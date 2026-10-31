@@ -14,3 +14,9 @@ test('loopback matches with a different port only', () => {
   expect(matchesRegistered('http://localhost:9999/cb', ['http://127.0.0.1:1234/cb'])).toBe(false);
   expect(matchesRegistered('https://claude.ai/api/mcp/auth_callback?x=1', ['https://claude.ai/api/mcp/auth_callback'])).toBe(false);
 });
+test('a requested loopback URI with an out-of-range port never matches', () => {
+  for (const port of ['0', '65536', '99999']) {
+    expect(matchesRegistered(`http://127.0.0.1:${port}/cb`, ['http://127.0.0.1:1234/cb'])).toBe(false);
+  }
+  expect(matchesRegistered('http://127.0.0.1:65535/cb', ['http://127.0.0.1:1234/cb'])).toBe(true);
+});
