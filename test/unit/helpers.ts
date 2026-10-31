@@ -10,7 +10,7 @@ export function makeApp(env: Record<string, string> = {}, fetchImpl: typeof fetc
     PUBLIC_URL: 'https://mm.example', TOKEN_ENC_KEY: randomBytes(32).toString('base64'),
     MM_OAUTH_CLIENT_ID: 'id', MM_OAUTH_CLIENT_SECRET: 's', ...env,
   });
-  const store = new Store(openDb(':memory:'), config.encKey);
+  const store = new Store(openDb(':memory:'), config.encKey, Date.now, config.accessTokenTtlSec);
   const app = createApp({ config, store, deps: { fetch: fetchImpl, now: Date.now } });
   return { app, store, config, req: request(app) };
 }
