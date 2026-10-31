@@ -40,3 +40,14 @@ test('limiter rejects immediately beyond per-user and global limits', () => {
   l2.acquire('u1')();
   l2.acquire('w')();
 });
+
+test('charge counts an extra Mattermost request in both windows without rejecting or taking a slot', () => {
+  let t = 0;
+  const l = new Limiter(opts, () => t);
+  for (let i = 0; i < 130; i++) l.charge('u1');
+  expect(rejected(() => l.acquire('u1')).retryAfterSec).toBe(60);
+  for (let i = 0; i < 470; i++) l.charge(`v${i % 5}`);
+  rejected(() => l.acquire('w'));
+  t = 60_000;
+  [1, 2, 3, 4].map(() => l.acquire('u1'));
+});

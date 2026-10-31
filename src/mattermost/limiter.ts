@@ -35,8 +35,7 @@ export class Limiter {
 
   acquire(mmUserId: string): Release {
     const now = this.now();
-    let u = this.users.get(mmUserId);
-    if (!u) this.users.set(mmUserId, (u = { active: 0, hits: [] }));
+    const u = this.usage(mmUserId);
     prune(u.hits, now);
     prune(this.all.hits, now);
     if (u.active >= this.opts.perUserConcurrency || this.all.active >= this.opts.globalConcurrency) throw new RateLimited(1, false);
@@ -53,5 +52,18 @@ export class Limiter {
       u.active--;
       this.all.active--;
     };
+  }
+
+  // Not rejecting: the extra request belongs to a call that already passed acquire and is half done.
+  charge(mmUserId: string): void {
+    const now = this.now();
+    this.usage(mmUserId).hits.push(now);
+    this.all.hits.push(now);
+  }
+
+  private usage(mmUserId: string): Usage {
+    let u = this.users.get(mmUserId);
+    if (!u) this.users.set(mmUserId, (u = { active: 0, hits: [] }));
+    return u;
   }
 }
