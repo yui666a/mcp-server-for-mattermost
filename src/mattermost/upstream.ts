@@ -6,6 +6,11 @@ export type MmTokens = { access: string; refresh: string };
 
 export class UpstreamUnavailable extends Error {
   name = 'UpstreamUnavailable';
+  readonly sent: boolean;
+  constructor(message: string, sent = true) {
+    super(message);
+    this.sent = sent;
+  }
 }
 
 const TIMEOUT_MS = 20_000;
