@@ -43,7 +43,7 @@ Mattermost は無償の Team Edition で、公式 Agents プラグインの外�
 | ログ収集 | Cloud Ops Agent は既定設定で、journald から `/var/log/syslog` に流れた分を Cloud Logging に送っている。Docker 既定の json-file ドライバーのコンテナ出力は届かない |
 | OAuth 2.0 Service Provider | 有効。`/.well-known/oauth-authorization-server` を公開しており、`registration_endpoint` はない（Dynamic Client Registration は無効） |
 | Mattermost の OAuth | 認可コードフロー、PKCE は `S256` のみ。public client にはリフレッシュトークンが発行されず、confidential client（`client_secret_post`）には発行される。スコープは `user` のみ |
-| Mattermost のトークン再利用 | 同じユーザーと同じ OAuth アプリの組では、新たに認可しても既存のアクセストークンとリフレッシュトークンが返る。リフレッシュすると古いアクセストークンは消え、リフレッシュトークンも新しいものに替わる（[v11.7.8 `oauth.go`](https://github.com/mattermost/mattermost/blob/v11.7.8/server/channels/app/oauth.go)。実装の最初にローカルで挙動を確かめる） |
+| Mattermost のトークン再利用 | 同じユーザーと同じ OAuth アプリの組では、新たに認可しても既存のアクセストークンとリフレッシュトークンが返る。リフレッシュするとリフレッシュトークンは新しいものに替わり、使用済みのものは使えなくなる。古いアクセストークンは、ローカルの v11.7.8 での実測ではリフレッシュ後も少なくとも 826 秒は有効なまま残り、利用者がアプリの許可を取り消すと無効になった（[v11.7.8 `oauth.go`](https://github.com/mattermost/mattermost/blob/v11.7.8/server/channels/app/oauth.go)、実測の詳細は `docs/runbook.md`）。Mattermost のトークンは MCP サーバーの外に出さないため、古いアクセストークンが残ることは設計に影響しない |
 | 利用者 | 約 20 人、世界中から利用 |
 
 ## 構成
