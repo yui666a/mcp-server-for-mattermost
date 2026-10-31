@@ -1,4 +1,5 @@
 import express from 'express';
+import { log } from './log.ts';
 import type { Config } from './config.ts';
 import type { Deps } from './deps.ts';
 import { metadataRouter } from './oauth/metadata.ts';
@@ -12,5 +13,10 @@ export function createApp(ctx: AppContext): express.Express {
   app.disable('x-powered-by');
   app.use(metadataRouter(ctx.config));
   app.use(registerRouter(ctx));
+  // Only the error's name and code are logged: messages from parsers and the DB can embed request data.
+  app.use(((err, _req, res, _next) => {
+    log('unhandled_error', { name: err?.name, code: err?.code });
+    res.status(500).set('Cache-Control', 'no-store').json({ error: 'server_error' });
+  }) satisfies express.ErrorRequestHandler);
   return app;
 }
