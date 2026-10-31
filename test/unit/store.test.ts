@@ -237,19 +237,32 @@ test('reuse of a consumed code still revokes the grant 10 minutes later, but not
   expect(store.consumeCode(code)).toBeUndefined();
 });
 
-test('rotation keeps at most two refresh rows per grant and still detects reuse of the previous generation', () => {
-  const first = grant();
-  let cur = first;
+test('reuse of a refresh token three generations back revokes the family', () => {
+  let cur = grant();
   const olds: string[] = [];
-  for (let i = 0; i < 5; i++) {
+  for (let i = 0; i < 4; i++) {
     olds.push(cur.refreshToken);
     const n = store.rotateRefresh(cur.refreshToken, 'c1', 'r');
     if (typeof n !== 'object') throw new Error();
     cur = n;
   }
-  expect(db.prepare('SELECT count(*) AS n FROM refresh_tokens').get()).toEqual({ n: 2 });
-  expect(store.rotateRefresh(olds[4], 'c1', 'r')).toBe('reused');
+  expect(store.rotateRefresh(olds[0], 'c1', 'r')).toBe('reused');
   expect(store.verifyAccess(cur.accessToken)).toBeUndefined();
+  expect(store.rotateRefresh(cur.refreshToken, 'c1', 'r')).toBeUndefined();
+});
+
+test('used refresh rows are kept for 7 days after use, then swept', () => {
+  const g1 = grant();
+  const g2 = store.rotateRefresh(g1.refreshToken, 'c1', 'r');
+  if (typeof g2 !== 'object') throw new Error();
+  t += 7 * DAY;
+  store.sweep();
+  expect(db.prepare('SELECT count(*) AS n FROM refresh_tokens').get()).toEqual({ n: 2 });
+  t += 1000;
+  store.sweep();
+  expect(db.prepare('SELECT count(*) AS n FROM refresh_tokens').get()).toEqual({ n: 1 });
+  expect(store.rotateRefresh(g1.refreshToken, 'c1', 'r')).toBeUndefined();
+  expect(store.rotateRefresh(g2.refreshToken, 'c1', 'r')).toMatchObject({ expiresIn: 3600 });
 });
 
 test('a stale dropPost does not delete a claim that a retry has taken over', () => {

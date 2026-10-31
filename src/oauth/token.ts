@@ -38,11 +38,15 @@ export function tokenRouter(ctx: { config: Config; store: Store }): Router {
     }
     const b = req.body ?? {};
     const grantType = str(b.grant_type);
-    if (!grantType) return fail(res, 'invalid_request', 'grant_type is required');
+    if (!grantType) {
+      return fail(res, 'invalid_request', b.grant_type === undefined ? 'grant_type is required' : 'grant_type must be a single value');
+    }
     if (grantType !== 'authorization_code' && grantType !== 'refresh_token') {
       return fail(res, 'unsupported_grant_type', 'unsupported grant_type');
     }
     if (req.headers.authorization !== undefined || b.client_secret !== undefined) {
+      const scheme = /^[A-Za-z0-9!#$%&'*+.^_`|~-]+/.exec(req.headers.authorization ?? '')?.[0];
+      if (scheme) res.set('WWW-Authenticate', `${scheme} realm="mcp"`);
       return fail(res, 'invalid_client', 'only public clients are supported (token_endpoint_auth_method none)');
     }
     const clientId = str(b.client_id);
@@ -66,19 +70,22 @@ export function tokenRouter(ctx: { config: Config; store: Store }): Router {
     }
 
     const code = str(b.code);
-    if (!code) return fail(res, 'invalid_grant', 'code is invalid');
-    const rec = store.consumeCode(code);
+    const redirectUri = str(b.redirect_uri);
+    const verifier = str(b.code_verifier);
+    for (const [name, v] of [['code', code], ['redirect_uri', redirectUri], ['code_verifier', verifier]]) {
+      if (!v) return fail(res, 'invalid_request', `${name} is required`);
+    }
+    const rec = store.consumeCode(code!);
     if (rec === 'reused') {
       log('token_reuse_detected', { client_id: client.clientId });
       return fail(res, 'invalid_grant', 'code is invalid');
     }
-    const verifier = str(b.code_verifier);
     const ok = rec !== undefined
       && rec.clientId === client.clientId
-      && b.redirect_uri === rec.redirectUri
-      && verifier !== undefined && VERIFIER.test(verifier)
-      && equal(createHash('sha256').update(verifier).digest('base64url'), rec.codeChallenge);
-    if (!rec || !ok) return fail(res, 'invalid_grant', 'code is invalid');
+      && redirectUri === rec.redirectUri
+      && VERIFIER.test(verifier!)
+      && equal(createHash('sha256').update(verifier!).digest('base64url'), rec.codeChallenge);
+    if (!ok) return fail(res, 'invalid_grant', 'code is invalid');
     // Must stay synchronous with consumeCode: no await may separate them.
     const t = store.createGrant({
       mmUserId: rec.mmUserId, clientId: rec.clientId, scope: rec.scope, resource: rec.resource, fromCodeHash: rec.codeHash,

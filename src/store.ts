@@ -9,6 +9,7 @@ const UNAUTHORIZED_CLIENT_TTL = 7 * 24 * 3600 * SEC;
 const UNAUTHORIZED_CLIENT_CAP = 500;
 const POST_DEDUP_WINDOW = 600 * SEC;
 const INFLIGHT_GRACE = 30 * SEC;
+const USED_REFRESH_KEEP = 7 * 24 * 3600 * SEC;
 const CONSUMED_CODE_KEEP = 24 * 3600 * SEC;
 
 export type ClientMeta = { clientName: string; redirectUris: string[] };
@@ -232,8 +233,7 @@ export class Store {
         this.run('DELETE FROM grants WHERE id = ?', r.id);
         return 'reused';
       }
-      this.run('UPDATE refresh_tokens SET used = 1 WHERE token_hash = ?', sha256(refreshToken));
-      this.run('DELETE FROM refresh_tokens WHERE grant_id = ? AND used = 1 AND token_hash != ?', r.id, sha256(refreshToken));
+      this.run('UPDATE refresh_tokens SET used = 1, used_at = ? WHERE token_hash = ?', this.now(), sha256(refreshToken));
       this.run('UPDATE grants SET last_used_at = ? WHERE id = ?', this.now(), r.id);
       return this.issue(r.id);
     });
@@ -335,6 +335,7 @@ export class Store {
       this.run('DELETE FROM codes WHERE expires_at <= ?', now);
       this.run('DELETE FROM access_tokens WHERE expires_at <= ?', now);
       this.run('DELETE FROM grants WHERE last_used_at < ?', now - REFRESH_IDLE);
+      this.run('DELETE FROM refresh_tokens WHERE used = 1 AND used_at < ?', now - USED_REFRESH_KEEP);
       this.run('DELETE FROM post_claims WHERE created_at <= ?', now - POST_DEDUP_WINDOW);
     });
   }
