@@ -29,10 +29,10 @@ export function registerRouter(ctx: { config: Config; store: Store }): Router {
     if (!strArray(uris) || uris.length < 1 || uris.length > 5) return bad('redirect_uris must be 1 to 5 strings');
     if (uris.some((u) => u.length > 2000 || CONTROL.test(u))) return bad('invalid redirect_uris');
 
-    if (b.grant_types !== undefined && (!strArray(b.grant_types) || b.grant_types.some((g: string) => !GRANTS.includes(g)))) {
+    if (b.grant_types !== undefined && (!strArray(b.grant_types) || !b.grant_types.includes('authorization_code') || b.grant_types.some((g: string) => !GRANTS.includes(g)))) {
       return bad('unsupported grant_types');
     }
-    if (b.response_types !== undefined && (!strArray(b.response_types) || b.response_types.some((t: string) => t !== 'code'))) {
+    if (b.response_types !== undefined && (!strArray(b.response_types) || !b.response_types.length || b.response_types.some((t: string) => t !== 'code'))) {
       return bad('unsupported response_types');
     }
     if (b.scope !== undefined && b.scope !== 'mattermost') return bad('unsupported scope');
@@ -56,7 +56,12 @@ export function registerRouter(ctx: { config: Config; store: Store }): Router {
       scope: 'mattermost',
     });
   });
-  const parseError: ErrorRequestHandler = (_err, _req, res, _next) => fail(res, 'invalid_client_metadata', 'invalid request body');
+  const parseError: ErrorRequestHandler = (err, _req, res, next) => {
+    if (err?.type === 'entity.parse.failed' || err?.type === 'entity.too.large') {
+      return fail(res, 'invalid_client_metadata', 'invalid request body');
+    }
+    next(err);
+  };
   r.use('/mcp/oauth/register', parseError);
   return r;
 }

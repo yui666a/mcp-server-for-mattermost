@@ -34,6 +34,9 @@ test('register rejects control chars, name > 100, > 5 uris, uri > 2000 with inva
     { redirect_uris: [URL_OK], scope: 'other' },
     { redirect_uris: [URL_OK], grant_types: ['password'] },
     { redirect_uris: [URL_OK], response_types: ['token'] },
+    { redirect_uris: [URL_OK], grant_types: [] },
+    { redirect_uris: [URL_OK], grant_types: ['refresh_token'] },
+    { redirect_uris: [URL_OK], response_types: [] },
   ];
   for (const b of bodies) {
     const r = await post(b);
@@ -52,11 +55,29 @@ test('register stores token_endpoint_auth_method none even if the client asked f
   expect(r.status).toBe(201);
   expect(r.body.token_endpoint_auth_method).toBe('none');
 });
-test('warns when unauthorized registrations exceed 450, without logging secrets', async () => {
+test('warns when unauthorized registrations exceed 450', async () => {
   const w = vi.mocked(process.stdout.write);
   const { req, store } = makeApp();
   for (let i = 0; i < 450; i++) store.createClient({ clientName: 'c', redirectUris: [URL_OK] });
   await req.post('/mcp/oauth/register').send({ redirect_uris: [URL_OK] });
   const lines = w.mock.calls.map((c) => JSON.parse(String(c[0])));
   expect(lines.find((l) => l.event === 'dcr_unauthorized_near_limit')).toMatchObject({ count: 451 });
+});
+test('logs contain neither client_id nor redirect URIs', async () => {
+  const w = vi.mocked(process.stdout.write);
+  const r = await post({ redirect_uris: [URL_OK] });
+  const out = w.mock.calls.map((c) => String(c[0])).join('');
+  expect(out).not.toContain(r.body.client_id);
+  expect(out).not.toContain(URL_OK);
+});
+test('a store failure is a 500 that is logged without the request body', async () => {
+  const w = vi.mocked(process.stdout.write);
+  const { req, store } = makeApp();
+  vi.spyOn(store, 'createClient').mockImplementation(() => { throw Object.assign(new Error('database or disk is full'), { code: 'ERR_SQLITE_ERROR' }); });
+  const r = await req.post('/mcp/oauth/register').send({ client_name: 'SECRET-NAME', redirect_uris: [URL_OK] });
+  expect(r.status).toBe(500);
+  expect(r.body.error).not.toBe('invalid_client_metadata');
+  const out = w.mock.calls.map((c) => String(c[0])).join('');
+  expect(out).toContain('unhandled_error');
+  expect(out).not.toContain('SECRET-NAME');
 });
