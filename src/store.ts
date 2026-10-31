@@ -101,6 +101,10 @@ export class Store {
     };
   }
 
+  countUnauthorizedClients(): number {
+    return Number(this.get('SELECT COUNT(*) AS n FROM clients WHERE authorized_at IS NULL')?.n ?? 0);
+  }
+
   markClientAuthorized(id: string): void {
     this.run('UPDATE clients SET authorized_at = ? WHERE client_id = ? AND authorized_at IS NULL', this.now(), id);
   }
