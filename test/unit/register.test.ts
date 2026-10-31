@@ -81,3 +81,11 @@ test('a store failure is a 500 that is logged without the request body', async (
   expect(out).toContain('unhandled_error');
   expect(out).not.toContain('SECRET-NAME');
 });
+test('a 4xx raised by middleware keeps its status and does not echo the body', async () => {
+  const { req } = makeApp();
+  const r = await req.post('/mcp/oauth/register').set('Content-Type', 'application/json; charset=latin1').send('{"client_name":"SECRET-NAME"}');
+  expect(r.status).toBe(415);
+  expect(r.headers['cache-control']).toBe('no-store');
+  expect(r.body).toEqual({ error: 'invalid_request' });
+  expect(r.text).not.toContain('SECRET-NAME');
+});
