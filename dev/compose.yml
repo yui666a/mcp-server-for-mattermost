@@ -1,0 +1,32 @@
+# 起動は npm run dev:up（dev/compose.sh が MATTERMOST_IMAGE_TAG を環境変数、../mattermost-infra/compose/.env、env.example の順で解決する）。
+name: mcp-dev
+
+services:
+  postgres:
+    image: postgres:18.6
+    environment:
+      POSTGRES_USER: mmuser
+      POSTGRES_PASSWORD: mmdev
+      POSTGRES_DB: mattermost
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U mmuser -d mattermost"]
+      interval: 2s
+      retries: 30
+
+  mattermost:
+    image: mattermost/mattermost-team-edition:${MATTERMOST_IMAGE_TAG:?use dev/compose.sh}
+    platform: linux/amd64
+    depends_on:
+      postgres:
+        condition: service_healthy
+    ports:
+      - 8065:8065
+    environment:
+      MM_SQLSETTINGS_DRIVERNAME: postgres
+      MM_SQLSETTINGS_DATASOURCE: postgres://mmuser:mmdev@postgres:5432/mattermost?sslmode=disable
+      MM_SERVICESETTINGS_SITEURL: http://localhost:8065
+      MM_SERVICESETTINGS_ENABLEOAUTHSERVICEPROVIDER: "true"
+      MM_SERVICESETTINGS_ENABLEUSERACCESSTOKENS: "true"
+      MM_SERVICESETTINGS_ENABLELOCALMODE: "true"
+      MM_RATELIMITSETTINGS_ENABLE: "false"
+      MM_SERVICESETTINGS_ALLOWEDUNTRUSTEDINTERNALCONNECTIONS: localhost
