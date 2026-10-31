@@ -5,6 +5,7 @@ import type { Deps } from './deps.ts';
 import { authorizeRouter } from './oauth/authorize.ts';
 import { metadataRouter } from './oauth/metadata.ts';
 import { registerRouter } from './oauth/register.ts';
+import { tokenRouter } from './oauth/token.ts';
 import type { Store } from './store.ts';
 
 export type AppContext = { config: Config; store: Store; deps: Deps };
@@ -15,6 +16,7 @@ export function createApp(ctx: AppContext): express.Express {
   app.use(metadataRouter(ctx.config));
   app.use(registerRouter(ctx));
   app.use(authorizeRouter(ctx));
+  app.use(tokenRouter(ctx));
   // Only the error's name and code are logged: messages from parsers and the DB can embed request data.
   app.use(((err, _req, res, next) => {
     if (res.headersSent) return next(err);
