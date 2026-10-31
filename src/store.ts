@@ -9,6 +9,7 @@ const UNAUTHORIZED_CLIENT_TTL = 7 * 24 * 3600 * SEC;
 const UNAUTHORIZED_CLIENT_CAP = 500;
 const POST_DEDUP_WINDOW = 600 * SEC;
 const INFLIGHT_GRACE = 30 * SEC;
+const CONSUMED_CODE_KEEP = 24 * 3600 * SEC;
 
 export type ClientMeta = { clientName: string; redirectUris: string[] };
 export type Client = ClientMeta & { clientId: string; createdAt: number; authorizedAt: number | null };
@@ -32,10 +33,10 @@ export type CodeInput = {
 export type CodeRecord = CodeInput & { codeHash: string };
 export type TokenPair = { accessToken: string; refreshToken: string; expiresIn: number };
 export type PostClaim =
-  | { kind: 'new'; id: number; pendingPostId: string }
+  | { kind: 'new'; id: number; pendingPostId: string; claimedAt: number }
   | { kind: 'done'; postId: string }
   | { kind: 'inflight' }
-  | { kind: 'retry'; id: number; pendingPostId: string; createdAt: number };
+  | { kind: 'retry'; id: number; pendingPostId: string; createdAt: number; claimedAt: number };
 
 type Row = Record<string, any>;
 
@@ -75,15 +76,17 @@ export class Store {
 
   createClient(meta: ClientMeta): Client {
     const c: Client = { ...meta, clientId: randomToken(), createdAt: this.now(), authorizedAt: null };
-    this.run(
-      'INSERT INTO clients (client_id, client_name, redirect_uris, created_at) VALUES (?, ?, ?, ?)',
-      c.clientId, c.clientName, JSON.stringify(c.redirectUris), c.createdAt,
-    );
-    this.run(
-      `DELETE FROM clients WHERE authorized_at IS NULL AND rowid NOT IN
-         (SELECT rowid FROM clients WHERE authorized_at IS NULL ORDER BY rowid DESC LIMIT ?)`,
-      UNAUTHORIZED_CLIENT_CAP,
-    );
+    this.tx(() => {
+      this.run(
+        'INSERT INTO clients (client_id, client_name, redirect_uris, created_at) VALUES (?, ?, ?, ?)',
+        c.clientId, c.clientName, JSON.stringify(c.redirectUris), c.createdAt,
+      );
+      this.run(
+        `DELETE FROM clients WHERE authorized_at IS NULL AND rowid NOT IN
+           (SELECT rowid FROM clients WHERE authorized_at IS NULL ORDER BY rowid DESC LIMIT ?)`,
+        UNAUTHORIZED_CLIENT_CAP,
+      );
+    });
     return c;
   }
 
@@ -121,7 +124,7 @@ export class Store {
     const n = this.run(
       `UPDATE auth_sessions SET upstream_state_hash = ?, upstream_verifier = ?
        WHERE session_id = ? AND cookie_hash = ? AND csrf_hash = ? AND created_at > ?`,
-      sha256(upstreamState), upstreamVerifier, sessionId, sha256(cookieSecret), sha256(csrf),
+      sha256(upstreamState), seal(this.encKey, upstreamVerifier), sessionId, sha256(cookieSecret), sha256(csrf),
       this.now() - AUTH_SESSION_TTL,
     );
     return n === 1 ? { upstreamState, upstreamVerifier } : undefined;
@@ -149,7 +152,7 @@ export class Store {
         state: r.state,
         resource: r.resource,
         scope: r.scope,
-        upstreamVerifier: r.upstream_verifier,
+        upstreamVerifier: open(this.encKey, r.upstream_verifier),
       };
     });
   }
@@ -175,7 +178,7 @@ export class Store {
         return 'reused';
       }
       if (r.expires_at <= this.now()) return undefined;
-      this.run('UPDATE codes SET consumed = 1 WHERE code_hash = ?', codeHash);
+      this.run('UPDATE codes SET consumed = 1, expires_at = ? WHERE code_hash = ?', this.now() + CONSUMED_CODE_KEEP, codeHash);
       return {
         codeHash,
         mmUserId: r.mm_user_id,
@@ -222,6 +225,7 @@ export class Store {
         return 'reused';
       }
       this.run('UPDATE refresh_tokens SET used = 1 WHERE token_hash = ?', sha256(refreshToken));
+      this.run('DELETE FROM refresh_tokens WHERE grant_id = ? AND used = 1 AND token_hash != ?', r.id, sha256(refreshToken));
       this.run('UPDATE grants SET last_used_at = ? WHERE id = ?', this.now(), r.id);
       return this.issue(r.id);
     });
@@ -239,6 +243,7 @@ export class Store {
   revokeUser(mmUserId: string): void {
     this.tx(() => {
       this.run('DELETE FROM grants WHERE mm_user_id = ?', mmUserId);
+      this.run('DELETE FROM codes WHERE mm_user_id = ?', mmUserId);
       this.run('DELETE FROM mm_creds WHERE mm_user_id = ?', mmUserId);
     });
   }
@@ -287,13 +292,13 @@ export class Store {
              VALUES (?, ?, ?, ?, ?, ?, ?)`,
           ).run(k.mmUserId, k.channelId, rootId, k.bodyHash, pendingPostId, now, now).lastInsertRowid,
         );
-        return { kind: 'new', id, pendingPostId };
+        return { kind: 'new', id, pendingPostId, claimedAt: now };
       }
       if (r.post_id) return { kind: 'done', postId: r.post_id };
       if (now - r.updated_at < INFLIGHT_GRACE) return { kind: 'inflight' };
       const won = this.run('UPDATE post_claims SET updated_at = ? WHERE id = ? AND updated_at = ?', now, r.id, r.updated_at);
       return won === 1
-        ? { kind: 'retry', id: r.id, pendingPostId: r.pending_post_id, createdAt: r.created_at }
+        ? { kind: 'retry', id: r.id, pendingPostId: r.pending_post_id, createdAt: r.created_at, claimedAt: now }
         : { kind: 'inflight' };
     });
   }
@@ -302,8 +307,9 @@ export class Store {
     this.run('UPDATE post_claims SET post_id = ?, updated_at = ? WHERE id = ?', postId, this.now(), id);
   }
 
-  dropPost(id: number): void {
-    this.run('DELETE FROM post_claims WHERE id = ?', id);
+  // claimedAt guards against a slow first request deleting a claim that a retry has since taken over.
+  dropPost(id: number, claimedAt: number): void {
+    this.run('DELETE FROM post_claims WHERE id = ? AND updated_at = ?', id, claimedAt);
   }
 
   purgeCredentials(): void {

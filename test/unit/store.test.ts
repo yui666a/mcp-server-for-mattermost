@@ -74,8 +74,11 @@ test('refresh extends idle expiry and expires after 90 idle days', () => {
   t += 89 * DAY;
   const g2 = store.rotateRefresh(g.refreshToken, 'c1', 'r');
   if (typeof g2 !== 'object') throw new Error();
+  t += 2 * DAY;
+  const g3 = store.rotateRefresh(g2.refreshToken, 'c1', 'r');
+  if (typeof g3 !== 'object') throw new Error();
   t += 90 * DAY + 1000;
-  expect(store.rotateRefresh(g2.refreshToken, 'c1', 'r')).toBeUndefined();
+  expect(store.rotateRefresh(g3.refreshToken, 'c1', 'r')).toBeUndefined();
 });
 
 test('auth session is single use and expires after 600s', () => {
@@ -183,7 +186,7 @@ test('claimPost: new → inflight within 30s → retry after 30s (only one claim
   expect(store.claimPost(k)).toEqual({ kind: 'inflight' });
   t += 1;
   const r = store.claimPost(k);
-  expect(r).toEqual({ kind: 'retry', id: c1.id, pendingPostId: c1.pendingPostId, createdAt: 1_000_000 });
+  expect(r).toEqual({ kind: 'retry', id: c1.id, pendingPostId: c1.pendingPostId, createdAt: 1_000_000, claimedAt: t });
   expect(store.claimPost(k)).toEqual({ kind: 'inflight' });
   store.completePost(c1.id, 'post1');
   expect(store.claimPost(k)).toEqual({ kind: 'done', postId: 'post1' });
@@ -194,9 +197,10 @@ test('claimPost: dropped claims can be retaken and claims expire after 600s', ()
   const k = { mmUserId: 'u1', channelId: 'ch', bodyHash: 'h' };
   const c = store.claimPost(k);
   if (c.kind !== 'new') throw new Error();
-  store.dropPost(c.id);
-  expect(store.claimPost(k).kind).toBe('new');
-  store.completePost(c.id + 1, 'p');
+  store.dropPost(c.id, c.claimedAt);
+  const c2 = store.claimPost(k);
+  if (c2.kind !== 'new') throw new Error();
+  store.completePost(c2.id, 'p');
   t += 600_000;
   expect(store.claimPost(k).kind).toBe('new');
 });
@@ -211,4 +215,58 @@ test('purgeCredentials keeps clients', () => {
   expect(store.getClient(c.clientId)).toBeDefined();
   for (const tbl of ['codes', 'grants', 'access_tokens', 'refresh_tokens', 'mm_creds', 'auth_sessions', 'post_claims'])
     expect(db.prepare(`SELECT count(*) AS n FROM ${tbl}`).get()).toEqual({ n: 0 });
+});
+
+test('revokeUser also invalidates unconsumed codes of that user', () => {
+  const code = store.createCode(codeInput);
+  store.revokeUser('u1');
+  expect(store.consumeCode(code)).toBeUndefined();
+});
+
+test('reuse of a consumed code still revokes the grant 10 minutes later, but not after 24 hours', () => {
+  const code = store.createCode(codeInput);
+  const rec = store.consumeCode(code);
+  if (typeof rec !== 'object') throw new Error();
+  const g = store.createGrant({ mmUserId: 'u1', clientId: 'c1', scope: 'mattermost', resource: 'r', fromCodeHash: rec.codeHash });
+  t += 600_000;
+  store.sweep();
+  expect(store.consumeCode(code)).toBe('reused');
+  expect(store.verifyAccess(g.accessToken)).toBeUndefined();
+  t += DAY;
+  store.sweep();
+  expect(store.consumeCode(code)).toBeUndefined();
+});
+
+test('rotation keeps at most two refresh rows per grant and still detects reuse of the previous generation', () => {
+  const first = grant();
+  let cur = first;
+  const olds: string[] = [];
+  for (let i = 0; i < 5; i++) {
+    olds.push(cur.refreshToken);
+    const n = store.rotateRefresh(cur.refreshToken, 'c1', 'r');
+    if (typeof n !== 'object') throw new Error();
+    cur = n;
+  }
+  expect(db.prepare('SELECT count(*) AS n FROM refresh_tokens').get()).toEqual({ n: 2 });
+  expect(store.rotateRefresh(olds[4], 'c1', 'r')).toBe('reused');
+  expect(store.verifyAccess(cur.accessToken)).toBeUndefined();
+});
+
+test('a stale dropPost does not delete a claim that a retry has taken over', () => {
+  const k = { mmUserId: 'u1', channelId: 'ch', bodyHash: 'h' };
+  const c1 = store.claimPost(k);
+  if (c1.kind !== 'new') throw new Error();
+  t += 30_000;
+  const r = store.claimPost(k);
+  if (r.kind !== 'retry') throw new Error();
+  store.dropPost(c1.id, c1.claimedAt);
+  expect(store.claimPost(k)).toEqual({ kind: 'inflight' });
+  store.dropPost(r.id, r.claimedAt);
+  expect(store.claimPost(k).kind).toBe('new');
+});
+
+test('the upstream PKCE verifier is not stored in plain text', () => {
+  const s = store.createAuthSession(sessionInput);
+  const a = store.approveAuthSession(s.sessionId, s.cookieSecret, s.csrf)!;
+  expect(JSON.stringify(db.prepare('SELECT * FROM auth_sessions').all())).not.toContain(a.upstreamVerifier);
 });
