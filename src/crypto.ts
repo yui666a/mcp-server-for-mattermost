@@ -15,6 +15,7 @@ export function open(key: Buffer, sealed: string): string {
   const parts = sealed.split('.');
   if (parts.length !== 3) throw new Error('malformed sealed value');
   const [iv, tag, ct] = parts.map((p) => Buffer.from(p, 'base64url'));
+  if (iv.length !== 12 || tag.length !== 16) throw new Error('malformed sealed value');
   const d = createDecipheriv('aes-256-gcm', key, iv);
   d.setAuthTag(tag);
   return Buffer.concat([d.update(ct), d.final()]).toString('utf8');

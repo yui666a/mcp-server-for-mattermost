@@ -22,3 +22,11 @@ test('randomToken is 32 bytes base64url and sha256 is hex', () => {
   expect(randomToken()).toMatch(/^[A-Za-z0-9_-]{43}$/);
   expect(sha256('a')).toBe('ca978112ca1bbdcafac231b39a23dc4da786eff8147c4e72b9807785afee48bb');
 });
+
+test('open rejects an iv or tag of the wrong length', () => {
+  const [iv, tag, ct] = seal(k, 'x').split('.');
+  const b = (s: string) => Buffer.from(s, 'base64url');
+  const e = (x: Buffer) => x.toString('base64url');
+  expect(() => open(k, `${e(b(iv).subarray(0, 11))}.${tag}.${ct}`)).toThrow('malformed');
+  expect(() => open(k, `${iv}.${e(b(tag).subarray(0, 8))}.${ct}`)).toThrow('malformed');
+});
