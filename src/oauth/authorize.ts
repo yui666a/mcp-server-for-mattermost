@@ -5,7 +5,7 @@ import express, { Router as makeRouter } from 'express';
 import type { Config } from '../config.ts';
 import type { Deps } from '../deps.ts';
 import { log } from '../log.ts';
-import { authorizeUrl, exchangeCode, userId } from '../mattermost/upstream.ts';
+import { authorizeUrl, exchangeCode, UpstreamUnavailable, userId } from '../mattermost/upstream.ts';
 import type { Store } from '../store.ts';
 import { consentPage, errorPage, setPageHeaders } from './pages.ts';
 import { isRegistrable, matchesRegistered } from './redirect.ts';
@@ -107,20 +107,31 @@ export function authorizeRouter(ctx: { config: Config; store: Store; deps: Deps 
       return redirectToClient(res, config, s.redirectUri, 302, { error: 'access_denied', state: s.state });
     }
 
+    let step = 'exchange';
     let mmUserId: string;
     let tokens: { access: string; refresh: string };
     try {
       tokens = await exchangeCode(config, deps, code, s.upstreamVerifier);
+      step = 'users_me';
       mmUserId = await userId(config, deps, tokens.access);
     } catch (e) {
-      log('authorize_upstream_failed', { name: (e as Error)?.name });
+      // UpstreamUnavailable messages carry only the status; anything else could embed request data.
+      log('authorize_upstream_failed', { step, name: (e as Error)?.name, message: e instanceof UpstreamUnavailable ? e.message : undefined });
       return showError(res, 502, 'Mattermost との通信に失敗しました。時間をおいて接続をやり直してください。');
     }
-    store.putMmCred(mmUserId, tokens.access, tokens.refresh);
-    store.markClientAuthorized(s.clientId);
-    const ourCode = store.createCode({
-      mmUserId, clientId: s.clientId, redirectUri: s.redirectUri, codeChallenge: s.codeChallenge, resource: s.resource, scope: s.scope,
-    });
+    let ourCode: string;
+    try {
+      ourCode = store.transaction(() => {
+        store.putMmCred(mmUserId, tokens.access, tokens.refresh);
+        store.markClientAuthorized(s.clientId);
+        return store.createCode({
+          mmUserId, clientId: s.clientId, redirectUri: s.redirectUri, codeChallenge: s.codeChallenge, resource: s.resource, scope: s.scope,
+        });
+      });
+    } catch (e) {
+      log('unhandled_error', { name: (e as Error)?.name, code: (e as { code?: string })?.code });
+      return showError(res, 500, 'サーバーで問題が起きました。時間をおいて接続をやり直してください。');
+    }
     log('authorize_completed');
     redirectToClient(res, config, s.redirectUri, 302, { code: ourCode, state: s.state });
   });

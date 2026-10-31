@@ -330,3 +330,50 @@ test('logs never contain cookies, codes, tokens or the client state', async () =
     expect(out).not.toContain(secret);
   }
 });
+
+test("session A's upstream state with only session B's cookie is rejected and A stays usable with its own cookie", async () => {
+  const s = setup();
+  const a = await approved(s, { state: 'A' });
+  const b = await approved(s, { state: 'B' });
+  const forged = `${a.cookie.split('=')[0]}=${b.cookie.split('=')[1]}`;
+  for (const cookie of [b.cookie, forged]) {
+    const r = await s.req.get(`/mcp/oauth/callback?code=mmcode&state=${a.upstreamState}`).set('Cookie', cookie);
+    expect(r.status).toBe(400);
+    expect(r.headers.location).toBeUndefined();
+  }
+  expect(s.f).not.toHaveBeenCalled();
+  const ok = await s.req.get(`/mcp/oauth/callback?code=mmcode&state=${a.upstreamState}`).set('Cookie', a.cookie);
+  expect(params(ok.headers.location).state).toBe('A');
+});
+
+test('a store failure after the Mattermost exchange stores nothing and shows a 5xx error page', async () => {
+  const s = setup();
+  const a = await approved(s);
+  vi.spyOn(s.store, 'createCode').mockImplementation(() => { throw new Error('disk full'); });
+  const r = await s.req.get(`/mcp/oauth/callback?code=mmcode&state=${a.upstreamState}`).set('Cookie', a.cookie);
+  expect(r.status).toBe(500);
+  expect(r.headers.location).toBeUndefined();
+  expect(r.headers['content-type']).toMatch(/^text\/html/);
+  expect(r.headers['content-security-policy']).toContain("form-action 'none'");
+  expect(s.store.getMmCred('u1')).toBeUndefined();
+  expect(s.store.getClient(s.client.clientId)?.authorizedAt).toBeNull();
+});
+
+test('authorize_upstream_failed says which step failed and the status, without secrets', async () => {
+  const cases: [ReturnType<typeof mmFetch>, string, string][] = [
+    [mmFetch({ token: () => Response.json({ id: 'x' }, { status: 400 }) }), 'exchange', '400'],
+    [mmFetch({ me: () => Response.json({ id: 'x' }, { status: 401 }) }), 'users_me', '401'],
+  ];
+  for (const [f, step, status] of cases) {
+    vi.mocked(process.stdout.write).mockClear();
+    const s = setup([CLAUDE], f);
+    const a = await approved(s);
+    await s.req.get(`/mcp/oauth/callback?code=mmcode&state=${a.upstreamState}`).set('Cookie', a.cookie);
+    const lines = vi.mocked(process.stdout.write).mock.calls.map((c) => JSON.parse(String(c[0])));
+    const line = lines.find((l) => l.event === 'authorize_upstream_failed');
+    expect(line).toMatchObject({ step, name: 'UpstreamUnavailable' });
+    expect(line.message).toContain(status);
+    for (const secret of ['mmcode', 'mm-a', 'mm-r', a.upstreamState, 's']) expect(Object.values(line)).not.toContain(secret);
+    expect(JSON.stringify(line)).not.toMatch(/mm-a|mm-r|mmcode/);
+  }
+});

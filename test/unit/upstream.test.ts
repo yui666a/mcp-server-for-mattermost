@@ -94,3 +94,19 @@ test('5xx, network failure, timeout and malformed success on refresh throw Upstr
   for (const f of fails) await expect(refreshTokens(cfg, deps(stub(f)), 'r')).rejects.toBeInstanceOf(UpstreamUnavailable);
   expect(logged()).not.toContain('mm_refresh_config_error');
 });
+
+test('Mattermost calls do not follow redirects; a 3xx is UpstreamUnavailable and only its status is logged', async () => {
+  const redirect = () => new Response(null, { status: 307, headers: { location: 'https://evil.example/steal' } });
+  const calls: Promise<unknown>[] = [
+    exchangeCode(cfg, deps(stub(redirect)), 'CODE-SECRET', 'v'),
+    userId(cfg, deps(stub(redirect)), 'ACCESS-SECRET'),
+    refreshTokens(cfg, deps(stub(redirect)), 'REFRESH-SECRET'),
+  ];
+  for (const c of calls) await expect(c).rejects.toBeInstanceOf(UpstreamUnavailable);
+  const f = stub(redirect);
+  await refreshTokens(cfg, deps(f), 'r').catch(() => {});
+  expect(f.mock.calls[0][1]?.redirect).toBe('manual');
+  expect(logged()).toContain('"status":307');
+  expect(logged()).not.toContain('SECRET');
+  expect(logged()).not.toContain('evil.example');
+});

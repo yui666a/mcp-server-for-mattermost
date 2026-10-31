@@ -53,7 +53,7 @@ export class Store {
     this.accessTtlSec = accessTtlSec;
   }
 
-  // ponytail: nested calls are not supported; every caller below is a leaf.
+  // ponytail: nested calls are not supported; every caller below, and every fn passed to transaction(), uses only methods that do not open their own tx.
   private tx<T>(fn: () => T): T {
     this.db.exec('BEGIN IMMEDIATE');
     try {
@@ -64,6 +64,10 @@ export class Store {
       this.db.exec('ROLLBACK');
       throw e;
     }
+  }
+
+  transaction<T>(fn: () => T): T {
+    return this.tx(fn);
   }
 
   private get(sql: string, ...p: (string | number | null)[]): Row | undefined {

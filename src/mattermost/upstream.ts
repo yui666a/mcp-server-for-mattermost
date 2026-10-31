@@ -24,12 +24,19 @@ export function authorizeUrl(cfg: Config, state: string, challenge: string): str
   return `${cfg.mmBrowserUrl}/oauth/authorize?${q}`;
 }
 
+// Redirects are not followed: the request carries client_secret and codes or tokens, which must only go to MM_URL.
 async function call(deps: Deps, url: string, init: RequestInit): Promise<Response> {
+  let res: Response;
   try {
-    return await deps.fetch(url, { ...init, signal: AbortSignal.timeout(TIMEOUT_MS) });
+    res = await deps.fetch(url, { ...init, redirect: 'manual', signal: AbortSignal.timeout(TIMEOUT_MS) });
   } catch {
     throw new UpstreamUnavailable('Mattermost unreachable');
   }
+  if (res.status >= 300 && res.status < 400) {
+    log('mm_upstream_redirect', { status: res.status });
+    throw new UpstreamUnavailable(`unexpected redirect: ${res.status}`);
+  }
+  return res;
 }
 
 async function json(res: Response): Promise<any> {
