@@ -2,7 +2,7 @@ import { randomBytes } from 'node:crypto';
 import { afterEach, beforeEach, expect, test, vi } from 'vitest';
 import { loadConfig } from '../../src/config.ts';
 import { openDb } from '../../src/db.ts';
-import { MmClient, MmError, RateLimited, Reauthorize, UpstreamUnavailable } from '../../src/mattermost/client.ts';
+import { CALL_DEADLINE_MS, MmClient, MmError, RateLimited, Reauthorize, UpstreamUnavailable } from '../../src/mattermost/client.ts';
 import { Limiter } from '../../src/mattermost/limiter.ts';
 import { Store } from '../../src/store.ts';
 
@@ -223,4 +223,105 @@ test('each call takes one limiter slot for its whole duration and is rejected un
   api = only(['a2']);
   await client.call('u1', 'GET', '/users/me');
   expect(acquire).toHaveBeenCalledTimes(6);
+});
+
+test('a 401 → refresh → retry call counts three Mattermost requests in the rate window', async () => {
+  store.putMmCred('u1', 'a1', 'r1');
+  api = only(['a2']);
+  const tight = new Limiter({ ...limits, perUserPerMin: 3 }, Date.now);
+  const c = new MmClient(cfg, store, tight, { fetch: fetchMock, now: Date.now });
+  await c.call('u1', 'GET', '/users/me');
+  const e = await failure(c.call('u1', 'GET', '/users/me'));
+  expect(e).toBeInstanceOf(RateLimited);
+  expect(e.sent).toBe(false);
+});
+
+test('a call that has used up its deadline does not start the refresh', async () => {
+  let t = 1_000;
+  const c = new MmClient(cfg, store, limiter, { fetch: fetchMock, now: () => t });
+  store.putMmCred('u1', 'a1', 'r1');
+  api = () => { t += CALL_DEADLINE_MS; return mmError(401, 'x'); };
+  const e = await failure(c.call('u1', 'GET', '/users/me'));
+  expect(e).toBeInstanceOf(UpstreamUnavailable);
+  expect(e.sent).toBe(true);
+  expect(refreshCalls).toEqual([]);
+  expect(CALL_DEADLINE_MS).toBe(25_000);
+});
+
+test('requests after the first only get the remaining part of the call deadline', async () => {
+  let t = 1_000;
+  const c = new MmClient(cfg, store, limiter, { fetch: fetchMock, now: () => t });
+  store.putMmCred('u1', 'a1', 'r1');
+  api = (access, req) => {
+    if (access === 'a1') { t += CALL_DEADLINE_MS - 100; return mmError(401, 'x'); }
+    return new Promise((_, fail) => req.signal.addEventListener('abort', () => fail(req.signal.reason)));
+  };
+  const started = Date.now();
+  const e = await failure(c.call('u1', 'GET', '/users/me'));
+  expect(e).toBeInstanceOf(UpstreamUnavailable);
+  expect(e.sent).toBe(true);
+  expect(Date.now() - started).toBeLessThan(2_000);
+  expect(cred()).toMatchObject({ access: 'a2' });
+});
+
+test('invalid_grant does not revoke when a concurrent login stored new credentials', async () => {
+  const pair = grant();
+  store.putMmCred('u1', 'a1', 'r1');
+  api = only(['aN']);
+  refresh = () => { store.putMmCred('u1', 'aN', 'rN'); return RELOGIN(); };
+  expect(await client.call('u1', 'GET', '/users/me')).toEqual({ ok: 'aN' });
+  expect(cred()).toMatchObject({ access: 'aN', refresh: 'rN' });
+  expect(store.verifyAccess(pair.accessToken)?.mmUserId).toBe('u1');
+});
+
+test('401 after the retry does not revoke when a concurrent login stored new credentials', async () => {
+  const pair = grant();
+  store.putMmCred('u1', 'a1', 'r1');
+  api = (access) => {
+    if (access === 'a2') store.putMmCred('u1', 'aN', 'rN');
+    return access === 'aN' ? Response.json({ ok: access }) : mmError(401, 'x');
+  };
+  expect(await client.call('u1', 'GET', '/users/me')).toEqual({ ok: 'aN' });
+  expect(cred()).toMatchObject({ access: 'aN' });
+  expect(store.verifyAccess(pair.accessToken)?.mmUserId).toBe('u1');
+});
+
+test('after a lost save, an inconclusive check of the refreshed token keeps the stored credential', async () => {
+  const outcomes: Api[] = [
+    () => mmError(503, 'x'),
+    () => { throw new DOMException('timed out', 'TimeoutError'); },
+    () => new Response(null, { status: 302, headers: { location: 'https://evil.example/' } }),
+  ];
+  for (const check of outcomes) {
+    store.putMmCred('u1', 'a1', 'r1');
+    refresh = () => { store.putMmCred('u1', 'aC', 'rC'); return Response.json({ access_token: 'a2', refresh_token: 'r2' }); };
+    api = (access, req) => (access === 'a2' ? check(access, req) : only(['aC'])(access, req));
+    expect(await client.call('u1', 'GET', '/users/me')).toEqual({ ok: 'aC' });
+    expect(cred()).toMatchObject({ access: 'aC', refresh: 'rC' });
+  }
+});
+
+test('after a lost save, an authenticated 4xx proves the refreshed token and it is kept', async () => {
+  store.putMmCred('u1', 'a1', 'r1');
+  refresh = () => { store.putMmCred('u1', 'aC', 'rC'); return Response.json({ access_token: 'a2', refresh_token: 'r2' }); };
+  api = (access) => (access === 'a2' ? mmError(403, 'api.context.permissions.app_error') : mmError(401, 'x'));
+  expect(await failure(client.call('u1', 'GET', '/users/me'))).toBeInstanceOf(MmError);
+  expect(cred()).toMatchObject({ access: 'a2', refresh: 'r2' });
+});
+
+test('response bodies of redirects, 429 and 5xx are released', async () => {
+  store.putMmCred('u1', 'a1', 'r1');
+  for (const [status, headers] of [[302, { location: 'https://x.example/' }], [429, {}], [503, {}]] as const) {
+    let cancelled = false;
+    const body = new ReadableStream({ cancel: () => { cancelled = true; } });
+    api = () => new Response(body, { status, headers });
+    await failure(client.call('u1', 'GET', '/users/me'));
+    expect(cancelled).toBe(true);
+  }
+});
+
+test('retryAfterSec from Mattermost is capped at one hour', async () => {
+  store.putMmCred('u1', 'a1', 'r1');
+  api = () => new Response('{}', { status: 429, headers: { 'X-RateLimit-Reset': '99999' } });
+  expect((await failure(client.call('u1', 'GET', '/users/me'))).retryAfterSec).toBe(3600);
 });
