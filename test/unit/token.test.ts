@@ -42,13 +42,14 @@ test('code exchange checks client_id, redirect_uri and PKCE (invalid_grant), res
   const cases: [string, Record<string, string | undefined>, number, string][] = [
     ['other client', { client_id: s.other.clientId }, 400, 'invalid_grant'],
     ['redirect mismatch', { redirect_uri: `${CB}/x` }, 400, 'invalid_grant'],
-    ['redirect missing', { redirect_uri: undefined }, 400, 'invalid_grant'],
+    ['redirect missing', { redirect_uri: undefined }, 400, 'invalid_request'],
     ['wrong verifier', { code_verifier: 'w'.repeat(43) }, 400, 'invalid_grant'],
     ['short verifier', { code_verifier: 'v'.repeat(42) }, 400, 'invalid_grant'],
     ['long verifier', { code_verifier: 'v'.repeat(129) }, 400, 'invalid_grant'],
     ['bad verifier chars', { code_verifier: 'v'.repeat(42) + '!' }, 400, 'invalid_grant'],
-    ['verifier missing', { code_verifier: undefined }, 400, 'invalid_grant'],
-    ['code missing', { code: undefined }, 400, 'invalid_grant'],
+    ['verifier missing', { code_verifier: undefined }, 400, 'invalid_request'],
+    ['code missing', { code: undefined }, 400, 'invalid_request'],
+    ['duplicate grant_type', { grant_type: ['authorization_code', 'authorization_code'] as any }, 400, 'invalid_request'],
     ['unknown code', { code: 'nope' }, 400, 'invalid_grant'],
     ['resource missing', { resource: undefined }, 400, 'invalid_target'],
     ['resource mismatch', { resource: `${RES}/` }, 400, 'invalid_target'],
@@ -65,6 +66,14 @@ test('code exchange checks client_id, redirect_uri and PKCE (invalid_grant), res
   }
 });
 
+test('a request missing redirect_uri or code_verifier does not burn the code', async () => {
+  const s = setup();
+  const code = s.newCode();
+  expect((await s.exchange(code, { redirect_uri: undefined })).body.error).toBe('invalid_request');
+  expect((await s.exchange(code, { code_verifier: undefined })).body.error).toBe('invalid_request');
+  expect((await s.exchange(code)).status).toBe(200);
+});
+
 test('a rejected exchange still consumes the code', async () => {
   const s = setup();
   const code = s.newCode();
@@ -77,6 +86,9 @@ test('Authorization header client authentication is rejected with invalid_client
   const r = await s.req.post('/mcp/oauth/token').set('Authorization', 'Basic eDp5').type('form')
     .send({ grant_type: 'authorization_code', client_id: s.client.clientId, code: s.newCode(), redirect_uri: CB, code_verifier: VERIFIER, resource: RES });
   expect([r.status, r.body.error]).toEqual([401, 'invalid_client']);
+  expect(r.headers['www-authenticate']).toBe('Basic realm="mcp"');
+  const bearer = await s.req.post('/mcp/oauth/token').set('Authorization', 'Bearer abc').type('form').send({ grant_type: 'refresh_token' });
+  expect(bearer.headers['www-authenticate']).toBe('Bearer realm="mcp"');
 });
 
 test('non-form content type is invalid_request', async () => {
