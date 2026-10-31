@@ -1,7 +1,8 @@
 import { writeFileSync } from 'node:fs';
+import { parseArgs } from 'node:util';
 
 const MM = process.env.MM_URL ?? 'http://localhost:8065';
-const CALLBACK = 'http://localhost:3000/mcp/oauth/callback';
+const CALLBACK = parseArgs({ options: { callback: { type: 'string', default: 'http://localhost:3000/mcp/oauth/callback' } } }).values.callback;
 const PASSWORD = 'Passw0rd!dev123';
 const STATE = new URL('./.state.json', import.meta.url);
 
@@ -69,6 +70,9 @@ async function main() {
     app = (await api('POST', '/oauth/apps', adminToken, {
       name: 'mcp-dev', description: 'mcp dev', homepage: 'http://localhost:3000', is_trusted: true, is_public: false, callback_urls: [CALLBACK],
     })).json;
+  }
+  if (app.callback_urls?.length !== 1 || app.callback_urls[0] !== CALLBACK) {
+    app = (await api('PUT', `/oauth/apps/${app.id}`, adminToken, { ...app, callback_urls: [CALLBACK] })).json;
   }
   if (!app!.client_secret) app = (await api('POST', `/oauth/apps/${app!.id}/regen_secret`, adminToken)).json;
 
