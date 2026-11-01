@@ -24,7 +24,13 @@ export class Ambiguous extends InputError {
 }
 
 const ID = /^[A-Za-z0-9]{26}$/;
-const enc = encodeURIComponent;
+const NAME = /^[A-Za-z0-9._-]+$/;
+
+// Checked rather than only encodeURIComponent'ed: "." and ".." survive encoding and fetch would normalise them into another endpoint.
+function plain(name: string, what: string): string {
+  if (!NAME.test(name) || name === '.' || name === '..') throw new InputError(`${what}「${name}」は Mattermost の名前として使えない文字を含みます。`);
+  return name;
+}
 const missing = (e: unknown) => e instanceof MmError && (e.status === 403 || e.status === 404);
 const ref = (c: MmChannel, teamName: string): ChannelRef => ({ id: c.id, name: c.name, displayName: c.display_name, teamId: c.team_id, teamName });
 
@@ -38,7 +44,7 @@ export async function teamNameOf(mm: Mm, userId: string, teamId: string): Promis
 
 export async function resolveUser(mm: Mm, userId: string, spec: string): Promise<UserRef> {
   const s = spec.trim();
-  if (s.startsWith('@')) return mm.call<UserRef>(userId, 'GET', `/users/username/${enc(s.slice(1))}`);
+  if (s.startsWith('@')) return mm.call<UserRef>(userId, 'GET', `/users/username/${plain(s.slice(1), 'ユーザー名')}`);
   if (ID.test(s)) return mm.call<UserRef>(userId, 'GET', `/users/${s}`);
   throw new InputError('ユーザーはユーザー ID か @ユーザー名 で指定してください。');
 }
@@ -51,10 +57,11 @@ export async function resolveChannel(mm: Mm, userId: string, spec: string): Prom
   }
   const slash = s.indexOf('/');
   if (slash > 0) {
-    const team = s.slice(0, slash);
-    const c = await mm.call<MmChannel>(userId, 'GET', `/teams/name/${enc(team)}/channels/name/${enc(s.slice(slash + 1))}`);
+    const team = plain(s.slice(0, slash), 'チーム名');
+    const c = await mm.call<MmChannel>(userId, 'GET', `/teams/name/${team}/channels/name/${plain(s.slice(slash + 1), 'チャンネル名')}`);
     return ref(c, team);
   }
+  if (!s.startsWith('@')) plain(s, 'チャンネル名');
   const teams = await myTeams(mm, userId);
   if (s.startsWith('@')) {
     const other = await resolveUser(mm, userId, s);
@@ -70,7 +77,7 @@ export async function resolveChannel(mm: Mm, userId: string, spec: string): Prom
   const found: ChannelRef[] = [];
   // Sequential rather than Promise.all: parallel lookups would exceed the per-user concurrency limit.
   for (const t of teams) {
-    const c = await mm.call<MmChannel>(userId, 'GET', `/teams/${t.id}/channels/name/${enc(s)}`).catch((e) => {
+    const c = await mm.call<MmChannel>(userId, 'GET', `/teams/${t.id}/channels/name/${s}`).catch((e) => {
       if (missing(e)) return undefined;
       throw e;
     });

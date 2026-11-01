@@ -8,6 +8,7 @@ type PostList = { order: string[]; posts: Record<string, MmPost>; has_next?: boo
 type Page = { lines: string[]; next?: object; posts?: MmPost[]; notes?: string[] };
 
 const MM_SEARCH_CAP = 100;
+const JST_OFFSET_SEC = 9 * 3600;
 
 const limitArg = (def: number, max: number) => z.number().int().min(1).max(max).optional()
   .describe(`件数（既定 ${def}、最大 ${max}）。cursor を渡したときは無視する`);
@@ -45,7 +46,7 @@ async function usernames(mm: Mm, uid: string, posts: MmPost[]): Promise<Map<stri
 }
 
 const capNote = (n: number, what: string) => (n >= MM_SEARCH_CAP
-  ? [`（Mattermost の検索は ${MM_SEARCH_CAP} 件までしか返さないため、これより後の${what}は出ていない可能性があります。条件を絞ってください）`]
+  ? [`（Mattermost の検索は ${MM_SEARCH_CAP} 件までしか返さないため、${what}は出ていない可能性があります。条件を絞ってください）`]
   : []);
 
 const listed = <T>(all: T[], c: { offset: number; per_page: number } | undefined, limit: number) => {
@@ -68,14 +69,14 @@ export function registerReadTools(server: McpServer, ctx: ToolContext): void {
       }) as unknown as ToolCallback<S>);
   }
 
-  tool('search_posts', '参加しているチームのメッセージを検索する。Mattermost の検索構文（from:、in:、before:、after: など）をそのまま使える。新しい順',
+  tool('search_posts', '参加しているチームのメッセージを検索する。Mattermost の検索構文（from:、in:、before:、after:、on: など）をそのまま使える。日付は日本時間（JST）で解釈する。新しい順',
     { terms: z.string().min(1), limit: limitArg(20, 50), cursor: cursorArg },
     async ({ terms, limit, cursor }, mm) => {
       const c = cursorOf(z.object({ page: z.number().int().min(0), per_page: perPage(50) }), cursor);
       const per = c?.per_page ?? limit ?? 20;
       const page = c?.page ?? 0;
       // Not passing the cursor's page to Mattermost: its database search ignores per_page and returns nothing for page > 0.
-      const r = await mm.call<PostList>(uid, 'POST', '/posts/search', { terms, is_or_search: false, include_deleted_channels: false, page: 0, per_page: MM_SEARCH_CAP });
+      const r = await mm.call<PostList>(uid, 'POST', '/posts/search', { terms, is_or_search: false, include_deleted_channels: false, time_zone_offset: JST_OFFSET_SEC, page: 0, per_page: MM_SEARCH_CAP });
       const all = r.order.map((id) => r.posts[id]).filter(Boolean);
       const shown = all.slice(page * per, (page + 1) * per);
       const lines = [`検索: ${terms}`];
@@ -88,13 +89,13 @@ export function registerReadTools(server: McpServer, ctx: ToolContext): void {
           const ch = channels.get(p.channel_id);
           const team = ch?.team_id ? teamName.get(ch.team_id) : undefined;
           const where = ch
-            ? `チャンネル: ${ch.display_name || ch.name}（channel_id: ${ch.id}）| ${team ? `チーム: ${team}（team_id: ${ch.team_id}）` : 'チーム: なし（DM またはグループ DM）'}`
+            ? channelLines({ id: ch.id, name: ch.name, displayName: ch.display_name, teamId: ch.team_id, teamName: team ?? '' }).join(' | ')
             : `channel_id: ${p.channel_id}`;
           lines.push(formatPost(p, { baseUrl: base, teamName: team ?? teams[0]?.name ?? '', usernames: users, channel: where }));
         }
       } else lines.push('一致する投稿はありません。');
       const more = all.length > (page + 1) * per;
-      return render({ lines, posts: shown, next: more ? { page: page + 1, per_page: per } : undefined, notes: capNote(all.length, '一致') });
+      return render({ lines, posts: shown, next: more ? { page: page + 1, per_page: per } : undefined, notes: capNote(all.length, 'これより古い一致') });
     });
 
   tool('read_channel', 'チャンネルの投稿を新しい順に読む。channel はチャンネル ID、「チーム名/チャンネル名」、チャンネル名、@ユーザー名（DM）のどれか',
@@ -176,7 +177,7 @@ export function registerReadTools(server: McpServer, ctx: ToolContext): void {
         return `- ${where}（表示名: ${x.display_name || x.label || x.name}、種類: ${kind[x.type] ?? x.type}、channel_id: ${x.id}${team ? `、team_id: ${x.team_id}` : ''}）`;
       })];
       if (!shown.length) lines.push('一致するチャンネルはありません。');
-      return render({ lines, next, notes: capNote(capped, '公開チャンネル') });
+      return render({ lines, next, notes: capNote(capped, 'ほかの公開チャンネル') });
     });
 
   tool('search_users', '名前やユーザー名でユーザーを探す',
@@ -190,7 +191,7 @@ export function registerReadTools(server: McpServer, ctx: ToolContext): void {
         return `- @${u.username}（${[name && `名前: ${name}`, u.nickname && `ニックネーム: ${u.nickname}`, `user_id: ${u.id}`].filter(Boolean).join('、')}）`;
       })];
       if (!shown.length) lines.push('一致するユーザーはいません。');
-      return render({ lines, next, notes: capNote(all.length, 'ユーザー') });
+      return render({ lines, next, notes: capNote(all.length, 'ほかのユーザー') });
     });
 
   tool('get_user', 'ユーザーのプロフィールを読む。user はユーザー ID か @ユーザー名',

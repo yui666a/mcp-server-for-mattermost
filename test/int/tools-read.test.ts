@@ -138,6 +138,13 @@ describe.skipIf(!up)('read tools against the local Mattermost', () => {
     expect(ids).toEqual(all.order);
   });
 
+  test('search_posts interprets on: dates in JST', async () => {
+    const term = `${TAG}tz`;
+    await mmApi(e.adminToken, 'POST', '/posts', { channel_id: e.teams.a.dupChannelId, message: term, create_at: Date.UTC(2026, 9, 14, 20, 0, 0) });
+    expect(postIds(await call('alice', 'search_posts', { terms: `${term} on:2026-10-15` }))).toHaveLength(1);
+    expect(postIds(await call('alice', 'search_posts', { terms: `${term} on:2026-10-14` }))).toHaveLength(0);
+  });
+
   test('Mattermost API calls per tool are counted by the limiter', async () => {
     const acquire = vi.spyOn(limiter, 'acquire');
     const charge = vi.spyOn(limiter, 'charge');
