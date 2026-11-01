@@ -45,20 +45,20 @@ async function attempt(store: Store, mm: Mm, s: ClaimedScheduled, now: number): 
   const late = s.scheduledAt < now - LATE_AFTER;
   if (s.retry) {
     let found: string | undefined;
-    let deleted = false;
+    let touched = false;
     try {
       const owned = store.otherScheduledPostIds(s.mmUserId, s.id);
       const r = await lookPosted(mm, s.mmUserId, { ...spec, fileCount: 0 }, s.firstAttemptAt!);
       found = r.found.find((p) => !owned.has(p));
-      deleted = r.deleted.some((p) => !owned.has(p));
+      touched = [...r.deleted, ...r.edited].some((p) => !owned.has(p));
     } catch (e) {
       // Not posting without a lookup: the earlier attempt may have posted, and a new post would be a second one.
       if (!late && (e instanceof RateLimited || e instanceof UpstreamUnavailable)) return { status: 'pending', forgetAttempt: false };
       return failed(UNKNOWN);
     }
     if (found) return { status: 'posted', postId: found };
-    // Not posting again: the deleted post may be this schedule's, removed by the user, and its text can no longer be compared.
-    if (deleted) return failed(UNKNOWN);
+    // Not posting again: a deleted or edited post may be this schedule's, changed by the user, and its text can no longer be compared.
+    if (touched) return failed(UNKNOWN);
   }
   if (late) return failed(LATE);
   const r = await postOnce(mm, s.mmUserId, { ...spec, fileIds: [] }, s.pendingPostId!);

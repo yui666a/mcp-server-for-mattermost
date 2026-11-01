@@ -10,7 +10,7 @@ export type Posting =
   | { kind: 'retryable'; sent: boolean; error: unknown }
   | { kind: 'failed'; reason: string; error: unknown };
 
-type PostList = { order: string[]; posts: Record<string, MmPost & { delete_at?: number }> };
+type PostList = { order: string[]; posts: Record<string, MmPost & { delete_at?: number; edit_at?: number }> };
 
 // Not taking a claim or a lookup here: send_message uploads files between its lookup and its post, and the scheduler keys retries on its own row.
 export async function postOnce(mm: Mm, uid: string, s: PostSpec & { fileIds: string[] }, pendingPostId: string): Promise<Posting> {
@@ -39,11 +39,13 @@ export async function findPosted(mm: Mm, uid: string, s: PostSpec & { fileCount:
 }
 
 // Deleted posts are listed apart rather than matched: Mattermost empties their message and file_ids in since, so they cannot be told apart by text.
-export async function lookPosted(mm: Mm, uid: string, s: PostSpec & { fileCount: number }, since: number): Promise<{ found: string[]; deleted: string[] }> {
+// Edited posts are listed apart for the same reason: the text Mattermost returns is the edited one, not the one that was posted.
+export async function lookPosted(mm: Mm, uid: string, s: PostSpec & { fileCount: number }, since: number): Promise<{ found: string[]; deleted: string[]; edited: string[] }> {
   const r = await mm.call<PostList>(uid, 'GET', `/channels/${s.channelId}/posts?since=${since - 1}`);
   const mine = Object.values(r.posts).filter((p) => p.user_id === uid && (p.root_id || '') === (s.rootId || '') && p.create_at >= since);
   return {
     found: mine.filter((p) => !p.delete_at && p.message === s.message && (p.file_ids?.length ?? 0) === s.fileCount).map((p) => p.id),
     deleted: mine.filter((p) => p.delete_at).map((p) => p.id),
+    edited: mine.filter((p) => !p.delete_at && (p.edit_at ?? 0) > 0 && p.message !== s.message).map((p) => p.id),
   };
 }
