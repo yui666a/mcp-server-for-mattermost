@@ -54,6 +54,7 @@ curl -s -X POST https://mattermost.example.com/api/v4/oauth/apps \
   -H "Authorization: Bearer $MM_ADMIN_TOKEN" -H 'Content-Type: application/json' \
   -d '{"name":"mattermost-mcp","description":"Mattermost MCP","homepage":"https://github.com/yui666a/mcp-server-for-mattermost","callback_urls":["https://mattermost.example.com/mcp/oauth/callback"],"is_trusted":true,"is_public":false}' \
   | jq '{id, client_secret, is_trusted, is_public, callback_urls}'
+unset MM_ADMIN_TOKEN
 ```
 
 `id` がクライアント ID、`client_secret` がクライアントシークレット。
@@ -84,9 +85,11 @@ cd /opt/mattermost-infra
 cp -p nginx/mattermost.conf nginx/mattermost.conf.pre-mcp
 cp -p compose/docker-compose.yml compose/docker-compose.yml.pre-mcp
 cp -p compose/env.example compose/env.example.pre-mcp
+cp -p compose/.env compose/.env.pre-mcp
 ```
 
-`env.example` は実行には使わないが、戻しておかないと切り戻し後の再投入で手順 5 の照合が一致しなくなる。
+- `env.example` は実行には使わないが、戻しておかないと切り戻し後の再投入で手順 5 の照合が一致しなくなる
+- `.env` はパッチでは変わらないが、手順 7 で追記する。追記を誤ったときに、Mattermost と Postgres のパスワードを含む元の内容へ戻せるようにする
 
 ### 5. パッチの適用
 
@@ -123,12 +126,21 @@ chown 1000:1000 /srv/mcp
 
 ```bash
 cd /opt/mattermost-infra/compose
+# 4 項目のどれかが既にあれば追記しない（切り戻し後の再投入）
+grep -E '^(PUBLIC_URL|MM_OAUTH_CLIENT_ID|MM_OAUTH_CLIENT_SECRET|TOKEN_ENC_KEY)=' .env | cut -d= -f1
+# 何も出なかったときだけ次の 4 行を打つ。末尾が改行でなければ、追記が最後の行（MMUSER_PASSWORD など）につながるので改行を足す
+[ -z "$(tail -c1 .env)" ] || echo >> .env
 read -r CID; read -rs CSECRET
 printf '%s\n' 'PUBLIC_URL=https://mattermost.example.com' "MM_OAUTH_CLIENT_ID=$CID" "MM_OAUTH_CLIENT_SECRET=$CSECRET" "TOKEN_ENC_KEY=$(openssl rand -base64 32)" >> .env
 unset CID CSECRET
-# 4（それぞれ値が入っている）
-grep -cE '^(PUBLIC_URL|MM_OAUTH_CLIENT_ID|MM_OAUTH_CLIENT_SECRET|TOKEN_ENC_KEY)=.' .env
+# PUBLIC_URL、MM_OAUTH_CLIENT_ID、MM_OAUTH_CLIENT_SECRET、TOKEN_ENC_KEY が 1 回ずつ出る
+grep -E '^(PUBLIC_URL|MM_OAUTH_CLIENT_ID|MM_OAUTH_CLIENT_SECRET|TOKEN_ENC_KEY)=.' .env | cut -d= -f1
+# .pre-mcp から変わった行の名前（値は出さない）。4 項目だけで、改行を足したときは元の最後の行の名前も出る
+diff .env.pre-mcp .env | grep '^>' | cut -d= -f1
 ```
+
+- 4 項目が既にあるときは追記せず、`TOKEN_ENC_KEY` を作り直さない。`.env` は同じ名前が複数あると後の行が勝つため、追記すると新しい鍵が使われ、`/srv/mcp` に残る Mattermost のトークンを復号できなくなる
+- OAuth アプリを作り直したときだけ、`MM_OAUTH_CLIENT_ID` と `MM_OAUTH_CLIENT_SECRET` の行をエディタで書き換える
 
 `docker compose config` の出力はシークレットを平文で含むので、記録に貼らない。
 
@@ -155,6 +167,7 @@ docker compose ps mcp
 
 nginx の作り直しは、10 秒前後 Mattermost に届かなくなるため、日本時間 3 時台に行う。
 `nginx -s reload` ではなく作り直すのは、ネットワーク（`mcp_net`）の追加が reload では反映されないため。
+また `patch` は `mattermost.conf` を新しいファイルとして書き直すので inode が変わり、動いている nginx のファイル単位の bind mount は古い内容を指したままになる。reload しても新しい設定は読まれない。
 
 ```bash
 docker compose up -d nginx
@@ -182,18 +195,21 @@ curl -s https://mattermost.example.com/mcp/healthz
 
 ```bash
 cd /opt/mattermost-infra/compose
-docker compose stop mcp
+docker compose rm -sf mcp
 cp ../nginx/mattermost.conf.pre-mcp ../nginx/mattermost.conf
 cp docker-compose.yml.pre-mcp docker-compose.yml
 cp env.example.pre-mcp env.example
 rm ../tests/nginx-mcp.test.sh
 docker compose up -d nginx
+docker network ls --filter name=mcp_net
+docker network rm compose_mcp_net
 ```
 
-- 書き戻しは `cp` で行う。nginx の設定はファイル単位の bind mount なので、`mv` やエディタの置き換えでは inode が変わり、コンテナに反映されない
+- `mcp` のコンテナは `docker-compose.yml` を戻す前に止めて消す。戻した後は Compose のサービスから `mcp` が消え、`docker compose` では扱えなくなる
 - nginx は reload ではなく作り直す。ネットワーク（`mcp_net`）の変更は reload では外れない。作り直しの間、10 秒前後 Mattermost に届かなくなる
-- `docker-compose.yml` から `mcp` が消えるため、Compose が孤立したコンテナの警告を出す。`mcp` は止めてあるので影響はない
-- `/srv/mcp` と `.env` の 4 項目は残す。どちらも `mcp` がなければ使われない
+- ネットワーク名は Compose のプロジェクト名（`compose/` のディレクトリ名 `compose`）と `mcp_net` をつないだもの。`docker network ls` の表示と違えば、表示された名前で消す。nginx を作り直して `mcp_net` から外した後でないと消せない
+- ここでは nginx を作り直すので、書き戻しの方法によらず新しい内容が読まれる。それでも `cp` で上書きするのは、`access.conf` のように reload だけで反映させるファイルは同じ inode に書かないとコンテナに見えず、書き戻しの手順をそろえておくため
+- `/srv/mcp` と `.env` の 4 項目は残す。`mcp` がなければ使われず、再投入のときに同じ `TOKEN_ENC_KEY` で `/srv/mcp` のデータをそのまま使えるため。再投入では手順 7 の追記をしない
 
 ## 環境変数
 
@@ -252,7 +268,7 @@ docker compose exec mcp node src/admin.ts list-clients --unauthorized | cut -f2,
 docker compose logs --no-log-prefix --since 24h nginx | grep 'POST /mcp/oauth/register' | awk '{print $1}' | sort | uniq -c | sort -rn | head
 ```
 
-- 正規の利用で未認可の登録が数百件に積み上がることはない（claude.ai でも 1 回の接続で 2 件）。名前と時刻が揃った登録がまとまっていれば、第三者による積み上げとみなす
+- 正規の利用で未認可の登録が数百件に積み上がることはない（claude.ai でも 1 回の接続で 2 件。「クライアント互換性」）。名前と時刻が揃った登録がまとまっていれば、第三者による積み上げとみなす
 - 上限（500 件）に達すると最も古い未認可の登録から消えるので、正規の利用者の新しい接続は妨げられない。消された登録のクライアントはコネクタを追加し直す
 - nginx の集計で特定の接続元に偏っていれば、その接続元を記録しておく。登録エンドポイントには IP ごとのレート制限（毎分 60 回）がかかっている
 
@@ -401,6 +417,7 @@ docker compose exec mcp node src/admin.ts list-clients | wc -l
 | 事前確認: 名前が `mcp` のチーム | |
 | OAuth アプリの作成方法（画面 / 管理者トークン） | |
 | OAuth アプリの ID | |
+| OAuth アプリの `is_trusted: true`、`is_public: false`、コールバック URL | |
 | `/opt/mattermost-mcp` の `git rev-parse HEAD` | |
 | `mattermost-infra.patch` の `sha256sum` | |
 | `.pre-mcp` の作成（3 ファイル） | |
@@ -408,7 +425,7 @@ docker compose exec mcp node src/admin.ts list-clients | wc -l
 | `patch -p1 --dry-run` | |
 | `patch -p1` | |
 | `/srv/mcp` の所有者（`ls -ldn /srv/mcp`） | |
-| `.env` の 4 項目（`grep -c` の結果） | |
+| `.env` の 4 項目（`grep` と `.pre-mcp` との `diff` の結果） | |
 | `nginx -t` | |
 | `docker compose build mcp` | |
 | `docker compose ps mcp` | |
