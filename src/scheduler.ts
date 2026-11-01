@@ -1,6 +1,6 @@
 import { log } from './log.ts';
 import { RateLimited, Reauthorize, UpstreamUnavailable } from './mattermost/client.ts';
-import { findPosted, postOnce } from './mcp/post.ts';
+import { lookPosted, postOnce } from './mcp/post.ts';
 import type { Mm } from './mcp/resolve.ts';
 import { wordOf, type Wording } from './mcp/tools-send.ts';
 import type { ClaimedScheduled, ScheduledOutcome, Store } from './store.ts';
@@ -45,15 +45,20 @@ async function attempt(store: Store, mm: Mm, s: ClaimedScheduled, now: number): 
   const late = s.scheduledAt < now - LATE_AFTER;
   if (s.retry) {
     let found: string | undefined;
+    let deleted = false;
     try {
       const owned = store.otherScheduledPostIds(s.mmUserId, s.id);
-      found = (await findPosted(mm, s.mmUserId, { ...spec, fileCount: 0 }, s.firstAttemptAt!)).find((p) => !owned.has(p));
+      const r = await lookPosted(mm, s.mmUserId, { ...spec, fileCount: 0 }, s.firstAttemptAt!);
+      found = r.found.find((p) => !owned.has(p));
+      deleted = r.deleted.some((p) => !owned.has(p));
     } catch (e) {
       // Not posting without a lookup: the earlier attempt may have posted, and a new post would be a second one.
       if (!late && (e instanceof RateLimited || e instanceof UpstreamUnavailable)) return { status: 'pending', forgetAttempt: false };
       return failed(UNKNOWN);
     }
     if (found) return { status: 'posted', postId: found };
+    // Not posting again: the deleted post may be this schedule's, removed by the user, and its text can no longer be compared.
+    if (deleted) return failed(UNKNOWN);
   }
   if (late) return failed(LATE);
   const r = await postOnce(mm, s.mmUserId, { ...spec, fileIds: [] }, s.pendingPostId!);

@@ -225,6 +225,34 @@ describe('a retry after an unknown outcome looks for the earlier post first', ()
     expect(s.row(id)).toMatchObject({ status: 'posted', post_id: 'p'.repeat(26) });
   });
 
+  const deletedWithMessageEmptiedByMattermost = (id: string, over: object = {}) => mine(id, { message: '', file_ids: [], delete_at: NOW + SEC, ...over });
+
+  test('does not post when only a deleted post of the user\'s in the same thread exists since the first attempt, and fails as maybe posted', async () => {
+    const s = setup();
+    routes[`GET /channels/${CH}/posts`] = () => postList(deletedWithMessageEmptiedByMattermost('gone'.padEnd(26, 'x')));
+    const id = attempted(s);
+    await s.run(NOW + MIN);
+    expect(s.posts()).toHaveLength(0);
+    expect(s.row(id)).toMatchObject({ status: 'failed', error: UNKNOWN });
+  });
+
+  test('posts again when no deleted post counts: another user\'s, another thread\'s, from before the first attempt, or one another schedule recorded', async () => {
+    const s = setup();
+    const owned = 'owned'.padEnd(26, 'x');
+    const other = s.make();
+    s.set(other, "status = 'posted', post_id = ?", owned);
+    routes[`GET /channels/${CH}/posts`] = () => postList(
+      deletedWithMessageEmptiedByMattermost('a'.repeat(26), { user_id: 'x'.repeat(26) }),
+      deletedWithMessageEmptiedByMattermost('b'.repeat(26), { root_id: ROOT }),
+      deletedWithMessageEmptiedByMattermost('c'.repeat(26), { create_at: NOW - 1 }),
+      deletedWithMessageEmptiedByMattermost(owned),
+    );
+    const id = attempted(s);
+    await s.run(NOW + MIN);
+    expect(s.posts()).toHaveLength(1);
+    expect(s.row(id)).toMatchObject({ status: 'posted' });
+  });
+
   test('does not take a post that another schedule with the same text already recorded', async () => {
     const s = setup();
     const taken = 'taken'.padEnd(26, 'x');
@@ -294,6 +322,15 @@ describe('a schedule more than an hour late is not newly posted', () => {
     await s.run(NOW + HOUR + 1);
     expect(s.posts()).toHaveLength(0);
     expect(s.row(id)).toMatchObject({ status: 'failed', error: LATE });
+  });
+
+  test('attempted and only a deleted post of the user\'s is found: fails as maybe posted', async () => {
+    const s = setup();
+    routes[`GET /channels/${CH}/posts`] = () => postList(mine('gone'.padEnd(26, 'x'), { message: '', file_ids: [], delete_at: NOW + SEC }));
+    const id = s.make();
+    s.set(id, 'first_attempt_at = ?, pending_post_id = ?', NOW, 'pending-1');
+    await s.run(NOW + HOUR + 1);
+    expect(s.row(id)).toMatchObject({ status: 'failed', error: UNKNOWN });
   });
 
   test('attempted and the lookup fails: fails as maybe posted', async () => {
