@@ -84,13 +84,17 @@ describe('mentionsMe', () => {
   });
 
   test.each([
-    'https://mastodon.social/@alice',
-    'see http://e.com/@alice.',
-    'ftp://e.com/@alice',
-    'see www.e.com/@alice',
-    '[x](https://e.com/@alice)',
-  ])('does not count %j, a link destination or an autolink, as a mention', (message) => {
-    expect(mentionsMe(message, alice)).toBe(false);
+    '[済](@alice さん確認)',
+    'xhttps://e.com/@alice',
+    '「www.e.com/@alice」',
+    'WWW.e.com/@alice',
+  ])('reads %j as text, as the database search never hits the inside of a link anyway', (message) => {
+    expect(mentionsMe(message, alice)).toBe(true);
+  });
+
+  test('a list item that cannot interrupt a paragraph (numbered from other than 1, or empty) does not end a code span', () => {
+    expect(mentionsMe('a `x\n2. y` @alice `z`', alice)).toBe(true);
+    expect(mentionsMe('a `x\n-\ny` @alice `z`', alice)).toBe(true);
   });
 
   test('a mention next to a link still counts', () => {

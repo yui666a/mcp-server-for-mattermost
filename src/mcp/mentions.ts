@@ -20,8 +20,6 @@ const FENCE = /^ {0,3}(`{3,}|~{3,})/;
 const LIST_ITEM = /^ {0,3}([-+*]|\d{1,9}[.)])(\s|$)/;
 const INDENTED = /^( {4}|\t)/;
 const CODE_SPAN = /(?<!`)(`+)(?!`)[\s\S]*?(?<!`)\1(?!`)/g;
-const LINK_DESTINATION = /\]\([^)]*\)/g;
-const AUTOLINK = /(?:https?|ftp|mailto|tel):\/\/\S+|(?<![\p{L}\p{N}_])www\d{0,3}\.\S+/giu;
 
 // Not a full CommonMark parser: blocks are told apart line by line, so code nested in block quotes or deep lists is read as text.
 function textOf(message: string): string {
@@ -34,6 +32,7 @@ function textOf(message: string): string {
   let afterBlank = true;
   let inCode = false;
   let inList = false;
+  let afterItem = false;
   for (const line of message.split('\n')) {
     if (fence) {
       if (new RegExp(`^ {0,3}${fence[0] === '`' ? '`' : '~'}{${fence.length},}\\s*$`).test(line)) fence = undefined;
@@ -48,6 +47,7 @@ function textOf(message: string): string {
     }
     if (!line.trim()) {
       afterBlank = true;
+      afterItem = false;
       out('', true);
       continue;
     }
@@ -56,7 +56,10 @@ function textOf(message: string): string {
       out('', true);
       continue;
     }
-    const item = LIST_ITEM.test(line);
+    const m = LIST_ITEM.exec(line);
+    // Not every item line starts a block: like the server's listStart, an empty item or one numbered from other than 1 does not interrupt a paragraph.
+    const item: boolean = !!m && (afterBlank || afterItem || (line.slice(m[0].length).trim() !== '' && (!/\d/.test(m[1]) || parseInt(m[1], 10) === 1)));
+    afterItem = item;
     if (item) inList = true;
     else if (afterBlank && !INDENTED.test(line)) inList = false;
     inCode = false;
@@ -64,9 +67,10 @@ function textOf(message: string): string {
     out(line, item);
   }
   // Per block rather than over the whole message: like the server's parser, a code span cannot close in another paragraph or list item.
-  return blocks.map((b) => b.join('\n').replace(CODE_SPAN, ' ').replace(LINK_DESTINATION, '] ').replace(AUTOLINK, ' ')).join('\n');
+  return blocks.map((b) => b.join('\n').replace(CODE_SPAN, ' ')).join('\n');
 }
 
+// Not removing link destinations or autolinks, though the server does not read them: the database search never hits inside them, and removing them risks erasing body text.
 // Not trusting the search hit alone: the database search finds a bare "alice" for "@alice", which the server never notifies as a mention.
 export function mentionsMe(message: string, u: MentionUser): boolean {
   const keywords = new Set([`@${u.username.toLowerCase()}`, ...keys(u).map((k) => k.toLowerCase()), ...firstName(u)]);
