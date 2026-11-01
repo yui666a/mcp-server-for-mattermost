@@ -106,6 +106,18 @@ describe('a due schedule is posted with the user\'s token', () => {
   });
 });
 
+test('schedules that keep failing for a while go behind ones not yet tried, so one user cannot hold every slot of a tick', async () => {
+  const s = setup();
+  routes['POST /posts'] = (_req, body) => (body.message === 'stuck' ? refused() : { id: 'p'.repeat(26) });
+  for (let i = 0; i < 20; i++) s.make({ message: 'stuck', scheduledAt: NOW - MIN });
+  const later = s.make({ mmUserId: UID2, message: 'later', scheduledAt: NOW });
+  await s.run();
+  expect(s.row(later)).toMatchObject({ status: 'pending' });
+  vi.setSystemTime(NOW + MIN);
+  await s.run(NOW + MIN);
+  expect(s.row(later)).toMatchObject({ status: 'posted' });
+});
+
 describe('a refusal fails the schedule without retrying, with a reason for the user', () => {
   const cases: [string, () => Response, string][] = [
     ['archived channel', () => mmError(400, 'api.post.create_post.can_not_post_to_deleted.error'), 'チャンネルがアーカイブされたため投稿していません。'],
@@ -296,8 +308,7 @@ describe('a schedule more than an hour late is not newly posted', () => {
 });
 
 describe('a schedule changed while the tick is running', () => {
-  // The first schedule's post gives the user a turn to act on the second one before the tick reaches it.
-  function race(act: (s: ReturnType<typeof setup>, second: string) => void) {
+  function actOnSecondWhileFirstIsPosting(act: (s: ReturnType<typeof setup>, second: string) => void) {
     const s = setup();
     const sent: any[] = [];
     let second = '';
@@ -312,20 +323,20 @@ describe('a schedule changed while the tick is running', () => {
   }
 
   test('postponed: not posted', async () => {
-    const { s, sent, second } = race((s, id) => s.store.updateScheduled(UID, id, { scheduledAt: NOW + HOUR }, NOW));
+    const { s, sent, second } = actOnSecondWhileFirstIsPosting((s, id) => s.store.updateScheduled(UID, id, { scheduledAt: NOW + HOUR }, NOW));
     await s.run();
     expect(sent.map((b) => b.message)).toEqual(['first']);
     expect(s.row(second)).toMatchObject({ status: 'pending', first_attempt_at: null });
   });
 
   test('cancelled: not posted', async () => {
-    const { s, sent } = race((s, id) => s.store.cancelScheduled(UID, id));
+    const { s, sent } = actOnSecondWhileFirstIsPosting((s, id) => s.store.cancelScheduled(UID, id));
     await s.run();
     expect(sent.map((b) => b.message)).toEqual(['first']);
   });
 
   test('message changed: posted with the new message', async () => {
-    const { s, sent } = race((s, id) => s.store.updateScheduled(UID, id, { message: 'changed' }, NOW));
+    const { s, sent } = actOnSecondWhileFirstIsPosting((s, id) => s.store.updateScheduled(UID, id, { message: 'changed' }, NOW));
     await s.run();
     expect(sent.map((b) => b.message)).toEqual(['first', 'changed']);
   });
