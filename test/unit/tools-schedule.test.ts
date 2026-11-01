@@ -176,11 +176,58 @@ describe('list_scheduled_messages', () => {
     expect(r.isError).toBe(false);
     expect(rows(r.text)).toEqual([early, late]);
     expect(r.text).toContain('状態: 待機中');
-    expect(r.text).toContain(`投稿先: channel_id: ${CH}（返信先 post_id: ${ROOT}）`);
+    expect(r.text).toContain(`投稿先: Town（channel_id: ${CH}）、返信先 post_id: ${ROOT}`);
     expect(r.text).toContain('予定時刻: 2026-11-03T01:00:00Z | 2026-11-03T10:00:00+09:00');
     expect(r.text).toContain(`本文（先頭 200 文字）: ${'あ'.repeat(200)}\n`);
     expect(r.text).not.toContain('not mine');
-    expect(hits).toEqual([]);
+    expect(hits).toEqual([`GET /channels/${CH}`]);
+  });
+
+  test('names the destination of every row, looking up each channel once, a DM by the other user, and falls back to the id alone', async () => {
+    const DM = 'm'.repeat(26);
+    const GONE = 'g'.repeat(26);
+    routes[`GET /channels/${DM}`] = () => ({ id: DM, name: 'u1__u5', display_name: '', team_id: '', type: 'D' });
+    routes['GET /users/u5'] = () => ({ id: 'u5', username: 'bob' });
+    const s = setup();
+    let n = 0;
+    for (const channelId of [CH, CH2, CH, DM, GONE]) s.store.createScheduled({ mmUserId: 'u1', channelId, message: 'x', scheduledAt: NOW + DAY + n++ * MIN }, NOW);
+    const r = await s.call('list_scheduled_messages', {});
+    expect(r.isError).toBe(false);
+    expect(r.text.match(/投稿先: .*/g)).toEqual([
+      `投稿先: Town（channel_id: ${CH}）`,
+      `投稿先: Other（channel_id: ${CH2}）`,
+      `投稿先: Town（channel_id: ${CH}）`,
+      `投稿先: @bob（channel_id: ${DM}）`,
+      `投稿先: channel_id: ${GONE}`,
+    ]);
+    expect(hits).toEqual([`GET /channels/${CH}`, `GET /channels/${CH2}`, `GET /channels/${DM}`, 'GET /users/u5', `GET /channels/${GONE}`]);
+  });
+
+  test.each([
+    [403, 'api.context.permissions.app_error'],
+    [429, 'rate_limited'],
+  ])('a posted row whose team lookup fails with %i is listed without a permalink, and the list still returns', async (status, id) => {
+    routes[`GET /teams/${TEAM}`] = () => Response.json({ id, message: 'm', status_code: status }, { status });
+    const s = setup();
+    s.setRow(s.store.createScheduled({ mmUserId: 'u1', channelId: CH, message: 'p', scheduledAt: NOW + DAY }, NOW)!, "status = 'posted', post_id = ?", POSTED);
+    const r = await s.call('list_scheduled_messages', {});
+    expect(r.isError, r.text).toBe(false);
+    expect(r.text).toContain(`post_id: ${POSTED}`);
+    expect(r.text).not.toContain('/pl/');
+  });
+
+  test('a posted DM row gets no permalink when the user has no team to put in it', async () => {
+    const DM = 'm'.repeat(26);
+    routes[`GET /channels/${DM}`] = () => ({ id: DM, name: 'u1__u5', display_name: '', team_id: '', type: 'D' });
+    routes['GET /users/u5'] = () => ({ id: 'u5', username: 'bob' });
+    routes['GET /users/me/teams'] = () => [];
+    const s = setup();
+    const id = s.store.createScheduled({ mmUserId: 'u1', channelId: DM, message: 'x', scheduledAt: NOW + DAY }, NOW)!;
+    s.setRow(id, "status = 'posted', post_id = ?", POSTED);
+    const r = await s.call('list_scheduled_messages', {});
+    expect(r.isError).toBe(false);
+    expect(r.text).toContain(`post_id: ${POSTED}`);
+    expect(r.text).not.toContain('/pl/');
   });
 
   test('a failed schedule shows the reason, and a posted one its post_id and permalink', async () => {

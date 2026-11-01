@@ -3,7 +3,7 @@ import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
 import { z } from 'zod';
 import { MAX_PENDING_SCHEDULED, type Scheduled, type ScheduledStatus, type Store } from '../store.ts';
 import { encodeCursor, formatTime, InputError, truncate } from './format.ts';
-import { resolveChannel, teamNameOf, type Mm, type MmChannel } from './resolve.ts';
+import { resolveChannel, teamNameOf, type Mm, type MmChannel, type UserRef } from './resolve.ts';
 import { guarded, text, type ToolContext } from './server.ts';
 import { cursorArg, cursorOf, limitArg, perPage } from './tools-read.ts';
 import { checkRoot } from './tools-send.ts';
@@ -60,28 +60,46 @@ export async function listScheduledMessages(mm: Mm, store: Store, uid: string, b
   const rows = store.listScheduled(uid, { status, after: c && { at: c.at, id: c.id }, limit: per + 1 });
   const shown = rows.slice(0, per);
   if (!shown.length && !c) return text('予約はありません。');
-  const teams = new Map<string, string | undefined>();
-  const teamOf = async (channelId: string) => {
-    if (!teams.has(channelId)) {
-      // Not failing the list: it is the only place a user learns a schedule failed, and a channel they have left answers 403.
-      const name = await mm.call<MmChannel>(uid, 'GET', `/channels/${channelId}`)
-        .then((ch) => teamNameOf(mm, uid, ch.team_id), () => undefined);
-      teams.set(channelId, name);
+  // Not failing the list on any of these lookups: it is the only place a user learns a schedule failed, and a channel they have left answers 403.
+  const channels = new Map<string, { label: string; ch?: MmChannel }>();
+  const channelOf = async (id: string) => {
+    if (!channels.has(id)) {
+      let v: { label: string; ch?: MmChannel } = { label: `channel_id: ${id}` };
+      try {
+        const ch = await mm.call<MmChannel>(uid, 'GET', `/channels/${id}`);
+        const other = ch.name.split('__').find((x) => x !== uid) ?? uid;
+        const name = ch.type === 'D' ? `@${(await mm.call<UserRef>(uid, 'GET', `/users/${other}`)).username}` : ch.display_name || ch.name;
+        v = { label: `${name}（channel_id: ${id}）`, ch };
+      } catch {}
+      channels.set(id, v);
     }
-    return teams.get(channelId);
+    return channels.get(id)!;
+  };
+  const teams = new Map<string, string | undefined>();
+  const teamOf = async (id: string) => {
+    if (!teams.has(id)) {
+      const { ch } = await channelOf(id);
+      let name: string | undefined;
+      try {
+        name = ch && (await teamNameOf(mm, uid, ch.team_id));
+      } catch {}
+      // Not building a permalink from an empty team name: /<team>/pl/<id> needs one, and //pl/ opens nothing.
+      teams.set(id, name || undefined);
+    }
+    return teams.get(id);
   };
   const lines: string[] = [];
-  for (const s of shown) lines.push(...await row(s, teamOf, baseUrl));
+  for (const s of shown) lines.push(...await row(s, (await channelOf(s.channelId)).label, teamOf, baseUrl));
   const last = shown.at(-1);
   lines.push(rows.length > per && last ? `next_cursor: ${encodeCursor({ at: last.scheduledAt, id: last.id, per_page: per, ...(status ? { status } : {}) })}` : '（続きはありません）');
   return text(lines.join('\n'));
 }
 
-async function row(s: Scheduled, teamOf: (channelId: string) => Promise<string | undefined>, baseUrl: string): Promise<string[]> {
+async function row(s: Scheduled, where: string, teamOf: (channelId: string) => Promise<string | undefined>, baseUrl: string): Promise<string[]> {
   const out = [
     `--- 予約 ID: ${s.id}`,
     `状態: ${STATUS[s.status]}`,
-    `投稿先: channel_id: ${s.channelId}${s.rootId ? `（返信先 post_id: ${s.rootId}）` : ''}`,
+    `投稿先: ${where}${s.rootId ? `、返信先 post_id: ${s.rootId}` : ''}`,
     `予定時刻: ${formatTime(s.scheduledAt)}`,
     s.message === undefined ? '本文: （復号できません）' : `本文（先頭 200 文字）: ${truncate(s.message, 200).text}`,
   ];
