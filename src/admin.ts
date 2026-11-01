@@ -25,7 +25,7 @@ export function runAdmin(argv: string[], db: DatabaseSync, io: Io): number {
   if (cmd === 'invalidate-scheduled' && args.length === 0) {
     const n = store.invalidateScheduled(Date.now(), {
       unattempted: 'サーバーを復元したため無効にしました。予約を入れ直してください。',
-      attempted: 'サーバーを復元したため無効にしました。投稿されたか不明なので、Mattermost の画面で確かめてください。',
+      unknown: 'サーバーを復元したため無効にしました。投稿されたか不明なので、Mattermost の画面で確かめてください。',
     });
     io.out(`invalidated ${n} scheduled posts\n`);
     return 0;

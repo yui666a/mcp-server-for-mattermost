@@ -416,8 +416,9 @@ export class Store {
     );
   }
 
+  // Not ordered by scheduled_at first: rows put back after a temporary failure would take every slot of each tick.
   dueScheduled(now: number, limit: number): string[] {
-    return (this.db.prepare("SELECT id FROM scheduled_posts WHERE status = 'pending' AND scheduled_at <= ? ORDER BY scheduled_at, id LIMIT ?")
+    return (this.db.prepare("SELECT id FROM scheduled_posts WHERE status = 'pending' AND scheduled_at <= ? ORDER BY updated_at, scheduled_at, id LIMIT ?")
       .all(now, limit) as Row[]).map((r) => r.id);
   }
 
@@ -455,11 +456,12 @@ export class Store {
     return new Set(rows.map((r) => r.post_id));
   }
 
-  invalidateScheduled(now: number, error: { unattempted: string; attempted: string }): number {
+  // Not trusting first_attempt_at alone: a row whose time passed after the snapshot may have been posted from the database that was lost.
+  invalidateScheduled(now: number, error: { unattempted: string; unknown: string }): number {
     return this.run(
-      `UPDATE scheduled_posts SET status = 'failed', error = CASE WHEN first_attempt_at IS NULL THEN ? ELSE ? END, updated_at = ?
+      `UPDATE scheduled_posts SET status = 'failed', error = CASE WHEN first_attempt_at IS NULL AND scheduled_at > ? THEN ? ELSE ? END, updated_at = ?
        WHERE status IN ('pending', 'sending')`,
-      error.unattempted, error.attempted, now,
+      now, error.unattempted, error.unknown, now,
     );
   }
 

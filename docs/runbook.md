@@ -317,7 +317,7 @@ docker compose exec mcp node src/admin.ts invalidate-scheduled       # 待機中
 古いスナップショットには、その後に取り消したり変えたりした予約が待機中のまま残っており、利用者が再ログインした後に投稿されてしまうため。
 `invalidate-scheduled` は `invalidated <件数> scheduled posts` を出す。
 失敗にした予約は `list_scheduled_messages` に理由とともに出るので、利用者には予約を確かめて入れ直すよう知らせる。
-投稿を試みた後の予約は、理由が「投稿されたか不明」になる。その利用者には Mattermost の画面で確かめてもらう。
+投稿を試みた予約と、予定時刻を過ぎた予約は、理由が「投稿されたか不明」になる。失った DB の上では、スナップショットの後に投稿されていたかもしれないため。その利用者には Mattermost の画面で確かめてもらう。
 
 ### 未認可の登録が上限に近いとき
 
