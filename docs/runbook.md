@@ -324,7 +324,7 @@ MCP サーバーは Mattermost 11.7.8 で実測した OAuth の挙動（「Matte
 更新する前に、開発機で新しい版に対して結合テストを通す。
 
 ```bash
-MATTERMOST_IMAGE_TAG=<新しい版> npm run dev:up && MATTERMOST_IMAGE_TAG=<新しい版> npm run test:int
+MATTERMOST_IMAGE_TAG=<新しい版> pnpm dev:up && MATTERMOST_IMAGE_TAG=<新しい版> pnpm test:int
 ```
 
 通ってから、本番の `/opt/mattermost-infra/compose/.env` の `MATTERMOST_IMAGE_TAG` を更新し、`docker compose up -d mattermost` で作り直す。
