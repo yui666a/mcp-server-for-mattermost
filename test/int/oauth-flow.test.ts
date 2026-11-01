@@ -1,14 +1,13 @@
 import type request from 'supertest';
 import { afterAll, beforeAll, describe, expect, test, vi } from 'vitest';
 import type { Store } from '../../src/store.ts';
-import { env, intApp, mcpAuthorize, mmAvailable, mmDeauthorize, mmLoginCookie } from './helpers.ts';
+import { intApp, mcpAuthorize, requireMm, mmDeauthorize, mmLoginCookie } from './helpers.ts';
 
-const up = await mmAvailable();
-const e = up ? env() : (undefined as never);
+const e = await requireMm();
 
 const REDIRECT = 'http://127.0.0.1:8123/cb';
 
-describe.skipIf(!up)('OAuth flow against the local Mattermost', () => {
+describe('OAuth flow against the local Mattermost', () => {
   let req: ReturnType<typeof request>;
   let store: Store;
   let resource: string;

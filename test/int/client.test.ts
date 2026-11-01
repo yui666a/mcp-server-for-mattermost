@@ -6,10 +6,9 @@ import { openDb } from '../../src/db.ts';
 import { MmClient, Reauthorize } from '../../src/mattermost/client.ts';
 import { Limiter } from '../../src/mattermost/limiter.ts';
 import { Store } from '../../src/store.ts';
-import { env, mmAuthorizeCode, mmAvailable, mmDeauthorize, mmLoginCookie, type Cred } from './helpers.ts';
+import { mmAuthorizeCode, requireMm, mmDeauthorize, mmLoginCookie, type Cred } from './helpers.ts';
 
-const up = await mmAvailable();
-const e = up ? env() : (undefined as never);
+const e = await requireMm();
 
 async function tokenPair(cookie: string): Promise<{ access: string; refresh: string }> {
   const code = await mmAuthorizeCode(cookie, { response_type: 'code', client_id: e.oauth.clientId, redirect_uri: e.oauth.callback, state: 'st' });
@@ -34,7 +33,7 @@ const adminApi = (method: string, path: string, body?: unknown) =>
 const psql = (sql: string) =>
   execFileSync('docker', ['exec', 'mcp-dev-postgres-1', 'psql', '-U', 'mmuser', '-d', 'mattermost', '-tAc', sql], { encoding: 'utf8' }).trim();
 
-describe.skipIf(!up)('MmClient against the local Mattermost', () => {
+describe('MmClient against the local Mattermost', () => {
   let store: Store;
   let client: MmClient;
 

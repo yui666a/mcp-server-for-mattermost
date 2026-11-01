@@ -1,8 +1,7 @@
 import { beforeEach, describe, expect, test } from 'vitest';
-import { env, mmAuthorizeCode, mmAvailable, mmDeauthorize, mmLoginCookie, type Cred } from './helpers.ts';
+import { mmAuthorizeCode, requireMm, mmDeauthorize, mmLoginCookie, type Cred } from './helpers.ts';
 
-const up = await mmAvailable();
-const e = up ? env() : (undefined as never);
+const e = await requireMm();
 
 const form = (o: Record<string, string>) => new URLSearchParams(o);
 const tokenReq = (o: Record<string, string>) =>
@@ -37,7 +36,7 @@ async function adminApi(method: string, path: string, body?: unknown) {
   });
 }
 
-describe.skipIf(!up)('Mattermost OAuth behavior the MCP server relies on', () => {
+describe('Mattermost OAuth behavior the MCP server relies on', () => {
   let cookie: string;
 
   beforeEach(async () => {
