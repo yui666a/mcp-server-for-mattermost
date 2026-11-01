@@ -29,6 +29,7 @@ const postIds = (r: Result) => [...r.content[0].text.matchAll(/^--- post_id: ([a
 describe('read tools against the local Mattermost', () => {
   let req: ReturnType<typeof request>;
   let limiter: Limiter;
+  let browserUrl: string;
   const access: Record<'alice' | 'bob', string> = { alice: '', bob: '' };
   let aliceMm: string;
   let channel: { id: string; name: string };
@@ -48,6 +49,7 @@ describe('read tools against the local Mattermost', () => {
     const app = intApp();
     req = app.req;
     limiter = app.limiter;
+    browserUrl = app.config.mmBrowserUrl;
     for (const who of ['alice', 'bob'] as const) {
       const mmCookie = await mmLoginCookie(e.users[who]);
       await mmDeauthorize(mmCookie, e.oauth.clientId);
@@ -142,6 +144,47 @@ describe('read tools against the local Mattermost', () => {
     await mmApi(e.adminToken, 'POST', '/posts', { channel_id: e.teams.a.dupChannelId, message: term, create_at: Date.UTC(2026, 9, 14, 20, 0, 0) });
     expect(postIds(await call('alice', 'search_posts', { terms: `${term} on:2026-10-15` }))).toHaveLength(1);
     expect(postIds(await call('alice', 'search_posts', { terms: `${term} on:2026-10-14` }))).toHaveLength(0);
+  });
+
+  test('get_post reads a post alice can see, both from its permalink and from its post_id', async () => {
+    const id = (await mmApi<{ id: string }>(aliceMm, 'POST', '/posts', { channel_id: channel.id, message: `${TAG} get_post` })).id;
+    for (const post of [`${browserUrl}/${e.teams.a.name}/pl/${id}`, id]) {
+      const r = await call('alice', 'get_post', { post });
+      expect(r.isError, post).toBeFalsy();
+      expect(postIds(r)).toEqual([id]);
+      expect(r.content[0].text).toContain(`${TAG} get_post`);
+      expect(r.content[0].text).toContain(channel.id);
+      expect(r.content[0].text).toContain(e.teams.a.id);
+    }
+  });
+
+  test('get_post refuses a post in a private channel the caller has not joined', async () => {
+    const id = (await mmApi<{ id: string }>(aliceMm, 'POST', '/posts', { channel_id: e.teams.a.privateChannelId!, message: `${TAG} private` })).id;
+    const r = await call('bob', 'get_post', { post: id });
+    expect(r.isError).toBe(true);
+    expect(r.content[0].text).toBe('この投稿を見る権限がありません（参加していない非公開チャンネルなど）');
+  });
+
+  test('get_post reports a deleted post as not found', async () => {
+    const id = (await mmApi<{ id: string }>(aliceMm, 'POST', '/posts', { channel_id: channel.id, message: `${TAG} deleted` })).id;
+    await mmApi(aliceMm, 'DELETE', `/posts/${id}`);
+    const r = await call('alice', 'get_post', { post: id });
+    expect(r.isError).toBe(true);
+    expect(r.content[0].text).toBe('投稿が見つかりません（削除されたか、存在しません）');
+  });
+
+  test('get_post on a reply gives the parent post_id', async () => {
+    const r = await call('alice', 'get_post', { post: replies[1] });
+    expect(r.isError).toBeFalsy();
+    expect(r.content[0].text).toContain(`親 post_id: ${root}`);
+    expect(r.content[0].text).toContain('read_thread');
+  });
+
+  test('get_post on a root post with replies points to read_thread', async () => {
+    const r = await call('alice', 'get_post', { post: root });
+    expect(r.isError).toBeFalsy();
+    expect(r.content[0].text).toContain(`返信数: ${replies.length}`);
+    expect(r.content[0].text).toContain(`read_thread に post_id: ${root}`);
   });
 
   test('Mattermost API calls per tool are counted by the limiter', async () => {

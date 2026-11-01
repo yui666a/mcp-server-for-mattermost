@@ -1,13 +1,15 @@
-import { afterEach, beforeEach, expect, test, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 import { makeApp } from './helpers.ts';
 
 type Route = (req: Request) => unknown;
 let routes: Record<string, Route>;
 let bodies: Record<string, unknown>;
+let hits: string[];
 
 beforeEach(() => {
   vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
   bodies = {};
+  hits = [];
 });
 afterEach(() => vi.restoreAllMocks());
 
@@ -16,8 +18,11 @@ function setup() {
     const req = new Request(input, init);
     const path = new URL(req.url).pathname.replace('/api/v4', '');
     if (req.method === 'POST') bodies[path] = await req.clone().json();
+    hits.push(`${req.method} ${path}`);
     const r = routes[`${req.method} ${path}`];
-    return r ? Response.json(r(req)) : Response.json({ id: 'not_found' }, { status: 404 });
+    if (!r) return Response.json({ id: 'not_found' }, { status: 404 });
+    const out = r(req);
+    return out instanceof Response ? out : Response.json(out);
   });
   const code = ctx.store.createCode({
     mmUserId: 'u1', clientId: 'c1', redirectUri: 'http://localhost:1/cb', codeChallenge: 'ch', resource: ctx.config.resource, scope: 'mattermost',
@@ -26,10 +31,10 @@ function setup() {
   if (typeof rec !== 'object') throw new Error('code not consumed');
   const { accessToken } = ctx.store.createGrant({ mmUserId: 'u1', clientId: 'c1', scope: 'mattermost', resource: ctx.config.resource, fromCodeHash: rec.codeHash });
   ctx.store.putMmCred('u1', 'mm-access', 'mm-refresh');
-  return async (name: string, args: Record<string, unknown>): Promise<string> => {
+  return async (name: string, args: Record<string, unknown>, isError = false): Promise<string> => {
     const r = await ctx.req.post('/mcp').set({ authorization: `Bearer ${accessToken}`, accept: 'application/json, text/event-stream', 'content-type': 'application/json' })
       .send(JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name, arguments: args } }));
-    expect(r.body.result.isError).toBeFalsy();
+    expect(r.body.result.isError ?? false).toBe(isError);
     return r.body.result.content[0].text;
   };
 }
@@ -61,4 +66,73 @@ test('search_users notes the 100-result cap', async () => {
   routes = { 'POST /users/search': () => Array.from({ length: 100 }, (_, i) => ({ id: `u${i}`, username: `user${i}` })) };
   const call = setup();
   expect(await call('search_users', { query: 'user' })).toContain('100 件まで');
+});
+
+describe('get_post', () => {
+  const C = 'c'.repeat(26);
+  const T = 't'.repeat(26);
+  const ROOT = 'r'.repeat(26);
+  const REPLY = 'q'.repeat(26);
+  const mmError = (status: number) => () => Response.json({ id: 'x', message: 'm', status_code: status }, { status });
+  const post = (o: Record<string, unknown>) => ({ user_id: 'u1', channel_id: C, root_id: '', message: 'hello', create_at: 0, reply_count: 0, ...o });
+  const base = {
+    [`GET /channels/${C}`]: () => ({ id: C, name: 'town', display_name: 'Town', team_id: T, type: 'O' }),
+    [`GET /teams/${T}`]: () => ({ id: T, name: 'team-b' }),
+    'POST /users/ids': () => [{ id: 'u1', username: 'alice' }],
+  };
+
+  test('reads a post from its permalink, with the channel and team, and builds the permalink from the post\'s own team', async () => {
+    routes = { ...base, [`GET /posts/${ROOT}`]: () => post({ id: ROOT, reply_count: 0 }) };
+    const out = await setup()('get_post', { post: `https://mm.example/team-a/pl/${ROOT}` });
+    expect(hits).toContain(`GET /posts/${ROOT}`);
+    expect(out).toContain(`channel_id: ${C}`);
+    expect(out).toContain(`team_id: ${T}`);
+    expect(out).toContain('@alice');
+    expect(out).toContain('hello');
+    expect(out).toContain(`https://mm.example/team-b/pl/${ROOT}`);
+    expect(out).toContain('返信数: 0');
+    expect(out).not.toContain('read_thread');
+  });
+
+  test('accepts a bare post_id', async () => {
+    routes = { ...base, [`GET /posts/${ROOT}`]: () => post({ id: ROOT }) };
+    expect(await setup()('get_post', { post: ROOT })).toContain(`post_id: ${ROOT}`);
+  });
+
+  test('for a reply, gives the parent post_id and points to read_thread', async () => {
+    routes = { ...base, [`GET /posts/${REPLY}`]: () => post({ id: REPLY, root_id: ROOT, reply_count: 3 }) };
+    const out = await setup()('get_post', { post: REPLY });
+    expect(out).toContain(`親 post_id: ${ROOT}`);
+    expect(out).toContain('read_thread');
+  });
+
+  test('for a root post with replies, gives the reply count and points to read_thread', async () => {
+    routes = { ...base, [`GET /posts/${ROOT}`]: () => post({ id: ROOT, reply_count: 2 }) };
+    const out = await setup()('get_post', { post: ROOT });
+    expect(out).toContain('返信数: 2');
+    expect(out).toContain('read_thread');
+  });
+
+  test('rejects a URL on another host without calling Mattermost', async () => {
+    routes = { ...base };
+    const out = await setup()('get_post', { post: `https://evil.example/team-a/pl/${ROOT}` }, true);
+    expect(out).toContain('https://mm.example');
+    expect(hits).toEqual([]);
+  });
+
+  test('turns 403 from GET /posts/{id} into a permission message', async () => {
+    routes = { ...base, [`GET /posts/${ROOT}`]: mmError(403) };
+    expect(await setup()('get_post', { post: ROOT }, true)).toBe('この投稿を見る権限がありません（参加していない非公開チャンネルなど）');
+  });
+
+  test('turns 404 from GET /posts/{id} into a not-found message', async () => {
+    routes = { ...base, [`GET /posts/${ROOT}`]: mmError(404) };
+    expect(await setup()('get_post', { post: ROOT }, true)).toBe('投稿が見つかりません（削除されたか、存在しません）');
+  });
+
+  test('leaves a 403 from a later API call as the generic Mattermost error', async () => {
+    routes = { ...base, [`GET /posts/${ROOT}`]: () => post({ id: ROOT }), [`GET /channels/${C}`]: mmError(403) };
+    const out = await setup()('get_post', { post: ROOT }, true);
+    expect(out).toContain('Mattermost がエラーを返しました（403）');
+  });
 });
