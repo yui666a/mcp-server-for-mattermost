@@ -64,6 +64,14 @@ async function main() {
   }
   const priv = await ensureChannel(aliceToken, teamA.id, 'alice-private', 'P');
 
+  const load: Json = {};
+  for (let i = 1; i <= 6; i++) {
+    const u = await ensureUser(adminToken, `load${i}`);
+    await api('POST', `/teams/${teamA.id}/members`, adminToken, { team_id: teamA.id, user_id: u.id }, [400]);
+    await api('POST', `/channels/${channels['team-a'].id}/members`, adminToken, { user_id: u.id }, [400]);
+    load[`load${i}`] = { id: u.id, username: `load${i}`, password: PASSWORD };
+  }
+
   const apps = (await api('GET', '/oauth/apps?per_page=200', adminToken)).json as Json[];
   let app = apps.find((a) => a.name === 'mcp-dev');
   if (!app) {
@@ -82,6 +90,7 @@ async function main() {
     users: {
       alice: { id: alice.id, username: 'alice', password: PASSWORD },
       bob: { id: bob.id, username: 'bob', password: PASSWORD },
+      ...load,
     },
     teams: {
       a: { id: teamA.id, name: 'team-a', dupChannelId: channels['team-a'].id, privateChannelId: priv.id },

@@ -1,0 +1,280 @@
+diff -ruN a/compose/docker-compose.yml b/compose/docker-compose.yml
+--- a/compose/docker-compose.yml	2026-11-01 14:34:26
++++ b/compose/docker-compose.yml	2026-11-01 14:34:26
+@@ -48,3 +48,41 @@
+       - /srv/certs/fullchain.pem:/cert.pem:ro
+       - /srv/certs/privkey.pem:/key.pem:ro
+       - /srv/certbot:/var/www/certbot:ro
++    # default に付けると mattermost からも自サイトの名前がプライベート IP に解決され、外向き通信が予約済み IP として拒否されうる
++    networks:
++      default: {}
++      mcp_net:
++        aliases:
++          - mattermost.example.com
++
++  mcp:
++    build: ../../mattermost-mcp
++    restart: unless-stopped
++    security_opt:
++      - no-new-privileges:true
++    read_only: true
++    tmpfs:
++      - /tmp
++    # 送信中の send_message が呼び出しの期限（25 秒）まで走り切れるように、既定の 10 秒より長く待つ
++    stop_grace_period: 40s
++    environment:
++      PUBLIC_URL: ${PUBLIC_URL}
++      MM_OAUTH_CLIENT_ID: ${MM_OAUTH_CLIENT_ID}
++      MM_OAUTH_CLIENT_SECRET: ${MM_OAUTH_CLIENT_SECRET}
++      TOKEN_ENC_KEY: ${TOKEN_ENC_KEY}
++      DB_PATH: /data/mcp.sqlite
++    # コンテナ内は UID 1000（node）。ホスト側は事前に chown 1000:1000 しておく
++    volumes:
++      - /srv/mcp:/data
++    cpus: 0.5
++    mem_limit: 256m
++    pids_limit: 128
++    logging:
++      driver: journald
++    healthcheck:
++      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3000/mcp/healthz').then(r=>process.exit(r.ok?0:1),()=>process.exit(1))"]
++    networks:
++      - mcp_net
++
++networks:
++  mcp_net: {}
+diff -ruN a/compose/env.example b/compose/env.example
+--- a/compose/env.example	2026-11-01 14:34:26
++++ b/compose/env.example	2026-11-01 14:34:26
+@@ -13,3 +13,10 @@
+ # SQL と接続 URL でエスケープしない前提のため、記号を含めてはいけない。
+ POSTGRES_PASSWORD=
+ MMUSER_PASSWORD=
++
++# MCP サーバー。クライアント ID とシークレットは Mattermost の System Console で作る OAuth 2.0 アプリ（confidential）の値。
++PUBLIC_URL=https://mattermost.example.com
++MM_OAUTH_CLIENT_ID=
++MM_OAUTH_CLIENT_SECRET=
++# 32 バイトの鍵を base64 で（openssl rand -base64 32）。
++TOKEN_ENC_KEY=
+diff -ruN a/nginx/mattermost.conf b/nginx/mattermost.conf
+--- a/nginx/mattermost.conf	2026-11-01 14:34:26
++++ b/nginx/mattermost.conf	2026-11-01 14:34:26
+@@ -1,6 +1,7 @@
+ # location は公式 mattermost/docker の nginx/conf.d/default.conf と同一。
+ # dhparam と OCSP stapling は採用しない（証明書は Let's Encrypt 発行で TLS1.2+ のみ許可するため不要）。
+ proxy_cache_path /var/cache/nginx levels=1:2 keys_zone=mattermost_cache:10m max_size=3g inactive=120m use_temp_path=off;
++limit_req_zone $binary_remote_addr zone=mcp_oauth:10m rate=60r/m;
+ 
+ server {
+     listen 80 default_server;
+@@ -28,6 +29,7 @@
+     # upstream ブロックは起動・reload 時に名前解決するため使わない。Mattermost 停止中でも reload で許可リストを差し替えられるようにする
+     resolver 127.0.0.11 valid=10s;
+     set $mattermost_upstream http://mattermost:8065;
++    set $mcp_upstream http://mcp:3000;
+ 
+     ssl_certificate /cert.pem;
+     ssl_certificate_key /key.pem;
+@@ -35,10 +37,73 @@
+     ssl_session_timeout 1d;
+     ssl_session_cache shared:MozSSL:10m;
+     ssl_session_tickets off;
+-    ssl_early_data on;
++    ssl_early_data off;
+ 
+     add_header Strict-Transport-Security "max-age=63072000" always;
+ 
++    # MCP のパスには location / のキャッシュを当てない。^~ は /mcp/…/websocket が下の WebSocket 用の正規表現に取られないため
++    location = /mcp {
++        client_max_body_size 1m;
++        proxy_set_header Connection "";
++        proxy_set_header Host $http_host;
++        proxy_set_header X-Real-IP $remote_addr;
++        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
++        proxy_set_header X-Forwarded-Proto $scheme;
++        proxy_buffering off;
++        proxy_cache off;
++        proxy_read_timeout 120s;
++        proxy_http_version 1.1;
++        proxy_pass $mcp_upstream;
++    }
++
++    location ^~ /mcp/ {
++        client_max_body_size 1m;
++        proxy_set_header Connection "";
++        proxy_set_header Host $http_host;
++        proxy_set_header X-Real-IP $remote_addr;
++        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
++        proxy_set_header X-Forwarded-Proto $scheme;
++        proxy_buffering off;
++        proxy_cache off;
++        proxy_read_timeout 120s;
++        proxy_http_version 1.1;
++        proxy_pass $mcp_upstream;
++
++        # proxy_pass は入れ子の location に継承されないため繰り返す
++        location ~ ^/mcp/oauth/(register|authorize|consent|callback|token)$ {
++            limit_req zone=mcp_oauth burst=30 nodelay;
++            proxy_pass $mcp_upstream;
++        }
++    }
++
++    location = /.well-known/oauth-protected-resource/mcp {
++        client_max_body_size 1m;
++        proxy_set_header Connection "";
++        proxy_set_header Host $http_host;
++        proxy_set_header X-Real-IP $remote_addr;
++        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
++        proxy_set_header X-Forwarded-Proto $scheme;
++        proxy_buffering off;
++        proxy_cache off;
++        proxy_read_timeout 120s;
++        proxy_http_version 1.1;
++        proxy_pass $mcp_upstream;
++    }
++
++    location = /.well-known/oauth-authorization-server/mcp {
++        client_max_body_size 1m;
++        proxy_set_header Connection "";
++        proxy_set_header Host $http_host;
++        proxy_set_header X-Real-IP $remote_addr;
++        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
++        proxy_set_header X-Forwarded-Proto $scheme;
++        proxy_buffering off;
++        proxy_cache off;
++        proxy_read_timeout 120s;
++        proxy_http_version 1.1;
++        proxy_pass $mcp_upstream;
++    }
++
+     location ~ /api/v[0-9]+/(users/)?websocket$ {
+         proxy_set_header Upgrade $http_upgrade;
+         proxy_set_header Connection "upgrade";
+@@ -48,7 +113,6 @@
+         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+         proxy_set_header X-Forwarded-Proto $scheme;
+         proxy_set_header X-Frame-Options SAMEORIGIN;
+-        proxy_set_header Early-Data $ssl_early_data;
+         proxy_buffers 256 16k;
+         proxy_buffer_size 16k;
+         client_body_timeout 60;
+@@ -69,7 +133,6 @@
+         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+         proxy_set_header X-Forwarded-Proto $scheme;
+         proxy_set_header X-Frame-Options SAMEORIGIN;
+-        proxy_set_header Early-Data $ssl_early_data;
+         proxy_buffers 256 16k;
+         proxy_buffer_size 16k;
+         proxy_read_timeout 600s;
+diff -ruN a/tests/nginx-mcp.test.sh b/tests/nginx-mcp.test.sh
+--- a/tests/nginx-mcp.test.sh	1970-01-01 09:00:00
++++ b/tests/nginx-mcp.test.sh	2026-11-01 14:34:26
+@@ -0,0 +1,107 @@
++#!/usr/bin/env bash
++# shellcheck disable=SC2329  # test_* は declare -F 経由で呼ぶ
++# Docker が要る。本物の compose/docker-compose.yml と nginx/mattermost.conf を使い、mattermost と mcp だけを
++# 要求のパスを返す nginx のスタブに差し替える（ネットワークとエイリアスの定義まで含めて確かめるため）。
++set -uo pipefail
++
++here=$(cd "$(dirname "$0")" && pwd)
++infra=$(cd "$here/.." && pwd)
++work=$(mktemp -d)
++proj="nginx-mcp-test-$$"
++dc() { docker compose -p "$proj" --env-file "$infra/compose/env.example" -f "$infra/compose/docker-compose.yml" -f "$work/override.yml" "$@"; }
++trap 'dc down -v --remove-orphans >/dev/null 2>&1; rm -rf "$work"' EXIT
++
++: >"$work/access.conf"
++mkdir "$work/certbot"
++openssl req -x509 -newkey rsa:2048 -nodes -days 1 -subj /CN=mattermost.example.com \
++  -keyout "$work/key.pem" -out "$work/cert.pem" 2>/dev/null
++chmod 644 "$work/key.pem"
++# shellcheck disable=SC2016  # $request_uri は nginx の変数
++stub() { printf 'server { listen %s; location / { return 200 "%s $request_uri\\n"; } }\n' "$1" "$2"; }
++stub 8065 mattermost >"$work/stub-mattermost.conf"
++stub 3000 mcp >"$work/stub-mcp.conf"
++cat >"$work/override.yml" <<EOF
++services:
++  nginx:
++    ports: !reset []
++    volumes: !override
++      - $infra/nginx/mattermost.conf:/etc/nginx/conf.d/default.conf:ro
++      - $work/access.conf:/etc/nginx/access.conf:ro
++      - $work/cert.pem:/cert.pem:ro
++      - $work/key.pem:/key.pem:ro
++      - $work/certbot:/var/www/certbot:ro
++  mattermost:
++    image: nginx:1.28
++    ports: !reset []
++    depends_on: !reset []
++    volumes: !override
++      - $work/stub-mattermost.conf:/etc/nginx/conf.d/default.conf:ro
++  mcp:
++    image: nginx:1.28
++    build: !reset null
++    read_only: false
++    healthcheck: { disable: true }
++    logging: !override { driver: json-file }
++    volumes: !override
++      - $work/stub-mcp.conf:/etc/nginx/conf.d/default.conf:ro
++EOF
++
++req() { dc exec -T nginx curl -sk "https://127.0.0.1$1"; }
++eq() { [ "$1" = "$2" ] || { echo "  expected '$2' got '$1'"; return 1; }; }
++routes_to() { local p; for p in "${@:2}"; do eq "$(req "$p")" "$1 $p" || return 1; done; }
++wait_for() { for _ in $(seq 30); do [ "$(req "$1")" = "$2 $1" ] && return 0; sleep 1; done; echo "  $1 did not reach $2"; return 1; }
++nginx_ips() { docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}} {{end}}' "$(dc ps -q nginx)"; }
++nginx_mcp_net_ip() { docker inspect -f "{{with index .NetworkSettings.Networks \"${proj}_mcp_net\"}}{{.IPAddress}}{{end}}" "$(dc ps -q nginx)"; }
++
++test_nginx_config_is_valid() {
++  local out; out=$(dc exec -T nginx nginx -t 2>&1) || { echo "$out"; return 1; }
++}
++
++test_mcp_paths_route_to_mcp() {
++  routes_to mcp /mcp /mcp/oauth/token /.well-known/oauth-protected-resource/mcp /.well-known/oauth-authorization-server/mcp
++}
++
++test_mcp_path_ending_in_websocket_routes_to_mcp() {
++  routes_to mcp /mcp/x/api/v4/websocket
++}
++
++test_mattermost_paths_route_to_mattermost() {
++  routes_to mattermost / /api/v4/users/me /.well-known/oauth-authorization-server /api/v4/websocket /api/v4/users/websocket
++}
++
++test_nginx_starts_and_serves_mattermost_without_mcp() {
++  dc stop mcp >/dev/null 2>&1 && dc restart nginx >/dev/null 2>&1 || return 1
++  local ok=0; wait_for / mattermost || ok=1
++  dc start mcp >/dev/null 2>&1; wait_for /mcp mcp || ok=1
++  return "$ok"
++}
++
++test_site_name_resolves_to_nginx_only_inside_mcp() {
++  local ip ip_all from_mm from_mcp
++  ip=$(nginx_mcp_net_ip); ip_all=$(nginx_ips)
++  [ -n "$ip" ] || { echo "  nginx is not on mcp_net"; return 1; }
++  from_mcp=$(dc exec -T mcp getent hosts mattermost.example.com | awk '{print $1}')
++  eq "$from_mcp" "$ip" || return 1
++  from_mm=$(dc exec -T mattermost getent hosts mattermost.example.com | awk '{print $1}')
++  for a in $ip_all; do
++    if grep -qx "$a" <<<"$from_mm"; then echo "  mattermost resolves the site to nginx ($a)"; return 1; fi
++  done
++}
++
++# 他のテストが 127.0.0.1 から送る分と枠を分けるため、mattermost のスタブから nginx へ送る。
++test_register_burst_is_rate_limited() {
++  local args=() codes
++  for _ in $(seq 40); do args+=(-o /dev/null https://nginx/mcp/oauth/register); done
++  codes=$(dc exec -T mattermost curl -sk -w '%{http_code}\n' "${args[@]}")
++  if grep -qx 503 <<<"$codes" && grep -qx 200 <<<"$codes"; then return 0; fi
++  echo "  codes: $(sort <<<"$codes" | uniq -c | tr '\n' ' ')"; return 1
++}
++
++dc up -d --no-deps nginx mattermost mcp >"$work/up.log" 2>&1 || { cat "$work/up.log"; exit 1; }
++wait_for / mattermost || { echo "nginx did not come up"; dc logs nginx | tail -20; exit 1; }
++
++fail=0
++for t in $(declare -F | awk '{print $3}' | grep '^test_'); do
++  if "$t"; then echo "PASS $t"; else echo "FAIL $t"; fail=1; fi
++done
++exit $fail
