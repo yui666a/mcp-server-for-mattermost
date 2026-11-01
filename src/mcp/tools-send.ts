@@ -57,14 +57,18 @@ export async function sendMessage(mm: Mm, store: Store, uid: string, baseUrl: st
   return done(post.id, '投稿しました。');
 }
 
-type Wording = { id?: Record<string, string>; status?: Record<number, string> };
+type Wording = { id?: [status: number, id: string, text: string][]; status?: [status: number, text: string][] };
 
 // Not matching on status first: one status (403, 404) covers causes that need different wording, told apart only by the id.
+// Not matching on the id alone: Mattermost reuses an id across statuses (app.post.get.app_error is also a 400 from UpdatePost and DeletePost).
+// Not an object keyed by id: an id such as "constructor" would hit Object.prototype.
 async function worded<T>(p: Promise<T>, w: Wording): Promise<T> {
   try {
     return await p;
   } catch (e) {
-    const m = e instanceof MmError ? (e.id && w.id?.[e.id]) || w.status?.[e.status] : undefined;
+    const m = e instanceof MmError
+      ? (w.id?.find(([s, id]) => s === e.status && id === e.id)?.[2] ?? w.status?.find(([s]) => s === e.status)?.[1])
+      : undefined;
     throw m ? new InputError(m) : e;
   }
 }
@@ -85,12 +89,12 @@ function emojiName(raw: string): string {
   return name;
 }
 const reactionWording = (name: string, archived: string): Wording => ({
-  id: {
-    'app.emoji.get_by_name.no_result': emojiHint(name),
-    'app.post.get.app_error': '投稿が見つかりません（削除されたか、存在しません）。',
-    [archived]: 'アーカイブ済みのチャンネルの投稿のリアクションは変えられません。',
-  },
-  status: { 403: 'この投稿にリアクションできません（見られない投稿、存在しない投稿、アーカイブ済みチャンネルの投稿）。' },
+  id: [
+    [404, 'app.emoji.get_by_name.no_result', emojiHint(name)],
+    [404, 'app.post.get.app_error', '投稿が見つかりません（削除されたか、存在しません）。'],
+    [403, archived, 'アーカイブ済みのチャンネルの投稿のリアクションは変えられません。'],
+  ],
+  status: [[403, 'この投稿にリアクションできません（見られない投稿、存在しない投稿、アーカイブ済みチャンネルの投稿）。']],
 });
 
 export async function addReaction(mm: Mm, uid: string, args: ReactionArgs): Promise<CallToolResult> {

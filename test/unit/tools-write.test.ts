@@ -112,6 +112,18 @@ describe('add_reaction', () => {
     expect(r.text).not.toContain('絵文字');
   });
 
+  test.each([
+    [400, 'app.post.get.app_error'],
+    [400, 'constructor'],
+    [400, '__proto__'],
+    [400, 'hasOwnProperty'],
+  ])('an error whose status and id are not in the wording table (%i %s) stays a generic Mattermost error', async (status, id) => {
+    routes = { 'POST /reactions': mmError(status, id) };
+    const r = await setup().call('add_reaction', { post_id: POST, emoji: 'smile' });
+    expect(r.isError).toBe(true);
+    expect(r.text).toBe(`Mattermost がエラーを返しました（${status}）: m`);
+  });
+
   test('403 says the post cannot be reacted to, naming the possible causes', async () => {
     routes = { 'POST /reactions': mmError(403, 'api.context.permissions.app_error') };
     const r = await setup().call('add_reaction', { post_id: POST, emoji: 'smile' });
