@@ -5,12 +5,14 @@ type Route = (req: Request) => unknown;
 let routes: Record<string, Route>;
 let bodies: Record<string, unknown>;
 let hits: string[];
+let uploads: { query: URLSearchParams; type: string | null; bytes: Uint8Array }[];
 
 beforeEach(() => {
   vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
   routes = {};
   bodies = {};
   hits = [];
+  uploads = [];
 });
 afterEach(() => vi.restoreAllMocks());
 
@@ -20,7 +22,8 @@ function setup() {
   const ctx = makeApp({}, async (input, init) => {
     const req = new Request(input, init);
     const path = new URL(req.url).pathname.replace('/api/v4', '');
-    if (req.method === 'POST' || req.method === 'PUT') bodies[path] = await req.clone().json();
+    if (path === '/files') uploads.push({ query: new URL(req.url).searchParams, type: req.headers.get('content-type'), bytes: new Uint8Array(await req.clone().arrayBuffer()) });
+    else if (req.method === 'POST' || req.method === 'PUT') bodies[path] = await req.clone().json();
     hits.push(`${req.method} ${path}`);
     const r = routes[`${req.method} ${path}`];
     if (!r) return Response.json({ id: 'not_found' }, { status: 404 });
@@ -640,5 +643,118 @@ describe('save_draft', () => {
     const d = t.inputSchema.properties.overwrite.description!;
     expect(d).toContain('添付');
     expect(d).toContain('優先度');
+  });
+});
+
+describe('send_message with files', () => {
+  const CH = 'c'.repeat(26);
+  const UPLOAD = 'POST /files';
+  const serve = (extra: Record<string, Route> = {}) => {
+    let n = 0;
+    routes = {
+      [`GET /channels/${CH}`]: () => ({ id: CH, name: 'town', display_name: 'Town', team_id: 't1', type: 'O' }),
+      'GET /teams/t1': () => ({ id: 't1', name: 'team-a' }),
+      [UPLOAD]: () => Response.json({ file_infos: [{ id: `f${String(n++).padStart(25, '0')}` }] }, { status: 201 }),
+      'POST /posts': () => ({ id: POST, user_id: 'u1', channel_id: CH, root_id: '', message: 'm', create_at: 1, file_ids: (bodies['/posts'] as { file_ids?: string[] }).file_ids }),
+      ...extra,
+    };
+  };
+  const send = (files: unknown, over: Record<string, unknown> = {}) => setup().call('send_message', { channel: CH, message: 'm', files, ...over });
+  const KiB128 = 128 * 1024;
+
+  test('sends content_text as its UTF-8 bytes and content_base64 as the decoded bytes, each as an octet-stream named by filename', async () => {
+    serve();
+    const r = await send([{ name: '図 1.svg', content_text: '<svg>日本</svg>' }, { name: 'b.bin', content_base64: 'AAH/' }]);
+    expect(r.isError).toBe(false);
+    expect(hits).toEqual([`GET /channels/${CH}`, 'GET /teams/t1', UPLOAD, UPLOAD, 'POST /posts']);
+    expect(uploads.map((u) => [u.query.get('channel_id'), u.query.get('filename'), u.type, [...u.bytes]])).toEqual([
+      [CH, '図 1.svg', 'application/octet-stream', [...Buffer.from('<svg>日本</svg>', 'utf8')]],
+      [CH, 'b.bin', 'application/octet-stream', [0, 1, 255]],
+    ]);
+    expect(bodies['/posts']).toMatchObject({ channel_id: CH, message: 'm', file_ids: [`f${'0'.repeat(25)}`, `f${'0'.repeat(24)}1`] });
+  });
+
+  test('accepts 5 files totalling exactly 128KiB', async () => {
+    serve();
+    const r = await send([1, 2, 3, 4].map((i) => ({ name: `${i}.txt`, content_text: 'a' })).concat([{ name: '5.txt', content_text: 'a'.repeat(KiB128 - 4) }]));
+    expect(r.isError).toBe(false);
+    expect(uploads).toHaveLength(5);
+  });
+
+  test.each([
+    ['no files', []],
+    ['6 files', Array.from({ length: 6 }, (_, i) => ({ name: `${i}.txt`, content_text: 'a' }))],
+    ['an empty name', [{ name: '', content_text: 'a' }]],
+    ['a name of 101 characters', [{ name: 'a'.repeat(101), content_text: 'a' }]],
+    ['a name with /', [{ name: 'a/b.txt', content_text: 'a' }]],
+    ['a name with \\', [{ name: 'a\\b.txt', content_text: 'a' }]],
+    ['a name with a newline', [{ name: 'a\nb.txt', content_text: 'a' }]],
+    ['a name with DEL', [{ name: 'a\u007fb.txt', content_text: 'a' }]],
+    ['a name with a C1 control', [{ name: 'a\u0085b.txt', content_text: 'a' }]],
+    ['both content_text and content_base64', [{ name: 'a.txt', content_text: 'a', content_base64: 'YQ==' }]],
+    ['neither content_text nor content_base64', [{ name: 'a.txt' }]],
+    ['an empty content_text', [{ name: 'a.txt', content_text: '' }]],
+    ['an empty content_base64', [{ name: 'a.txt', content_base64: '' }]],
+    ['texts totalling 128KiB + 1 byte', [{ name: 'a.txt', content_text: 'a'.repeat(KiB128 - 1) }, { name: 'b.txt', content_text: 'é' }]],
+    ['base64 decoding to 128KiB + 1 byte', [{ name: 'a.bin', content_base64: Buffer.alloc(KiB128 + 1).toString('base64') }]],
+  ])('refuses %s without calling Mattermost', async (_, files) => {
+    serve();
+    const r = await send(files);
+    expect(r.isError).toBe(true);
+    expect(hits).toEqual([]);
+  });
+
+  test('the size limit is told in the refusal', async () => {
+    serve();
+    const r = await send([{ name: 'a.txt', content_text: 'a'.repeat(KiB128 + 1) }]);
+    expect(r.text).toContain('128KiB');
+  });
+
+  test.each([
+    ['a data URL', 'data:image/png;base64,iVBORw0KGgo='],
+    ['base64url characters', 'AA-_'],
+    ['a length that is not a multiple of 4', 'AAH'],
+    ['a newline inside', 'AAAA\nAAAA'],
+    ['padding in the middle', 'AA==AAAA'],
+    ['three padding characters', 'A==='],
+    ['non-canonical trailing bits', 'AB=='],
+  ])('refuses content_base64 with %s without calling Mattermost', async (_, content_base64) => {
+    serve();
+    const r = await send([{ name: 'a.bin', content_base64 }]);
+    expect(r.isError).toBe(true);
+    expect(r.text).toContain('base64');
+    expect(hits).toEqual([]);
+  });
+
+  test('refuses a message longer than 16383 characters without calling Mattermost', async () => {
+    serve();
+    const r = await setup().call('send_message', { channel: CH, message: 'a'.repeat(16384) });
+    expect(r.isError).toBe(true);
+    expect(hits).toEqual([]);
+  });
+
+  test.each([
+    [400, 'api.file.upload_file.large_image_detailed.app_error', '画素数が大きすぎる'],
+    [413, 'api.file.upload_file.too_large_detailed.app_error', '大きすぎる'],
+  ])('an upload refused with %i %s is worded with the file name, and nothing is posted', async (status, id, wording) => {
+    serve({ [UPLOAD]: mmError(status, id) });
+    const r = await send([{ name: 'huge.png', content_text: 'a' }]);
+    expect(r.isError).toBe(true);
+    expect(r.text).toContain(wording);
+    expect(r.text).toContain('huge.png');
+    expect(hits).not.toContain('POST /posts');
+  });
+
+  test('file contents and names do not appear in the logs', async () => {
+    serve();
+    await send([{ name: 'secret-name.txt', content_text: 'secret-text' }, { name: 'b.bin', content_base64: Buffer.from('secret-bytes').toString('base64') }]);
+    const logged = vi.mocked(process.stdout.write).mock.calls.map((c) => String(c[0])).join('');
+    expect(logged).toContain('/files');
+    for (const s of ['secret-name', 'secret-text', 'secret-bytes', Buffer.from('secret-bytes').toString('base64')]) expect(logged).not.toContain(s);
+  });
+
+  test('the tool describes files, their two forms and the limits', async () => {
+    const t = (await setup().tools()).find((x) => x.name === 'send_message')!;
+    expect(t.description).toContain('files');
   });
 });

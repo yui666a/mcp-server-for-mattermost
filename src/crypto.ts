@@ -2,7 +2,7 @@ import { createCipheriv, createDecipheriv, createHash, randomBytes } from 'node:
 
 export const randomToken = (): string => randomBytes(32).toString('base64url');
 
-export const sha256 = (s: string): string => createHash('sha256').update(s).digest('hex');
+export const sha256 = (s: string | Uint8Array): string => createHash('sha256').update(s).digest('hex');
 
 export function seal(key: Buffer, plain: string): string {
   const iv = randomBytes(12);

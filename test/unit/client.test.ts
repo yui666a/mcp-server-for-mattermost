@@ -419,3 +419,21 @@ test('callBytes reads the id of a 4xx JSON error into an MmError', async () => {
   expect(e).toBeInstanceOf(MmError);
   expect(e).toMatchObject({ status: 400, id: 'api.file.get_file_preview.no_preview.app_error', sent: true });
 });
+
+test('call sends a Blob body as its bytes with the Blob\'s type, and sends the same bytes again after a 401 → refresh', async () => {
+  store.putMmCred('u1', 'a1', 'r1');
+  const bytes = Uint8Array.from([0, 1, 2, 0xff, 0x7b]);
+  const seen: { type: string | null; bytes: Uint8Array }[] = [];
+  api = async (access, req) => {
+    seen.push({ type: req.headers.get('content-type'), bytes: new Uint8Array(await req.arrayBuffer()) });
+    return access === 'a2' ? Response.json({ file_infos: [{ id: 'f1' }] }, { status: 201 }) : mmError(401, 'api.context.session_expired.app_error');
+  };
+  const r = await client.call('u1', 'POST', '/files?channel_id=c1&filename=a.bin', new Blob([bytes], { type: 'application/octet-stream' }));
+  expect(r).toEqual({ file_infos: [{ id: 'f1' }] });
+  expect(refreshCalls).toEqual(['r1']);
+  expect(apiCalls.map((c) => [c.access, c.req.method, c.req.url])).toEqual([
+    ['a1', 'POST', 'http://mm.internal/api/v4/files?channel_id=c1&filename=a.bin'],
+    ['a2', 'POST', 'http://mm.internal/api/v4/files?channel_id=c1&filename=a.bin'],
+  ]);
+  expect(seen).toEqual([{ type: 'application/octet-stream', bytes }, { type: 'application/octet-stream', bytes }]);
+});
