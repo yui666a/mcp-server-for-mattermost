@@ -21,6 +21,23 @@ const iso = (ms: number, offset: number, suffix: string) => new Date(ms + offset
 
 export const formatTime = (ms: number): string => `${iso(ms, 0, 'Z')} | ${iso(ms, JST_MS, '+09:00')}`;
 
+// Not timeZoneName 'longOffset' alone: it writes UTC as plain "GMT", not "GMT+00:00".
+export function localTime(tz: string, nowMs: number): string | undefined {
+  if (!tz) return undefined;
+  let parts: Intl.DateTimeFormatPart[];
+  try {
+    parts = new Intl.DateTimeFormat('en-US', {
+      timeZone: tz, hourCycle: 'h23', year: 'numeric', month: '2-digit', day: '2-digit',
+      hour: '2-digit', minute: '2-digit', second: '2-digit', timeZoneName: 'longOffset',
+    }).formatToParts(nowMs);
+  } catch {
+    return undefined;
+  }
+  const p = Object.fromEntries(parts.map((x) => [x.type, x.value]));
+  const offset = p.timeZoneName.replace('GMT', '') || '+00:00';
+  return `${p.year}-${p.month}-${p.day}T${p.hour}:${p.minute}:${p.second}${offset}`;
+}
+
 export function formatPost(p: MmPost, ctx: PostCtx): string {
   const who = ctx.usernames.get(p.user_id);
   return [

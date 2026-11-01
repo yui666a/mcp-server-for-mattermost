@@ -317,6 +317,44 @@ describe('read tools against the local Mattermost', () => {
     });
   });
 
+  describe('get_user with time zone and presence', () => {
+    type Status = { status: string; dnd_end_time: number };
+    let bobMm: string;
+    let original: { timezone: Record<string, string>; status: Status };
+
+    beforeAll(async () => {
+      bobMm = await mmToken(e.users.bob);
+      original = {
+        timezone: (await mmApi<{ timezone: Record<string, string> }>(bobMm, 'GET', '/users/me')).timezone,
+        status: await mmApi<Status>(bobMm, 'GET', `/users/${e.users.bob.id}/status`),
+      };
+    });
+
+    afterAll(async () => {
+      await mmApi(bobMm, 'PUT', `/users/${e.users.bob.id}/patch`, { timezone: original.timezone });
+      await mmApi(bobMm, 'PUT', `/users/${e.users.bob.id}/status`, { user_id: e.users.bob.id, status: original.status.status === 'dnd' ? 'online' : original.status.status });
+    });
+
+    test('shows the manual time zone bob set and the local time there to alice', async () => {
+      await mmApi(bobMm, 'PUT', `/users/${e.users.bob.id}/patch`, {
+        timezone: { useAutomaticTimezone: 'false', automaticTimezone: 'Asia/Tokyo', manualTimezone: 'Asia/Kolkata' },
+      });
+      const r = await call('alice', 'get_user', { user: '@bob' });
+      expect(r.isError).toBeFalsy();
+      expect(r.content[0].text).toContain('タイムゾーン: Asia/Kolkata（手動）');
+      expect(r.content[0].text).toMatch(/現地時刻: \d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\+05:30/);
+    });
+
+    test('shows do-not-disturb and its end time when bob turns it on', async () => {
+      const end = Math.floor(Date.now() / 1000) + 3600;
+      await mmApi(bobMm, 'PUT', `/users/${e.users.bob.id}/status`, { user_id: e.users.bob.id, status: 'dnd', dnd_end_time: end });
+      const r = await call('alice', 'get_user', { user: '@bob' });
+      expect(r.isError).toBeFalsy();
+      const minute = new Date(Math.floor(end / 60) * 60_000).toISOString().slice(0, 19);
+      expect(r.content[0].text).toContain(`在席: 取り込み中（終了: ${minute}Z | `);
+    });
+  });
+
   test('Mattermost API calls per tool are counted by the limiter', async () => {
     const acquire = vi.spyOn(limiter, 'acquire');
     const charge = vi.spyOn(limiter, 'charge');

@@ -1,5 +1,5 @@
-import { expect, test } from 'vitest';
-import { decodeCursor, encodeCursor, formatPost, formatTime, InputError, truncate } from '../../src/mcp/format.ts';
+import { describe, expect, test } from 'vitest';
+import { decodeCursor, encodeCursor, formatPost, formatTime, InputError, localTime, truncate } from '../../src/mcp/format.ts';
 
 test('truncation keeps grapheme clusters', () => {
   const s = '👨‍👩‍👧'.repeat(4001); const r = truncate(s);
@@ -35,4 +35,29 @@ test('cursor round-trips as base64url JSON and rejects anything else as an input
 
 test('a time shows UTC and JST in ISO 8601, in the same form as a post', () => {
   expect(formatTime(Date.UTC(2026, 10, 1, 20, 4, 5))).toBe('2026-11-01T20:04:05Z | 2026-11-02T05:04:05+09:00');
+});
+
+describe('localTime', () => {
+  const at = (iso: string) => Date.parse(iso);
+
+  test('gives the local time with the zone offset of that moment', () => {
+    expect(localTime('Asia/Tokyo', at('2026-11-01T20:04:05Z'))).toBe('2026-11-02T05:04:05+09:00');
+    expect(localTime('Asia/Kolkata', at('2026-11-01T20:04:05Z'))).toBe('2026-11-02T01:34:05+05:30');
+  });
+
+  test('follows daylight saving time', () => {
+    expect(localTime('America/New_York', at('2026-03-08T06:59:59Z'))).toBe('2026-03-08T01:59:59-05:00');
+    expect(localTime('America/New_York', at('2026-03-08T07:00:00Z'))).toBe('2026-03-08T03:00:00-04:00');
+  });
+
+  test('writes a zero offset as +00:00', () => {
+    expect(localTime('Europe/London', at('2026-01-15T00:30:00Z'))).toBe('2026-01-15T00:30:00+00:00');
+    expect(localTime('UTC', at('2026-01-15T12:00:00Z'))).toBe('2026-01-15T12:00:00+00:00');
+    expect(localTime('Etc/UTC', at('2026-01-15T12:00:00Z'))).toBe('2026-01-15T12:00:00+00:00');
+  });
+
+  test('is undefined for an empty or unknown zone', () => {
+    expect(localTime('', 0)).toBeUndefined();
+    expect(localTime('Mars/Olympus_Mons', 0)).toBeUndefined();
+  });
 });
