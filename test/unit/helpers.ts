@@ -16,5 +16,5 @@ export function makeApp(env: Record<string, string> = {}, fetchImpl: typeof fetc
   const deps = { fetch: fetchImpl, now: Date.now };
   const mm = new MmClient(config, store, new Limiter({ perUserConcurrency: 4, globalConcurrency: 16, perUserPerMin: 120, globalPerMin: 600 }, Date.now), deps);
   const app = createApp({ config, store, deps, mm });
-  return { app, store, config, req: request(app) };
+  return { app, store, config, mm, req: request(app) };
 }

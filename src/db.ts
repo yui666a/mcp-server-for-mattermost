@@ -89,6 +89,7 @@ CREATE TABLE IF NOT EXISTS scheduled_posts (
   updated_at INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS scheduled_posts_user ON scheduled_posts (mm_user_id, scheduled_at, id);
+CREATE INDEX IF NOT EXISTS scheduled_posts_due ON scheduled_posts (status, scheduled_at, id);
 `;
 
 export function openDb(path: string): DatabaseSync {

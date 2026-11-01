@@ -47,6 +47,14 @@ export type Scheduled = {
   status: ScheduledStatus; postId: string | null; error: string | null;
 };
 
+export type ClaimedScheduled = Scheduled & {
+  mmUserId: string; message: string | undefined; pendingPostId: string | null; firstAttemptAt: number | null; retry: boolean;
+};
+export type ScheduledOutcome =
+  | { status: 'posted'; postId: string }
+  | { status: 'failed'; error: string }
+  | { status: 'pending'; forgetAttempt: boolean };
+
 type Row = Record<string, any>;
 
 export class Store {
@@ -395,6 +403,64 @@ export class Store {
       "DELETE FROM scheduled_posts WHERE id = ? AND mm_user_id = ? AND status = 'pending' AND first_attempt_at IS NULL",
       id, mmUserId,
     ) === 1;
+  }
+
+  resetSendingScheduled(now: number): void {
+    this.run("UPDATE scheduled_posts SET status = 'pending', updated_at = ? WHERE status = 'sending' AND updated_at <= ?", now, now - INFLIGHT_GRACE);
+  }
+
+  failUnattemptedScheduled(before: number, error: string, now: number): void {
+    this.run(
+      "UPDATE scheduled_posts SET status = 'failed', error = ?, updated_at = ? WHERE status = 'pending' AND first_attempt_at IS NULL AND scheduled_at < ?",
+      error, now, before,
+    );
+  }
+
+  dueScheduled(now: number, limit: number): string[] {
+    return (this.db.prepare("SELECT id FROM scheduled_posts WHERE status = 'pending' AND scheduled_at <= ? ORDER BY scheduled_at, id LIMIT ?")
+      .all(now, limit) as Row[]).map((r) => r.id);
+  }
+
+  // Not trusting the row as it was picked: the user can change or cancel it until this UPDATE, so the message comes from its RETURNING.
+  // Not marking the attempt when the message cannot be opened: nothing will be sent, and the row should read as never attempted.
+  claimScheduled(id: string, now: number, attemptAt: number): ClaimedScheduled | undefined {
+    return this.tx(() => {
+      const r = this.get(
+        "UPDATE scheduled_posts SET status = 'sending', updated_at = ? WHERE id = ? AND status = 'pending' AND scheduled_at <= ? RETURNING *",
+        now, id, now,
+      );
+      if (!r) return undefined;
+      const s = { ...this.scheduled(r), mmUserId: r.mm_user_id, pendingPostId: r.pending_post_id, firstAttemptAt: r.first_attempt_at, retry: r.first_attempt_at !== null };
+      if (!s.retry && s.message !== undefined) {
+        s.pendingPostId = randomToken();
+        s.firstAttemptAt = attemptAt;
+        this.run('UPDATE scheduled_posts SET pending_post_id = ?, first_attempt_at = ? WHERE id = ?', s.pendingPostId, attemptAt, id);
+      }
+      return s;
+    });
+  }
+
+  settleScheduled(id: string, now: number, o: ScheduledOutcome): void {
+    const forget = o.status === 'pending' && o.forgetAttempt ? 1 : 0;
+    this.run(
+      `UPDATE scheduled_posts SET status = ?, post_id = ?, error = ?, updated_at = ?,
+         first_attempt_at = CASE WHEN ? THEN NULL ELSE first_attempt_at END, pending_post_id = CASE WHEN ? THEN NULL ELSE pending_post_id END
+       WHERE id = ? AND status = 'sending'`,
+      o.status, o.status === 'posted' ? o.postId : null, o.status === 'failed' ? o.error : null, now, forget, forget, id,
+    );
+  }
+
+  otherScheduledPostIds(mmUserId: string, id: string): Set<string> {
+    const rows = this.db.prepare('SELECT post_id FROM scheduled_posts WHERE mm_user_id = ? AND id != ? AND post_id IS NOT NULL').all(mmUserId, id) as Row[];
+    return new Set(rows.map((r) => r.post_id));
+  }
+
+  invalidateScheduled(now: number, error: { unattempted: string; attempted: string }): number {
+    return this.run(
+      `UPDATE scheduled_posts SET status = 'failed', error = CASE WHEN first_attempt_at IS NULL THEN ? ELSE ? END, updated_at = ?
+       WHERE status IN ('pending', 'sending')`,
+      error.unattempted, error.attempted, now,
+    );
   }
 
   purgeCredentials(): number {

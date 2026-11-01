@@ -13,23 +13,25 @@ export type ToolContext = { mm: MmClient; mmUserId: string; cfg: Config; store: 
 
 export const text = (t: string, isError = false): CallToolResult => ({ content: [{ type: 'text', text: t }], ...(isError ? { isError } : {}) });
 
+const UNEXPECTED = 'ツールの実行中に予期しないエラーが発生しました。';
+
+function classify(e: unknown): [outcome: string, text: string] | undefined {
+  if (e instanceof InputError) return ['input_error', e.message];
+  if (e instanceof Reauthorize) return ['reauthorize', 'Mattermost への再ログインが必要です。コネクタを再接続してください。'];
+  if (e instanceof RateLimited) return ['rate_limited', `呼び出しが多すぎます。${e.retryAfterSec} 秒後に再試行してください。`];
+  if (e instanceof UpstreamUnavailable) return ['upstream_unavailable', 'Mattermost に一時的に接続できません。しばらくしてから再試行してください。'];
+  if (e instanceof MmError) return ['mm_error', `Mattermost がエラーを返しました（${e.status}）: ${e.message}`];
+  return undefined;
+}
+
+export const failureText = (e: unknown): string => classify(e)?.[1] ?? UNEXPECTED;
+
 // SDK's Streamable HTTP has already committed 200 by the time a tool runs, so failures surface as tool results.
 export function failure(e: unknown): { outcome: string; result: CallToolResult } {
-  if (e instanceof InputError) return { outcome: 'input_error', result: text(e.message, true) };
-  if (e instanceof Reauthorize) {
-    return { outcome: 'reauthorize', result: text('Mattermost への再ログインが必要です。コネクタを再接続してください。', true) };
-  }
-  if (e instanceof RateLimited) {
-    return { outcome: 'rate_limited', result: text(`呼び出しが多すぎます。${e.retryAfterSec} 秒後に再試行してください。`, true) };
-  }
-  if (e instanceof UpstreamUnavailable) {
-    return { outcome: 'upstream_unavailable', result: text('Mattermost に一時的に接続できません。しばらくしてから再試行してください。', true) };
-  }
-  if (e instanceof MmError) {
-    return { outcome: 'mm_error', result: text(`Mattermost がエラーを返しました（${e.status}）: ${e.message}`, true) };
-  }
-  log('tool_unhandled_error', { name: (e as Error)?.name });
-  return { outcome: 'error', result: text('ツールの実行中に予期しないエラーが発生しました。', true) };
+  const c = classify(e);
+  if (!c) log('tool_unhandled_error', { name: (e as Error)?.name });
+  const [outcome, t] = c ?? ['error', UNEXPECTED];
+  return { outcome, result: text(t, true) };
 }
 
 export function guarded<A extends unknown[]>(ctx: ToolContext, tool: string, fn: (...args: A) => Promise<CallToolResult>) {
