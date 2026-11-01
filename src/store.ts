@@ -320,10 +320,27 @@ export class Store {
     this.run('DELETE FROM post_claims WHERE id = ? AND updated_at = ?', id, claimedAt);
   }
 
-  purgeCredentials(): void {
-    this.tx(() => {
+  purgeCredentials(): number {
+    return this.tx(() => {
+      let n = 0;
       for (const t of ['post_claims', 'mm_creds', 'refresh_tokens', 'access_tokens', 'grants', 'codes', 'auth_sessions'])
-        this.run(`DELETE FROM ${t}`);
+        n += this.run(`DELETE FROM ${t}`);
+      return n;
+    });
+  }
+
+  listClients(unauthorizedOnly = false): Client[] {
+    const rows = this.db
+      .prepare(`SELECT client_id FROM clients ${unauthorizedOnly ? 'WHERE authorized_at IS NULL' : ''} ORDER BY created_at`)
+      .all() as Row[];
+    return rows.map((r) => this.getClient(r.client_id)!);
+  }
+
+  // No FK from these tables to clients, so the children are removed here; token tables cascade from grants.
+  deleteClient(id: string): boolean {
+    return this.tx(() => {
+      for (const t of ['grants', 'codes', 'auth_sessions']) this.run(`DELETE FROM ${t} WHERE client_id = ?`, id);
+      return this.run('DELETE FROM clients WHERE client_id = ?', id) === 1;
     });
   }
 
