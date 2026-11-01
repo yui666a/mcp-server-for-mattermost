@@ -367,7 +367,7 @@ docker compose logs --tail 50 mcp
 | ログ | 原因 | 対処 |
 |---|---|---|
 | `PUBLIC_URL is required` など `... is required` | `.env` の 4 項目が欠けている | 「デプロイ」の手順 7 |
-| `TOKEN_ENC_KEY must be 32 bytes in base64` | 鍵の形式の誤り | 鍵を作り直してよいのは、DB に Mattermost のトークンがないときだけ。あるなら元の鍵を探す |
+| `TOKEN_ENC_KEY must be 32 bytes in base64` | 鍵の形式の誤り | 鍵を作り直してよいのは、DB に Mattermost のトークンがないときだけ。あるなら元の鍵を探す。待機中の予約があれば、それらは本文を復号できず、投稿されずに失敗になる |
 | `unable to open database file` | `/srv/mcp` がない、または UID 1000 が書けない | `ls -ln /srv/mcp`、「デプロイ」の手順 6 |
 
 直したら `docker compose up -d mcp` で作り直す（`.env` の変更は作り直さないと反映されない）。
@@ -423,7 +423,7 @@ umount /mnt/restore
 - `purge-credentials` は `purged <件数> rows` を出す。前後の `list-clients` の件数が変わらない（DCR の登録は消さない）ことを確かめる
 - `invalidate-scheduled` は、待機中と投稿中の予約を失敗にして `invalidated <件数> scheduled posts` を出す。件数が 0 でなければ、起動後に利用者へ予約を確かめて入れ直すよう知らせる（「管理コマンド」）
 - `--network none` で動かすので、巻き戻った状態の MCP サーバーがどこからも呼ばれない
-- 鍵（`TOKEN_ENC_KEY`）は作り直さない。Mattermost のトークンを消すので、古い鍵で暗号化された値は残らない
+- 鍵（`TOKEN_ENC_KEY`）は作り直さない。Mattermost のトークンは消すが、失敗にした予約の本文は同じ鍵で暗号化されたまま更新から 7 日残り、作り直すと `list_scheduled_messages` で本文が読めなくなる
 
 手元の端末で、ディスクを外して本番 VM の起動ディスクと差し替える。
 元の起動ディスクは消さずに残す。
