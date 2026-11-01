@@ -1,8 +1,8 @@
 import type { McpServer, ToolCallback } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
 import { z } from 'zod';
-import { sha256 } from '../crypto.ts';
-import { MmError } from '../mattermost/client.ts';
+import { randomToken, sha256 } from '../crypto.ts';
+import { MmError, RateLimited } from '../mattermost/client.ts';
 import type { Store } from '../store.ts';
 import { InputError, type MmPost } from './format.ts';
 import { resolveChannel, type Mm } from './resolve.ts';
@@ -20,7 +20,7 @@ const inputSchema = {
 
 export async function sendMessage(mm: Mm, store: Store, uid: string, baseUrl: string, args: Args): Promise<CallToolResult> {
   const ch = await resolveChannel(mm, uid, args.channel);
-  const rootId = args.root_id || undefined;
+  const rootId = args.root_id;
   if (rootId) {
     const root = await mm.call<MmPost>(uid, 'GET', `/posts/${rootId}`);
     if (root.channel_id !== ch.id) throw new InputError(`root_id ${rootId} の投稿はチャンネル「${ch.name}」にありません。`);
@@ -29,7 +29,7 @@ export async function sendMessage(mm: Mm, store: Store, uid: string, baseUrl: st
   const done = (postId: string, note: string) => text([note, `post_id: ${postId}`, where, `${baseUrl}/${ch.teamName}/pl/${postId}`].join('\n'));
   const body = { channel_id: ch.id, message: args.message, ...(rootId ? { root_id: rootId } : {}) };
 
-  if (args.allow_duplicate) return done((await mm.call<MmPost>(uid, 'POST', '/posts', body)).id, '投稿しました。');
+  if (args.allow_duplicate) return done((await mm.call<MmPost>(uid, 'POST', '/posts', { ...body, pending_post_id: randomToken() })).id, '投稿しました。');
 
   const claim = store.claimPost({ mmUserId: uid, channelId: ch.id, rootId, bodyHash: sha256(args.message) });
   if (claim.kind === 'done') return done(claim.postId, '同じ本文を直前に投稿済みのため、やり直しとみなして投稿していません。');
@@ -38,7 +38,7 @@ export async function sendMessage(mm: Mm, store: Store, uid: string, baseUrl: st
   }
   if (claim.kind === 'retry') {
     // Not dropping the claim if this lookup fails: the earlier attempt's outcome is still unknown.
-    const r = await mm.call<PostList>(uid, 'GET', `/channels/${ch.id}/posts?since=${claim.createdAt}`);
+    const r = await mm.call<PostList>(uid, 'GET', `/channels/${ch.id}/posts?since=${claim.createdAt - 1}`);
     const prev = Object.values(r.posts).find((p) =>
       p.user_id === uid && (p.root_id || undefined) === rootId && p.message === args.message && !p.delete_at && p.create_at >= claim.createdAt);
     if (prev) {
@@ -50,7 +50,7 @@ export async function sendMessage(mm: Mm, store: Store, uid: string, baseUrl: st
   try {
     post = await mm.call<MmPost>(uid, 'POST', '/posts', { ...body, pending_post_id: claim.pendingPostId });
   } catch (e) {
-    if (e instanceof MmError || (e as { sent?: boolean })?.sent === false) store.dropPost(claim.id, claim.claimedAt);
+    if (e instanceof MmError || e instanceof RateLimited || (e as { sent?: boolean })?.sent === false) store.dropPost(claim.id, claim.claimedAt);
     throw e;
   }
   store.completePost(claim.id, post.id);
