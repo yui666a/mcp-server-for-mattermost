@@ -364,6 +364,7 @@ export function registerReadTools(server: McpServer, ctx: ToolContext): void {
       const teamName = new Map(teams.map((t) => [t.id, t.name]));
       const threads = new Map<string, Thread & { teamName: string }>();
       const notes: string[] = [];
+      let threadsFailed = false;
       if (crt.on) {
         try {
           for (const [i, t] of teams.entries()) {
@@ -385,6 +386,8 @@ export function registerReadTools(server: McpServer, ctx: ToolContext): void {
         } catch (e) {
           if (!(e instanceof MmError)) throw e;
           threads.clear();
+          threadsFailed = true;
+          notes.length = 0;
           notes.push(`（未読のスレッドを取得できませんでした（Mattermost のエラー ${e.status}: ${e.message}）。チャンネルの未読だけを出しています）`);
         }
       }
@@ -432,7 +435,7 @@ export function registerReadTools(server: McpServer, ctx: ToolContext): void {
       };
       const lines = [
         `スレッドの折りたたみ（CRT）: ${crt.on ? '有効' : '無効'}（${crt.label}）`,
-        `未読のあるチャンネル: ${unread.length} 件${crt.on ? `、未読のスレッド: ${threads.size} 件` : '（返信も数えています）'}`,
+        `未読のあるチャンネル: ${unread.length} 件${crt.on ? `、未読のスレッド: ${threadsFailed ? '取得できませんでした' : `${threads.size} 件`}` : '（返信も数えています）'}`,
         ...(p.updated.length ? ['前のページの後に更新されたチャンネルとスレッド（前のページまでに出したものを含むことがあります）:', ...p.updated.map(line)] : []),
       ];
       const bodyChannels = p.body.filter((r) => r.kind === 'channel');

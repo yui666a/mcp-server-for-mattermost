@@ -598,6 +598,16 @@ describe('get_unreads', () => {
     expect(out).toContain('未読のスレッドを取得できませんでした');
   });
 
+  test('when the threads API answers 4xx after a team hit the 4-page cap, drops that cap note and says the thread count is unavailable', async () => {
+    let n = 0;
+    const full = () => threadPage(Array.from({ length: 50 }, () => thread(`t${String(n++).padStart(25, '0')}`, OLD, 5000)), 321);
+    routes = { ...base(), [`GET /users/u1/teams/${T1}/threads`]: full, [`GET /users/u1/teams/${T2}/threads`]: () => Response.json({ id: 'x', message: 'nope' }, { status: 403 }) };
+    const out = await setup()('get_unreads', {});
+    expect(out).not.toContain('200 件までしか');
+    expect(out).toContain('未読のあるチャンネル: 4 件、未読のスレッド: 取得できませんでした');
+    expect(out).toContain('未読のスレッドを取得できませんでした');
+  });
+
   test('when the threads API fails otherwise, the tool fails', async () => {
     routes = { ...base(), [`GET /users/u1/teams/${T1}/threads`]: () => new Response('oops', { status: 503 }) };
     const out = await setup()('get_unreads', {}, true);

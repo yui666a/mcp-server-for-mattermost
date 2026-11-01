@@ -18,6 +18,10 @@ describe('mentionTerms', () => {
     expect(mentionTerms({ ...withKeys('', 'true'), first_name: '' })).toEqual(['@alice']);
   });
 
+  test('leaves out a first name containing a double quote', () => {
+    expect(mentionTerms({ ...withKeys('', 'true'), first_name: 'A"B' })).toEqual(['@alice']);
+  });
+
   test('leaves out @channel, @all and @here even when they are mention keys', () => {
     expect(mentionTerms(withKeys('@channel,@ALL,@here,ops'))).toEqual(['@alice', 'ops']);
   });
@@ -71,6 +75,27 @@ describe('mentionsMe', () => {
   test('an indented line continuing a paragraph or a list item is still text, not code', () => {
     expect(mentionsMe('para\n    @alice', alice)).toBe(true);
     expect(mentionsMe('- item\n\n    @alice', alice)).toBe(true);
+  });
+
+  test('an inline code span closes only within its own paragraph or list item', () => {
+    expect(mentionsMe('a ` b\n\n@alice\n\nc ` d', alice)).toBe(true);
+    expect(mentionsMe('- a `\n- @alice\n- b `', alice)).toBe(true);
+    expect(mentionsMe('a `\n@alice\nb `', alice)).toBe(false);
+  });
+
+  test.each([
+    'https://mastodon.social/@alice',
+    'see http://e.com/@alice.',
+    'ftp://e.com/@alice',
+    'see www.e.com/@alice',
+    '[x](https://e.com/@alice)',
+  ])('does not count %j, a link destination or an autolink, as a mention', (message) => {
+    expect(mentionsMe(message, alice)).toBe(false);
+  });
+
+  test('a mention next to a link still counts', () => {
+    expect(mentionsMe('@alice see https://e.com/x', alice)).toBe(true);
+    expect(mentionsMe('[@alice](https://e.com/@bob)', alice)).toBe(true);
   });
 
   test('a mention outside a code block still counts', () => {
