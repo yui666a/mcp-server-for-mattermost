@@ -1,7 +1,7 @@
 import { MmError, RateLimited, Reauthorize, UpstreamUnavailable } from '../mattermost/client.ts';
 import type { MmPost } from './format.ts';
 import type { Mm } from './resolve.ts';
-import { failure } from './server.ts';
+import { failureText } from './server.ts';
 
 export type PostSpec = { channelId: string; rootId?: string; message: string };
 // Not dropping error: send_message rethrows it to keep the wording its callers already see.
@@ -11,8 +11,6 @@ export type Posting =
   | { kind: 'failed'; reason: string; error: unknown };
 
 type PostList = { order: string[]; posts: Record<string, MmPost & { delete_at?: number }> };
-
-const reason = (e: unknown) => (failure(e).result.content[0] as { text: string }).text;
 
 // Not taking a claim or a lookup here: send_message uploads files between its lookup and its post, and the scheduler keys retries on its own row.
 export async function postOnce(mm: Mm, uid: string, s: PostSpec & { fileIds: string[] }, pendingPostId: string): Promise<Posting> {
@@ -25,8 +23,9 @@ export async function postOnce(mm: Mm, uid: string, s: PostSpec & { fileIds: str
     const post = await mm.call<MmPost>(uid, 'POST', '/posts', body);
     return { kind: 'posted', postId: post.id, fileCount: post.file_ids?.length ?? 0 };
   } catch (e) {
-    if (e instanceof MmError || e instanceof Reauthorize) return { kind: 'failed', reason: reason(e), error: e };
-    // Not passing RateLimited.sent on: a 429 reached Mattermost but was refused, so sent=false keeps meaning "certainly not posted".
+    if (e instanceof MmError || e instanceof Reauthorize) return { kind: 'failed', reason: failureText(e), error: e };
+    // Not passing RateLimited.sent on: a 429 means Mattermost refused this request, so nothing was posted by it.
+    // ponytail: after a 401 whose refreshed pair lost the save, the check POST can time out or get a 5xx after posting and the resend then gets the 429; that post is reported as unsent (design doc, known limits).
     if (e instanceof RateLimited) return { kind: 'retryable', sent: false, error: e };
     if (e instanceof UpstreamUnavailable) return { kind: 'retryable', sent: e.sent, error: e };
     throw e;

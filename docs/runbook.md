@@ -309,10 +309,15 @@ docker compose exec mcp node src/admin.ts list-clients               # 登録さ
 docker compose exec mcp node src/admin.ts list-clients --unauthorized # 未認可の登録だけ
 docker compose exec mcp node src/admin.ts delete-client <client_id>   # 登録を消す。そのクライアントはコネクタの追加し直しが要る
 docker compose exec mcp node src/admin.ts purge-credentials          # 認可途中の状態、grant、トークン、重複防止の記録を消す。登録は残す
+docker compose exec mcp node src/admin.ts invalidate-scheduled       # 待機中と投稿中の予約をすべて失敗にする。投稿済みと失敗の予約は残す
 ```
 
 `purge-credentials` を稼働中に実行すると、全利用者が再ログインになる。
-通常はスナップショットからの復元でだけ使う。
+通常はスナップショットからの復元でだけ使い、そのときは `invalidate-scheduled` も続けて実行する。
+古いスナップショットには、その後に取り消したり変えたりした予約が待機中のまま残っており、利用者が再ログインした後に投稿されてしまうため。
+`invalidate-scheduled` は `invalidated <件数> scheduled posts` を出す。
+失敗にした予約は `list_scheduled_messages` に理由とともに出るので、利用者には予約を確かめて入れ直すよう知らせる。
+投稿を試みた後の予約は、理由が「投稿されたか不明」になる。その利用者には Mattermost の画面で確かめてもらう。
 
 ### 未認可の登録が上限に近いとき
 
@@ -408,6 +413,7 @@ ls -ln /mnt/restore/srv/mcp
 docker build -t mattermost-mcp-restore /mnt/restore/opt/mattermost-mcp
 docker run --rm --network none -v /mnt/restore/srv/mcp:/data mattermost-mcp-restore node src/admin.ts list-clients | wc -l
 docker run --rm --network none -v /mnt/restore/srv/mcp:/data mattermost-mcp-restore node src/admin.ts purge-credentials
+docker run --rm --network none -v /mnt/restore/srv/mcp:/data mattermost-mcp-restore node src/admin.ts invalidate-scheduled
 docker run --rm --network none -v /mnt/restore/srv/mcp:/data mattermost-mcp-restore node src/admin.ts list-clients | wc -l
 sync
 umount /mnt/restore
@@ -415,6 +421,7 @@ umount /mnt/restore
 
 - `/srv/mcp` はディレクトリごとマウントする。SQLite の `-wal`、`-shm` も同じディレクトリにある
 - `purge-credentials` は `purged <件数> rows` を出す。前後の `list-clients` の件数が変わらない（DCR の登録は消さない）ことを確かめる
+- `invalidate-scheduled` は、待機中と投稿中の予約を失敗にして `invalidated <件数> scheduled posts` を出す。件数が 0 でなければ、起動後に利用者へ予約を確かめて入れ直すよう知らせる（「管理コマンド」）
 - `--network none` で動かすので、巻き戻った状態の MCP サーバーがどこからも呼ばれない
 - 鍵（`TOKEN_ENC_KEY`）は作り直さない。Mattermost のトークンを消すので、古い鍵で暗号化された値は残らない
 
@@ -437,7 +444,7 @@ gcloud compute instances start mattermost-vm $P $Z
 
 ### SQLite ファイルを失った場合
 
-「スナップショットからの復元」と同じ手順で、直近のスナップショットから作ったディスクを作業用の VM に接続し、`purge-credentials` まで行う。
+「スナップショットからの復元」と同じ手順で、直近のスナップショットから作ったディスクを作業用の VM に接続し、`purge-credentials` と `invalidate-scheduled` まで行う。
 VM の起動ディスクは差し替えず、`/srv/mcp` の中身だけを本番 VM に戻す。
 
 本番 VM で `mcp` を止め、残っているファイルを退避する。
