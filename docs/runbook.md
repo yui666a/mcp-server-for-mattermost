@@ -23,6 +23,8 @@ cd /opt/mattermost-infra/compose
 grep '^MATTERMOST_IMAGE_TAG=' .env
 # OAuth 2.0 サービスプロバイダーが有効であること（true）
 jq .ServiceSettings.EnableOAuthServiceProvider /srv/mattermost/config/config.json
+# レート制限の設定と、接続元 IP として信頼するヘッダー
+jq '{RateLimitSettings, TrustedProxyIPHeader: .ServiceSettings.TrustedProxyIPHeader}' /srv/mattermost/config/config.json
 # 名前が mcp のチームがないこと（0 行）。nginx の ^~ /mcp/ がチームの URL /mcp/... を取ってしまうため。アーカイブ済みも含めて見る
 docker compose exec -T postgres psql -U mmuser -d mattermost -tAc "SELECT name, deleteat FROM teams WHERE name = 'mcp'"
 # 作業に使うコマンド
@@ -31,6 +33,11 @@ command -v git patch openssl
 
 - `EnableOAuthServiceProvider` が `false` なら、System Console の Integration Management で「Enable OAuth 2.0 Service Provider」を有効にする（Mattermost の設定変更なので利用者の確認を取る）
 - `mcp` という名前のチームがあれば投入しない
+- `RateLimitSettings.Enable` が `false` なら、Mattermost は `mcp` の呼び出しを制限しない
+- `Enable` が `true` なら、`mcp` の呼び出しも Mattermost のレート制限の枠を消費する。Mattermost は枠を次の単位で分ける（v11.7.8 の `server/channels/app/ratelimit.go`）
+  - `VaryByUser` が `true`: 要求のトークンごと。`mcp` は利用者ごとの OAuth のトークンで呼ぶので、利用者ごとに別の枠になり、その利用者の Web やアプリのセッションとも枠を分け合わない
+  - `VaryByUser` が `false` で `VaryByRemoteAddr` が `true`: 接続元 IP ごと。IP は `TrustedProxyIPHeader` に挙げたヘッダー（nginx は `X-Real-IP` と `X-Forwarded-For` を付ける）から取り、空なら接続のアドレスを使う。`mcp` の呼び出しはすべて nginx を通るので、全利用者の MCP の呼び出しが 1 つの枠（ヘッダーを信頼していれば `mcp_net` 上の `mcp` のアドレス、空なら nginx のアドレス）を分け合う。空のときは Web やアプリの利用者も nginx のアドレスで同じ枠に入り、MCP の呼び出しが多いと Web やアプリにも `429` が返る
+- 枠を超えると Mattermost は `429` を返し、`mcp` は再試行せずにレート制限のエラーとしてツールの結果に返す。全利用者で 1 つの枠を分け合う設定で、`PerSec` の 60 倍が `mcp` の全体の上限（毎分 600 回）を下回るなら、投入前に Mattermost の設定を変えるか、この影響を受け入れるかを利用者と決める
 
 ### 2. OAuth アプリの作成
 
@@ -188,6 +195,45 @@ curl -s https://mattermost.example.com/mcp/healthz
 - `access.conf` は一般開放の `allow all;`（`nginx/access-open.conf`）であること
 - `getent` が返すアドレスは nginx の `mcp_net` 上のアドレス。`ping` は `200`。`403` なら `access.conf` が `mcp` を拒否している
 - `/mcp/healthz` は `{"ok":true}`
+
+### 11. 本番での確認
+
+nginx を作り直した後に確かめる。
+
+```bash
+curl -s https://mattermost.example.com/.well-known/oauth-protected-resource/mcp | jq .
+curl -s https://mattermost.example.com/.well-known/oauth-authorization-server/mcp | jq .
+```
+
+- 保護リソースのメタデータは `resource` が `https://mattermost.example.com/mcp`、`authorization_servers` が `["https://mattermost.example.com/mcp"]`、`scopes_supported` が `["mattermost"]`
+- 認可サーバーのメタデータは `issuer` が `https://mattermost.example.com/mcp`、各エンドポイントがその下の `/oauth/authorize`、`/oauth/token`、`/oauth/register`、`code_challenge_methods_supported` が `["S256"]`
+
+既存の Mattermost の利用に変化がないことを、作業者のアカウントで確かめる。
+
+- Web でログインし、投稿できる
+- 別の端末やブラウザから投稿すると、開いている画面に再読み込みなしで現れる（WebSocket）
+- Calls に参加でき、音声が届く
+
+MCP クライアントからつなぐ。作業者のアカウントで、claude.ai のカスタムコネクタ、Claude Code、Codex CLI のそれぞれから `https://mattermost.example.com/mcp` に接続する。
+
+- 読み取り系の 6 ツール（`search_posts`、`read_channel`、`read_thread`、`search_channels`、`search_users`、`get_user`）を 1 回ずつ呼び、エラーにならない
+- `send_message` は作業者自身の DM（`@<作業者のユーザー名>`）にだけ投稿する。他のチャンネルや利用者には投稿しない
+
+取り消しと再ログインを確かめる。クライアントは 1 つでよい。
+
+1. Mattermost の「設定 > セキュリティ > OAuth 2.0 アプリ」で `mattermost-mcp` の許可を取り消す
+2. 次のツール呼び出しが「Mattermost への再ログインが必要です。コネクタを再接続してください。」を返す
+3. その次の要求でクライアントが再ログインを求める
+4. 再ログインし、ツールを呼べることを確かめる
+
+ログを確かめる。Cloud Logging で次を検索する。
+
+```text
+logName="projects/my-gcp-project/logs/syslog" "tool_call"
+```
+
+- 上の呼び出しの `tool_call` が、`mm_user_id`、`tool`、`outcome`、`ms` を持って届いている
+- 投稿した本文、検索語、トークン（`Bearer`、`access_token`、`refresh_token`）が含まれていない
 
 ### 切り戻し
 
@@ -415,6 +461,7 @@ docker compose exec mcp node src/admin.ts list-clients | wc -l
 | 事前確認: `MATTERMOST_IMAGE_TAG` | |
 | 事前確認: `EnableOAuthServiceProvider` | |
 | 事前確認: 名前が `mcp` のチーム | |
+| 事前確認: `RateLimitSettings` と `TrustedProxyIPHeader`、その扱い | |
 | OAuth アプリの作成方法（画面 / 管理者トークン） | |
 | OAuth アプリの ID | |
 | OAuth アプリの `is_trusted: true`、`is_public: false`、コールバック URL | |
@@ -434,6 +481,14 @@ docker compose exec mcp node src/admin.ts list-clients | wc -l
 | `mcp` からの名前解決（`getent hosts`） | |
 | `mcp` からの `system/ping` | |
 | `/mcp/healthz` | |
+| 本番での確認: 保護リソースと認可サーバーのメタデータ | |
+| 本番での確認: 既存の利用（ログイン、投稿、WebSocket、Calls） | |
+| 本番での確認: claude.ai から読み取り系 6 ツール | |
+| 本番での確認: Claude Code から読み取り系 6 ツール | |
+| 本番での確認: Codex CLI から読み取り系 6 ツール | |
+| 本番での確認: `send_message`（作業者自身の DM） | |
+| 本番での確認: 許可の取り消し → 再ログインのエラー → 再ログインの要求 → 再ログイン（使ったクライアント） | |
+| 本番での確認: Cloud Logging の `tool_call`（本文・検索語・トークンを含まない） | |
 
 ## Mattermost の OAuth の実測
 
