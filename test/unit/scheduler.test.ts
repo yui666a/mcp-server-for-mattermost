@@ -253,6 +253,34 @@ describe('a retry after an unknown outcome looks for the earlier post first', ()
     expect(s.row(id)).toMatchObject({ status: 'posted' });
   });
 
+  const editedByUser = (id: string, over: object = {}) => mine(id, { message: 'hello, edited', edit_at: NOW + 2 * SEC, ...over });
+
+  test('does not post when the user edited a post in the same thread since the first attempt, and fails as maybe posted', async () => {
+    const s = setup();
+    routes[`GET /channels/${CH}/posts`] = () => postList(editedByUser('edited'.padEnd(26, 'x')));
+    const id = attempted(s);
+    await s.run(NOW + MIN);
+    expect(s.posts()).toHaveLength(0);
+    expect(s.row(id)).toMatchObject({ status: 'failed', error: UNKNOWN });
+  });
+
+  test('posts again when no edited post counts: another user\'s, another thread\'s, from before the first attempt, or one another schedule recorded', async () => {
+    const s = setup();
+    const owned = 'owned'.padEnd(26, 'x');
+    const other = s.make();
+    s.set(other, "status = 'posted', post_id = ?", owned);
+    routes[`GET /channels/${CH}/posts`] = () => postList(
+      editedByUser('a'.repeat(26), { user_id: 'x'.repeat(26) }),
+      editedByUser('b'.repeat(26), { root_id: ROOT }),
+      editedByUser('c'.repeat(26), { create_at: NOW - 1 }),
+      editedByUser(owned),
+    );
+    const id = attempted(s);
+    await s.run(NOW + MIN);
+    expect(s.posts()).toHaveLength(1);
+    expect(s.row(id)).toMatchObject({ status: 'posted' });
+  });
+
   test('does not take a post that another schedule with the same text already recorded', async () => {
     const s = setup();
     const taken = 'taken'.padEnd(26, 'x');
