@@ -77,6 +77,19 @@ test('sends a JSON request with the bearer token to MM_URL/api/v4 without follow
   expect(logged()).not.toMatch(/SECRET|BODY-TEXT|a1"/);
 });
 
+test('logged paths keep IDs but not channel, team or user names', async () => {
+  store.putMmCred('u1', 'a1', 'r1');
+  await client.call('u1', 'GET', '/teams/name/secret-team/channels/name/secret-channel');
+  await client.call('u1', 'GET', '/users/username/secret-user');
+  await client.call('u1', 'GET', '/teams/abcdefghijklmnopqrstuvwxyz/channels/name/secret-dm');
+  await client.call('u1', 'GET', '/channels/abcdefghijklmnopqrstuvwxyz/posts?since=1');
+  expect(logged()).not.toContain('secret');
+  expect(logged()).toContain('"path":"/teams/name/:name/channels/name/:name"');
+  expect(logged()).toContain('"path":"/users/username/:name"');
+  expect(logged()).toContain('"path":"/teams/abcdefghijklmnopqrstuvwxyz/channels/name/:name"');
+  expect(logged()).toContain('"path":"/channels/abcdefghijklmnopqrstuvwxyz/posts"');
+});
+
 test('shared credential survives refresh by another grant', async () => {
   grant();
   grant();
