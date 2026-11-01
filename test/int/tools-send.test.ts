@@ -3,10 +3,9 @@ import { sha256 } from '../../src/crypto.ts';
 import type { Store } from '../../src/store.ts';
 import type request from 'supertest';
 import { afterAll, beforeAll, describe, expect, test, vi } from 'vitest';
-import { env, intApp, mcpAuthorize, mmAvailable, mmDeauthorize, mmLoginCookie } from './helpers.ts';
+import { intApp, mcpAuthorize, requireMm, mmDeauthorize, mmLoginCookie } from './helpers.ts';
 
-const up = await mmAvailable();
-const e = up ? env() : (undefined as never);
+const e = await requireMm();
 
 const REDIRECT = 'http://127.0.0.1:8123/cb';
 const TAG = `zs${randomBytes(6).toString('hex')}`;
@@ -22,7 +21,7 @@ async function mmApi<T>(token: string, method: string, path: string, body?: unkn
   return res.json() as Promise<T>;
 }
 
-describe.skipIf(!up)('send_message against the local Mattermost', () => {
+describe('send_message against the local Mattermost', () => {
   let req: ReturnType<typeof request>;
   let access: string;
   let aliceMm: string;

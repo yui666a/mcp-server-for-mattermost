@@ -25,13 +25,15 @@ export function env(): Env {
   return JSON.parse(readFileSync(stateUrl, 'utf8'));
 }
 
-export async function mmAvailable(): Promise<boolean> {
+// Failing rather than skipping: a skipped integration run reads as green while proving nothing.
+export async function requireMm(): Promise<Env> {
   try {
     const e = env();
     const res = await fetch(`${e.mmUrl}/api/v4/system/ping`, { signal: AbortSignal.timeout(2000) });
-    return res.ok;
-  } catch {
-    return false;
+    if (res.ok) return e;
+    throw new Error(`ping returned ${res.status}`);
+  } catch (cause) {
+    throw new Error('The local Mattermost is not reachable (or dev/.state.json is missing). Run `npm run dev:up` first.', { cause });
   }
 }
 

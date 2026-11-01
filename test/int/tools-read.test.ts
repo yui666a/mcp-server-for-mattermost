@@ -2,10 +2,9 @@ import { randomBytes } from 'node:crypto';
 import type request from 'supertest';
 import { afterAll, beforeAll, describe, expect, test, vi } from 'vitest';
 import type { Limiter } from '../../src/mattermost/limiter.ts';
-import { env, intApp, mcpAuthorize, mmAvailable, mmDeauthorize, mmLoginCookie, type Cred } from './helpers.ts';
+import { intApp, mcpAuthorize, requireMm, mmDeauthorize, mmLoginCookie, type Cred } from './helpers.ts';
 
-const up = await mmAvailable();
-const e = up ? env() : (undefined as never);
+const e = await requireMm();
 
 const REDIRECT = 'http://127.0.0.1:8123/cb';
 const TAG = `zq${randomBytes(6).toString('hex')}`;
@@ -27,7 +26,7 @@ async function mmApi<T>(token: string, method: string, path: string, body?: unkn
 const nextCursor = (r: Result) => /next_cursor: (\S+)/.exec(r.content[0].text)?.[1];
 const postIds = (r: Result) => [...r.content[0].text.matchAll(/^--- post_id: ([a-z0-9]{26})/gm)].map((m) => m[1]);
 
-describe.skipIf(!up)('read tools against the local Mattermost', () => {
+describe('read tools against the local Mattermost', () => {
   let req: ReturnType<typeof request>;
   let limiter: Limiter;
   const access: Record<'alice' | 'bob', string> = { alice: '', bob: '' };
