@@ -187,7 +187,7 @@ export class MmClient {
     const ms = this.remaining(at);
     if (at.requests++ > 0) this.limiter.charge(mmUserId);
     const started = this.deps.now();
-    const fields = { mm_user_id: mmUserId, method, path: path.split('?')[0] };
+    const fields = { mm_user_id: mmUserId, method, path: path.split('?')[0].replace(/\/(name|username)\/[^/]+/g, '/$1/:name') };
     let res: Response;
     try {
       res = await this.deps.fetch(`${this.cfg.mmUrl}/api/v4${path}`, {
