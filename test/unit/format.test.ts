@@ -1,5 +1,5 @@
 import { expect, test } from 'vitest';
-import { decodeCursor, encodeCursor, formatPost, InputError, truncate } from '../../src/mcp/format.ts';
+import { decodeCursor, encodeCursor, formatPost, formatTime, InputError, truncate } from '../../src/mcp/format.ts';
 
 test('truncation keeps grapheme clusters', () => {
   const s = '👨‍👩‍👧'.repeat(4001); const r = truncate(s);
@@ -31,4 +31,8 @@ test('cursor round-trips as base64url JSON and rejects anything else as an input
   for (const bad of ['%%%', Buffer.from('[1]').toString('base64url'), Buffer.from('null').toString('base64url'), Buffer.from('3').toString('base64url')]) {
     expect(() => decodeCursor(bad), bad).toThrow(InputError);
   }
+});
+
+test('a time shows UTC and JST in ISO 8601, in the same form as a post', () => {
+  expect(formatTime(Date.UTC(2026, 10, 1, 20, 4, 5))).toBe('2026-11-01T20:04:05Z | 2026-11-02T05:04:05+09:00');
 });

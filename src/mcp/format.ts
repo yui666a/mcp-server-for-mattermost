@@ -19,11 +19,13 @@ export function truncate(s: string, max = 4000): { text: string; truncated: bool
 
 const iso = (ms: number, offset: number, suffix: string) => new Date(ms + offset).toISOString().slice(0, 19) + suffix;
 
+export const formatTime = (ms: number): string => `${iso(ms, 0, 'Z')} | ${iso(ms, JST_MS, '+09:00')}`;
+
 export function formatPost(p: MmPost, ctx: PostCtx): string {
   const who = ctx.usernames.get(p.user_id);
   return [
     `--- post_id: ${p.id}${p.root_id ? `（返信先 post_id: ${p.root_id}）` : ''}`,
-    `${who ? `@${who}` : `user_id: ${p.user_id}`} | ${iso(p.create_at, 0, 'Z')} | ${iso(p.create_at, JST_MS, '+09:00')}`,
+    `${who ? `@${who}` : `user_id: ${p.user_id}`} | ${formatTime(p.create_at)}`,
     ...(ctx.channel ? [ctx.channel] : []),
     truncate(p.message).text,
     `${ctx.baseUrl}/${ctx.teamName}/pl/${p.id}`,
