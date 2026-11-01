@@ -52,8 +52,8 @@ Mattermost は無償の Team Edition で、公式 Agents プラグインの外�
 | OAuth 2.0 Service Provider | 有効。`/.well-known/oauth-authorization-server` を公開しており、`registration_endpoint` はない（Dynamic Client Registration は無効） |
 | Mattermost の OAuth | 認可コードフロー、PKCE は `S256` のみ。public client にはリフレッシュトークンが発行されず、confidential client（`client_secret_post`）には発行される。スコープは `user` のみ |
 | Mattermost のトークン再利用 | 同じユーザーと同じ OAuth アプリの組では、新たに認可しても既存のアクセストークンとリフレッシュトークンが返る。リフレッシュするとリフレッシュトークンは新しいものに替わり、使用済みのものは使えなくなる。古いアクセストークンは、ローカルの v11.7.8 での実測ではリフレッシュ後も少なくとも 826 秒は有効なまま残り、利用者がアプリの許可を取り消すと無効になった（[v11.7.8 `oauth.go`](https://github.com/mattermost/mattermost/blob/v11.7.8/server/channels/app/oauth.go)、実測の詳細は `docs/runbook.md`）。Mattermost のトークンは MCP サーバーの外に出さないため、古いアクセストークンが残ることは設計に影響しない |
-| 下書きの同期 | サーバー設定 `ServiceSettings.AllowSyncedDrafts`（既定 true）が有効なときだけ、API で保存した下書きが本人の画面に届く。無効なら下書きの API は 501 を返す |
-| Mattermost の台数 | 1 台構成で、下書きの一覧を読むレプリカを持たない |
+| 下書きの同期 | サーバー設定 `ServiceSettings.AllowSyncedDrafts`（既定 true）が有効なときだけ、API で保存した下書きが本人の画面に届く。無効なら下書きの API は 501 を返す。本番で有効かは、投入前に確かめる（`docs/runbook.md` の「事前確認」） |
+| Mattermost の台数 | 1 台構成で、下書きの一覧を読むレプリカを持たない。本番にレプリカが無いことは、投入前に確かめる（`docs/runbook.md` の「事前確認」） |
 | 利用者 | 約 20 人、世界中から利用 |
 
 ## 構成
@@ -362,7 +362,7 @@ mcp ──(https://mattermost.example.com、Compose 内部で nginx に解決)�
 - 認可フローとツールは、ローカルの Docker Compose で Mattermost Team Edition を立てて自動テストする。本番の Mattermost にテストのための書き込みをしない
 - テストに使う Mattermost のバージョンは環境変数 `MATTERMOST_IMAGE_TAG` で指定し、未指定なら隣の `mattermost-infra` の `compose/.env`（なければ `compose/env.example`）の値を使う。どれも見つからなければテストを始めない。トークンの再利用、リフレッシュの競合、アプリの取り消しの挙動もこのテストで確かめる
 - 「前提」の Mattermost のトークン再利用の挙動は v11.7.8 の実装に基づく。MCP サーバーの本番投入は Mattermost が v11.7.8 のうちに行い、その後 Mattermost を更新するときは、新しいバージョンでこのテストを通してから本番を更新する。テストが通らなければ、Mattermost の更新を止めて設計を見直す
-- 本番投入後の確認は、作業者のアカウントで 3 つのクライアントから接続し、読み取り系のツールを一通り呼ぶ。`send_message` は作業者の DM（自分宛て）にだけ投稿して確かめる
+- 本番投入後の確認は、作業者のアカウントで 3 つのクライアントから接続し、読み取り系のツールを一通り呼ぶ。書き込み系のツールは、作業者自身の DM（自分宛て）の中だけで確かめ、他のチャンネルや利用者の投稿には触れない
 
 ## 実装者に任せること
 
