@@ -1,6 +1,6 @@
 import { randomBytes } from 'node:crypto';
 import { execFileSync, spawnSync } from 'node:child_process';
-import { mkdtempSync } from 'node:fs';
+import { existsSync, mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { expect, test } from 'vitest';
@@ -38,9 +38,11 @@ test('purge-credentials clears credentials but keeps clients, and prints the cou
   const db = openDb(':memory:');
   const store = new Store(db, randomBytes(32));
   seed(db, store, 'a');
+  const expected = TABLES.reduce((n, t) => n + count(db, t), 0);
+  expect(expected).toBeGreaterThan(0);
   const r = run(db, ['purge-credentials']);
   expect(r.code).toBe(0);
-  expect(r.out).toMatch(/\d+/);
+  expect(r.out).toBe(`purged ${expected} rows\n`);
   expect(count(db, 'clients')).toBe(1);
   for (const t of TABLES) expect(count(db, t), t).toBe(0);
 });
@@ -101,4 +103,21 @@ test('the CLI runs with DB_PATH as the only environment variable', () => {
   const bad = spawnSync(process.execPath, ['src/admin.ts', 'bogus'], { env });
   expect(bad.status).not.toBe(0);
   expect(bad.stderr.toString()).toContain('Usage');
+});
+
+test('a missing DB file is an error and is not created', () => {
+  const path = join(mkdtempSync(join(tmpdir(), 'admin-')), 'missing.sqlite');
+  const r = spawnSync(process.execPath, ['src/admin.ts', 'purge-credentials'], { env: { DB_PATH: path, PATH: process.env.PATH ?? '' } });
+  expect(r.status).toBe(1);
+  expect(r.stderr.toString()).toContain(path);
+  expect(r.stdout.toString()).toBe('');
+  expect(existsSync(path)).toBe(false);
+});
+
+test('a DB error prints a one-line error without a stack trace', () => {
+  const path = join(mkdtempSync(join(tmpdir(), 'admin-')), 'bad.sqlite');
+  writeFileSync(path, 'this is not a sqlite database, '.repeat(10));
+  const r = spawnSync(process.execPath, ['src/admin.ts', 'list-clients'], { env: { DB_PATH: path, PATH: process.env.PATH ?? '' } });
+  expect(r.status).toBe(1);
+  expect(r.stderr.toString()).toMatch(/^error: .+\n$/);
 });
