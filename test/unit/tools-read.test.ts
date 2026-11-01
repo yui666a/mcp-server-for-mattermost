@@ -256,7 +256,7 @@ describe('get_channel', () => {
     [`GET /teams/${T}`]: () => ({ id: T, name: 'team-a' }),
     [`GET /channels/${C}/stats`]: () => ({ channel_id: C, member_count: 42, guest_count: 0, pinnedpost_count: 3, files_count: -1 }),
     // Returned oldest first, as Mattermost does.
-    [`GET /channels/${C}/pinned`]: () => ({ order: [P2.id, P3.id, P1.id], posts: { [P1.id]: P1, [P2.id]: P2, [P3.id]: P3 } }),
+    [`GET /channels/${C}/pinned`]: () => ({ order: [P3.id, P2.id, P1.id], posts: { [P1.id]: P1, [P2.id]: P2, [P3.id]: P3 } }),
     'POST /users/ids': () => [{ id: 'u1', username: 'alice' }],
   });
   const pinIds = (out: string) => [...out.matchAll(/^--- post_id: ([a-z]{26})/gm)].map((m) => m[1]);
@@ -352,9 +352,9 @@ describe('get_channel', () => {
   test('turns 404 from fetching the channel, by id or by team/name, into a not-found message', async () => {
     routes = { ...base(), [`GET /channels/${C}`]: mmError(404) };
     const call = setup();
-    expect(await call('get_channel', { channel: C }, true)).toBe('チャンネルが見つかりません');
+    expect(await call('get_channel', { channel: C }, true)).toBe('チャンネルが見つかりません（参加していない非公開チャンネルを名前で指定した場合も、Mattermost はこの結果を返します）');
     routes['GET /teams/name/team-a/channels/name/nope'] = mmError(404, 'app.channel.get_by_name.missing.app_error');
-    expect(await call('get_channel', { channel: 'team-a/nope' }, true)).toBe('チャンネルが見つかりません');
+    expect(await call('get_channel', { channel: 'team-a/nope' }, true)).toBe('チャンネルが見つかりません（参加していない非公開チャンネルを名前で指定した場合も、Mattermost はこの結果を返します）');
   });
 
   test('does not turn errors about the user or the team into the channel messages', async () => {
