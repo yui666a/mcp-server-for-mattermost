@@ -220,7 +220,8 @@ export class MmClient {
       await discard(res);
       throw new RateLimited(retryAfterSec(res.headers), true);
     }
-    if (res.status >= 400 && res.status < 500) {
+    // Not every 5xx as MmError: a 500 or 503 can pass on retry, and callers such as send_message treat MmError as a definite refusal.
+    if ((res.status >= 400 && res.status < 500) || res.status === 501) {
       const b = await res.json().catch(() => undefined);
       throw new MmError(res.status, str(b?.id), str(b?.message));
     }
