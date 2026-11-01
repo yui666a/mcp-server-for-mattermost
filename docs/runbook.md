@@ -49,3 +49,18 @@
 ### `pending_post_id` の重複排除
 
 - 同じ `pending_post_id` で `POST /api/v4/posts` を 2 回呼ぶと、2 回目は 201 で最初の投稿と同じ `id` を返す（テストで確認）。
+
+## クライアント互換性
+
+ローカルの Mattermost の前に一時的な HTTPS トンネルを置き、`/mcp` を公開して 3 つのクライアントからつないだ。`ACCESS_TOKEN_TTL_SEC=120` にして、`whoami` を 2 分以上空けて 2 回呼び、リフレッシュも確かめた。どれも 2 回とも成功した（2026-11-01）。
+
+| クライアント | 登録（DCR）の `redirect_uris` | 認可要求 | コード交換 | リフレッシュ |
+|---|---|---|---|---|
+| Codex CLI 0.166.0 | `http://127.0.0.1:<port>/callback/<id>` | `resource`、`scope=mattermost`、S256 | `resource` あり | `resource`、`scope` あり |
+| Claude Code 2.1.316 | `http://localhost:<port>/callback` | `resource`、`scope=mattermost`、S256 | `resource` あり | `resource` あり、`scope` なし |
+| claude.ai | `https://claude.ai/api/mcp/auth_callback` | `resource`、`scope=mattermost`、S256 | `resource` あり | `resource` あり、`scope` なし |
+
+- どのクライアントも、パスを挟んだ形のメタデータ（`/.well-known/oauth-protected-resource/mcp`、`/.well-known/oauth-authorization-server/mcp`）を見つけ、`token_endpoint_auth_method=none` で登録した。
+- Claude Code と claude.ai は、`initialize` の前に `server/discover` を送る。サーバーはこれを 400 で返し、クライアントはそのまま `initialize` に進む。
+- Claude Code は、期限が近いアクセストークンを使う前にリフレッシュする。有効期限が 120 秒だと要求のたびにリフレッシュし、1 秒のうちに 5 回続いた。どれも直前に受け取ったリフレッシュトークンを使うので、再利用の検知には当たらない。本番の 3600 秒では起きない。
+- claude.ai は、要求のたびに `initialize` を送るとは限らない。stateless なので問題ない。
