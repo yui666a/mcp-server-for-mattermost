@@ -265,12 +265,15 @@ export class Store {
     };
   }
 
+  // A fresh row starts its version at the current time rather than 1, so a CAS held from before revokeUser
+  // cannot match the row a re-login inserts. ponytail: assumes a row is bumped fewer times than milliseconds
+  // pass before it is re-inserted (each bump costs a Mattermost round trip); a persisted per-user counter if not.
   putMmCred(mmUserId: string, access: string, refresh: string): void {
     this.run(
-      `INSERT INTO mm_creds (mm_user_id, access_sealed, refresh_sealed, version) VALUES (?, ?, ?, 1)
+      `INSERT INTO mm_creds (mm_user_id, access_sealed, refresh_sealed, version) VALUES (?, ?, ?, ?)
        ON CONFLICT (mm_user_id) DO UPDATE SET access_sealed = excluded.access_sealed,
          refresh_sealed = excluded.refresh_sealed, version = version + 1`,
-      mmUserId, seal(this.encKey, access), seal(this.encKey, refresh),
+      mmUserId, seal(this.encKey, access), seal(this.encKey, refresh), this.now(),
     );
   }
 

@@ -143,13 +143,24 @@ test('sweep removes expired codes, access tokens, auth sessions, idle grants and
 
 test('casMmCred fails when version changed', () => {
   store.putMmCred('u1', 'a1', 'r1');
-  expect(store.getMmCred('u1')).toEqual({ access: 'a1', refresh: 'r1', version: 1 });
-  expect(store.casMmCred('u1', 1, 'a2', 'r2')).toBe(true);
-  expect(store.casMmCred('u1', 1, 'a3', 'r3')).toBe(false);
-  expect(store.getMmCred('u1')).toEqual({ access: 'a2', refresh: 'r2', version: 2 });
+  const v = store.getMmCred('u1')!.version;
+  expect(store.getMmCred('u1')).toEqual({ access: 'a1', refresh: 'r1', version: v });
+  expect(store.casMmCred('u1', v, 'a2', 'r2')).toBe(true);
+  expect(store.casMmCred('u1', v, 'a3', 'r3')).toBe(false);
+  expect(store.getMmCred('u1')).toEqual({ access: 'a2', refresh: 'r2', version: v + 1 });
   store.putMmCred('u1', 'a4', 'r4');
-  expect(store.getMmCred('u1')?.version).toBe(3);
-  expect(store.casMmCred('nobody', 1, 'a', 'r')).toBe(false);
+  expect(store.getMmCred('u1')?.version).toBe(v + 2);
+  expect(store.casMmCred('nobody', v, 'a', 'r')).toBe(false);
+});
+
+test('a refresh that started before revoke and re-login cannot overwrite the new credentials', () => {
+  store.putMmCred('u1', 'a1', 'r1');
+  const stale = store.getMmCred('u1')!.version;
+  store.revokeUser('u1');
+  t += 1000;
+  store.putMmCred('u1', 'a2', 'r2');
+  expect(store.casMmCred('u1', stale, 'a-stale', 'r-stale')).toBe(false);
+  expect(store.getMmCred('u1')).toMatchObject({ access: 'a2', refresh: 'r2' });
 });
 
 test('sealed Mattermost tokens are not stored in plain text', () => {
