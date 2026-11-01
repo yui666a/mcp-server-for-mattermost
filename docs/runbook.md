@@ -85,11 +85,11 @@ cd /opt/mattermost-infra
 cp -p nginx/mattermost.conf nginx/mattermost.conf.pre-mcp
 cp -p compose/docker-compose.yml compose/docker-compose.yml.pre-mcp
 cp -p compose/env.example compose/env.example.pre-mcp
-cp -p compose/.env compose/.env.pre-mcp
+cp -pn compose/.env compose/.env.pre-mcp
 ```
 
 - `env.example` は実行には使わないが、戻しておかないと切り戻し後の再投入で手順 5 の照合が一致しなくなる
-- `.env` はパッチでは変わらないが、手順 7 で追記する。追記を誤ったときに、Mattermost と Postgres のパスワードを含む元の内容へ戻せるようにする
+- `.env` はパッチでは変わらないが、手順 7 で追記する。追記を誤ったときに、Mattermost と Postgres のパスワードを含む元の内容へ戻せるようにする。`-n` を付けるのは、切り戻し後の再投入で、追記済みの `.env` が MCP を入れる前の退避を上書きしないようにするため
 
 ### 5. パッチの適用
 
@@ -420,7 +420,7 @@ docker compose exec mcp node src/admin.ts list-clients | wc -l
 | OAuth アプリの `is_trusted: true`、`is_public: false`、コールバック URL | |
 | `/opt/mattermost-mcp` の `git rev-parse HEAD` | |
 | `mattermost-infra.patch` の `sha256sum` | |
-| `.pre-mcp` の作成（3 ファイル） | |
+| `.pre-mcp` の作成（4 ファイル） | |
 | `sha256sum -c`（3 ファイル） | |
 | `patch -p1 --dry-run` | |
 | `patch -p1` | |
