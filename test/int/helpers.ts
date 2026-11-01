@@ -76,7 +76,7 @@ export function intApp(extraEnv: Record<string, string> = {}) {
   const deps = { fetch, now: Date.now };
   const limiter = new Limiter({ perUserConcurrency: 4, globalConcurrency: 16, perUserPerMin: 120, globalPerMin: 600 }, Date.now);
   const mm = new MmClient(config, store, limiter, deps);
-  return { config, store, req: request(createApp({ config, store, deps, mm })) };
+  return { config, store, limiter, req: request(createApp({ config, store, deps, mm })) };
 }
 
 // register → authorize → consent → Mattermost login → callback, ending with the MCP authorization code.

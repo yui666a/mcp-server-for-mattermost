@@ -31,16 +31,16 @@ describe.skipIf(!up)('MCP endpoint against the local Mattermost', () => {
     .set({ authorization: `Bearer ${access}`, accept: 'application/json, text/event-stream', 'content-type': 'application/json' })
     .send(JSON.stringify({ jsonrpc: '2.0', id, method, params }));
 
-  test('initialize, tools/list and whoami over Streamable HTTP with a token from the OAuth flow', async () => {
+  test('initialize, tools/list and get_user over Streamable HTTP with a token from the OAuth flow', async () => {
     const init = await rpc(1, 'initialize', { protocolVersion: '2025-11-25', capabilities: {}, clientInfo: { name: 'int', version: '0' } });
     expect(init.status).toBe(200);
     expect(init.headers['content-type']).toMatch(/^application\/json/);
     expect(init.body.result.serverInfo.name).toBeTruthy();
 
     const list = await rpc(2, 'tools/list', {});
-    expect(list.body.result.tools.map((t: { name: string }) => t.name)).toContain('whoami');
+    expect(list.body.result.tools.map((t: { name: string }) => t.name)).toContain('get_user');
 
-    const who = await rpc(3, 'tools/call', { name: 'whoami', arguments: {} });
+    const who = await rpc(3, 'tools/call', { name: 'get_user', arguments: { user: '@alice' } });
     expect(who.body.result.isError).toBeFalsy();
     expect(who.body.result.content[0].text).toContain('alice');
     expect(who.body.result.content[0].text).toContain(e.users.alice.id);

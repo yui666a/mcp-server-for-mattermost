@@ -325,3 +325,15 @@ test('retryAfterSec from Mattermost is capped at one hour', async () => {
   api = () => new Response('{}', { status: 429, headers: { 'X-RateLimit-Reset': '99999' } });
   expect((await failure(client.call('u1', 'GET', '/users/me'))).retryAfterSec).toBe(3600);
 });
+
+test('aborting the caller signal ends the call and frees its limiter slot', async () => {
+  store.putMmCred('u1', 'a1', 'r1');
+  api = (_access, req) => new Promise((_, fail) => req.signal.addEventListener('abort', () => fail(req.signal.reason)));
+  const ac = new AbortController();
+  const running = [1, 2, 3, 4].map(() => failure(client.call('u1', 'GET', '/users/me', undefined, ac.signal)));
+  expect(await failure(client.call('u1', 'GET', '/users/me'))).toBeInstanceOf(RateLimited);
+  ac.abort();
+  for (const e of await Promise.all(running)) expect(e).toBeInstanceOf(UpstreamUnavailable);
+  api = () => Response.json({ ok: true });
+  expect(await client.call('u1', 'GET', '/users/me')).toEqual({ ok: true });
+});

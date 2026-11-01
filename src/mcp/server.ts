@@ -4,6 +4,8 @@ import type { Config } from '../config.ts';
 import { log } from '../log.ts';
 import { MmError, RateLimited, Reauthorize, UpstreamUnavailable, type MmClient } from '../mattermost/client.ts';
 import type { Store } from '../store.ts';
+import { InputError } from './format.ts';
+import { registerReadTools } from './tools-read.ts';
 
 export type ToolContext = { mm: MmClient; mmUserId: string; cfg: Config; store: Store };
 
@@ -11,6 +13,7 @@ export const text = (t: string, isError = false): CallToolResult => ({ content: 
 
 // SDK's Streamable HTTP has already committed 200 by the time a tool runs, so failures surface as tool results.
 function failure(e: unknown): { outcome: string; result: CallToolResult } {
+  if (e instanceof InputError) return { outcome: 'input_error', result: text(e.message, true) };
   if (e instanceof Reauthorize) {
     return { outcome: 'reauthorize', result: text('Mattermost への再ログインが必要です。コネクタを再接続してください。', true) };
   }
@@ -47,12 +50,6 @@ export function guarded<A extends unknown[]>(ctx: ToolContext, tool: string, fn:
 
 export function buildServer(ctx: ToolContext): McpServer {
   const server = new McpServer({ name: 'mattermost-mcp', version: '0.1.0' });
-  server.registerTool('whoami', {
-    description: 'Returns the Mattermost user this connection acts as.',
-    annotations: { readOnlyHint: true },
-  }, guarded(ctx, 'whoami', async () => {
-    const me = await ctx.mm.call<{ id: string; username: string }>(ctx.mmUserId, 'GET', '/users/me');
-    return text(`username: ${me.username}\nuser_id: ${me.id}`);
-  }));
+  registerReadTools(server, ctx);
   return server;
 }

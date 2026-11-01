@@ -1,3 +1,4 @@
+import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import { afterEach, beforeEach, expect, test, vi } from 'vitest';
 import { makeApp } from './helpers.ts';
 
@@ -10,7 +11,7 @@ const INIT = {
   params: { protocolVersion: '2025-11-25', capabilities: {}, clientInfo: { name: 't', version: '0' } },
 };
 const LIST = { jsonrpc: '2.0', id: 2, method: 'tools/list', params: {} };
-const WHOAMI = { jsonrpc: '2.0', id: 3, method: 'tools/call', params: { name: 'whoami', arguments: {} } };
+const GET_USER = { jsonrpc: '2.0', id: 3, method: 'tools/call', params: { name: 'get_user', arguments: { user: '@alice' } } };
 
 type Mm = (req: Request) => Response | Promise<Response>;
 let mm: Mm;
@@ -81,12 +82,12 @@ test('initialize and tools/list over Streamable HTTP with a valid token return a
   const list = await s.rpc(LIST);
   expect(list.status).toBe(200);
   expect(list.headers['content-type']).toMatch(/^application\/json/);
-  expect(list.body.result.tools.map((t: { name: string }) => t.name)).toContain('whoami');
+  expect(list.body.result.tools.map((t: { name: string }) => t.name)).toContain('get_user');
 
-  const who = await s.rpc(WHOAMI);
+  const who = await s.rpc(GET_USER);
   expect(who.body.result.isError).toBeFalsy();
   expect(who.body.result.content[0].text).toContain('alice');
-  expect(logged()).toMatch(/"mm_user_id":"u1","tool":"whoami","outcome":"ok","ms":\d+.*"event":"tool_call"/);
+  expect(logged()).toMatch(/"mm_user_id":"u1","tool":"get_user","outcome":"ok","ms":\d+.*"event":"tool_call"/);
 
   for (const method of ['get', 'delete'] as const) {
     const r = await s.req[method]('/mcp').set('authorization', `Bearer ${s.token}`);
@@ -105,10 +106,10 @@ test('after Reauthorize in a tool call, the next request gets 401 invalid_token'
   mm = (req) => req.url.endsWith('/oauth/access_token')
     ? Response.json({ id: 'api.oauth.get_access_token.refresh_token.app_error' }, { status: 404 })
     : Response.json({ id: 'api.context.session_expired.app_error' }, { status: 401 });
-  const who = await s.rpc(WHOAMI);
+  const who = await s.rpc(GET_USER);
   expect(who.status).toBe(200);
   expect(who.body.result).toMatchObject({ isError: true, content: [{ type: 'text', text: RELOGIN_TEXT }] });
-  expect(logged()).toMatch(/"tool":"whoami","outcome":"reauthorize"/);
+  expect(logged()).toMatch(/"tool":"get_user","outcome":"reauthorize"/);
 
   const next = await s.rpc(LIST);
   expect(next.status).toBe(401);
@@ -125,7 +126,7 @@ test('other tool errors become isError results without tokens', async () => {
   ];
   for (const [impl, text, outcome] of cases) {
     mm = impl;
-    const r = await s.rpc(WHOAMI);
+    const r = await s.rpc(GET_USER);
     expect(r.status, outcome).toBe(200);
     expect(r.body.result.isError, outcome).toBe(true);
     expect(r.body.result.content[0].text, outcome).toMatch(text);
@@ -133,4 +134,29 @@ test('other tool errors become isError results without tokens', async () => {
   }
   const all = JSON.stringify(logged());
   for (const secret of [s.token, 'mm-access', 'mm-refresh']) expect(all).not.toContain(secret);
+});
+
+test('a client disconnect aborts the Mattermost request of the running tool', async () => {
+  const s = setup();
+  let signal: AbortSignal | undefined;
+  mm = (req) => {
+    signal = req.signal;
+    return new Promise((_, fail) => req.signal.addEventListener('abort', () => fail(req.signal.reason)));
+  };
+  await expect(s.rpc(GET_USER).timeout(200)).rejects.toThrow(/Timeout/);
+  await vi.waitFor(() => expect(signal?.aborted).toBe(true));
+  await vi.waitFor(() => expect(logged()).toMatch(/"tool":"get_user","outcome":"upstream_unavailable"/));
+});
+
+test('an error after the response has started is logged by name only and ends the response', async () => {
+  const s = setup();
+  vi.spyOn(StreamableHTTPServerTransport.prototype, 'handleRequest').mockImplementation(async (_req, res) => {
+    res.writeHead(200, { 'content-type': 'application/json' }).write('{');
+    throw new TypeError('SECRET-DETAIL');
+  });
+  const r = await s.rpc(INIT).buffer(true).parse((res, done) => { let b = ''; res.on('data', (c) => { b += c; }); res.on('end', () => done(null, b)); });
+  expect(r.status).toBe(200);
+  expect(r.body).toBe('{');
+  expect(logged()).toMatch(/"name":"TypeError".*"event":"unhandled_error"/);
+  expect(logged()).not.toContain('SECRET-DETAIL');
 });

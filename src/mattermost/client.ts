@@ -30,7 +30,7 @@ export class MmError extends Error {
 
 type Cred = { access: string; refresh: string; version: number };
 type Refreshed = MmTokens & { saved: boolean };
-type Attempt = { sent: boolean; requests: number; deadline: number };
+type Attempt = { sent: boolean; requests: number; deadline: number; signal?: AbortSignal };
 type Send = (access: string) => Promise<Response>;
 // res is undefined when Mattermost answered nothing usable for this pair (invalid_grant, or revoked meanwhile).
 type Outcome = { res?: Response; used: number };
@@ -67,17 +67,17 @@ export class MmClient {
     this.deps = deps;
   }
 
-  async call<T>(mmUserId: string, method: string, path: string, body?: unknown): Promise<T> {
+  async call<T>(mmUserId: string, method: string, path: string, body?: unknown, signal?: AbortSignal): Promise<T> {
     const release = this.limiter.acquire(mmUserId);
     try {
-      return await this.run<T>(mmUserId, method, path, body);
+      return await this.run<T>(mmUserId, method, path, body, signal);
     } finally {
       release();
     }
   }
 
-  private async run<T>(mmUserId: string, method: string, path: string, body: unknown): Promise<T> {
-    const at: Attempt = { sent: false, requests: 0, deadline: this.deps.now() + CALL_DEADLINE_MS };
+  private async run<T>(mmUserId: string, method: string, path: string, body: unknown, signal: AbortSignal | undefined): Promise<T> {
+    const at: Attempt = { sent: false, requests: 0, deadline: this.deps.now() + CALL_DEADLINE_MS, signal };
     const send: Send = (access) => this.send(at, mmUserId, access, method, path, body);
     const cred = this.store.getMmCred(mmUserId);
     if (!cred) this.reauthorize(mmUserId, at);
@@ -193,7 +193,7 @@ export class MmClient {
         body: body === undefined ? undefined : JSON.stringify(body),
         // Not following redirects keeps the bearer token from being sent anywhere but MM_URL.
         redirect: 'manual',
-        signal: AbortSignal.timeout(Math.min(TIMEOUT_MS, ms)),
+        signal: AbortSignal.any([AbortSignal.timeout(Math.min(TIMEOUT_MS, ms)), ...(at.signal ? [at.signal] : [])]),
       });
     } catch (e) {
       // A timeout or reset may have reached Mattermost, so only failures before connecting count as unsent.

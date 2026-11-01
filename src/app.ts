@@ -41,8 +41,12 @@ export function createApp(ctx: AppContext): express.Express {
   // Stateless with no notifications: there is no SSE stream to open (GET) and no session to end (DELETE).
   app.all('/mcp', ...guard, (_req, res) => { res.set('Allow', 'POST').status(405).json({ error: 'method_not_allowed' }); });
   // Only the error's name and code are logged: messages from parsers and the DB can embed request data.
-  app.use(((err, _req, res, next) => {
-    if (res.headersSent) return next(err);
+  app.use(((err, _req, res, _next) => {
+    // Not handing off to express's default handler: it prints the stack, and a partly sent response cannot take a JSON error.
+    if (res.headersSent) {
+      log('unhandled_error', { name: err?.name });
+      return res.end();
+    }
     const status = err?.status ?? err?.statusCode;
     if (Number.isInteger(status) && status >= 400 && status < 500) {
       log('request_rejected', { name: err?.name, type: err?.type, status });
