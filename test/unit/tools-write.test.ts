@@ -376,6 +376,28 @@ describe('edit_message and delete_message', () => {
       expect(sent()).toBe(2);
     });
 
+    test.each([
+      ['the post lookup', GET_POST],
+      ['DELETE', DELETE],
+    ])('after a retried delete_message gets 404 from %s because the first DELETE went through, sending the same body again posts it', async (_, route) => {
+      serve(mine(), { [POSTS]: () => mine(), [route]: mmError(404, 'app.post.get.app_error') });
+      const s = setup();
+      expect((await send(s, 'old')).isError).toBe(false);
+      expect((await del(s)).isError).toBe(true);
+      const r = await send(s, 'old');
+      expect(r.text).toContain('投稿しました');
+      expect(sent()).toBe(2);
+    });
+
+    test('a refused delete_message keeps send_message\'s duplicate guard, since the post is still there', async () => {
+      serve(mine(), { [POSTS]: () => mine(), [DELETE]: mmError(400, 'api.post.delete_post.can_not_delete_post_in_deleted.error') });
+      const s = setup();
+      expect((await send(s, 'old')).isError).toBe(false);
+      expect((await del(s)).isError).toBe(true);
+      expect((await send(s, 'old')).text).toContain('同じ本文を直前に投稿済み');
+      expect(sent()).toBe(1);
+    });
+
     test('after edit_message, sending the original body again posts it', async () => {
       serve(mine(), { [POSTS]: () => mine() });
       const s = setup();
