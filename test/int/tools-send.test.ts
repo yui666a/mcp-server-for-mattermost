@@ -1,4 +1,6 @@
 import { randomBytes } from 'node:crypto';
+import { sha256 } from '../../src/crypto.ts';
+import type { Store } from '../../src/store.ts';
 import type request from 'supertest';
 import { afterAll, beforeAll, describe, expect, test, vi } from 'vitest';
 import { env, intApp, mcpAuthorize, mmAvailable, mmDeauthorize, mmLoginCookie } from './helpers.ts';
@@ -25,6 +27,8 @@ describe.skipIf(!up)('send_message against the local Mattermost', () => {
   let access: string;
   let aliceMm: string;
   let channel: { id: string; name: string };
+  let store: Store;
+  let skew = 0;
 
   const call = async (args: Record<string, unknown>): Promise<Result> => {
     const r = await req.post('/mcp')
@@ -39,8 +43,9 @@ describe.skipIf(!up)('send_message against the local Mattermost', () => {
 
   beforeAll(async () => {
     vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
-    const app = intApp();
+    const app = intApp({}, () => Date.now() + skew);
     req = app.req;
+    store = app.store;
     const mmCookie = await mmLoginCookie(e.users.alice);
     await mmDeauthorize(mmCookie, e.oauth.clientId);
     const { clientId, code, verifier } = await mcpAuthorize(req, app.config.resource, mmCookie, REDIRECT);
@@ -75,6 +80,39 @@ describe.skipIf(!up)('send_message against the local Mattermost', () => {
     expect(found).toHaveLength(1);
     expect(second.content[0].text).toContain(found[0].id);
     expect(second.content[0].text).toContain('投稿していません');
+  });
+
+  const lostFirstAttempt = async (message: string, rootId?: string) => {
+    skew = -60_000;
+    try {
+      store.claimPost({ mmUserId: e.users.alice.id, channelId: channel.id, rootId, bodyHash: sha256(message) });
+    } finally {
+      skew = 0;
+    }
+    return mmApi<Post>(aliceMm, 'POST', '/posts', { channel_id: channel.id, message, ...(rootId ? { root_id: rootId } : {}) });
+  };
+
+  test('a retry after a lost response returns the post that already exists', async () => {
+    const message = `${TAG} lost`;
+    const prev = await lostFirstAttempt(message);
+    const r = await call({ channel: channel.id, message });
+    expect(r.isError).toBeFalsy();
+    expect(r.content[0].text).toContain(`post_id: ${prev.id}`);
+    expect(r.content[0].text).toContain('既にあったため');
+    expect(await messages(message)).toHaveLength(1);
+  });
+
+  test('a retried thread reply after a lost response returns the reply that already exists', async () => {
+    const root = await mmApi<Post>(aliceMm, 'POST', '/posts', { channel_id: channel.id, message: `${TAG} lost root` });
+    const message = `${TAG} lost reply`;
+    const prev = await lostFirstAttempt(message, root.id);
+    const r = await call({ channel: channel.id, message, root_id: root.id });
+    expect(r.isError).toBeFalsy();
+    expect(r.content[0].text).toContain(`post_id: ${prev.id}`);
+    expect(r.content[0].text).toContain('既にあったため');
+    const found = await messages(message);
+    expect(found).toHaveLength(1);
+    expect(found[0].root_id).toBe(root.id);
   });
 
   test('ambiguous channel name is rejected without posting', async () => {
