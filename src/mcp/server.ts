@@ -6,6 +6,7 @@ import { MmError, RateLimited, Reauthorize, UpstreamUnavailable, type MmClient }
 import type { Store } from '../store.ts';
 import { InputError } from './format.ts';
 import { registerReadTools } from './tools-read.ts';
+import { registerSendTools } from './tools-send.ts';
 
 export type ToolContext = { mm: MmClient; mmUserId: string; cfg: Config; store: Store };
 
@@ -51,5 +52,6 @@ export function guarded<A extends unknown[]>(ctx: ToolContext, tool: string, fn:
 export function buildServer(ctx: ToolContext): McpServer {
   const server = new McpServer({ name: 'mattermost-mcp', version: '0.1.0' });
   registerReadTools(server, ctx);
+  registerSendTools(server, ctx);
   return server;
 }
