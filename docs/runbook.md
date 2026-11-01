@@ -52,7 +52,7 @@
 
 ## クライアント互換性
 
-ローカルの Mattermost の前に一時的な HTTPS トンネルを置き、`/mcp` を公開して 3 つのクライアントからつないだ。`ACCESS_TOKEN_TTL_SEC=120` にして、`whoami` を 2 分以上空けて 2 回呼び、リフレッシュも確かめた。どれも 2 回とも成功した（2026-11-01）。
+MCP サーバーの前に一時的な HTTPS トンネルを置いて `/mcp` を公開し、3 つのクライアントからつないだ。`ACCESS_TOKEN_TTL_SEC=120` にして `whoami` を 2 分以上空けて 2 回呼び、リフレッシュ後の呼び出しも確かめた。どれも 2 回とも成功した（2026-11-01）。
 
 | クライアント | 登録（DCR）の `redirect_uris` | 認可要求 | コード交換 | リフレッシュ |
 |---|---|---|---|---|
@@ -61,6 +61,8 @@
 | claude.ai | `https://claude.ai/api/mcp/auth_callback` | `resource`、`scope=mattermost`、S256 | `resource` あり | `resource` あり、`scope` なし |
 
 - どのクライアントも、パスを挟んだ形のメタデータ（`/.well-known/oauth-protected-resource/mcp`、`/.well-known/oauth-authorization-server/mcp`）を見つけ、`token_endpoint_auth_method=none` で登録した。
-- Claude Code と claude.ai は、`initialize` の前に `server/discover` を送る。サーバーはこれを 400 で返し、クライアントはそのまま `initialize` に進む。
-- Claude Code は、期限が近いアクセストークンを使う前にリフレッシュする。有効期限が 120 秒だと要求のたびにリフレッシュし、1 秒のうちに 5 回続いた。どれも直前に受け取ったリフレッシュトークンを使うので、再利用の検知には当たらない。本番の 3600 秒では起きない。
-- claude.ai は、要求のたびに `initialize` を送るとは限らない。stateless なので問題ない。
+- claude.ai は 1 回の接続で DCR を 2 回送った。使われない client の登録が残る。
+- Codex は、認証なしの要求が 401 になってからリフレッシュする。Claude Code と claude.ai は、期限が近いアクセストークンを使う前にリフレッシュする。
+- Claude Code は有効期限が 120 秒だと要求のたびにリフレッシュし、約 1 秒のうちに 5 回続いた。5 回は直列で、どれも 200 だった。同じリフレッシュトークンを並行して送る挙動は観測していない。送られた場合は再利用として grant が取り消され、再ログインになる。
+- Claude Code と claude.ai は、認証のあと `server/discover` を送る。サーバーは 400 を返し、クライアントはそのまま次の要求に進んだ。
+- claude.ai は、`initialize` を送らずに `tools/call` を送ることがある。サーバーは stateless なので、この要求も処理できる。
