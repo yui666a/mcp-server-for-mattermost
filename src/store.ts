@@ -256,13 +256,15 @@ export class Store {
     });
   }
 
+  // Not throwing when the row cannot be opened (TOKEN_ENC_KEY changed): absent sends callers down the re-login path.
   getMmCred(mmUserId: string): { access: string; refresh: string; version: number } | undefined {
     const r = this.get('SELECT * FROM mm_creds WHERE mm_user_id = ?', mmUserId);
-    return r && {
-      access: open(this.encKey, r.access_sealed),
-      refresh: open(this.encKey, r.refresh_sealed),
-      version: r.version,
-    };
+    if (!r) return undefined;
+    try {
+      return { access: open(this.encKey, r.access_sealed), refresh: open(this.encKey, r.refresh_sealed), version: r.version };
+    } catch {
+      return undefined;
+    }
   }
 
   // A fresh row starts its version at the current time rather than 1, so a CAS held from before revokeUser
