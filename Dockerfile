@@ -1,4 +1,4 @@
-FROM node:26-slim
+FROM node:26.13.0-slim
 WORKDIR /app
 COPY package.json package-lock.json ./
 RUN npm ci --omit=dev && npm cache clean --force

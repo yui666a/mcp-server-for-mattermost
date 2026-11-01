@@ -1,6 +1,6 @@
 diff -ruN a/compose/docker-compose.yml b/compose/docker-compose.yml
---- a/compose/docker-compose.yml	2026-11-01 14:34:26
-+++ b/compose/docker-compose.yml	2026-11-01 14:34:26
+--- a/compose/docker-compose.yml	2026-11-01 14:40:22
++++ b/compose/docker-compose.yml	2026-11-01 14:40:22
 @@ -48,3 +48,41 @@
        - /srv/certs/fullchain.pem:/cert.pem:ro
        - /srv/certs/privkey.pem:/key.pem:ro
@@ -44,8 +44,8 @@ diff -ruN a/compose/docker-compose.yml b/compose/docker-compose.yml
 +networks:
 +  mcp_net: {}
 diff -ruN a/compose/env.example b/compose/env.example
---- a/compose/env.example	2026-11-01 14:34:26
-+++ b/compose/env.example	2026-11-01 14:34:26
+--- a/compose/env.example	2026-11-01 14:40:22
++++ b/compose/env.example	2026-11-01 14:40:22
 @@ -13,3 +13,10 @@
  # SQL と接続 URL でエスケープしない前提のため、記号を含めてはいけない。
  POSTGRES_PASSWORD=
@@ -58,10 +58,11 @@ diff -ruN a/compose/env.example b/compose/env.example
 +# 32 バイトの鍵を base64 で（openssl rand -base64 32）。
 +TOKEN_ENC_KEY=
 diff -ruN a/nginx/mattermost.conf b/nginx/mattermost.conf
---- a/nginx/mattermost.conf	2026-11-01 14:34:26
-+++ b/nginx/mattermost.conf	2026-11-01 14:34:26
+--- a/nginx/mattermost.conf	2026-11-01 14:40:22
++++ b/nginx/mattermost.conf	2026-11-01 14:40:22
 @@ -1,6 +1,7 @@
- # location は公式 mattermost/docker の nginx/conf.d/default.conf と同一。
+-# location は公式 mattermost/docker の nginx/conf.d/default.conf と同一。
++# Mattermost 向けの location は公式 mattermost/docker の nginx/conf.d/default.conf と同一（Early-Data ヘッダーは除く）。MCP 向けの location はこのリポジトリ独自。
  # dhparam と OCSP stapling は採用しない（証明書は Let's Encrypt 発行で TLS1.2+ のみ許可するため不要）。
  proxy_cache_path /var/cache/nginx levels=1:2 keys_zone=mattermost_cache:10m max_size=3g inactive=120m use_temp_path=off;
 +limit_req_zone $binary_remote_addr zone=mcp_oauth:10m rate=60r/m;
@@ -76,7 +77,7 @@ diff -ruN a/nginx/mattermost.conf b/nginx/mattermost.conf
  
      ssl_certificate /cert.pem;
      ssl_certificate_key /key.pem;
-@@ -35,10 +37,73 @@
+@@ -35,10 +37,75 @@
      ssl_session_timeout 1d;
      ssl_session_cache shared:MozSSL:10m;
      ssl_session_tickets off;
@@ -114,8 +115,10 @@ diff -ruN a/nginx/mattermost.conf b/nginx/mattermost.conf
 +        proxy_pass $mcp_upstream;
 +
 +        # proxy_pass は入れ子の location に継承されないため繰り返す
-+        location ~ ^/mcp/oauth/(register|authorize|consent|callback|token)$ {
++        # Express はパスの大文字小文字と末尾のスラッシュを区別しないため、エンドポイント名の完全一致では枠を外れる変形が通る
++        location ~* ^/mcp/oauth/ {
 +            limit_req zone=mcp_oauth burst=30 nodelay;
++            limit_req_status 429;
 +            proxy_pass $mcp_upstream;
 +        }
 +    }
@@ -151,7 +154,7 @@ diff -ruN a/nginx/mattermost.conf b/nginx/mattermost.conf
      location ~ /api/v[0-9]+/(users/)?websocket$ {
          proxy_set_header Upgrade $http_upgrade;
          proxy_set_header Connection "upgrade";
-@@ -48,7 +113,6 @@
+@@ -48,7 +115,6 @@
          proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
          proxy_set_header X-Forwarded-Proto $scheme;
          proxy_set_header X-Frame-Options SAMEORIGIN;
@@ -159,7 +162,7 @@ diff -ruN a/nginx/mattermost.conf b/nginx/mattermost.conf
          proxy_buffers 256 16k;
          proxy_buffer_size 16k;
          client_body_timeout 60;
-@@ -69,7 +133,6 @@
+@@ -69,7 +135,6 @@
          proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
          proxy_set_header X-Forwarded-Proto $scheme;
          proxy_set_header X-Frame-Options SAMEORIGIN;
@@ -169,8 +172,8 @@ diff -ruN a/nginx/mattermost.conf b/nginx/mattermost.conf
          proxy_read_timeout 600s;
 diff -ruN a/tests/nginx-mcp.test.sh b/tests/nginx-mcp.test.sh
 --- a/tests/nginx-mcp.test.sh	1970-01-01 09:00:00
-+++ b/tests/nginx-mcp.test.sh	2026-11-01 14:34:26
-@@ -0,0 +1,107 @@
++++ b/tests/nginx-mcp.test.sh	2026-11-01 14:40:22
+@@ -0,0 +1,122 @@
 +#!/usr/bin/env bash
 +# shellcheck disable=SC2329  # test_* は declare -F 経由で呼ぶ
 +# Docker が要る。本物の compose/docker-compose.yml と nginx/mattermost.conf を使い、mattermost と mcp だけを
@@ -262,12 +265,27 @@ diff -ruN a/tests/nginx-mcp.test.sh b/tests/nginx-mcp.test.sh
 +}
 +
 +# 他のテストが 127.0.0.1 から送る分と枠を分けるため、mattermost のスタブから nginx へ送る。
-+test_register_burst_is_rate_limited() {
++# 枠は全パスで共有なので、2 回目以降の連射は 200 を含まないことがある。429 が混じり、200 と 429 以外がないことだけを見る。
++burst_is_limited() {
 +  local args=() codes
-+  for _ in $(seq 40); do args+=(-o /dev/null https://nginx/mcp/oauth/register); done
++  for _ in $(seq 40); do args+=(-o /dev/null "https://nginx$1"); done
 +  codes=$(dc exec -T mattermost curl -sk -w '%{http_code}\n' "${args[@]}")
-+  if grep -qx 503 <<<"$codes" && grep -qx 200 <<<"$codes"; then return 0; fi
-+  echo "  codes: $(sort <<<"$codes" | uniq -c | tr '\n' ' ')"; return 1
++  if grep -qx 429 <<<"$codes" && ! grep -qvxE '200|429' <<<"$codes"; then return 0; fi
++  echo "  $1 codes: $(sort <<<"$codes" | uniq -c | tr '\n' ' ')"; return 1
++}
++
++test_register_burst_is_rate_limited() {
++  burst_is_limited /mcp/oauth/register
++}
++
++# Express はパスの大文字小文字と末尾のスラッシュを区別しないため、その変形でも枠を逃れられないこと
++test_oauth_path_variants_are_rate_limited() {
++  local p ok=0
++  for p in /mcp/oauth/register/ /mcp/oauth/REGISTER /mcp/OAUTH/register /mcp/oauth/Token; do
++    eq "$(req "$p")" "mcp $p" || ok=1
++    burst_is_limited "$p" || ok=1
++  done
++  return "$ok"
 +}
 +
 +dc up -d --no-deps nginx mattermost mcp >"$work/up.log" 2>&1 || { cat "$work/up.log"; exit 1; }
