@@ -33,7 +33,7 @@ export async function requireMm(): Promise<Env> {
     if (res.ok) return e;
     throw new Error(`ping returned ${res.status}`);
   } catch (cause) {
-    throw new Error('The local Mattermost is not reachable (or dev/.state.json is missing). Run `npm run dev:up` first.', { cause });
+    throw new Error('The local Mattermost is not reachable (or dev/.state.json is missing). Run `pnpm dev:up` first.', { cause });
   }
 }
 

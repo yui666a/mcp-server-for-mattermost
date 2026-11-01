@@ -1,4 +1,4 @@
-# 起動は npm run dev:up（dev/compose.sh が MATTERMOST_IMAGE_TAG を環境変数、../mattermost-infra/compose/.env、env.example の順で解決する）。
+# 起動は pnpm dev:up（dev/compose.sh が MATTERMOST_IMAGE_TAG を環境変数、../mattermost-infra/compose/.env、env.example の順で解決する）。
 name: mcp-dev
 
 services:
