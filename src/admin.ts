@@ -1,3 +1,4 @@
+import { existsSync } from 'node:fs';
 import type { DatabaseSync } from 'node:sqlite';
 import { openDb } from './db.ts';
 import { Store } from './store.ts';
@@ -40,8 +41,14 @@ export function runAdmin(argv: string[], db: DatabaseSync, io: Io): number {
 }
 
 if (import.meta.main) {
-  process.exitCode = runAdmin(process.argv.slice(2), openDb(process.env.DB_PATH || '/data/mcp.sqlite'), {
-    out: (s) => process.stdout.write(s),
-    err: (s) => process.stderr.write(s),
-  });
+  const io = { out: (s: string) => process.stdout.write(s), err: (s: string) => process.stderr.write(s) };
+  const path = process.env.DB_PATH || '/data/mcp.sqlite';
+  try {
+    // openDb would silently create an empty DB on a wrong path, making "purged 0 rows" look like success.
+    if (!existsSync(path)) throw new Error(`database not found: ${path}`);
+    process.exitCode = runAdmin(process.argv.slice(2), openDb(path), io);
+  } catch (e) {
+    io.err(`error: ${(e as Error).message}\n`);
+    process.exitCode = 1;
+  }
 }
