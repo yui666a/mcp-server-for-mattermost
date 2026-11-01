@@ -182,6 +182,7 @@ const draftSchema = {
 };
 type DraftArgs = { channel: string; message: string; root_id?: string; overwrite?: boolean };
 type Draft = { channel_id: string; root_id: string; message: string };
+const LEFT_BEHIND = 'この下書きを send_message で送っても下書きは消えず、残った下書きをそのまま送ると同じ投稿が 2 回になります。';
 const DISABLED: [number, string, string] = [501, 'api.drafts.disabled.app_error', 'このサーバーでは下書きの同期が無効です。'];
 
 // Refused rather than saved: with sync off the webapp neither loads the draft nor shows its own unsent text to the check below.
@@ -213,7 +214,7 @@ export async function saveDraft(mm: Mm, uid: string, args: DraftArgs): Promise<C
   const list = await worded(mm.call<Draft[] | null>(uid, 'GET', `/users/${uid}/teams/${teamId}/drafts`), { id: [DISABLED] });
   const where = `チャンネル: ${ch.displayName || ch.name}（channel_id: ${ch.id}）${rootId ? `、返信先 post_id: ${rootId}` : ''}`;
   const existing = (list ?? []).find((d) => d.channel_id === ch.id && (d.root_id || '') === rootId);
-  if (existing?.message === args.message) return text(`同じ下書きがあります。保存し直していません。\n${where}`);
+  if (existing?.message === args.message) return text(`同じ下書きがあります。保存し直していません。\n${where}\n${LEFT_BEHIND}`);
   if (existing && !args.overwrite) {
     const head = [...existing.message].slice(0, 200).join('');
     throw new InputError([
@@ -228,11 +229,12 @@ export async function saveDraft(mm: Mm, uid: string, args: DraftArgs): Promise<C
   });
   // Not claiming the input box for a reply: only channel drafts were checked in the webapp.
   return text(rootId
-    ? ['下書きとして保存しました。送信は本人が行ってください。', where].join('\n')
+    ? ['下書きとして保存しました。送信は本人が行ってください。', where, LEFT_BEHIND].join('\n')
     : [
       'Mattermost の下書きとして保存しました。そのチャンネルの入力欄に入っています。送信は本人が行ってください。',
       where,
       '保存したときにそのチャンネルを開いていた場合は、チャンネルを開き直してから編集してください。開き直さずに書くと、この下書きは置き換わります。',
+      LEFT_BEHIND,
     ].join('\n'));
 }
 
@@ -268,7 +270,7 @@ export function registerSendTools(server: McpServer, ctx: ToolContext): void {
   ) as unknown as ToolCallback<typeof deleteSchema>);
 
   server.registerTool('save_draft', {
-    description: '投稿せずに、本人の Mattermost の下書きとして保存する。送信は本人が画面で行う。root_id を渡すとスレッドへの返信の下書きになる。同じ投稿先に本文の違う下書きがあれば、overwrite: true が無い限り上書きしない。下書きの同期を切っている利用者には保存しない',
+    description: '投稿せずに、本人の Mattermost の下書きとして保存する。送信は本人が画面で行う。root_id を渡すとスレッドへの返信の下書きになる。同じ投稿先に本文の違う下書きがあれば、overwrite: true が無い限り上書きしない。下書きの同期を切っている利用者には保存しない。この下書きを send_message で送っても下書きは残り、本人がそれをそのまま送ると同じ投稿が 2 回になる',
     inputSchema: draftSchema,
     annotations: destructive,
   }, guarded(ctx, 'save_draft', async (args: DraftArgs, extra: { signal: AbortSignal }) => saveDraft(mmOf(extra.signal), ctx.mmUserId, args),
