@@ -333,6 +333,19 @@ describe('edit_message and delete_message', () => {
       expect(writes()).toEqual([DELETE]);
     });
 
+    test.each([
+      ['has no reply_count', { reply_count: undefined }],
+      ['has a non-numeric reply_count', { reply_count: '2' }],
+      ['has no root_id and no reply_count', { root_id: undefined, reply_count: undefined }],
+      ['has no root_id and replies', { root_id: undefined, reply_count: 1 }],
+    ])('refuses a post that %s, treating it as a thread root that may have replies, without sending DELETE', async (_, over) => {
+      serve(mine(over));
+      const r = await del(setup());
+      expect(r.isError).toBe(true);
+      expect(r.text).toContain('Mattermost の画面');
+      expect(hits).toEqual([GET_POST]);
+    });
+
     test('an archived channel is reported as such', async () => {
       serve(mine(), { [DELETE]: mmError(400, 'api.post.delete_post.can_not_delete_post_in_deleted.error') });
       const r = await del(setup());

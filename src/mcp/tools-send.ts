@@ -156,8 +156,9 @@ export async function editMessage(mm: Mm, uid: string, baseUrl: string, args: Ed
 export async function deleteMessage(mm: Mm, uid: string, args: { post_id: string }): Promise<CallToolResult> {
   const post = await ownPost(mm, uid, args.post_id);
   // Not using reply_count alone: Mattermost puts the whole thread's count on replies too, which would block deleting a reply.
+  // Not defaulting a missing reply_count to 0: the delete cannot be undone, so an unknown count is treated as having replies.
   // Not closing the race with a reply posted after this check: Mattermost has no conditional delete.
-  if (post.root_id === '' && (post.reply_count ?? 0) > 0) {
+  if (!post.root_id && post.reply_count !== 0) {
     throw new InputError('返信のあるスレッドの親投稿は消せません。消すとほかの人の返信も消えるためです。消す場合は Mattermost の画面から操作してください。');
   }
   const where = await whereOf(mm, uid, post);
