@@ -259,6 +259,64 @@ describe('read tools against the local Mattermost', () => {
     });
   });
 
+  describe('get_channel', () => {
+    let ch: { id: string; name: string };
+    let pins: string[];
+
+    beforeAll(async () => {
+      ch = await mmApi(aliceMm, 'POST', '/channels', {
+        team_id: e.teams.a.id, name: `t9-${TAG}`, display_name: `t9 ${TAG}`, type: 'O', purpose: `${TAG} purpose`, header: `${TAG} header`,
+      });
+      pins = [];
+      for (let i = 1; i <= 3; i++) {
+        const p = await mmApi<{ id: string }>(aliceMm, 'POST', '/posts', { channel_id: ch.id, message: `${TAG} pinned ${i}` });
+        await mmApi(aliceMm, 'POST', `/posts/${p.id}/pin`);
+        pins.unshift(p.id);
+      }
+    });
+
+    afterAll(async () => {
+      await mmApi(e.adminToken, 'DELETE', `/channels/${ch.id}`);
+    });
+
+    test('for a channel alice is in, shows the purpose, header, member count and pinned posts', async () => {
+      const r = await call('alice', 'get_channel', { channel: `${e.teams.a.name}/${ch.name}` });
+      expect(r.isError).toBeFalsy();
+      const t = r.content[0].text;
+      expect(t).toContain(`channel_id: ${ch.id}`);
+      expect(t).toContain(`team_id: ${e.teams.a.id}`);
+      expect(t).toContain('種類: 公開');
+      expect(t).toContain(`目的: ${TAG} purpose`);
+      expect(t).toContain(`ヘッダー: ${TAG} header`);
+      expect(t).toContain('メンバー数: 1');
+      expect(t).toContain('ピン留め: 3 件');
+      expect(postIds(r)).toEqual(pins);
+    });
+
+    test('for a public channel bob has not joined, says the member count is unavailable', async () => {
+      const r = await call('bob', 'get_channel', { channel: ch.id });
+      expect(r.isError).toBeFalsy();
+      expect(r.content[0].text).toContain('メンバー数: 参加していないため取得できません');
+      expect(r.content[0].text).toContain(`目的: ${TAG} purpose`);
+      expect(postIds(r)).toEqual(pins);
+    });
+
+    test('for the id of a private channel bob has not joined, says he has no permission', async () => {
+      const r = await call('bob', 'get_channel', { channel: e.teams.a.privateChannelId! });
+      expect(r.isError).toBe(true);
+      expect(r.content[0].text).toBe('このチャンネルを見る権限がありません（参加していない非公開チャンネルなど）');
+    });
+
+    test('pages through 3 pinned posts with pinned_limit 2', async () => {
+      const first = await call('alice', 'get_channel', { channel: ch.id, pinned_limit: 2 });
+      expect(postIds(first)).toEqual(pins.slice(0, 2));
+      const second = await call('alice', 'get_channel', { channel: ch.id, cursor: nextCursor(first) });
+      expect(second.isError).toBeFalsy();
+      expect(postIds(second)).toEqual(pins.slice(2));
+      expect(nextCursor(second)).toBeUndefined();
+    });
+  });
+
   test('Mattermost API calls per tool are counted by the limiter', async () => {
     const acquire = vi.spyOn(limiter, 'acquire');
     const charge = vi.spyOn(limiter, 'charge');

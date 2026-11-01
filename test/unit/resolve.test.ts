@@ -40,7 +40,7 @@ const routes = {
 
 test('resolve team/channel, bare name, @user DM, id', async () => {
   const { mm, calls } = fake(routes);
-  expect(await resolveChannel(mm, ME, CH_A)).toEqual({ id: CH_A, name: 'general-dup', displayName: 'GENERAL-DUP', teamId: teams[0].id, teamName: 'team-a' });
+  expect(await resolveChannel(mm, ME, CH_A)).toEqual({ id: CH_A, name: 'general-dup', displayName: 'GENERAL-DUP', teamId: teams[0].id, teamName: 'team-a', raw: routes[`/channels/${CH_A}`] });
   expect(await resolveChannel(mm, ME, 'team-b/general-dup')).toMatchObject({ id: CH_B, teamId: teams[1].id, teamName: 'team-b' });
   expect(await resolveChannel(mm, ME, 'only-a')).toMatchObject({ id: CH_A, name: 'only-a', teamName: 'team-a' });
   expect(await resolveChannel(mm, ME, '@bob')).toMatchObject({ id: DM, name: dmName, teamId: '', displayName: '@bob' });
@@ -81,4 +81,12 @@ test('names that are not plain Mattermost names are rejected before any request'
   }
   for (const spec of ['@..', '@.', '@a/b', '@']) await expect(resolveUser(mm, ME, spec), spec).rejects.toBeInstanceOf(InputError);
   expect(calls.filter((c) => !c.endsWith('/users/me/teams'))).toEqual([]);
+});
+
+test('every form of channel spec also returns the fetched channel as raw', async () => {
+  const { mm } = fake(routes);
+  expect((await resolveChannel(mm, ME, CH_A)).raw).toBe(routes[`/channels/${CH_A}`]);
+  expect((await resolveChannel(mm, ME, 'team-b/general-dup')).raw).toBe(routes['/teams/name/team-b/channels/name/general-dup']);
+  expect((await resolveChannel(mm, ME, 'only-a')).raw).toBe(routes[`/teams/${teams[0].id}/channels/name/only-a`]);
+  expect((await resolveChannel(mm, ME, '@bob')).raw).toBe(routes[`/teams/${teams[0].id}/channels/name/${dmName}`]);
 });
