@@ -579,6 +579,15 @@ describe('get_unreads', () => {
     expect(out.indexOf(`post_id: ${TH2}`)).toBeGreaterThan(out.indexOf(`channel_id: ${OLD}`));
   });
 
+  test('leaves out unread threads in channels that /users/me/channels does not list (archived ones) and does not count them', async () => {
+    routes = { ...base(), [`GET /users/u1/teams/${T2}/threads`]: () => threadPage([thread(TH2, ARCHIVED, 6000), thread(TH_DM, DM, 4000)]) };
+    const out = await setup()('get_unreads', {});
+    expect(out).not.toContain(TH2);
+    expect(out).not.toContain(ARCHIVED);
+    expect(order(out).slice(-2)).toEqual([TH1, TH_DM]);
+    expect(out).toContain('未読のあるチャンネル: 4 件、未読のスレッド: 2 件');
+  });
+
   test('follows a team\'s unread threads with before= for at most 4 pages, then says it stopped and gives total_unread_threads', async () => {
     let n = 0;
     const full = () => threadPage(Array.from({ length: 50 }, () => thread(`t${String(n++).padStart(25, '0')}`, OLD, 5000)), 321);

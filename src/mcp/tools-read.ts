@@ -374,7 +374,8 @@ export function registerReadTools(server: McpServer, ctx: ToolContext): void {
               const q = new URLSearchParams({ unread: 'true', per_page: String(THREAD_PAGE), ...(i ? { excludeDirect: 'true' } : {}), ...(before ? { before } : {}) });
               const r = await mm.call<ThreadList>(uid, 'GET', `/users/${uid}/teams/${t.id}/threads?${q}`);
               const got = r.threads ?? [];
-              for (const x of got) if (!threads.has(x.id)) threads.set(x.id, { ...x, teamName: t.name });
+              // Not keeping threads the threads API returns for archived channels: the channel list leaves those channels out, and nothing can mark such a thread read.
+              for (const x of got) if (channels.has(x.post.channel_id) && !threads.has(x.id)) threads.set(x.id, { ...x, teamName: t.name });
               if (got.length < THREAD_PAGE) break;
               if (n === THREAD_PAGES) {
                 notes.push(`（${t.name} の未読スレッドは ${THREAD_PAGE * THREAD_PAGES} 件までしか取得していません（total_unread_threads: ${r.total_unread_threads}））`);
