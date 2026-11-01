@@ -221,6 +221,19 @@ test('claimPost: dropped claims can be retaken and claims expire after 600s', ()
   expect(store.claimPost(k).kind).toBe('new');
 });
 
+test('forgetPost removes only the given user\'s claim on that post, so the same body can be posted again', () => {
+  const k = { mmUserId: 'u1', channelId: 'ch', bodyHash: 'h' };
+  for (const [uid, postId] of [['u1', 'p1'], ['u1', 'p2'], ['u2', 'p1']]) {
+    const c = store.claimPost({ ...k, mmUserId: uid, bodyHash: postId });
+    if (c.kind !== 'new') throw new Error();
+    store.completePost(c.id, postId);
+  }
+  store.forgetPost('u1', 'p1');
+  expect(store.claimPost({ ...k, bodyHash: 'p1' }).kind).toBe('new');
+  expect(store.claimPost({ ...k, bodyHash: 'p2' })).toEqual({ kind: 'done', postId: 'p2' });
+  expect(store.claimPost({ ...k, mmUserId: 'u2', bodyHash: 'p1' })).toEqual({ kind: 'done', postId: 'p1' });
+});
+
 test('purgeCredentials keeps clients', () => {
   const c = store.createClient(meta);
   grant();

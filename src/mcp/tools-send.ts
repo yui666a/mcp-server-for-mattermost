@@ -140,7 +140,7 @@ const editSchema = {
 };
 type EditArgs = { post_id: string; message: string };
 
-export async function editMessage(mm: Mm, uid: string, baseUrl: string, args: EditArgs): Promise<CallToolResult> {
+export async function editMessage(mm: Mm, store: Store, uid: string, baseUrl: string, args: EditArgs): Promise<CallToolResult> {
   if (!args.message.trim()) throw new InputError('本文が空白だけです。投稿を消したいときは delete_message を使ってください。');
   const where = await whereOf(mm, uid, await ownPost(mm, uid, args.post_id));
   // Not PUT /posts/{id}: it clears is_pinned when the field is left out.
@@ -150,10 +150,11 @@ export async function editMessage(mm: Mm, uid: string, baseUrl: string, args: Ed
       [400, 'api.post.patch_post.can_not_update_post_in_deleted.error', 'アーカイブ済みのチャンネルの投稿は編集できません。'],
     ],
   });
+  store.forgetPost(uid, args.post_id);
   return text(['編集しました。編集で足したメンションは通知されません。', `post_id: ${args.post_id}`, where.line, `${baseUrl}/${where.teamName}/pl/${args.post_id}`].join('\n'));
 }
 
-export async function deleteMessage(mm: Mm, uid: string, args: { post_id: string }): Promise<CallToolResult> {
+export async function deleteMessage(mm: Mm, store: Store, uid: string, args: { post_id: string }): Promise<CallToolResult> {
   const post = await ownPost(mm, uid, args.post_id);
   // Not using reply_count alone: Mattermost puts the whole thread's count on replies too, which would block deleting a reply.
   // Not defaulting a missing reply_count to 0: the delete cannot be undone, so an unknown count is treated as having replies.
@@ -168,6 +169,7 @@ export async function deleteMessage(mm: Mm, uid: string, args: { post_id: string
       [400, 'api.post.delete_post.can_not_delete_post_in_deleted.error', 'アーカイブ済みのチャンネルの投稿は削除できません。'],
     ],
   });
+  store.forgetPost(uid, args.post_id);
   return text(['削除しました。', `post_id: ${args.post_id}`, where.line].join('\n'));
 }
 
@@ -255,14 +257,14 @@ export function registerSendTools(server: McpServer, ctx: ToolContext): void {
     description: '本人の投稿の本文を書き換える。他人、webhook、Bot の投稿とシステムメッセージは扱わない。元の本文は上書きされる。編集で足したメンションは通知されない',
     inputSchema: editSchema,
     annotations: destructive,
-  }, guarded(ctx, 'edit_message', async (args: EditArgs, extra: { signal: AbortSignal }) => editMessage(mmOf(extra.signal), ctx.mmUserId, ctx.cfg.mmBrowserUrl, args),
+  }, guarded(ctx, 'edit_message', async (args: EditArgs, extra: { signal: AbortSignal }) => editMessage(mmOf(extra.signal), ctx.store, ctx.mmUserId, ctx.cfg.mmBrowserUrl, args),
   ) as unknown as ToolCallback<typeof editSchema>);
   const deleteSchema = { post_id: POST_ID.describe('削除する、本人の投稿の post_id') };
   server.registerTool('delete_message', {
     description: '本人の投稿を削除する。削除は取り消せない。実行の前に利用者に確認すること。他人、webhook、Bot の投稿とシステムメッセージ、返信のあるスレッドの親投稿は消さない',
     inputSchema: deleteSchema,
     annotations: destructive,
-  }, guarded(ctx, 'delete_message', async (args: { post_id: string }, extra: { signal: AbortSignal }) => deleteMessage(mmOf(extra.signal), ctx.mmUserId, args),
+  }, guarded(ctx, 'delete_message', async (args: { post_id: string }, extra: { signal: AbortSignal }) => deleteMessage(mmOf(extra.signal), ctx.store, ctx.mmUserId, args),
   ) as unknown as ToolCallback<typeof deleteSchema>);
 
   server.registerTool('save_draft', {

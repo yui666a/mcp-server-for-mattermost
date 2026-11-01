@@ -361,6 +361,32 @@ describe('edit_message and delete_message', () => {
     });
   });
 
+  describe('send_message\'s duplicate guard no longer treats the post as already sent', () => {
+    const send = (s: ReturnType<typeof setup>, message: string) => s.call('send_message', { channel: CH, message });
+    const POSTS = 'POST /posts';
+    const sent = () => hits.filter((h) => h === POSTS).length;
+
+    test('after delete_message, sending the same body again posts it', async () => {
+      serve(mine(), { [POSTS]: () => mine() });
+      const s = setup();
+      expect((await send(s, 'old')).isError).toBe(false);
+      expect((await del(s)).isError).toBe(false);
+      const r = await send(s, 'old');
+      expect(r.text).toContain('投稿しました');
+      expect(sent()).toBe(2);
+    });
+
+    test('after edit_message, sending the original body again posts it', async () => {
+      serve(mine(), { [POSTS]: () => mine() });
+      const s = setup();
+      expect((await send(s, 'old')).isError).toBe(false);
+      expect((await edit(s)).isError).toBe(false);
+      const r = await send(s, 'old');
+      expect(r.text).toContain('投稿しました');
+      expect(sent()).toBe(2);
+    });
+  });
+
   test('both are marked destructive and idempotent, and delete_message tells the client to confirm with the user', async () => {
     const list = await setup().tools();
     for (const name of ['edit_message', 'delete_message']) {
