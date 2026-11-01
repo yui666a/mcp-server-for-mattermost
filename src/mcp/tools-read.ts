@@ -259,7 +259,7 @@ export function registerReadTools(server: McpServer, ctx: ToolContext): void {
         // Not converting a missing team: /teams/name/{team}/channels/name/{channel} answers it with 404 too.
         if (e instanceof ChannelFetchError && e.id !== 'app.team.get_by_name.missing.app_error') {
           if (e.status === 403) throw new InputError('このチャンネルを見る権限がありません（参加していない非公開チャンネルなど）');
-          if (e.status === 404) throw new InputError('チャンネルが見つかりません');
+          if (e.status === 404) throw new InputError('チャンネルが見つかりません（参加していない非公開チャンネルを名前で指定した場合も、Mattermost はこの結果を返します）');
         }
         throw e;
       });
