@@ -65,14 +65,14 @@ export async function mmDeauthorize(cookie: string, clientId: string): Promise<R
   });
 }
 
-export function intApp(extraEnv: Record<string, string> = {}) {
+export function intApp(extraEnv: Record<string, string> = {}, storeNow: () => number = Date.now) {
   const e = env();
   // The Mattermost OAuth app only accepts http://localhost:3000/mcp/oauth/callback, so PUBLIC_URL has to match it.
   const config = loadConfig({
     PUBLIC_URL: new URL(e.oauth.callback).origin, TOKEN_ENC_KEY: randomBytes(32).toString('base64'), MM_URL: e.mmUrl,
     MM_OAUTH_CLIENT_ID: e.oauth.clientId, MM_OAUTH_CLIENT_SECRET: e.oauth.clientSecret, ...extraEnv,
   });
-  const store = new Store(openDb(':memory:'), config.encKey, Date.now, config.accessTokenTtlSec);
+  const store = new Store(openDb(':memory:'), config.encKey, storeNow, config.accessTokenTtlSec);
   const deps = { fetch, now: Date.now };
   const limiter = new Limiter({ perUserConcurrency: 4, globalConcurrency: 16, perUserPerMin: 120, globalPerMin: 600 }, Date.now);
   const mm = new MmClient(config, store, limiter, deps);
