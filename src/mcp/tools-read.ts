@@ -3,6 +3,7 @@ import { z } from 'zod';
 import { MmError } from '../mattermost/client.ts';
 import { BAD_CURSOR, decodeCursor, encodeCursor, formatPost, formatTime, InputError, localTime, truncate, type MmPost } from './format.ts';
 import { pageCursor, paginate } from './paging.ts';
+import { mentionsMe, mentionTerms, type MentionUser } from './mentions.ts';
 import { parsePostRef } from './permalink.ts';
 import { ChannelFetchError, myTeams, resolveChannel, resolveUser, teamNameOf, type ChannelRef, type Mm, type MmChannel, type MmTeam, type UserRef } from './resolve.ts';
 import { guarded, text, type ToolContext } from './server.ts';
@@ -12,6 +13,11 @@ type Page = { lines: string[]; next?: object; posts?: MmPost[]; notes?: string[]
 
 const MM_SEARCH_CAP = 100;
 const JST_OFFSET_SEC = 9 * 3600;
+const DAY_MS = 86_400_000;
+
+const jstDay = (ms: number) => new Date(ms + JST_OFFSET_SEC * 1000).toISOString().slice(0, 10);
+const nextDay = (day: string) => new Date(Date.parse(day) + DAY_MS).toISOString().slice(0, 10);
+const newestFirst = (a: MmPost, b: MmPost) => b.create_at - a.create_at || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
 
 const limitArg = (def: number, max: number) => z.number().int().min(1).max(max).optional()
   .describe(`件数（既定 ${def}、最大 ${max}）。cursor を渡したときは無視する`);
@@ -82,6 +88,30 @@ async function presence(mm: Mm, uid: string, userId: string): Promise<string> {
   return `${PRESENCE[s.status] ?? s.status}${end}${s.manual ? '（手動で設定）' : ''}`;
 }
 
+type UnreadChannel = MmChannel & { last_post_at: number; last_root_post_at: number; total_msg_count: number; total_msg_count_root: number };
+type Member = { channel_id: string; msg_count: number; msg_count_root: number; mention_count: number; mention_count_root: number; notify_props?: { mark_unread?: string } };
+type Thread = { id: string; last_reply_at: number; unread_replies: number; unread_mentions: number; post: MmPost };
+type ThreadList = { total_unread_threads: number; threads: Thread[] | null };
+type UnreadKey = { s: number; m: number; t: number; id: string };
+
+const THREAD_PAGE = 50;
+const THREAD_PAGES = 4;
+const MEMBER_PAGE = 200;
+const CRT_PREF = '/users/me/preferences/display_settings/name/collapsed_reply_threads';
+
+const byUnreadKey = (a: UnreadKey, b: UnreadKey) => a.s - b.s || a.m - b.m || b.t - a.t || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
+
+async function collapsedThreads(mm: Mm, uid: string): Promise<{ on: boolean; label: string }> {
+  const server = (await mm.call<{ CollapsedThreads?: string }>(uid, 'GET', '/config/client?format=old')).CollapsedThreads ?? '';
+  if (server !== 'default_on' && server !== 'default_off') return { on: server === 'always_on', label: `サーバー設定: ${server}` };
+  const pref = await mm.call<{ value: string }>(uid, 'GET', CRT_PREF).catch((e) => {
+    // A 400 rather than 404 is how Mattermost answers for a user who never saved the preference.
+    if (e instanceof MmError && e.status === 400 && e.id === 'app.preference.get.app_error') return undefined;
+    throw e;
+  });
+  return { on: pref ? pref.value === 'on' : server === 'default_on', label: `サーバー設定: ${server}、利用者の設定: ${pref?.value ?? 'なし'}` };
+}
+
 export function registerReadTools(server: McpServer, ctx: ToolContext): void {
   const uid = ctx.mmUserId;
   const base = ctx.cfg.mmBrowserUrl;
@@ -95,6 +125,21 @@ export function registerReadTools(server: McpServer, ctx: ToolContext): void {
       }) as unknown as ToolCallback<S>);
   }
 
+  async function withChannels(mm: Mm, shown: MmPost[]): Promise<string[]> {
+    const channels = new Map((await mm.call<MmChannel[]>(uid, 'GET', '/users/me/channels')).map((x) => [x.id, x]));
+    const teams = await myTeams(mm, uid);
+    const teamName = new Map(teams.map((t) => [t.id, t.name]));
+    const users = await usernames(mm, uid, shown);
+    return shown.map((p) => {
+      const ch = channels.get(p.channel_id);
+      const team = ch?.team_id ? teamName.get(ch.team_id) : undefined;
+      const where = ch
+        ? channelLines({ id: ch.id, name: ch.name, displayName: ch.display_name, teamId: ch.team_id, teamName: team ?? '' }).join(' | ')
+        : `channel_id: ${p.channel_id}`;
+      return formatPost(p, { baseUrl: base, teamName: team ?? teams[0]?.name ?? '', usernames: users, channel: where });
+    });
+  }
+
   tool('search_posts', '参加しているチームのメッセージを検索する。Mattermost の検索構文（from:、in:、before:、after:、on: など）をそのまま使える。日付は日本時間（JST）で解釈する。新しい順',
     { terms: z.string().min(1), limit: limitArg(20, 50), cursor: cursorArg },
     async ({ terms, limit, cursor }, mm) => {
@@ -105,21 +150,7 @@ export function registerReadTools(server: McpServer, ctx: ToolContext): void {
       const r = await mm.call<PostList>(uid, 'POST', '/posts/search', { terms, is_or_search: false, include_deleted_channels: false, time_zone_offset: JST_OFFSET_SEC, page: 0, per_page: MM_SEARCH_CAP });
       const all = r.order.map((id) => r.posts[id]).filter(Boolean);
       const shown = all.slice(page * per, (page + 1) * per);
-      const lines = [`検索: ${terms}`];
-      if (shown.length) {
-        const channels = new Map((await mm.call<MmChannel[]>(uid, 'GET', '/users/me/channels')).map((x) => [x.id, x]));
-        const teams = await myTeams(mm, uid);
-        const teamName = new Map(teams.map((t) => [t.id, t.name]));
-        const users = await usernames(mm, uid, shown);
-        for (const p of shown) {
-          const ch = channels.get(p.channel_id);
-          const team = ch?.team_id ? teamName.get(ch.team_id) : undefined;
-          const where = ch
-            ? channelLines({ id: ch.id, name: ch.name, displayName: ch.display_name, teamId: ch.team_id, teamName: team ?? '' }).join(' | ')
-            : `channel_id: ${p.channel_id}`;
-          lines.push(formatPost(p, { baseUrl: base, teamName: team ?? teams[0]?.name ?? '', usernames: users, channel: where }));
-        }
-      } else lines.push('一致する投稿はありません。');
+      const lines = [`検索: ${terms}`, ...(shown.length ? await withChannels(mm, shown) : ['一致する投稿はありません。'])];
       const more = all.length > (page + 1) * per;
       return render({ lines, posts: shown, next: more ? { page: page + 1, per_page: per } : undefined, notes: capNote(all.length, 'これより古い一致') });
     });
@@ -311,6 +342,155 @@ export function registerReadTools(server: McpServer, ctx: ToolContext): void {
       if (!all.length) lines.push('ピン留めされた投稿はありません。');
       const last = shown.at(-1);
       return render({ lines, posts: shown, next: rest.length > per && last ? { channel_id: ch.id, create_at: last.create_at, id: last.id, per_page: per } : undefined });
+    });
+
+  tool('get_unreads', '自分の未読を一覧する。未読のあるチャンネル（未読数とメンション数）と、スレッドの折りたたみ（CRT）が有効なら未読の返信があるスレッド。メンションのあるチャンネルが先。読むだけで、既読にはしない',
+    { limit: limitArg(30, 100), cursor: cursorArg },
+    async ({ limit, cursor }, mm) => {
+      const startedAt = Date.now();
+      const c = cursorOf(pageCursor(z.object({ s: z.number().int(), m: z.number().int(), t: z.number().int(), id: z.string() })).extend({ per_page: perPage(100), crt: z.boolean() }), cursor);
+      const per = c?.per_page ?? limit ?? 30;
+      const crt = await collapsedThreads(mm, uid);
+      // Refusing rather than carrying on: the channel's update time switches between last_root_post_at and last_post_at, so the cursor's position no longer means the same row.
+      if (c && c.crt !== crt.on) throw new InputError('スレッドの折りたたみ（CRT）の判定がページの合間に変わりました。cursor を付けずに最初のページから取り直してください。');
+      const channels = new Map((await mm.call<UnreadChannel[]>(uid, 'GET', '/users/me/channels')).map((x) => [x.id, x]));
+      const members: Member[] = [];
+      for (let page = 0; ; page++) {
+        const got = await mm.call<Member[]>(uid, 'GET', `/users/me/channel_members?page=${page}&per_page=${MEMBER_PAGE}`);
+        members.push(...got);
+        if (got.length < MEMBER_PAGE) break;
+      }
+      const teams = await myTeams(mm, uid);
+      const teamName = new Map(teams.map((t) => [t.id, t.name]));
+      const threads = new Map<string, Thread & { teamName: string }>();
+      const notes: string[] = [];
+      if (crt.on) {
+        try {
+          for (const [i, t] of teams.entries()) {
+            let before: string | undefined;
+            for (let n = 1; ; n++) {
+              // Not taking DM and group DM threads from every team: each team's list repeats them.
+              const q = new URLSearchParams({ unread: 'true', per_page: String(THREAD_PAGE), ...(i ? { excludeDirect: 'true' } : {}), ...(before ? { before } : {}) });
+              const r = await mm.call<ThreadList>(uid, 'GET', `/users/${uid}/teams/${t.id}/threads?${q}`);
+              const got = r.threads ?? [];
+              for (const x of got) if (!threads.has(x.id)) threads.set(x.id, { ...x, teamName: t.name });
+              if (got.length < THREAD_PAGE) break;
+              if (n === THREAD_PAGES) {
+                notes.push(`（${t.name} の未読スレッドは ${THREAD_PAGE * THREAD_PAGES} 件までしか取得していません（total_unread_threads: ${r.total_unread_threads}））`);
+                break;
+              }
+              before = got.at(-1)!.id;
+            }
+          }
+        } catch (e) {
+          if (!(e instanceof MmError)) throw e;
+          threads.clear();
+          notes.push(`（未読のスレッドを取得できませんでした（Mattermost のエラー ${e.status}: ${e.message}）。チャンネルの未読だけを出しています）`);
+        }
+      }
+      const unread = members.flatMap((mb) => {
+        const ch = channels.get(mb.channel_id);
+        if (!ch) return [];
+        const count = crt.on ? ch.total_msg_count_root - mb.msg_count_root : ch.total_msg_count - mb.msg_count;
+        const mentions = crt.on ? mb.mention_count_root : mb.mention_count;
+        if (!count && !mentions) return [];
+        if (mb.notify_props?.mark_unread === 'mention' && !mentions) return [];
+        const updatedAt = crt.on ? ch.last_root_post_at : ch.last_post_at;
+        return [{ kind: 'channel' as const, ch, count, mentions, updatedAt, key: { s: 0, m: mentions ? 0 : 1, t: updatedAt, id: ch.id } }];
+      });
+      const rows = [...unread, ...[...threads.values()].map((th) => ({ kind: 'thread' as const, th, updatedAt: th.last_reply_at, key: { s: 1, m: 0, t: th.last_reply_at, id: th.id } }))];
+      const p = paginate(rows, byUnreadKey, c, per, startedAt);
+      const shown = [...p.updated, ...p.body];
+      const other = (x: MmChannel) => x.name.split('__').find((id) => id !== uid) ?? uid;
+      const dmOf = (id: string) => {
+        const ch = channels.get(id);
+        return ch?.type === 'D' ? [other(ch)] : [];
+      };
+      const userIds = [...new Set(shown.flatMap((r) => (r.kind === 'thread' ? [r.th.post.user_id, ...dmOf(r.th.post.channel_id)] : dmOf(r.ch.id))))];
+      const users = userIds.length
+        ? new Map((await mm.call<UserRef[]>(uid, 'POST', '/users/ids', userIds)).map((u) => [u.id, u.username]))
+        : new Map<string, string>();
+      const where = (x: MmChannel) => {
+        const label = x.type === 'D' ? `@${users.get(other(x)) ?? other(x)}` : x.display_name || x.name;
+        const team = teamName.get(x.team_id);
+        return { label, path: team ? `${team}/${x.name}` : x.type === 'D' || x.type === 'G' ? label : x.name };
+      };
+      const posts: MmPost[] = [];
+      const line = (r: (typeof rows)[number]): string => {
+        if (r.kind === 'channel') {
+          const w = where(r.ch);
+          return `- ${w.path}（表示名: ${w.label}、channel_id: ${r.ch.id}${r.ch.team_id ? `、team_id: ${r.ch.team_id}` : ''}）未読: ${r.count}、メンション: ${r.mentions}、${crt.on ? '最終のルート投稿' : '最終投稿'}: ${formatTime(r.updatedAt)}`;
+        }
+        const ch = channels.get(r.th.post.channel_id);
+        const team = ch && teamName.get(ch.team_id);
+        const at = ch ? channelLines({ id: ch.id, name: ch.name, displayName: where(ch).label, teamId: ch.team_id, teamName: team ?? '' }).join(' | ') : `channel_id: ${r.th.post.channel_id}`;
+        posts.push(r.th.post);
+        return [
+          formatPost(r.th.post, { baseUrl: base, teamName: team ?? r.th.teamName, usernames: users, channel: at }),
+          `未読の返信: ${r.th.unread_replies}、未読のメンション: ${r.th.unread_mentions}、最終返信: ${formatTime(r.th.last_reply_at)}`,
+        ].join('\n');
+      };
+      const lines = [
+        `スレッドの折りたたみ（CRT）: ${crt.on ? '有効' : '無効'}（${crt.label}）`,
+        `未読のあるチャンネル: ${unread.length} 件${crt.on ? `、未読のスレッド: ${threads.size} 件` : '（返信も数えています）'}`,
+        ...(p.updated.length ? ['前のページの後に更新されたチャンネルとスレッド（前のページまでに出したものを含むことがあります）:', ...p.updated.map(line)] : []),
+      ];
+      const bodyChannels = p.body.filter((r) => r.kind === 'channel');
+      const bodyThreads = p.body.filter((r) => r.kind === 'thread');
+      if (bodyChannels.length) lines.push('未読のあるチャンネル（メンションのあるものが先、その中で更新の新しい順）:', ...bodyChannels.map(line));
+      if (bodyThreads.length) lines.push('未読の返信があるスレッド（最終返信の新しい順）:', ...bodyThreads.map(line));
+      if (!rows.length) lines.push('未読はありません。');
+      if (p.rest) return [...lines, ...notes, `（更新されたチャンネルとスレッドがほかに ${p.rest} 件あり、このページに収まりませんでした。cursor を付けずに最初のページから取り直してください）`].join('\n');
+      return render({ lines, posts, notes, next: p.next && { ...p.next, per_page: per, crt: crt.on } });
+    });
+
+  tool('get_mentions', '自分へのメンション（@ユーザー名、通知の設定にあるキーワード）を新しい順に一覧する。全チームと DM が対象。読むだけで、既読にはしない',
+    { limit: limitArg(20, 50), cursor: cursorArg },
+    async ({ limit, cursor }, mm) => {
+      const c = cursorOf(z.object({
+        before: z.string().regex(/^\d{4}-\d\d-\d\d$/).optional(),
+        last: z.object({ create_at: z.number().int(), id: z.string() }).optional(),
+        per_page: perPage(50),
+      }).strict(), cursor);
+      const per = c?.per_page ?? limit ?? 20;
+      const me = await mm.call<MentionUser>(uid, 'GET', '/users/me');
+      const terms = mentionTerms(me).map((t) => `"${t}"`).join(' ');
+      let before = c?.before;
+      let last = c?.last;
+      const shown: MmPost[] = [];
+      const notes: string[] = [];
+      let next: object | undefined;
+      for (let round = 1; ; round++) {
+        // Not paging Mattermost's search: its database search returns nothing for page > 0, so older hits are reached by moving before: back a day at a time.
+        const r = await mm.call<PostList>(uid, 'POST', '/posts/search', {
+          terms: before ? `${terms} before:${before}` : terms, is_or_search: true, include_deleted_channels: false, time_zone_offset: JST_OFFSET_SEC, page: 0, per_page: MM_SEARCH_CAP,
+        });
+        const all = r.order.map((id) => r.posts[id]).filter(Boolean).sort(newestFirst);
+        const full = all.length >= MM_SEARCH_CAP;
+        const d = full ? jstDay(all.at(-1)!.create_at) : '';
+        const oneDay = full && jstDay(all[0].create_at) === d;
+        // Not showing day D's hits when the 100 are full: D's older posts may lie beyond the 100, so D is searched again in full next time.
+        const rest = (full && !oneDay ? all.filter((p) => jstDay(p.create_at) > d) : all)
+          .filter((p) => !last || p.create_at < last.create_at || (p.create_at === last.create_at && p.id > last.id))
+          .filter((p) => mentionsMe(p.message, me));
+        const take = rest.slice(0, per);
+        shown.push(...take);
+        if (take.length) last = { create_at: take.at(-1)!.create_at, id: take.at(-1)!.id };
+        if (rest.length > per) {
+          next = { before, last, per_page: per };
+          break;
+        }
+        if (!full) break;
+        if (oneDay) notes.push(`（${d} のメンションは 1 日で ${MM_SEARCH_CAP} 件を超えるため、新しい ${MM_SEARCH_CAP} 件だけを照合しました。この日のより古いメンションは出していません）`);
+        before = oneDay ? d : nextDay(d);
+        if (take.length || round === 3) {
+          if (!take.length) notes.push('（この範囲には照合に当たる投稿がありませんでした。next_cursor で、さらに前の日を探せます）');
+          next = { before, last, per_page: per };
+          break;
+        }
+      }
+      const lines = [`自分へのメンション（新しい順）。検索した語: ${terms}`, ...(shown.length ? await withChannels(mm, shown) : next ? [] : ['メンションはありません。'])];
+      return render({ lines, posts: shown, notes, next });
     });
 
   tool('search_users', '名前やユーザー名でユーザーを探す',
