@@ -63,7 +63,12 @@ beforeAll(async () => {
   channels.push(secret.id);
 });
 
+const drafts: [channelId: string, rootId: string][] = [];
+const SYNC = { category: 'advanced_settings', name: 'sync_drafts' };
+
 afterAll(async () => {
+  for (const [ch, root] of drafts) await mmApi(aliceMm, 'DELETE', `/users/${e.users.alice.id}/channels/${ch}/drafts${root ? `/${root}` : ''}`);
+  await mmApi(aliceMm, 'POST', `/users/${e.users.alice.id}/preferences/delete`, [{ user_id: e.users.alice.id, ...SYNC }]);
   for (const id of channels) await mmApi(bobMm, 'DELETE', `/channels/${id}`);
   vi.restoreAllMocks();
 });
@@ -161,5 +166,50 @@ describe('edit_message and delete_message against the local Mattermost', () => {
     expect(await status(mine.id)).toBe(404);
     expect(await status(root.id)).toBe(200);
     expect(await status(other.id)).toBe(200);
+  });
+});
+
+describe('save_draft against the local Mattermost', () => {
+  type Draft = { channel_id: string; root_id: string; message: string };
+  const listed = async () => (await mmApi<Draft[] | null>(aliceMm, 'GET', `/users/${e.users.alice.id}/teams/${e.teams.a.id}/drafts`)) ?? [];
+  const find = async (root = '') => (await listed()).find((d) => d.channel_id === open.id && d.root_id === root);
+
+  test('a saved draft shows in alice\'s draft list, a different second one is refused, and overwrite: true replaces it', async () => {
+    drafts.push([open.id, '']);
+    const first = await call('save_draft', { channel: open.id, message: `${TAG} first` });
+    expect(first.isError).toBeFalsy();
+    expect((await find())?.message).toBe(`${TAG} first`);
+
+    const second = await call('save_draft', { channel: open.id, message: `${TAG} second` });
+    expect(second.isError).toBe(true);
+    expect(second.content[0].text).toContain(`${TAG} first`);
+    expect((await find())?.message).toBe(`${TAG} first`);
+
+    const forced = await call('save_draft', { channel: open.id, message: `${TAG} second`, overwrite: true });
+    expect(forced.isError).toBeFalsy();
+    expect((await find())?.message).toBe(`${TAG} second`);
+  });
+
+  test('a reply\'s post_id as root_id is refused and leaves no draft', async () => {
+    const root = await bobPost(open.id);
+    const reply = await mmApi<{ id: string }>(bobMm, 'POST', '/posts', { channel_id: open.id, message: `${TAG} reply`, root_id: root.id });
+    drafts.push([open.id, reply.id]);
+    const r = await call('save_draft', { channel: open.id, message: `${TAG} on reply`, root_id: reply.id });
+    expect(r.isError).toBe(true);
+    expect(await find(reply.id)).toBeUndefined();
+  });
+
+  test('alice with draft sync turned off is refused and nothing is saved', async () => {
+    const root = await bobPost(open.id);
+    drafts.push([open.id, root.id]);
+    await mmApi(aliceMm, 'PUT', `/users/${e.users.alice.id}/preferences`, [{ user_id: e.users.alice.id, ...SYNC, value: 'false' }]);
+    try {
+      const r = await call('save_draft', { channel: open.id, message: `${TAG} sync off`, root_id: root.id });
+      expect(r.isError).toBe(true);
+      expect(r.content[0].text).toContain('設定 > 詳細設定');
+      expect(await find(root.id)).toBeUndefined();
+    } finally {
+      await mmApi(aliceMm, 'POST', `/users/${e.users.alice.id}/preferences/delete`, [{ user_id: e.users.alice.id, ...SYNC }]);
+    }
   });
 });

@@ -5,7 +5,7 @@ import { randomToken, sha256 } from '../crypto.ts';
 import { MmError, RateLimited } from '../mattermost/client.ts';
 import type { Store } from '../store.ts';
 import { InputError, type MmPost } from './format.ts';
-import { resolveChannel, teamNameOf, type Mm, type MmChannel } from './resolve.ts';
+import { myTeams, resolveChannel, teamNameOf, type Mm, type MmChannel } from './resolve.ts';
 import { guarded, text, type ToolContext } from './server.ts';
 
 type Args = { channel: string; message: string; root_id?: string; allow_duplicate?: boolean };
@@ -171,6 +171,69 @@ export async function deleteMessage(mm: Mm, uid: string, args: { post_id: string
   return text(['削除しました。', `post_id: ${args.post_id}`, where.line].join('\n'));
 }
 
+const draftSchema = {
+  channel: z.string().min(1).describe('チャンネル ID、「チーム名/チャンネル名」、チャンネル名、@ユーザー名（DM）のどれか'),
+  // Not counting code points: zod counts UTF-16 units, which can only be stricter than Mattermost's limit.
+  message: z.string().min(1).max(MAX_MESSAGE),
+  root_id: POST_ID.optional().describe('返信の下書きにするときの、スレッドの親投稿の post_id'),
+  overwrite: z.boolean().optional().describe('同じ投稿先に本文の違う下書きがあるときに、上書きするなら true。元の本文に加えて添付ファイルと優先度も失われ、取り消せない'),
+};
+type DraftArgs = { channel: string; message: string; root_id?: string; overwrite?: boolean };
+type Draft = { channel_id: string; root_id: string; message: string };
+const DISABLED: [number, string, string] = [501, 'api.drafts.disabled.app_error', 'このサーバーでは下書きの同期が無効です。'];
+
+// Refused rather than saved: with sync off the webapp neither loads the draft nor shows its own unsent text to the check below.
+async function syncDraftsOff(mm: Mm, uid: string): Promise<boolean> {
+  try {
+    return (await mm.call<{ value: string }>(uid, 'GET', '/users/me/preferences/advanced_settings/name/sync_drafts')).value === 'false';
+  } catch (e) {
+    if (e instanceof MmError && e.status === 400 && e.id === 'app.preference.get.app_error') return false;
+    throw e;
+  }
+}
+
+export async function saveDraft(mm: Mm, uid: string, args: DraftArgs): Promise<CallToolResult> {
+  const ch = await resolveChannel(mm, uid, args.channel);
+  const rootId = args.root_id ?? '';
+  // Checked here rather than left to Mattermost: it saves a draft on any root_id, and one on a reply never shows in any thread.
+  if (rootId) {
+    const root = await worded(mm.call<MmPost>(uid, 'GET', `/posts/${rootId}`), {
+      status: [[404, `root_id ${rootId} の投稿が見つかりません。`], [403, `root_id ${rootId} の投稿を見られません。`]],
+    });
+    if (root.channel_id !== ch.id) throw new InputError(`root_id ${rootId} の投稿はチャンネル「${ch.name}」にありません。`);
+    if (root.root_id) throw new InputError(`root_id ${rootId} は返信です。スレッドの親投稿の post_id を指定してください。`);
+  }
+  if (await syncDraftsOff(mm, uid)) {
+    throw new InputError('下書きの同期を切っているため保存していません。保存しても画面に届かないか、書きかけの下書きを上書きするおそれがあります。「設定 > 詳細設定」で下書きの同期を入れてください。');
+  }
+  const teamId = ch.teamId || (await myTeams(mm, uid))[0]?.id;
+  if (!teamId) throw new InputError('所属しているチームがないため、既存の下書きを確かめられません。');
+  const list = await worded(mm.call<Draft[] | null>(uid, 'GET', `/users/${uid}/teams/${teamId}/drafts`), { id: [DISABLED] });
+  const where = `チャンネル: ${ch.displayName || ch.name}（channel_id: ${ch.id}）${rootId ? `、返信先 post_id: ${rootId}` : ''}`;
+  const existing = (list ?? []).find((d) => d.channel_id === ch.id && (d.root_id || '') === rootId);
+  if (existing?.message === args.message) return text(`同じ下書きがあります。保存し直していません。\n${where}`);
+  if (existing && !args.overwrite) {
+    const head = [...existing.message].slice(0, 200).join('');
+    throw new InputError([
+      '同じ投稿先に、本文の違う下書きがあります。上書きしていません。上書きするときは overwrite: true を付けてください（添付ファイルと優先度も失われます）。',
+      where,
+      `既存の下書き（先頭 200 文字）: ${head}`,
+    ].join('\n'));
+  }
+  await worded(mm.call(uid, 'POST', '/drafts', { channel_id: ch.id, root_id: rootId, message: args.message }), {
+    id: [DISABLED, [400, 'api.draft.create_draft.can_not_draft_to_deleted.error', 'アーカイブ済みのチャンネルには下書きを保存できません。']],
+    status: [[403, 'このチャンネルに下書きを保存する権限がありません。']],
+  });
+  // Not claiming the input box for a reply: only channel drafts were checked in the webapp.
+  return text(rootId
+    ? ['下書きとして保存しました。送信は本人が行ってください。', where].join('\n')
+    : [
+      'Mattermost の下書きとして保存しました。そのチャンネルの入力欄に入っています。送信は本人が行ってください。',
+      where,
+      '保存したときにそのチャンネルを開いていた場合は、チャンネルを開き直してから編集してください。開き直さずに書くと、この下書きは置き換わります。',
+    ].join('\n'));
+}
+
 export function registerSendTools(server: McpServer, ctx: ToolContext): void {
   const mmOf = (signal: AbortSignal): Mm => ({ call: (u, m, p, b) => ctx.mm.call(u, m, p, b, signal) });
   const reactionAnnotations = { readOnlyHint: false, destructiveHint: false, idempotentHint: true };
@@ -201,6 +264,13 @@ export function registerSendTools(server: McpServer, ctx: ToolContext): void {
     annotations: destructive,
   }, guarded(ctx, 'delete_message', async (args: { post_id: string }, extra: { signal: AbortSignal }) => deleteMessage(mmOf(extra.signal), ctx.mmUserId, args),
   ) as unknown as ToolCallback<typeof deleteSchema>);
+
+  server.registerTool('save_draft', {
+    description: '投稿せずに、本人の Mattermost の下書きとして保存する。送信は本人が画面で行う。root_id を渡すとスレッドへの返信の下書きになる。同じ投稿先に本文の違う下書きがあれば、overwrite: true が無い限り上書きしない。下書きの同期を切っている利用者には保存しない',
+    inputSchema: draftSchema,
+    annotations: destructive,
+  }, guarded(ctx, 'save_draft', async (args: DraftArgs, extra: { signal: AbortSignal }) => saveDraft(mmOf(extra.signal), ctx.mmUserId, args),
+  ) as unknown as ToolCallback<typeof draftSchema>);
 
   server.registerTool('send_message', {
     description: 'チャンネルへ投稿する。root_id を渡すとスレッドへの返信になる。channel はチャンネル ID、「チーム名/チャンネル名」、チャンネル名、@ユーザー名（DM）のどれか。同じ投稿先へ同じ本文を 10 分以内に送ると、やり直しとみなして投稿しない',
