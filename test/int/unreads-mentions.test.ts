@@ -111,6 +111,21 @@ describe('get_unreads and get_mentions against the local Mattermost', () => {
     expect(await unreadOf()).toEqual(before);
   });
 
+  test('get_unreads leaves out an unread thread whose channel has been archived', async () => {
+    const gone = await mmApi<{ id: string }>(aliceMm, 'POST', '/channels', { team_id: e.teams.a.id, name: `t6a-${TAG}`, display_name: `t6a ${TAG}`, type: 'O' });
+    await mmApi(aliceMm, 'POST', `/channels/${gone.id}/members`, { user_id: e.users.bob.id });
+    const root = (await mmApi<{ id: string }>(aliceMm, 'POST', '/posts', { channel_id: gone.id, message: `${TAG} archived root` })).id;
+    await mmApi(aliceMm, 'POST', '/channels/members/me/view', { channel_id: gone.id });
+    await mmApi(bobMm, 'POST', '/posts', { channel_id: gone.id, root_id: root, message: `${TAG} archived reply` });
+    const thread = await mmApi<{ unread_replies: number }>(aliceMm, 'GET', `/users/me/teams/${e.teams.a.id}/threads/${root}`);
+    expect(thread.unread_replies).toBe(1);
+    await mmApi(e.adminToken, 'DELETE', `/channels/${gone.id}`);
+    const text = (await pageAll('alice', 'get_unreads', 100)).join('\n');
+    expect(text).toContain(`channel_id: ${ch.id}`);
+    expect(text).not.toContain(root);
+    expect(text).not.toContain(gone.id);
+  });
+
   test('get_mentions returns the post with @alice but not the one with a bare "alice"', async () => {
     const r = await call('alice', 'get_mentions', { limit: 50 });
     expect(r.isError).toBeFalsy();
