@@ -163,6 +163,11 @@ test('a refresh that started before revoke and re-login cannot overwrite the new
   expect(store.getMmCred('u1')).toMatchObject({ access: 'a2', refresh: 'r2' });
 });
 
+test('credentials sealed under another key read as absent', () => {
+  new Store(db, randomBytes(32), () => t, 3600).putMmCred('u1', 'a1', 'r1');
+  expect(store.getMmCred('u1')).toBeUndefined();
+});
+
 test('sealed Mattermost tokens are not stored in plain text', () => {
   store.putMmCred('u1', 'plain-access-token', 'plain-refresh-token');
   const raw = JSON.stringify(db.prepare('SELECT * FROM mm_creds').all());

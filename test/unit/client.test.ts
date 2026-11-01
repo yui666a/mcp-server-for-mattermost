@@ -176,6 +176,20 @@ test('a user without stored Mattermost credentials must log in again before anyt
   expect(fetchMock).not.toHaveBeenCalled();
 });
 
+test('credentials sealed under another TOKEN_ENC_KEY force relogin before anything is sent', async () => {
+  const db = openDb(':memory:');
+  new Store(db, randomBytes(32), Date.now, 3600).putMmCred('u1', 'a1', 'r1');
+  store = new Store(db, cfg.encKey, Date.now, 3600);
+  client = new MmClient(cfg, store, limiter, { fetch: fetchMock, now: Date.now });
+  const pair = grant();
+  const e = await failure(client.call('u1', 'GET', '/users/me'));
+  expect(e).toBeInstanceOf(Reauthorize);
+  expect(e.sent).toBe(false);
+  expect(fetchMock).not.toHaveBeenCalled();
+  expect(store.verifyAccess(pair.accessToken)).toBeUndefined();
+  expect(db.prepare('SELECT count(*) AS n FROM mm_creds').get()).toEqual({ n: 0 });
+});
+
 test('other 4xx on refresh (bad client secret) keeps grants and credentials', async () => {
   const pair = grant();
   store.putMmCred('u1', 'a1', 'r1');
