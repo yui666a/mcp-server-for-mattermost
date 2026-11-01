@@ -407,8 +407,17 @@ describe('a schedule changed while the tick is running', () => {
   });
 });
 
+test('a schedule whose message cannot be decrypted (TOKEN_ENC_KEY was made again) fails without calling Mattermost, asking to schedule it again', async () => {
+  const s = setup();
+  const id = s.make();
+  s.set(id, 'message_sealed = ?', 'not-a-sealed-value');
+  await s.run();
+  expect(hits).toEqual([]);
+  expect(s.row(id)).toMatchObject({ status: 'failed', error: '本文を復号できないため投稿していません。予約を入れ直してください。', first_attempt_at: null });
+});
+
 describe('an unexpected error fails only that schedule', () => {
-  test('after the post was sent: maybe posted; a row that cannot be decrypted: internal error; the others are still posted', async () => {
+  test('after the post was sent: maybe posted; a row that cannot be decrypted: asks to schedule again; the others are still posted', async () => {
     const s = setup();
     routes['POST /posts'] = (_req, body) => (body.message === 'broken reply' ? new Response('', { status: 201 }) : { id: 'p'.repeat(26) });
     const sentBroken = s.make({ message: 'broken reply', scheduledAt: NOW - 2 * SEC });
@@ -417,7 +426,7 @@ describe('an unexpected error fails only that schedule', () => {
     const fine = s.make({ message: 'fine' });
     await s.run();
     expect(s.row(sentBroken)).toMatchObject({ status: 'failed', error: UNKNOWN });
-    expect(s.row(sealed)).toMatchObject({ status: 'failed', error: '内部エラーのため投稿していません。' });
+    expect(s.row(sealed)).toMatchObject({ status: 'failed', error: '本文を復号できないため投稿していません。予約を入れ直してください。' });
     expect(s.row(fine)).toMatchObject({ status: 'posted' });
   });
 });

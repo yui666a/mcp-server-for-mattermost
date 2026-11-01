@@ -10,6 +10,7 @@ const LATE_AFTER = 3600_000;
 const UNKNOWN = '投稿されたか不明です。Mattermost の画面で確かめてください。';
 const LATE = '予定時刻を 1 時間過ぎたため投稿していません。';
 const INTERNAL = '内部エラーのため投稿していません。';
+const UNSEALED = '本文を復号できないため投稿していません。予約を入れ直してください。';
 const POST_WORDING: Wording = {
   id: [
     [400, 'api.post.create_post.can_not_post_to_deleted.error', 'チャンネルがアーカイブされたため投稿していません。'],
@@ -40,7 +41,8 @@ export async function tick(store: Store, mm: Mm, now: number): Promise<void> {
 }
 
 async function attempt(store: Store, mm: Mm, s: ClaimedScheduled, now: number): Promise<ScheduledOutcome> {
-  if (s.message === undefined) throw new Error('scheduled message cannot be opened');
+  // Not "not posted" for an attempted row: the earlier attempt may have posted before the key was made again.
+  if (s.message === undefined) return failed(s.firstAttemptAt === null ? UNSEALED : UNKNOWN);
   const spec = { channelId: s.channelId, rootId: s.rootId, message: s.message };
   const late = s.scheduledAt < now - LATE_AFTER;
   if (s.retry) {
