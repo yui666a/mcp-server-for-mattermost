@@ -1,0 +1,102 @@
+import { describe, expect, test } from 'vitest';
+import { mentionsMe, mentionTerms, type MentionUser } from '../../src/mcp/mentions.ts';
+
+const alice: MentionUser = { username: 'alice', first_name: 'Alice', notify_props: { mention_keys: '', first_name: 'false' } };
+const withKeys = (keys: string, firstName = 'false'): MentionUser => ({ ...alice, notify_props: { mention_keys: keys, first_name: firstName } });
+
+describe('mentionTerms', () => {
+  test('always searches for @username', () => {
+    expect(mentionTerms(alice)).toEqual(['@alice']);
+  });
+
+  test('adds each mention key, trimmed, dropping empty ones and ones containing a double quote', () => {
+    expect(mentionTerms(withKeys(' aiso ,, ,say "hi",DB team'))).toEqual(['@alice', 'aiso', 'DB team']);
+  });
+
+  test('adds the first name only when the first_name notify prop is the string "true" and the name is set', () => {
+    expect(mentionTerms(withKeys('', 'true'))).toEqual(['@alice', 'Alice']);
+    expect(mentionTerms({ ...withKeys('', 'true'), first_name: '' })).toEqual(['@alice']);
+  });
+
+  test('leaves out @channel, @all and @here even when they are mention keys', () => {
+    expect(mentionTerms(withKeys('@channel,@ALL,@here,ops'))).toEqual(['@alice', 'ops']);
+  });
+
+  test('does not repeat a term', () => {
+    expect(mentionTerms(withKeys('@alice,ops,OPS'))).toEqual(['@alice', 'ops']);
+  });
+});
+
+describe('mentionsMe', () => {
+  test.each([
+    '@alice',
+    '@alice.',
+    '@alice_',
+    '@alice-',
+    '@alice:',
+    '@ALICE',
+    'hi @alice',
+    '@alice\nnext line',
+    'line\n@alice',
+    '、@alice',
+    '（@alice）',
+    'ok,@alice',
+    'foo.@alice',
+    '*@alice*',
+    '_@alice_',
+    '[@alice](https://example.com)',
+    '@alice`code`',
+    '> @alice',
+  ])('counts %j as a mention', (message) => {
+    expect(mentionsMe(message, alice)).toBe(true);
+  });
+
+  test.each([
+    'x@alice',
+    '@alicex',
+    'alice',
+    '@alice.bob',
+    '`@alice`',
+    '``a ` @alice``',
+    '```\n@alice\n```',
+    '~~~js\n@alice\n~~~',
+    'text\n\n    @alice',
+    '```\nunclosed @alice',
+    ':@alice:',
+    '@aliceさん',
+  ])('does not count %j as a mention', (message) => {
+    expect(mentionsMe(message, alice)).toBe(false);
+  });
+
+  test('an indented line continuing a paragraph or a list item is still text, not code', () => {
+    expect(mentionsMe('para\n    @alice', alice)).toBe(true);
+    expect(mentionsMe('- item\n\n    @alice', alice)).toBe(true);
+  });
+
+  test('a mention outside a code block still counts', () => {
+    expect(mentionsMe('```\ncode\n```\n@alice', alice)).toBe(true);
+    expect(mentionsMe('`x` @alice', alice)).toBe(true);
+  });
+
+  test('mention keys match case-insensitively on the same word boundaries', () => {
+    const u = withKeys('Aiso');
+    expect(mentionsMe('ask aiso.', u)).toBe(true);
+    expect(mentionsMe('ASK AISO', u)).toBe(true);
+    expect(mentionsMe('aisox', u)).toBe(false);
+    expect(mentionsMe('`aiso`', u)).toBe(false);
+  });
+
+  test('a mention key with a multibyte character also matches inside a longer word', () => {
+    expect(mentionsMe('あいそさん、見て', withKeys('あいそ'))).toBe(true);
+  });
+
+  test('the first name matches case-sensitively, and only when enabled', () => {
+    expect(mentionsMe('hi Alice', withKeys('', 'true'))).toBe(true);
+    expect(mentionsMe('hi alice', withKeys('', 'true'))).toBe(false);
+    expect(mentionsMe('hi Alice', alice)).toBe(false);
+  });
+
+  test('@channel, @all and @here are not mentions of the user', () => {
+    expect(mentionsMe('@channel @all @here', alice)).toBe(false);
+  });
+});
