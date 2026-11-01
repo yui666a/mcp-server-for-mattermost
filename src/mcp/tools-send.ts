@@ -117,10 +117,20 @@ type Where = { line: string; teamName: string };
 const GONE = '投稿が見つかりません。直前の呼び出しで削除済みの可能性があります。';
 const goneWording: Wording = { id: [[404, 'app.post.get.app_error', GONE]] };
 
+// Not forgetting before DELETE: if Mattermost refused the delete, the post would stay while a resend posted it twice.
+async function forgetIfGone<T>(p: Promise<T>, store: Store, uid: string, postId: string): Promise<T> {
+  try {
+    return await p;
+  } catch (e) {
+    if (e instanceof MmError && e.status === 404 && e.id === 'app.post.get.app_error') store.forgetPost(uid, postId);
+    throw e;
+  }
+}
+
 // Not trusting user_id alone: a webhook post carries its creator's user_id, and Mattermost would let that creator edit or delete it.
 // Not refusing from_oauth_app or from_plugin: this MCP's own send_message posts carry from_oauth_app.
-async function ownPost(mm: Mm, uid: string, postId: string): Promise<OwnPost> {
-  const post = await worded(mm.call<OwnPost>(uid, 'GET', `/posts/${postId}`), goneWording);
+async function ownPost(mm: Mm, store: Store, uid: string, postId: string): Promise<OwnPost> {
+  const post = await worded(forgetIfGone(mm.call<OwnPost>(uid, 'GET', `/posts/${postId}`), store, uid, postId), goneWording);
   if (post.user_id !== uid) throw new InputError('本人の投稿ではありません。この MCP からは本人の投稿だけを編集・削除できます。');
   if (post.props?.from_webhook || post.props?.from_bot) throw new InputError('webhook や Bot が投稿したものは扱えません。');
   if (post.type) throw new InputError(`この種類の投稿は扱えません（type: ${post.type}）。`);
@@ -142,7 +152,7 @@ type EditArgs = { post_id: string; message: string };
 
 export async function editMessage(mm: Mm, store: Store, uid: string, baseUrl: string, args: EditArgs): Promise<CallToolResult> {
   if (!args.message.trim()) throw new InputError('本文が空白だけです。投稿を消したいときは delete_message を使ってください。');
-  const where = await whereOf(mm, uid, await ownPost(mm, uid, args.post_id));
+  const where = await whereOf(mm, uid, await ownPost(mm, store, uid, args.post_id));
   // Not PUT /posts/{id}: it clears is_pinned when the field is left out.
   await worded(mm.call(uid, 'PUT', `/posts/${args.post_id}/patch`, { message: args.message }), {
     id: [
@@ -155,7 +165,7 @@ export async function editMessage(mm: Mm, store: Store, uid: string, baseUrl: st
 }
 
 export async function deleteMessage(mm: Mm, store: Store, uid: string, args: { post_id: string }): Promise<CallToolResult> {
-  const post = await ownPost(mm, uid, args.post_id);
+  const post = await ownPost(mm, store, uid, args.post_id);
   // Not using reply_count alone: Mattermost puts the whole thread's count on replies too, which would block deleting a reply.
   // Not defaulting a missing reply_count to 0: the delete cannot be undone, so an unknown count is treated as having replies.
   // Not closing the race with a reply posted after this check: Mattermost has no conditional delete.
@@ -163,7 +173,7 @@ export async function deleteMessage(mm: Mm, store: Store, uid: string, args: { p
     throw new InputError('返信のあるスレッドの親投稿は消せません。消すとほかの人の返信も消えるためです。消す場合は Mattermost の画面から操作してください。');
   }
   const where = await whereOf(mm, uid, post);
-  await worded(mm.call(uid, 'DELETE', `/posts/${args.post_id}`), {
+  await worded(forgetIfGone(mm.call(uid, 'DELETE', `/posts/${args.post_id}`), store, uid, args.post_id), {
     id: [
       ...goneWording.id!,
       [400, 'api.post.delete_post.can_not_delete_post_in_deleted.error', 'アーカイブ済みのチャンネルの投稿は削除できません。'],
