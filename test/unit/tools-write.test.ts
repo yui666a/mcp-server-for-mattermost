@@ -406,6 +406,7 @@ describe('save_draft', () => {
   const LIST = 'GET /users/u1/teams/t1/drafts';
   const SAVE = 'POST /drafts';
   const SYNC_OFF = '設定 > 詳細設定';
+  const LEFT_BEHIND = 'send_message で送っても下書きは消えず、残った下書きをそのまま送ると同じ投稿が 2 回になります';
   const writes = () => hits.filter((h) => !h.startsWith('GET '));
   const draft = (over: Record<string, unknown> = {}) => ({ user_id: 'u1', channel_id: CH, root_id: '', message: 'mine', create_at: 1, update_at: 1, ...over });
   const serve = (extra: Record<string, Route> = {}) => {
@@ -434,6 +435,7 @@ describe('save_draft', () => {
       expect(r.text).toContain('Town');
       expect(r.text).toContain('チャンネルを開き直して');
       expect(r.text).toContain('置き換わります');
+      expect(r.text).toContain(LEFT_BEHIND);
     });
 
     test('saves a reply draft after checking the root post, saying only that it was saved as a draft', async () => {
@@ -444,6 +446,7 @@ describe('save_draft', () => {
       expect(bodies['/drafts']).toEqual({ channel_id: CH, root_id: ROOT, message: 'hello' });
       expect(r.text).toContain('下書きとして保存しました');
       expect(r.text).toContain(`返信先 post_id: ${ROOT}`);
+      expect(r.text).toContain(LEFT_BEHIND);
       expect(r.text).toContain('送信は本人');
       expect(r.text).not.toContain('入力欄');
       expect(r.text).not.toContain('開き直して');
@@ -506,6 +509,7 @@ describe('save_draft', () => {
       const r = await save({ overwrite });
       expect(r.isError).toBe(false);
       expect(r.text).toContain('同じ下書きがあります');
+      expect(r.text).toContain(LEFT_BEHIND);
       expect(writes()).toEqual([]);
     });
 
@@ -605,10 +609,12 @@ describe('save_draft', () => {
     });
   });
 
-  test('is marked destructive and idempotent, and overwrite warns that attachments and priority are lost too', async () => {
-    const list = await setup().tools() as unknown as { name: string; annotations: object; inputSchema: { properties: Record<string, { description?: string }> } }[];
+  test('is marked destructive and idempotent, warns that sending it with send_message leaves the draft behind, and overwrite warns that attachments and priority are lost too', async () => {
+    const list = await setup().tools() as unknown as { name: string; description: string; annotations: object; inputSchema: { properties: Record<string, { description?: string }> } }[];
     const t = list.find((x) => x.name === 'save_draft')!;
     expect(t.annotations).toMatchObject({ readOnlyHint: false, destructiveHint: true, idempotentHint: true });
+    expect(t.description).toContain('send_message で送っても下書きは残り');
+    expect(t.description).toContain('同じ投稿が 2 回になる');
     const d = t.inputSchema.properties.overwrite.description!;
     expect(d).toContain('添付');
     expect(d).toContain('優先度');
