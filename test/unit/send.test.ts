@@ -13,9 +13,9 @@ const OTHER = 'o'.repeat(26);
 const BASE = 'https://mm.example';
 const id = (n: number) => `p${String(n).padStart(25, '0')}`;
 
-type Mode = 'before' | 'after' | 'lost' | 'reject' | undefined;
+type Mode = 'before' | 'after' | 'lost' | 'reject' | 'rate429' | undefined;
 
-function fakeMm(opts: { failPost?: () => Mode; postDelay?: Promise<void> } = {}) {
+function fakeMm(opts: { failPost?: () => Mode; postDelay?: Promise<void>; failSearch?: () => boolean } = {}) {
   let now = 1_000_000;
   const store = new Store(openDb(':memory:'), randomBytes(32), () => now);
   const posts: MmPost[] = [{ id: id(0), user_id: UID, channel_id: OTHER, root_id: '', message: 'root elsewhere', create_at: 0 }];
@@ -34,8 +34,10 @@ function fakeMm(opts: { failPost?: () => Mode; postDelay?: Promise<void> } = {})
         return found;
       }
       if (method === 'GET' && p === `/channels/${CH}/posts`) {
+        if (opts.failSearch?.()) throw new UpstreamUnavailable('Mattermost unreachable', true);
         const since = Number(new URLSearchParams(path.split('?')[1]).get('since'));
-        const hit = posts.filter((x) => x.channel_id === CH && x.create_at >= since);
+        // Strict like Mattermost's GetPostsSince (UpdateAt > since); posts here are never edited, so update_at = create_at.
+        const hit = posts.filter((x) => x.channel_id === CH && x.create_at > since);
         return { order: hit.map((x) => x.id), posts: Object.fromEntries(hit.map((x) => [x.id, x])) };
       }
       if (method === 'POST' && p === '/posts') {
@@ -44,6 +46,7 @@ function fakeMm(opts: { failPost?: () => Mode; postDelay?: Promise<void> } = {})
         if (mode === 'before') throw new RateLimited(5, false);
         created.push(body);
         if (mode === 'reject') throw new MmError(400, 'bad_request', 'bad');
+        if (mode === 'rate429') throw new RateLimited(5, true);
         if (mode === 'lost') throw new UpstreamUnavailable('Mattermost unreachable', true);
         const dup = body.pending_post_id ? byPending.get(body.pending_post_id) : undefined;
         const post = dup ?? { id: id(posts.length), user_id: UID, channel_id: body.channel_id, root_id: body.root_id ?? '', message: body.message, create_at: now };
@@ -134,8 +137,12 @@ test('allow_duplicate posts again', async () => {
   const f = fakeMm();
   await f.send({ channel: 'team-a/dup', message: 'again' });
   const r = await f.send({ channel: 'team-a/dup', message: 'again', allow_duplicate: true });
+  await f.send({ channel: 'team-a/dup', message: 'again', allow_duplicate: true });
   expect(r.isError).toBeFalsy();
-  expect(f.created).toHaveLength(2);
+  const created = f.created as { pending_post_id?: string }[];
+  expect(created).toHaveLength(3);
+  expect(created.every((c) => typeof c.pending_post_id === 'string')).toBe(true);
+  expect(new Set(created.map((c) => c.pending_post_id)).size).toBe(3);
 });
 
 test('rate limited before sending drops the claim so an immediate retry is not blocked', async () => {
@@ -152,4 +159,24 @@ test('a 4xx rejection drops the claim', async () => {
   const f = fakeMm({ failPost: () => (first ? ((first = false), 'reject') : undefined) });
   await expect(f.send({ channel: 'team-a/dup', message: 'bad' })).rejects.toBeInstanceOf(MmError);
   expect((await f.send({ channel: 'team-a/dup', message: 'bad' })).isError).toBeFalsy();
+});
+
+test('a 429 from Mattermost drops the claim', async () => {
+  let first = true;
+  const f = fakeMm({ failPost: () => (first ? ((first = false), 'rate429') : undefined) });
+  await expect(f.send({ channel: 'team-a/dup', message: '429' })).rejects.toBeInstanceOf(RateLimited);
+  expect((await f.send({ channel: 'team-a/dup', message: '429' })).isError).toBeFalsy();
+});
+
+test('a failed lookup on the retry path keeps the claim', async () => {
+  let search = true;
+  const f = fakeMm({ failPost: () => 'after', failSearch: () => search });
+  await expect(f.send({ channel: 'team-a/dup', message: 'look' })).rejects.toBeInstanceOf(UpstreamUnavailable);
+  f.advance(31_000);
+  await expect(f.send({ channel: 'team-a/dup', message: 'look' })).rejects.toBeInstanceOf(UpstreamUnavailable);
+  search = false;
+  const r = await f.send({ channel: 'team-a/dup', message: 'look' });
+  expect(r.isError).toBe(true);
+  expect(textOf(r)).toContain('処理中');
+  expect(f.created).toHaveLength(1);
 });
