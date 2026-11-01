@@ -61,3 +61,36 @@ describe('localTime', () => {
     expect(localTime('Mars/Olympus_Mons', 0)).toBeUndefined();
   });
 });
+
+describe('attachments of a post', () => {
+  const p = { id: 'p1', user_id: 'u1', channel_id: 'c1', root_id: '', message: 'see attached', create_at: 0 };
+  const ctx = { baseUrl: 'https://x', teamName: 't', usernames: new Map<string, string>() };
+  const png = { id: 'f'.repeat(26), name: 'shot.png', mime_type: 'image/png', size: 11393, width: 1920, height: 1080 };
+  const pdf = { id: 'g'.repeat(26), name: 'spec.pdf', mime_type: 'application/pdf', size: 52000 };
+
+  test('lists each file of metadata.files in its order, with file_id, name, MIME type, size and, for an image, width and height', () => {
+    const out = formatPost({ ...p, file_ids: [pdf.id, png.id], metadata: { files: [png, pdf] } }, ctx);
+    const lines = out.split('\n');
+    const a = lines.findIndex((l) => l.includes(png.id));
+    const b = lines.findIndex((l) => l.includes(pdf.id));
+    expect(a).toBeGreaterThan(-1);
+    expect(b).toBeGreaterThan(a);
+    expect(lines[a]).toContain('shot.png');
+    expect(lines[a]).toContain('image/png');
+    expect(lines[a]).toContain('11393 バイト');
+    expect(lines[a]).toContain('1920x1080');
+    expect(lines[b]).toContain('spec.pdf');
+    expect(lines[b]).toContain('application/pdf');
+    expect(lines[b]).toContain('52000 バイト');
+    expect(lines[b]).not.toMatch(/\d+x\d+/);
+  });
+
+  test('with only file_ids, says how many files are attached and that get_post shows them', () => {
+    const out = formatPost({ ...p, file_ids: [png.id, pdf.id] }, ctx);
+    expect(out).toContain('添付 2 件（get_post で確認できます）');
+  });
+
+  test('without attachments, adds no attachment line', () => {
+    for (const post of [p, { ...p, file_ids: [] }, { ...p, metadata: {} }]) expect(formatPost(post, ctx)).not.toContain('添付');
+  });
+});

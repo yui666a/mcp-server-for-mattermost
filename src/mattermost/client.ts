@@ -32,6 +32,7 @@ type Cred = { access: string; refresh: string; version: number };
 type Refreshed = MmTokens & { saved: boolean };
 type Attempt = { sent: boolean; requests: number; deadline: number; signal?: AbortSignal };
 type Send = (access: string) => Promise<Response>;
+type Read<T> = (res: Response) => Promise<T>;
 // res is undefined when Mattermost answered nothing usable for this pair (invalid_grant, or revoked meanwhile).
 type Outcome = { res?: Response; used: number };
 
@@ -67,22 +68,30 @@ export class MmClient {
     this.deps = deps;
   }
 
-  async call<T>(mmUserId: string, method: string, path: string, body?: unknown, signal?: AbortSignal): Promise<T> {
+  call<T>(mmUserId: string, method: string, path: string, body?: unknown, signal?: AbortSignal): Promise<T> {
+    return this.request(mmUserId, method, path, body, signal, (res) => this.json<T>(res));
+  }
+
+  callBytes(mmUserId: string, path: string, signal?: AbortSignal): Promise<Uint8Array> {
+    return this.request(mmUserId, 'GET', path, undefined, signal, (res) => this.bytes(res));
+  }
+
+  private async request<T>(mmUserId: string, method: string, path: string, body: unknown, signal: AbortSignal | undefined, read: Read<T>): Promise<T> {
     const release = this.limiter.acquire(mmUserId);
     try {
-      return await this.run<T>(mmUserId, method, path, body, signal);
+      return await this.run(mmUserId, method, path, body, signal, read);
     } finally {
       release();
     }
   }
 
-  private async run<T>(mmUserId: string, method: string, path: string, body: unknown, signal: AbortSignal | undefined): Promise<T> {
+  private async run<T>(mmUserId: string, method: string, path: string, body: unknown, signal: AbortSignal | undefined, read: Read<T>): Promise<T> {
     const at: Attempt = { sent: false, requests: 0, deadline: this.deps.now() + CALL_DEADLINE_MS, signal };
     const send: Send = (access) => this.send(at, mmUserId, access, method, path, body);
     const cred = this.store.getMmCred(mmUserId);
     if (!cred) this.reauthorize(mmUserId, at);
     let res: Response | undefined = await send(cred.access);
-    if (res.status !== 401) return this.parse<T>(res);
+    if (res.status !== 401) return read(res);
     await discard(res);
     const latest = this.store.getMmCred(mmUserId);
     if (!latest) this.reauthorize(mmUserId, at);
@@ -94,7 +103,7 @@ export class MmClient {
       await discard(res);
       res = await this.lastChance(mmUserId, at, out.used, send);
     }
-    return this.parse<T>(res);
+    return read(res);
   }
 
   private async refreshAndSend(mmUserId: string, cred: Cred, at: Attempt, send: Send): Promise<Outcome> {
@@ -215,7 +224,26 @@ export class MmClient {
     return res;
   }
 
-  private async parse<T>(res: Response): Promise<T> {
+  private async json<T>(res: Response): Promise<T> {
+    await this.check(res);
+    try {
+      const text = await res.text();
+      return (text ? JSON.parse(text) : undefined) as T;
+    } catch {
+      throw new UpstreamUnavailable('unreadable Mattermost response', true);
+    }
+  }
+
+  private async bytes(res: Response): Promise<Uint8Array> {
+    await this.check(res);
+    try {
+      return new Uint8Array(await res.arrayBuffer());
+    } catch {
+      throw new UpstreamUnavailable('unreadable Mattermost response', true);
+    }
+  }
+
+  private async check(res: Response): Promise<void> {
     if (res.status === 429) {
       await discard(res);
       throw new RateLimited(retryAfterSec(res.headers), true);
@@ -228,12 +256,6 @@ export class MmClient {
     if (!res.ok) {
       await discard(res);
       throw new UpstreamUnavailable(`Mattermost API failed: ${res.status}`, true);
-    }
-    try {
-      const text = await res.text();
-      return (text ? JSON.parse(text) : undefined) as T;
-    } catch {
-      throw new UpstreamUnavailable('unreadable Mattermost response', true);
     }
   }
 }

@@ -1,4 +1,5 @@
 import { randomBytes } from 'node:crypto';
+import { crc32, deflateSync } from 'node:zlib';
 import type request from 'supertest';
 import { afterAll, beforeAll, describe, expect, test, vi } from 'vitest';
 import type { Limiter } from '../../src/mattermost/limiter.ts';
@@ -9,7 +10,7 @@ const e = await requireMm();
 const REDIRECT = 'http://127.0.0.1:8123/cb';
 const TAG = `zq${randomBytes(6).toString('hex')}`;
 
-type Result = { isError?: boolean; content: { type: string; text: string }[] };
+type Result = { isError?: boolean; content: { type: string; text: string; data?: string; mimeType?: string }[] };
 
 async function mmToken(user: Cred): Promise<string> {
   return /MMAUTHTOKEN=([^;]+)/.exec(await mmLoginCookie(user))![1];
@@ -21,6 +22,28 @@ async function mmApi<T>(token: string, method: string, path: string, body?: unkn
   });
   if (!res.ok) throw new Error(`${method} ${path} -> ${res.status} ${await res.text()}`);
   return res.json() as Promise<T>;
+}
+
+function png(width: number, height: number): Buffer {
+  const chunk = (type: string, data: Buffer) => {
+    const td = Buffer.concat([Buffer.from(type), data]);
+    const len = Buffer.alloc(4); len.writeUInt32BE(data.length);
+    const crc = Buffer.alloc(4); crc.writeUInt32BE(crc32(td));
+    return Buffer.concat([len, td, crc]);
+  };
+  const ihdr = Buffer.alloc(13);
+  ihdr.writeUInt32BE(width, 0); ihdr.writeUInt32BE(height, 4); ihdr.set([8, 2, 0, 0, 0], 8);
+  const rows = Buffer.alloc((width * 3 + 1) * height, 0x7f);
+  for (let y = 0; y < height; y++) rows[y * (width * 3 + 1)] = 0;
+  return Buffer.concat([Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]), chunk('IHDR', ihdr), chunk('IDAT', deflateSync(rows)), chunk('IEND', Buffer.alloc(0))]);
+}
+
+async function upload(token: string, channelId: string, filename: string, body: Buffer): Promise<string> {
+  const res = await fetch(`${e.mmUrl}/api/v4/files?${new URLSearchParams({ channel_id: channelId, filename })}`, {
+    method: 'POST', headers: { authorization: `Bearer ${token}`, 'content-type': 'application/octet-stream' }, body: new Uint8Array(body),
+  });
+  if (!res.ok) throw new Error(`upload ${filename} -> ${res.status} ${await res.text()}`);
+  return ((await res.json()) as { file_infos: { id: string }[] }).file_infos[0].id;
 }
 
 const nextCursor = (r: Result) => /next_cursor: (\S+)/.exec(r.content[0].text)?.[1];
@@ -352,6 +375,45 @@ describe('read tools against the local Mattermost', () => {
       expect(r.isError).toBeFalsy();
       const minute = new Date(Math.floor(end / 60) * 60_000).toISOString().slice(0, 19);
       expect(r.content[0].text).toContain(`在席: 取り込み中（終了: ${minute}Z | `);
+    });
+  });
+
+  describe('attachments and get_file', () => {
+    test('read_channel lists a PNG attached to a post, and get_file returns its preview as a PNG image', async () => {
+      const fileId = await upload(aliceMm, channel.id, `${TAG}.png`, png(40, 30));
+      await mmApi(aliceMm, 'POST', '/posts', { channel_id: channel.id, message: `${TAG} with png`, file_ids: [fileId] });
+      const list = await call('bob', 'read_channel', { channel: channel.id, limit: 1 });
+      expect(list.isError).toBeFalsy();
+      const line = list.content[0].text.split('\n').find((l) => l.includes(fileId));
+      expect(line).toContain(`${TAG}.png`);
+      expect(line).toContain('image/png');
+      expect(line).toContain('40x30');
+
+      const r = await call('bob', 'get_file', { file_id: fileId });
+      expect(r.isError).toBeFalsy();
+      const img = r.content.find((c) => c.type === 'image');
+      expect(img?.mimeType).toBe('image/png');
+      expect(Buffer.from(img!.data!, 'base64').subarray(0, 8)).toEqual(png(1, 1).subarray(0, 8));
+      expect(r.content.find((c) => c.type === 'text')?.text).toContain(`${TAG}.png`);
+    });
+
+    test('get_file returns only the information of a PDF', async () => {
+      const fileId = await upload(aliceMm, channel.id, `${TAG}.pdf`, Buffer.from('%PDF-1.4\n%%EOF\n'));
+      await mmApi(aliceMm, 'POST', '/posts', { channel_id: channel.id, message: `${TAG} with pdf`, file_ids: [fileId] });
+      const r = await call('bob', 'get_file', { file_id: fileId });
+      expect(r.isError).toBeFalsy();
+      expect(r.content.map((c) => c.type)).toEqual(['text']);
+      expect(r.content[0].text).toContain(`${TAG}.pdf`);
+      expect(r.content[0].text).toContain('application/pdf');
+    });
+
+    test('get_file refuses a file in a private channel the caller has not joined', async () => {
+      const priv = e.teams.a.privateChannelId!;
+      const fileId = await upload(aliceMm, priv, `${TAG}-private.png`, png(4, 4));
+      await mmApi(aliceMm, 'POST', '/posts', { channel_id: priv, message: `${TAG} private png`, file_ids: [fileId] });
+      const r = await call('bob', 'get_file', { file_id: fileId });
+      expect(r.isError).toBe(true);
+      expect(r.content[0].text).toBe('このファイルを見る権限がありません');
     });
   });
 

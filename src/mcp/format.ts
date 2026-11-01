@@ -2,7 +2,11 @@ export class InputError extends Error {
   name = 'InputError';
 }
 
-export type MmPost = { id: string; user_id: string; channel_id: string; root_id: string; message: string; create_at: number };
+export type MmFileInfo = { id: string; name: string; mime_type: string; size: number; width?: number; height?: number };
+export type MmPost = {
+  id: string; user_id: string; channel_id: string; root_id: string; message: string; create_at: number;
+  file_ids?: string[]; metadata?: { files?: MmFileInfo[] };
+};
 export type PostCtx = { baseUrl: string; teamName: string; usernames: Map<string, string>; channel?: string };
 
 export const BAD_CURSOR = 'cursor が不正です。前回の出力の next_cursor をそのまま渡してください。';
@@ -38,6 +42,14 @@ export function localTime(tz: string, nowMs: number): string | undefined {
   return `${p.year}-${p.month}-${p.day}T${p.hour}:${p.minute}:${p.second}${offset}`;
 }
 
+export const fileLine = (f: MmFileInfo): string =>
+  `${f.name}（file_id: ${f.id}、種類: ${f.mime_type || '不明'}、${f.size} バイト${f.width && f.height ? `、${f.width}x${f.height}` : ''}）`;
+
+function attachmentLines(p: MmPost): string[] {
+  if (p.metadata?.files?.length) return p.metadata.files.map((f) => `添付: ${fileLine(f)}`);
+  return p.file_ids?.length ? [`添付 ${p.file_ids.length} 件（get_post で確認できます）`] : [];
+}
+
 export function formatPost(p: MmPost, ctx: PostCtx): string {
   const who = ctx.usernames.get(p.user_id);
   return [
@@ -45,6 +57,7 @@ export function formatPost(p: MmPost, ctx: PostCtx): string {
     `${who ? `@${who}` : `user_id: ${p.user_id}`} | ${formatTime(p.create_at)}`,
     ...(ctx.channel ? [ctx.channel] : []),
     truncate(p.message).text,
+    ...attachmentLines(p),
     `${ctx.baseUrl}/${ctx.teamName}/pl/${p.id}`,
   ].join('\n');
 }

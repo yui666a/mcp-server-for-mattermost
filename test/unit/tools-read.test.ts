@@ -6,6 +6,7 @@ let routes: Record<string, Route>;
 let bodies: Record<string, unknown>;
 let hits: string[];
 let urls: string[];
+let last: { content: { type: string; text?: string; data?: string; mimeType?: string }[] };
 
 beforeEach(() => {
   vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
@@ -38,6 +39,7 @@ function setup() {
     const r = await ctx.req.post('/mcp').set({ authorization: `Bearer ${accessToken}`, accept: 'application/json, text/event-stream', 'content-type': 'application/json' })
       .send(JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name, arguments: args } }));
     expect(r.body.result.isError ?? false).toBe(isError);
+    last = r.body.result;
     return r.body.result.content[0].text;
   };
 }
@@ -859,5 +861,123 @@ describe('get_mentions', () => {
     routes = base();
     const out = await setup()('get_mentions', { cursor: Buffer.from(JSON.stringify({ page: 1, per_page: 5 })).toString('base64url') }, true);
     expect(out).toContain('cursor が不正です');
+  });
+});
+
+describe('get_file', () => {
+  const F = 'f'.repeat(26);
+  const INFO = `GET /files/${F}/info`;
+  const PREVIEW = `GET /files/${F}/preview`;
+  const PNG = [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a];
+  const JPEG = [0xff, 0xd8, 0xff, 0xe0];
+  const GIF = [...Buffer.from('GIF89a')];
+  const WEBP = [...Buffer.from('RIFF'), 0, 0, 0, 0, ...Buffer.from('WEBP')];
+  const bytes = (head: number[], size = 64) => { const b = new Uint8Array(size); b.set(head); return b; };
+  // Mattermost labels every preview image/jpeg, whatever its format.
+  const preview = (b: Uint8Array<ArrayBuffer>) => () => new Response(b, { headers: { 'content-type': 'image/jpeg' } });
+  const info = (o: Record<string, unknown>) => () => ({ id: F, name: 'shot.png', extension: 'png', mime_type: 'image/png', size: 11393, ...o });
+  const image = () => last.content.find((c) => c.type === 'image');
+  const mmError = (status: number, id: string) => () => Response.json({ id, message: 'm', status_code: status }, { status });
+
+  test('returns a JPEG preview as an MCP image with the file\'s name, type, size and dimensions as text', async () => {
+    const b = bytes(JPEG);
+    routes = { [INFO]: info({ name: 'photo.jpg', mime_type: 'image/jpeg', size: 58626, width: 1920, height: 1080, has_preview_image: true }), [PREVIEW]: preview(b) };
+    const out = await setup()('get_file', { file_id: F });
+    expect(hits).toEqual([INFO, PREVIEW]);
+    expect(image()).toEqual({ type: 'image', data: Buffer.from(b).toString('base64'), mimeType: 'image/jpeg' });
+    for (const s of [F, 'photo.jpg', 'image/jpeg', '58626 バイト', '1920x1080']) expect(out).toContain(s);
+  });
+
+  test.each([['PNG', PNG, 'image/png'], ['GIF', GIF, 'image/gif'], ['WebP', WEBP, 'image/webp']])(
+    'tells a %s preview by its first bytes, not by Mattermost\'s image/jpeg header', async (_, head, mime) => {
+      routes = { [INFO]: info({ width: 200, height: 100, has_preview_image: true }), [PREVIEW]: preview(bytes(head)) };
+      await setup()('get_file', { file_id: F });
+      expect(image()?.mimeType).toBe(mime);
+    });
+
+  test('fetches the preview of a GIF even though Mattermost reports no preview image for it', async () => {
+    routes = { [INFO]: info({ name: 'anim.gif', mime_type: 'image/gif', width: 400, height: 300 }), [PREVIEW]: preview(bytes(JPEG)) };
+    await setup()('get_file', { file_id: F });
+    expect(hits).toContain(PREVIEW);
+    expect(image()?.mimeType).toBe('image/jpeg');
+  });
+
+  test('for a file without width and height (HEIC, PDF), returns only its information without fetching a preview', async () => {
+    routes = { [INFO]: info({ name: 'IMG.heic', mime_type: 'image/heic', size: 900 }) };
+    const out = await setup()('get_file', { file_id: F });
+    expect(hits).toEqual([INFO]);
+    expect(image()).toBeUndefined();
+    for (const s of ['IMG.heic', 'image/heic', '900 バイト']) expect(out).toContain(s);
+  });
+
+  test('when Mattermost has no preview for the file (SVG), returns only its information', async () => {
+    routes = { [INFO]: info({ name: 'a.svg', mime_type: 'image/svg+xml', width: 300, height: 150 }), [PREVIEW]: mmError(400, 'api.file.get_file_preview.no_preview.app_error') };
+    const out = await setup()('get_file', { file_id: F });
+    expect(image()).toBeUndefined();
+    expect(out).toContain('a.svg');
+  });
+
+  test('when the preview bytes are of no known image format, returns only the information', async () => {
+    routes = { [INFO]: info({ width: 200, height: 100 }), [PREVIEW]: preview(bytes([1, 2, 3, 4])) };
+    const out = await setup()('get_file', { file_id: F });
+    expect(image()).toBeUndefined();
+    expect(out).toContain('shot.png');
+  });
+
+  test('fetches a preview whose longer side is exactly 3000px', async () => {
+    routes = { [INFO]: info({ width: 1000, height: 3000 }), [PREVIEW]: preview(bytes(PNG)) };
+    await setup()('get_file', { file_id: F });
+    expect(image()?.mimeType).toBe('image/png');
+  });
+
+  test.each([[1000, 3001], [4000, 6260]])('does not fetch the preview of a %ix%i image, whose preview would be taller than 3000px', async (width, height) => {
+    routes = { [INFO]: info({ width, height }), [PREVIEW]: preview(bytes(PNG)) };
+    const out = await setup()('get_file', { file_id: F });
+    expect(hits).toEqual([INFO]);
+    expect(image()).toBeUndefined();
+    expect(out).toContain('縦横が大きすぎるため');
+  });
+
+  test('a wide image is scaled to 1920px by Mattermost, so its preview is fetched', async () => {
+    routes = { [INFO]: info({ width: 7000, height: 4500 }), [PREVIEW]: preview(bytes(PNG)) };
+    await setup()('get_file', { file_id: F });
+    expect(image()?.mimeType).toBe('image/png');
+  });
+
+  test('returns a preview of 3.75MB, but not a larger one', async () => {
+    routes = { [INFO]: info({ width: 1920, height: 1080 }), [PREVIEW]: preview(bytes(PNG, 3_750_000)) };
+    await setup()('get_file', { file_id: F });
+    expect(image()?.mimeType).toBe('image/png');
+    routes[PREVIEW] = preview(bytes(PNG, 3_750_001));
+    const out = await setup()('get_file', { file_id: F });
+    expect(image()).toBeUndefined();
+    expect(out).toContain('画像が大きすぎるため');
+  });
+
+  test('says the caller may not see the file on a 403', async () => {
+    routes = { [INFO]: mmError(403, 'api.context.permissions.app_error') };
+    expect(await setup()('get_file', { file_id: F }, true)).toBe('このファイルを見る権限がありません');
+  });
+
+  test('says the file is not found on a 404', async () => {
+    routes = { [INFO]: mmError(404, 'app.file_info.get.app_error') };
+    expect(await setup()('get_file', { file_id: F }, true)).toBe('ファイルが見つかりません（投稿が削除されたか、存在しません）');
+  });
+
+  test.each(['..', '.', 'a/b', '%2F', '../../posts/x', '%2e%2e', 'f'.repeat(25)])('rejects the file_id %j without calling Mattermost', async (file_id) => {
+    routes = {};
+    await setup()('get_file', { file_id }, true);
+    expect(hits).toEqual([]);
+  });
+
+  test('does not log the image', async () => {
+    const b = bytes(PNG);
+    b.set(Buffer.from('SECRETPIXELS'), 16);
+    routes = { [INFO]: info({ width: 200, height: 100 }), [PREVIEW]: preview(b) };
+    await setup()('get_file', { file_id: F });
+    const logged = vi.mocked(process.stdout.write).mock.calls.map((c) => String(c[0])).join('');
+    expect(logged).toContain('get_file');
+    expect(logged).not.toContain(Buffer.from(b).toString('base64').slice(16, 40));
+    expect(logged).not.toContain('SECRETPIXELS');
   });
 });
