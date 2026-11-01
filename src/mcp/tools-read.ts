@@ -1,6 +1,8 @@
 import type { McpServer, ToolCallback } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod';
+import { MmError } from '../mattermost/client.ts';
 import { BAD_CURSOR, decodeCursor, encodeCursor, formatPost, InputError, truncate, type MmPost } from './format.ts';
+import { parsePostRef } from './permalink.ts';
 import { myTeams, resolveChannel, resolveUser, teamNameOf, type ChannelRef, type Mm, type MmChannel, type MmTeam, type UserRef } from './resolve.ts';
 import { guarded, text, type ToolContext } from './server.ts';
 
@@ -138,6 +140,30 @@ export function registerReadTools(server: McpServer, ctx: ToolContext): void {
         posts: shown,
         next: more ? { from_post: last.id, from_create_at: last.create_at, per_page: per } : undefined,
       });
+    });
+
+  tool('get_post', '1 件の投稿を読む。post は post_id か、パーマリンクの URL（…/<チーム名>/pl/<post_id>）',
+    { post: z.string().min(1) },
+    async ({ post }, mm) => {
+      const id = parsePostRef(post, base);
+      const p = await mm.call<MmPost & { reply_count?: number }>(uid, 'GET', `/posts/${id}`).catch((e) => {
+        if (e instanceof MmError && e.status === 403) throw new InputError('この投稿を見る権限がありません（参加していない非公開チャンネルなど）');
+        if (e instanceof MmError && e.status === 404) throw new InputError('投稿が見つかりません（削除されたか、存在しません）');
+        throw e;
+      });
+      const raw = await mm.call<MmChannel>(uid, 'GET', `/channels/${p.channel_id}`);
+      const ch: ChannelRef = { id: raw.id, name: raw.name, displayName: raw.display_name, teamId: raw.team_id, teamName: await teamNameOf(mm, uid, raw.team_id) };
+      const users = await usernames(mm, uid, [p]);
+      const replies = p.reply_count ?? 0;
+      // Not using render(): its "no more pages" line means nothing for a single post.
+      return [
+        ...channelLines(ch),
+        formatPost(p, { baseUrl: base, teamName: ch.teamName, usernames: users }),
+        `返信数: ${replies}`,
+        ...(p.root_id ? [`スレッド内の返信です。親 post_id: ${p.root_id}。read_thread でスレッド全体を読めます。`]
+          : replies ? [`返信があります。read_thread に post_id: ${p.id} を渡すと、スレッド全体を読めます。`] : []),
+        ...(truncate(p.message).truncated ? ['（本文を 4000 文字で切りました）'] : []),
+      ].join('\n');
     });
 
   tool('search_channels', '名前でチャンネルを探す（公開チャンネル、参加している非公開チャンネル、DM、グループ DM）',
