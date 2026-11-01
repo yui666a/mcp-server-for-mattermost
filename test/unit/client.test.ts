@@ -337,3 +337,19 @@ test('aborting the caller signal ends the call and frees its limiter slot', asyn
   api = () => Response.json({ ok: true });
   expect(await client.call('u1', 'GET', '/users/me')).toEqual({ ok: true });
 });
+
+test('aborting while waiting on the shared refresh frees the slot at once and the refresh still completes', async () => {
+  store.putMmCred('u1', 'a1', 'r1');
+  api = only(['a2']);
+  let open!: () => void;
+  const gate = new Promise<void>((ok) => { open = ok; });
+  refresh = async () => { await gate; return Response.json({ access_token: 'a2', refresh_token: 'r2' }); };
+  const ac = new AbortController();
+  const running = [1, 2, 3, 4].map(() => failure(client.call('u1', 'GET', '/users/me', undefined, ac.signal)));
+  await vi.waitFor(() => expect(refreshCalls).toEqual(['r1']));
+  ac.abort();
+  for (const e of await Promise.all(running)) expect(e).toBeInstanceOf(UpstreamUnavailable);
+  for (let i = 0; i < 4; i++) limiter.acquire('u1')();
+  open();
+  await vi.waitFor(() => expect(cred()?.access).toBe('a2'));
+});

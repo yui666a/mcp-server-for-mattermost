@@ -1,5 +1,6 @@
 import { expect, test } from 'vitest';
 import { MmError } from '../../src/mattermost/client.ts';
+import { InputError } from '../../src/mcp/format.ts';
 import { Ambiguous, resolveChannel, resolveUser, type Mm } from '../../src/mcp/resolve.ts';
 
 const ME = 'a'.repeat(26);
@@ -71,4 +72,13 @@ test('errors other than not-found while looking up a bare name are not swallowed
     },
   };
   await expect(resolveChannel(mm, ME, 'general-dup')).rejects.toMatchObject({ status: 500 });
+});
+
+test('names that are not plain Mattermost names are rejected before any request', async () => {
+  const { mm, calls } = fake(routes);
+  for (const spec of ['..', '.', 'team-a/..', '../general-dup', 'team-a/.', 'a b', 'team-a/x?y', '@..', '@.', '@bo%2fb', 'gen/eral/dup']) {
+    await expect(resolveChannel(mm, ME, spec), spec).rejects.toBeInstanceOf(InputError);
+  }
+  for (const spec of ['@..', '@.', '@a/b', '@']) await expect(resolveUser(mm, ME, spec), spec).rejects.toBeInstanceOf(InputError);
+  expect(calls.filter((c) => !c.endsWith('/users/me/teams'))).toEqual([]);
 });

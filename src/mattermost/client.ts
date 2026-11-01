@@ -150,20 +150,25 @@ export class MmClient {
     return { ...t, saved: this.store.casMmCred(mmUserId, cred.version, t.access, t.refresh) };
   }
 
-  // The shared refresh is not aborted at this call's deadline: other calls may be waiting on it,
+  // The shared refresh is not aborted at this call's deadline or abort: other calls may be waiting on it,
   // and letting it finish keeps the rotated pair that Mattermost has already issued.
   private async untilDeadline<T>(start: () => Promise<T>, at: Attempt): Promise<T> {
     const ms = this.remaining(at);
     let timer: ReturnType<typeof setTimeout> | undefined;
+    let onAbort: (() => void) | undefined;
     try {
       return await Promise.race([
         start(),
         new Promise<never>((_, fail) => {
           timer = setTimeout(() => fail(new UpstreamUnavailable('call deadline exceeded', at.sent)), ms);
+          onAbort = () => fail(new UpstreamUnavailable('call aborted', at.sent));
+          if (at.signal?.aborted) onAbort();
+          else at.signal?.addEventListener('abort', onAbort, { once: true });
         }),
       ]);
     } finally {
       clearTimeout(timer);
+      if (onAbort) at.signal?.removeEventListener('abort', onAbort);
     }
   }
 
