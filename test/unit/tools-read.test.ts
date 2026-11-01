@@ -241,3 +241,131 @@ describe('list_my_channels', () => {
     expect(out).toBe('cursor が不正です。前回の出力の next_cursor をそのまま渡してください。');
   });
 });
+
+describe('get_channel', () => {
+  const C = 'c'.repeat(26);
+  const T = 't'.repeat(26);
+  const OTHER = 'o'.repeat(26);
+  const DM = 'd'.repeat(26);
+  const BOB = 'b'.repeat(26);
+  const pinned = (n: number, create_at: number) => ({ id: `${String.fromCharCode(96 + n)}`.repeat(26), user_id: 'u1', channel_id: C, root_id: '', message: `pin ${n}`, create_at, is_pinned: true });
+  const [P1, P2, P3] = [pinned(1, 3000), pinned(2, 2000), pinned(3, 2000)];
+  const mmError = (status: number, id = 'x') => () => Response.json({ id, message: 'm', status_code: status }, { status });
+  const base = () => ({
+    [`GET /channels/${C}`]: () => ({ id: C, name: 'town', display_name: 'Town', team_id: T, type: 'O', purpose: '雑談用', header: '仕事の話は #work へ' }),
+    [`GET /teams/${T}`]: () => ({ id: T, name: 'team-a' }),
+    [`GET /channels/${C}/stats`]: () => ({ channel_id: C, member_count: 42, guest_count: 0, pinnedpost_count: 3, files_count: -1 }),
+    // Returned oldest first, as Mattermost does.
+    [`GET /channels/${C}/pinned`]: () => ({ order: [P2.id, P3.id, P1.id], posts: { [P1.id]: P1, [P2.id]: P2, [P3.id]: P3 } }),
+    'POST /users/ids': () => [{ id: 'u1', username: 'alice' }],
+  });
+  const pinIds = (out: string) => [...out.matchAll(/^--- post_id: ([a-z]{26})/gm)].map((m) => m[1]);
+  const cursorIn = (out: string) => /next_cursor: (\S+)/.exec(out)?.[1];
+
+  test('shows the channel and team, kind, purpose, header, member count and the pinned posts newest first (ties by post_id)', async () => {
+    routes = base();
+    const out = await setup()('get_channel', { channel: C });
+    expect(out).toContain(`チャンネル: Town（name: town、channel_id: ${C}）`);
+    expect(out).toContain(`チーム: team-a（team_id: ${T}）`);
+    expect(out).toContain('種類: 公開');
+    expect(out).toContain('目的: 雑談用');
+    expect(out).toContain('ヘッダー: 仕事の話は #work へ');
+    expect(out).toContain('メンバー数: 42');
+    expect(out).toContain('ピン留め: 3 件');
+    expect(pinIds(out)).toEqual([P1.id, P2.id, P3.id]);
+    expect(out).toContain('@alice');
+    expect(out).toContain(`https://mm.example/team-a/pl/${P1.id}`);
+    expect(out).toContain('（続きはありません）');
+    expect(urls).toContain(`GET /channels/${C}/stats?exclude_files_count=true`);
+    expect(hits.filter((h) => h === `GET /channels/${C}`)).toHaveLength(1);
+  });
+
+  test('says when the purpose or header is empty and when nothing is pinned', async () => {
+    routes = {
+      ...base(),
+      [`GET /channels/${C}`]: () => ({ id: C, name: 'town', display_name: 'Town', team_id: T, type: 'P', purpose: '', header: '' }),
+      [`GET /channels/${C}/pinned`]: () => ({ order: [], posts: {} }),
+    };
+    const out = await setup()('get_channel', { channel: C });
+    expect(out).toContain('種類: 非公開');
+    expect(out).toContain('目的: なし');
+    expect(out).toContain('ヘッダー: なし');
+    expect(out).toContain('ピン留め: 0 件');
+    expect(out).toContain('ピン留めされた投稿はありません。');
+    expect(hits).not.toContain('POST /users/ids');
+  });
+
+  test('when /stats is refused (a public channel the user has not joined), says the member count is unavailable and returns the rest', async () => {
+    routes = { ...base(), [`GET /channels/${C}/stats`]: mmError(403) };
+    const out = await setup()('get_channel', { channel: C });
+    expect(out).toContain('メンバー数: 参加していないため取得できません');
+    expect(out).toContain('目的: 雑談用');
+    expect(pinIds(out)).toEqual([P1.id, P2.id, P3.id]);
+  });
+
+  test('pages through the pinned posts with pinned_limit; a cursor gives only the rest of the pinned posts', async () => {
+    routes = base();
+    const call = setup();
+    const first = await call('get_channel', { channel: C, pinned_limit: 2 });
+    expect(pinIds(first)).toEqual([P1.id, P2.id]);
+    expect(first).toContain('ピン留め: 3 件');
+    hits = [];
+    const second = await call('get_channel', { channel: C, pinned_limit: 50, cursor: cursorIn(first) });
+    expect(pinIds(second)).toEqual([P3.id]);
+    expect(second).toContain(`channel_id: ${C}`);
+    expect(second).not.toContain('目的');
+    expect(second).not.toContain('メンバー数');
+    expect(second).toContain('（続きはありません）');
+    expect(hits).not.toContain(`GET /channels/${C}/stats`);
+  });
+
+  test('rejects a cursor issued for another channel', async () => {
+    routes = { ...base(), [`GET /channels/${OTHER}`]: () => ({ id: OTHER, name: 'other', display_name: 'Other', team_id: T, type: 'O', purpose: '', header: '' }) };
+    const call = setup();
+    const first = await call('get_channel', { channel: C, pinned_limit: 1 });
+    const out = await call('get_channel', { channel: OTHER, cursor: cursorIn(first) }, true);
+    expect(out).toBe('cursor が不正です。前回の出力の next_cursor をそのまま渡してください。');
+  });
+
+  test('shows a DM given as @username with its kind', async () => {
+    const name = [BOB, 'u1'].sort().join('__');
+    routes = {
+      ...base(),
+      'GET /users/me/teams': () => [{ id: T, name: 'team-a' }],
+      'GET /users/username/bob': () => ({ id: BOB, username: 'bob' }),
+      [`GET /teams/${T}/channels/name/${name}`]: () => ({ id: DM, name, display_name: '', team_id: '', type: 'D', purpose: '', header: '' }),
+      [`GET /channels/${DM}/stats`]: () => ({ channel_id: DM, member_count: 2 }),
+      [`GET /channels/${DM}/pinned`]: () => ({ order: [], posts: {} }),
+    };
+    const out = await setup()('get_channel', { channel: '@bob' });
+    expect(out).toContain(`チャンネル: @bob（name: ${name}、channel_id: ${DM}）`);
+    expect(out).toContain('種類: DM');
+    expect(out).toContain('メンバー数: 2');
+    expect(hits).not.toContain(`GET /channels/${DM}`);
+  });
+
+  test('turns 403 from fetching the channel into a permission message', async () => {
+    routes = { ...base(), [`GET /channels/${C}`]: mmError(403) };
+    expect(await setup()('get_channel', { channel: C }, true)).toBe('このチャンネルを見る権限がありません（参加していない非公開チャンネルなど）');
+  });
+
+  test('turns 404 from fetching the channel, by id or by team/name, into a not-found message', async () => {
+    routes = { ...base(), [`GET /channels/${C}`]: mmError(404) };
+    const call = setup();
+    expect(await call('get_channel', { channel: C }, true)).toBe('チャンネルが見つかりません');
+    routes['GET /teams/name/team-a/channels/name/nope'] = mmError(404, 'app.channel.get_by_name.missing.app_error');
+    expect(await call('get_channel', { channel: 'team-a/nope' }, true)).toBe('チャンネルが見つかりません');
+  });
+
+  test('does not turn errors about the user or the team into the channel messages', async () => {
+    routes = {
+      ...base(),
+      'GET /users/me/teams': () => [{ id: T, name: 'team-a' }],
+      'GET /users/username/nobody': mmError(404, 'app.user.missing_account.const'),
+      'GET /teams/name/no-team/channels/name/town': mmError(404, 'app.team.get_by_name.missing.app_error'),
+    };
+    const call = setup();
+    expect(await call('get_channel', { channel: '@nobody' }, true)).toContain('Mattermost がエラーを返しました（404）');
+    expect(await call('get_channel', { channel: 'no-team/town' }, true)).toContain('Mattermost がエラーを返しました（404）');
+  });
+});
