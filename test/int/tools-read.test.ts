@@ -187,6 +187,78 @@ describe('read tools against the local Mattermost', () => {
     expect(r.content[0].text).toContain(`read_thread に post_id: ${root}`);
   });
 
+  describe('list_my_channels', () => {
+    const ids = (r: Result) => [...r.content[0].text.matchAll(/channel_id: ([a-z0-9]{26})/g)].map((m) => m[1]);
+    const lineOf = (text: string, id: string) => text.split('\n').find((l) => l.includes(`channel_id: ${id}`));
+    const listAll = async (args: Record<string, unknown>) => {
+      let text = '';
+      const seen: string[] = [];
+      let cursor: string | undefined;
+      let pages = 0;
+      do {
+        const r = await call('alice', 'list_my_channels', { ...args, ...(cursor ? { cursor } : {}) });
+        expect(r.isError).toBeFalsy();
+        expect(r.content[0].text).not.toContain('取り直してください');
+        text += `${r.content[0].text}\n`;
+        seen.push(...ids(r));
+        cursor = nextCursor(r);
+        pages++;
+      } while (cursor);
+      return { text, seen, pages };
+    };
+    const created: string[] = [];
+    let pub: { id: string };
+    let priv: { id: string };
+    let dm: { id: string };
+    let gm: { id: string };
+    let archived: { id: string };
+
+    beforeAll(async () => {
+      const admin = await mmApi<{ id: string }>(e.adminToken, 'GET', '/users/me');
+      const mk = async (name: string, type: 'O' | 'P') => {
+        const c = await mmApi<{ id: string }>(aliceMm, 'POST', '/channels', { team_id: e.teams.a.id, name: `${name}-${TAG}`, display_name: `${name} ${TAG}`, type });
+        created.push(c.id);
+        return c;
+      };
+      pub = await mk('t7-pub', 'O');
+      priv = await mk('t7-priv', 'P');
+      archived = await mk('t7-arch', 'O');
+      await mmApi(e.adminToken, 'DELETE', `/channels/${archived.id}`);
+      dm = await mmApi(aliceMm, 'POST', '/channels/direct', [e.users.alice.id, e.users.bob.id]);
+      gm = await mmApi(aliceMm, 'POST', '/channels/group', [e.users.alice.id, e.users.bob.id, admin.id]);
+      await mmApi(aliceMm, 'POST', '/posts', { channel_id: pub.id, message: `${TAG} list_my_channels` });
+    });
+
+    afterAll(async () => {
+      for (const id of created.filter((x) => x !== archived.id)) await mmApi(e.adminToken, 'DELETE', `/channels/${id}`);
+    });
+
+    test('lists alice\'s public, private, DM and group DM channels, but not an archived one', async () => {
+      const { text } = await listAll({ limit: 200 });
+      expect(lineOf(text, pub.id)).toContain(`${e.teams.a.name}/t7-pub-${TAG}（表示名: t7-pub ${TAG}、種類: 公開`);
+      expect(lineOf(text, priv.id)).toContain('種類: 非公開');
+      expect(lineOf(text, dm.id)).toContain(`@${e.users.bob.username}（表示名: @${e.users.bob.username}、種類: DM`);
+      expect(lineOf(text, gm.id)).toContain('種類: グループ DM');
+      expect(text).not.toContain(archived.id);
+    });
+
+    test('filters by types', async () => {
+      const { text, seen } = await listAll({ types: ['dm', 'group_dm'], limit: 200 });
+      expect(seen).toContain(dm.id);
+      expect(seen).toContain(gm.id);
+      expect(seen).not.toContain(pub.id);
+      expect(seen).not.toContain(priv.id);
+      expect(text).not.toMatch(/種類: (公開|非公開)、/);
+    });
+
+    test('paging to the end yields exactly the channels of GET /users/me/channels', async () => {
+      const all = await mmApi<{ id: string }[]>(aliceMm, 'GET', '/users/me/channels');
+      const { seen, pages } = await listAll({ limit: Math.min(200, Math.ceil(all.length / 2)) });
+      expect(pages).toBeGreaterThan(1);
+      expect(new Set(seen)).toEqual(new Set(all.map((c) => c.id)));
+    });
+  });
+
   test('Mattermost API calls per tool are counted by the limiter', async () => {
     const acquire = vi.spyOn(limiter, 'acquire');
     const charge = vi.spyOn(limiter, 'charge');
