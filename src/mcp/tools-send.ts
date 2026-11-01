@@ -57,12 +57,12 @@ export async function sendMessage(mm: Mm, store: Store, uid: string, baseUrl: st
   return done(post.id, '投稿しました。');
 }
 
-type Wording = { id?: [status: number, id: string, text: string][]; status?: [status: number, text: string][] };
+export type Wording = { id?: [status: number, id: string, text: string][]; status?: [status: number, text: string][] };
 
 // Not matching on status first: one status (403, 404) covers causes that need different wording, told apart only by the id.
 // Not matching on the id alone: Mattermost reuses an id across statuses (app.post.get.app_error is also a 400 from UpdatePost and DeletePost).
 // Not an object keyed by id: an id such as "constructor" would hit Object.prototype.
-async function worded<T>(p: Promise<T>, w: Wording): Promise<T> {
+export async function worded<T>(p: Promise<T>, w: Wording): Promise<T> {
   try {
     return await p;
   } catch (e) {

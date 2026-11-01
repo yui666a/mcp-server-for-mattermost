@@ -394,3 +394,28 @@ test('aborting while waiting on the shared refresh frees the slot at once and th
   open();
   await vi.waitFor(() => expect(cred()?.access).toBe('a2'));
 });
+
+test('callBytes returns the response body as bytes, after a 401 → refresh → retry, within one limiter slot', async () => {
+  store.putMmCred('u1', 'a1', 'r1');
+  const acquire = vi.spyOn(limiter, 'acquire');
+  const png = Uint8Array.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0, 255]);
+  api = (access) => (access === 'a2'
+    ? new Response(png, { headers: { 'content-type': 'image/jpeg' } })
+    : mmError(401, 'api.context.session_expired.app_error'));
+  expect(await client.callBytes('u1', '/files/f1/preview')).toEqual(png);
+  expect(refreshCalls).toEqual(['r1']);
+  expect(apiCalls.map((c) => [c.access, c.req.method, c.req.url])).toEqual([
+    ['a1', 'GET', 'http://mm.internal/api/v4/files/f1/preview'],
+    ['a2', 'GET', 'http://mm.internal/api/v4/files/f1/preview'],
+  ]);
+  expect(acquire).toHaveBeenCalledTimes(1);
+  expect(cred()).toMatchObject({ access: 'a2', refresh: 'r2' });
+});
+
+test('callBytes reads the id of a 4xx JSON error into an MmError', async () => {
+  store.putMmCred('u1', 'a1', 'r1');
+  api = () => mmError(400, 'api.file.get_file_preview.no_preview.app_error');
+  const e = await failure(client.callBytes('u1', '/files/f1/preview'));
+  expect(e).toBeInstanceOf(MmError);
+  expect(e).toMatchObject({ status: 400, id: 'api.file.get_file_preview.no_preview.app_error', sent: true });
+});

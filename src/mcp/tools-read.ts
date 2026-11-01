@@ -1,19 +1,41 @@
 import type { McpServer, ToolCallback } from '@modelcontextprotocol/sdk/server/mcp.js';
+import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
 import { z } from 'zod';
-import { MmError } from '../mattermost/client.ts';
-import { BAD_CURSOR, decodeCursor, encodeCursor, formatPost, formatTime, InputError, localTime, truncate, type MmPost } from './format.ts';
+import { MmError, type MmClient } from '../mattermost/client.ts';
+import { BAD_CURSOR, decodeCursor, encodeCursor, fileLine, formatPost, formatTime, InputError, localTime, truncate, type MmFileInfo, type MmPost } from './format.ts';
 import { pageCursor, paginate } from './paging.ts';
 import { mentionsMe, mentionTerms, type MentionUser } from './mentions.ts';
 import { parsePostRef } from './permalink.ts';
 import { ChannelFetchError, myTeams, resolveChannel, resolveUser, teamNameOf, type ChannelRef, type Mm, type MmChannel, type MmTeam, type UserRef } from './resolve.ts';
 import { guarded, text, type ToolContext } from './server.ts';
+import { worded, type Wording } from './tools-send.ts';
 
 type PostList = { order: string[]; posts: Record<string, MmPost>; has_next?: boolean | null };
 type Page = { lines: string[]; next?: object; posts?: MmPost[]; notes?: string[] };
 
+type ReadMm = Mm & Pick<MmClient, 'callBytes'>;
+
 const MM_SEARCH_CAP = 100;
 const JST_OFFSET_SEC = 9 * 3600;
 const DAY_MS = 86_400_000;
+const PREVIEW_MAX_WIDTH = 1920;
+const IMAGE_MAX_SIDE = 3000;
+// Decimal MB rather than MiB: base64 of 3.75e6 bytes is 5e6, inside a 5MB request limit whichever unit it means.
+const IMAGE_MAX_BYTES = 3_750_000;
+const FILE_WORDING: Wording = {
+  id: [[404, 'app.file_info.get.app_error', 'ファイルが見つかりません（投稿が削除されたか、存在しません）']],
+  status: [[403, 'このファイルを見る権限がありません']],
+};
+
+// Not trusting Content-Type: Mattermost labels every preview image/jpeg, PNG ones included.
+function imageType(b: Uint8Array): string | undefined {
+  const at = (off: number, sig: number[]) => sig.every((x, i) => b[off + i] === x);
+  if (at(0, [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a])) return 'image/png';
+  if (at(0, [0xff, 0xd8, 0xff])) return 'image/jpeg';
+  if (at(0, [0x47, 0x49, 0x46, 0x38])) return 'image/gif';
+  if (at(0, [0x52, 0x49, 0x46, 0x46]) && at(8, [0x57, 0x45, 0x42, 0x50])) return 'image/webp';
+  return undefined;
+}
 
 const jstDay = (ms: number) => new Date(ms + JST_OFFSET_SEC * 1000).toISOString().slice(0, 10);
 const nextDay = (day: string) => new Date(Date.parse(day) + DAY_MS).toISOString().slice(0, 10);
@@ -116,11 +138,12 @@ export function registerReadTools(server: McpServer, ctx: ToolContext): void {
   const uid = ctx.mmUserId;
   const base = ctx.cfg.mmBrowserUrl;
 
-  function tool<S extends z.ZodRawShape>(name: string, description: string, inputSchema: S, fn: (args: z.infer<z.ZodObject<S>>, mm: Mm) => Promise<string>) {
+  function tool<S extends z.ZodRawShape>(name: string, description: string, inputSchema: S, fn: (args: z.infer<z.ZodObject<S>>, mm: ReadMm) => Promise<string | CallToolResult>) {
     server.registerTool(name, { description, inputSchema, annotations: { readOnlyHint: true } },
       guarded(ctx, name, async (args: z.infer<z.ZodObject<S>>, extra: { signal: AbortSignal }) => {
-        const mm: Mm = { call: (u, m, p, b) => ctx.mm.call(u, m, p, b, extra.signal) };
-        return text(await fn(args, mm));
+        const mm: ReadMm = { call: (u, m, p, b) => ctx.mm.call(u, m, p, b, extra.signal), callBytes: (u, p) => ctx.mm.callBytes(u, p, extra.signal) };
+        const r = await fn(args, mm);
+        return typeof r === 'string' ? text(r) : r;
       // Cast rather than typed directly: the SDK's callback type is a conditional type TypeScript cannot resolve for a generic shape.
       }) as unknown as ToolCallback<S>);
   }
@@ -219,6 +242,28 @@ export function registerReadTools(server: McpServer, ctx: ToolContext): void {
           : replies ? [`返信があります。read_thread に post_id: ${p.id} を渡すと、スレッド全体を読めます。`] : []),
         ...(truncate(p.message).truncated ? ['（本文を 4000 文字で切りました）'] : []),
       ].join('\n');
+    });
+
+  tool('get_file', '投稿に添付されたファイルを読む。画像なら縮小版（プレビュー）を画像として返し、画像でなければ名前・種類・大きさだけを返す。file_id は投稿の「添付:」の行にある',
+    { file_id: z.string().regex(/^[A-Za-z0-9]{26}$/) },
+    async ({ file_id }, mm) => {
+      const f = await worded(mm.call<MmFileInfo>(uid, 'GET', `/files/${file_id}/info`), FILE_WORDING);
+      const about = `ファイル: ${fileLine(f)}`;
+      // Not filtering on mime_type or has_preview_image: Mattermost decodes by content, and a GIF has a preview despite has_preview_image false.
+      if (!f.width || !f.height) return about;
+      const w = Math.min(f.width, PREVIEW_MAX_WIDTH);
+      if (Math.max(w, Math.round((f.height * w) / f.width)) > IMAGE_MAX_SIDE) {
+        return `${about}\n縦横が大きすぎるため画像は返しません（プレビューの長い辺が ${IMAGE_MAX_SIDE}px を超えます）。`;
+      }
+      const b = await worded(mm.callBytes(uid, `/files/${file_id}/preview`), FILE_WORDING).catch((e) => {
+        if (e instanceof MmError && e.status === 400 && e.id === 'api.file.get_file_preview.no_preview.app_error') return undefined;
+        throw e;
+      });
+      if (!b) return `${about}\nMattermost がプレビューを作らない形式のため、画像は返しません。`;
+      const mimeType = imageType(b);
+      if (!mimeType) return `${about}\nプレビューの形式を判定できないため、画像は返しません。`;
+      if (b.length > IMAGE_MAX_BYTES) return `${about}\n画像が大きすぎるため返しません（プレビューが ${b.length} バイト）。`;
+      return { content: [{ type: 'text', text: about }, { type: 'image', data: Buffer.from(b).toString('base64'), mimeType }] };
     });
 
   tool('search_channels', '名前でチャンネルを探す（公開チャンネル、参加している非公開チャンネル、DM、グループ DM）',
