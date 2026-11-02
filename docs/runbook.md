@@ -216,7 +216,8 @@ curl -s https://mattermost.example.com/.well-known/oauth-authorization-server/mc
 
 MCP クライアントからつなぐ。作業者のアカウントで、claude.ai のカスタムコネクタ、Claude Code、Codex CLI のそれぞれから `https://mattermost.example.com/mcp` に接続する。
 
-- 読み取り系の 6 ツール（`search_posts`、`read_channel`、`read_thread`、`search_channels`、`search_users`、`get_user`）を 1 回ずつ呼び、エラーにならない
+- 読み取り系の 11 ツール（`search_posts`、`read_channel`、`read_thread`、`search_channels`、`search_users`、`get_user`、`get_post`、`list_my_channels`、`get_channel`、`get_unreads`、`get_mentions`）を 1 回ずつ呼び、エラーにならない
+  - `get_unreads` は、出力の先頭に CRT の判定の行（`スレッドの折りたたみ（CRT）: 有効（サーバー設定: …）` など）が出る
 - `send_message` は作業者自身の DM（`@<作業者のユーザー名>`）にだけ投稿する。他のチャンネルや利用者には投稿しない
 
 取り消しと再ログインを確かめる。クライアントは 1 つでよい。
@@ -483,9 +484,9 @@ docker compose exec mcp node src/admin.ts list-clients | wc -l
 | `/mcp/healthz` | |
 | 本番での確認: 保護リソースと認可サーバーのメタデータ | |
 | 本番での確認: 既存の利用（ログイン、投稿、WebSocket、Calls） | |
-| 本番での確認: claude.ai から読み取り系 6 ツール | |
-| 本番での確認: Claude Code から読み取り系 6 ツール | |
-| 本番での確認: Codex CLI から読み取り系 6 ツール | |
+| 本番での確認: claude.ai から読み取り系 11 ツール | |
+| 本番での確認: Claude Code から読み取り系 11 ツール | |
+| 本番での確認: Codex CLI から読み取り系 11 ツール | |
 | 本番での確認: `send_message`（作業者自身の DM） | |
 | 本番での確認: 許可の取り消し → 再ログインのエラー → 再ログインの要求 → 再ログイン（使ったクライアント） | |
 | 本番での確認: Cloud Logging の `tool_call`（本文・検索語・トークンを含まない） | |

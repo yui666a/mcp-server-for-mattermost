@@ -76,7 +76,7 @@ export function intApp(extraEnv: Record<string, string> = {}, storeNow: () => nu
   });
   const store = new Store(openDb(':memory:'), config.encKey, storeNow, config.accessTokenTtlSec);
   const deps = { fetch, now: Date.now };
-  const limiter = new Limiter({ perUserConcurrency: 4, globalConcurrency: 16, perUserPerMin: 120, globalPerMin: 600 }, Date.now);
+  const limiter = new Limiter({ perUserConcurrency: 4, globalConcurrency: 16, perUserPerMin: 300, globalPerMin: 600 }, Date.now);
   const mm = new MmClient(config, store, limiter, deps);
   return { config, store, limiter, req: request(createApp({ config, store, deps, mm })) };
 }
