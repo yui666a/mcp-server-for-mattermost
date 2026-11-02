@@ -47,7 +47,7 @@ export type PostClaim =
 export type UploadTarget = { mmUserId: string; channelId: string };
 export type UploadedFile = { fileId: string; channelId: string; postId: string | null };
 
-export type ScheduledStatus ='pending' | 'sending' | 'posted' | 'failed';
+export type ScheduledStatus = 'pending' | 'sending' | 'posted' | 'failed';
 export type Scheduled = {
   id: string; channelId: string; rootId: string; message: string | undefined; scheduledAt: number;
   status: ScheduledStatus; postId: string | null; error: string | null;
