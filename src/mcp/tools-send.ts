@@ -363,7 +363,7 @@ export async function prepareUpload(mm: Mm, store: Store, uid: string, publicUrl
   if (!token) throw new InputError(`使われていないアップロード URL が ${MAX_OPEN_UPLOAD_URLS} 件あります。それを使うか、10 分の期限が切れるのを待ってください。`);
   const limit = maxBytes % MiB ? `${maxBytes} バイト` : `${maxBytes / MiB}MiB`;
   return text([
-    `アップロード用の URL を発行しました。10 分間、1 回だけ使えます（1 回で ${MAX_UPLOAD_FILES} 件、合計 ${limit} まで）。`,
+    `アップロード用の URL を発行しました。10 分間、1 回だけ使えます（1 回で ${MAX_UPLOAD_FILES} 件まで、送る本文は multipart の枠を含めて ${limit} まで）。`,
     `投稿先: ${ch.displayName || ch.name}（channel_id: ${ch.id}）`,
     '実行する前に、送るファイルのパスと投稿先を利用者に示して、確認を取ってください。',
     '',

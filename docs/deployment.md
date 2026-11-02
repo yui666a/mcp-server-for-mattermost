@@ -97,7 +97,7 @@ unset MM_ADMIN_TOKEN
 | `ACCESS_TOKEN_TTL_SEC` | | `3600` | MCP のアクセストークンの有効期限（秒）。リフレッシュの確認のときにだけ短くする |
 | `EXTRA_REDIRECT_URIS` | | | 追加で登録を許すリダイレクト URI（カンマ区切り、完全一致）。claude.ai、claude.com、ループバックは既定で許可している |
 | `EXTRA_ALLOWED_ORIGINS` | | | `/mcp` で追加で許す `Origin`（カンマ区切り）。既定は `https://claude.ai` と `https://claude.com`。`Origin` の無い要求（CLI）は検査しない |
-| `UPLOAD_MAX_BYTES` | | `20971520`（20MiB） | `prepare_upload` の URL へ 1 回に送れる要求の本文の上限（バイト）。リバースプロキシの `/mcp/upload/` の本文の上限は、これより少し大きくする |
+| `UPLOAD_MAX_BYTES` | | `10485760`（10MiB） | `prepare_upload` の URL へ 1 回に送れる要求の本文の上限（バイト）。multipart の枠を含めた本文全体で数える。リバースプロキシの `/mcp/upload/` の本文の上限は、これに 1MiB を足した値にする |
 
 `TOKEN_ENC_KEY` は作り直さない。
 変えると保存済みの Mattermost のトークンが読めなくなって全員が再ログインになり、待機中の予約は本文を復号できずに失敗になる。
@@ -153,7 +153,7 @@ docker compose up -d --build
 docker compose ps    # healthy になるまで待つ（healthcheck の間隔は既定の 30 秒）
 ```
 
-- リソースの上限は、6 人が全体の上限まで呼び続けた負荷でメモリ最大 86 MiB だった値に余裕を持たせたもの（[measurements.md の「負荷」](measurements.md#負荷)）。`prepare_upload` の URL へのアップロードは、要求の本文とファイルをメモリに置き、全体で同時に 2 件まで処理する。`UPLOAD_MAX_BYTES` を既定より上げるなら `mem_limit` も上げる
+- リソースの上限は、6 人が全体の上限まで呼び続けた負荷でメモリ最大 86 MiB だった値に余裕を持たせたもの（[measurements.md の「負荷」](measurements.md#負荷)）。`prepare_upload` の URL へのアップロードは、要求の本文とファイルをメモリに置き、全体で同時に 1 件だけ処理する。既定の 10MiB の本文を送ったとき、メモリの使用量は約 80MB 増えた（本文の約 8 倍）。`UPLOAD_MAX_BYTES` を既定より上げるなら、その 8 倍を目安に `mem_limit` も上げる
 - MCP サーバーは 1 プロセスで動かす。予約投稿の二重実行の防止と、トークンのリフレッシュの直列化はプロセスの中で行っているため、同じ SQLite ファイルに複数のプロセスを向けない
 - `SIGTERM` を受けると新しい接続を断り、処理中の要求が終わってから終了コード 0 で止まる
 
@@ -170,7 +170,7 @@ MCP サーバーへ送るパスは次の 4 つ。別のホストに置くなら�
 
 リバースプロキシには次を設定する。
 
-- **要求本文の上限**: 1 MB。MCP サーバー自身も `/mcp` の本文を 1 MiB で断る。添付の上限（128KiB）は、テキストが JSON のエスケープで最大 6 倍に膨らんでも最長の本文と合わせてこの 1 MB に収まるように決めている。`/mcp/upload/` だけは `UPLOAD_MAX_BYTES` に multipart の枠の分を足した値（既定の 20MiB なら 21 MB）に上げる。上げるのはこのパスだけにして、MCP の通常の経路は 1 MB のままにする。リバースプロキシの上限の方が小さいと、利用者には MCP サーバーの説明の代わりにリバースプロキシの 413 が返る
+- **要求本文の上限**: 1 MB。MCP サーバー自身も `/mcp` の本文を 1 MiB で断る。添付の上限（128KiB）は、テキストが JSON のエスケープで最大 6 倍に膨らんでも最長の本文と合わせてこの 1 MB に収まるように決めている。`/mcp/upload/` だけは `UPLOAD_MAX_BYTES` に 1MiB を足した値（既定なら 11 MB）に上げる。上げるのはこのパスだけにして、MCP の通常の経路は 1 MB のままにする。MCP サーバーは、上限を 1MiB まで超えた本文は読み切ってから 413 と送り直し方の説明を返し、それより大きい本文は読まずに接続を閉じる。そのため、リバースプロキシの上限が小さいと利用者には説明の無いリバースプロキシの 413 が返り、大きいと送信中に接続が切れて 502 になりうる
 - **キャッシュとバッファリングの無効化**: Mattermost 向けの `location /` のキャッシュを MCP のパスに当てない
 - **OAuth のエンドポイントへの IP ごとのレート制限**: 登録エンドポイントは認証なしで公開されるので、第三者が登録を積み上げられる。MCP サーバーは接続元 IP を見ないので、制限はリバースプロキシでかける。Express はパスの大文字小文字と末尾のスラッシュを区別しないため、`/mcp/oauth/` 以下を大文字小文字を無視する一致で受けて、変形したパスも枠に入れる。`/mcp` 自体には IP ごとの制限をかけない。claude.ai からの要求は Anthropic の共有の送信元から来るため、全利用者が 1 つの枠を分け合ってしまう（ツールの呼び出しは MCP サーバーの中で利用者ごとに制限している）。同じ理由で、OAuth のエンドポイントの枠も claude.ai の全利用者が 1 つを分け合うので、claude.ai からの接続で 429 が出るなら枠を広げる
 - **TLS 1.3 の 0-RTT（Early Data）の無効化**: 0-RTT で送られた要求は再送（リプレイ）されうる。`send_message` の二重投稿や、リフレッシュ要求の再送によるリフレッシュトークン再利用検知の誤発火（その grant のトークンがすべて失効する）を招く。0-RTT が `server` 全体に効く設定なら、Mattermost 本体の POST も同じ危険を抱えるので、全体で無効にしてよい
@@ -208,7 +208,7 @@ server {
         }
         # ~* は、Express がパスの大文字小文字を区別しないため。/MCP/UPLOAD/... も同じ上限で受ける
         location ~* ^/mcp/upload/ {
-            client_max_body_size 21m;
+            client_max_body_size 11m;
             # 最大 5 件を 1 件ずつ Mattermost へ送り、1 件の呼び出しは 25 秒で打ち切る
             proxy_read_timeout 180s;
             proxy_pass http://127.0.0.1:3000;
@@ -225,7 +225,7 @@ location = /mcp { ... }
 location ^~ /mcp/ {
     ...
     location ~* ^/mcp/oauth/ { limit_req zone=mcp_oauth burst=30 nodelay; limit_req_status 429; proxy_pass ...; }
-    location ~* ^/mcp/upload/ { client_max_body_size 21m; proxy_read_timeout 180s; proxy_pass ...; }
+    location ~* ^/mcp/upload/ { client_max_body_size 11m; proxy_read_timeout 180s; proxy_pass ...; }
 }
 location = /.well-known/oauth-protected-resource/mcp { ... }
 location = /.well-known/oauth-authorization-server/mcp { ... }
