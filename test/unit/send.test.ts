@@ -372,6 +372,14 @@ describe('send_message with file_ids from prepare_upload', () => {
     expect((await f.send({ channel: 'team-a/dup', message: 'second', file_ids: [F2] })).isError).toBeFalsy();
   });
 
+  test('does not mark the files as posted when Mattermost dropped some of them', async () => {
+    const f = fakeMm({ keepFiles: (ids) => ids.slice(0, 1) });
+    uploaded(f, [F1, F2]);
+    const r = await f.send({ channel: 'team-a/dup', message: 'dropped', file_ids: [F1, F2] });
+    expect(textOf(r)).toContain('2 件のうち 1 件');
+    expect(f.store.uploadedFiles(UID, [F1, F2]).map((x) => x.postId)).toEqual([null, null]);
+  });
+
   test('allow_duplicate also refuses a file already used by another post', async () => {
     const f = fakeMm();
     uploaded(f, [F1]);
