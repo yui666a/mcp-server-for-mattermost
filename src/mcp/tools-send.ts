@@ -5,12 +5,12 @@ import { randomToken, sha256 } from '../crypto.ts';
 import { MmError, RateLimited } from '../mattermost/client.ts';
 import type { Store } from '../store.ts';
 import { InputError, type MmPost } from './format.ts';
+import { findPosted, postOnce } from './post.ts';
 import { myTeams, resolveChannel, teamNameOf, type Mm, type MmChannel } from './resolve.ts';
 import { guarded, text, type ToolContext } from './server.ts';
 
 type FileArg = { name: string; content_text?: string; content_base64?: string };
 type Args = { channel: string; message: string; root_id?: string; allow_duplicate?: boolean; files?: FileArg[] };
-type PostList = { order: string[]; posts: Record<string, MmPost & { delete_at?: number }> };
 type Upload = { name: string; bytes: Buffer<ArrayBuffer> };
 
 const MAX_MESSAGE = 16383;
@@ -77,10 +77,8 @@ export async function sendMessage(mm: Mm, store: Store, uid: string, baseUrl: st
   }
   const where = `チャンネル: ${ch.displayName || ch.name}（channel_id: ${ch.id}）${rootId ? `、返信先 post_id: ${rootId}` : ''}`;
   const done = (postId: string, note: string) => text([note, `post_id: ${postId}`, where, `${baseUrl}/${ch.teamName}/pl/${postId}`].join('\n'));
-  const body = { channel_id: ch.id, message: args.message, ...(rootId ? { root_id: rootId } : {}) };
-  const withFiles = (ids: string[]) => (ids.length ? { ...body, file_ids: ids } : body);
-  const posted = (post: MmPost) => {
-    const got = post.file_ids?.length ?? 0;
+  const spec = { channelId: ch.id, message: args.message, rootId };
+  const posted = (got: number) => {
     if (!files.length) return '投稿しました。';
     if (got === files.length) return `投稿しました。ファイル ${files.length} 件を添付しました。`;
     return `投稿しました。ただし、添付した ${files.length} 件のうち ${files.length - got} 件を Mattermost が外したため、投稿に付いていません。`;
@@ -92,9 +90,9 @@ export async function sendMessage(mm: Mm, store: Store, uid: string, baseUrl: st
   };
 
   if (args.allow_duplicate) {
-    const ids = await uploadAll();
-    const post = await mm.call<MmPost>(uid, 'POST', '/posts', { ...withFiles(ids), pending_post_id: randomToken() });
-    return done(post.id, posted(post));
+    const r = await postOnce(mm, uid, { ...spec, fileIds: await uploadAll() }, randomToken());
+    if (r.kind !== 'posted') throw r.error;
+    return done(r.postId, posted(r.fileCount));
   }
 
   const claim = store.claimPost({ mmUserId: uid, channelId: ch.id, rootId, bodyHash: bodyHash(args.message, files) });
@@ -102,31 +100,30 @@ export async function sendMessage(mm: Mm, store: Store, uid: string, baseUrl: st
   if (claim.kind === 'inflight') return text(INFLIGHT, true);
   if (claim.kind === 'retry') {
     // Not dropping the claim if this lookup fails: the earlier attempt's outcome is still unknown.
-    const r = await mm.call<PostList>(uid, 'GET', `/channels/${ch.id}/posts?since=${claim.createdAt - 1}`);
-    const prev = Object.values(r.posts).find((p) =>
-      p.user_id === uid && (p.root_id || undefined) === rootId && p.message === args.message && (p.file_ids?.length ?? 0) === files.length
-      && !p.delete_at && p.create_at >= claim.createdAt);
+    const [prev] = await findPosted(mm, uid, { ...spec, fileCount: files.length }, claim.createdAt);
     if (prev) {
-      store.completePost(claim.id, prev.id);
-      return done(prev.id, '同じ本文の投稿が既にあったため、やり直しとみなして投稿していません。');
+      store.completePost(claim.id, prev);
+      return done(prev, '同じ本文の投稿が既にあったため、やり直しとみなして投稿していません。');
     }
   }
   let claimedAt = claim.claimedAt;
-  let post: MmPost;
+  let postId: string, fileCount: number;
   try {
     const ids = await uploadAll();
     // Not posting on the claim taken before the uploads: they can outlast the in-flight grace, and a resend that took the claim over meanwhile posts too.
     const again = store.reclaimPost(claim.id, claimedAt);
     if (again === undefined) return text(INFLIGHT, true);
     claimedAt = again;
-    post = await mm.call<MmPost>(uid, 'POST', '/posts', { ...withFiles(ids), pending_post_id: claim.pendingPostId });
+    const r = await postOnce(mm, uid, { ...spec, fileIds: ids }, claim.pendingPostId);
+    if (r.kind !== 'posted') throw r.error;
+    ({ postId, fileCount } = r);
   } catch (e) {
     // Not leaving out InputError: here it can only be an upload that Mattermost refused, so nothing was posted.
     if (e instanceof MmError || e instanceof InputError || e instanceof RateLimited || (e as { sent?: boolean })?.sent === false) store.dropPost(claim.id, claimedAt);
     throw e;
   }
-  store.completePost(claim.id, post.id);
-  return done(post.id, posted(post));
+  store.completePost(claim.id, postId);
+  return done(postId, posted(fileCount));
 }
 
 export type Wording = { id?: [status: number, id: string, text: string][]; status?: [status: number, text: string][] };
