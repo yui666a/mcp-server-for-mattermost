@@ -46,6 +46,9 @@ docker compose logs --no-log-prefix mcp | grep '"event":"tool_call"'
 |---|---|
 | `tool_call` | ツールの呼び出し。`mm_user_id`、`tool`、`outcome`（`ok`、`tool_error`、`input_error`、`reauthorize`、`rate_limited`、`upstream_unavailable`、`mm_error`、`error`）、`ms` |
 | `scheduled_post` | 予約の投稿の結果。`mm_user_id`、`outcome` |
+| `token_issued`、`token_refreshed` | MCP のトークンの発行とリフレッシュ。`client_id`、`mm_user_id` |
+| `token_reuse_detected` | 使用済みの認可コードかリフレッシュトークンが再び提示され、その grant を失効させた。`client_id`。そのクライアントは再ログインになる。同じクライアントで繰り返すなら、トークンの漏えいか、クライアントが同じリフレッシュトークンを並行して送っていることを疑う |
+| `mm_refresh_config_error` | Mattermost が、再ログインで直るもの以外の 4xx でリフレッシュを断った。`status`、`id`。`model.oauth.validate_grant.credentials.app_error`（401）なら `MM_OAUTH_CLIENT_SECRET` が OAuth アプリと合っていない（シークレットを作り直した場合など）。ツールは一時的なエラーを返し続ける |
 | `dcr_registered`、`dcr_unauthorized_near_limit` | クライアントの登録と、未認可の登録が上限に近いことの警告（下の「未認可の登録が上限に近いとき」） |
 | `authorize_completed`、`authorize_upstream_failed` | 利用者のログインの完了と、Mattermost との通信の失敗（`step` が `exchange` か `users_me`） |
 | `unhandled_error`、`tool_unhandled_error`、`scheduled_post_error`、`scheduler_failed`、`sweep_failed` | 想定外の失敗。エラーの名前とコードだけを持つ |
@@ -94,6 +97,16 @@ pnpm test:int
 
 通ってから運用中の Mattermost を更新する。
 通らなければ更新を止め、食い違った挙動を調べる。
+
+## MCP サーバーを更新するとき
+
+更新の前に、下の「バックアップと復元」のとおりに `/data` を写しておく。
+新しい版をビルドしてコンテナを作り直す（`docker compose up -d --build mcp`）。
+
+DB のスキーマは、起動のたびに `CREATE TABLE IF NOT EXISTS` で作るだけで、移行の仕組みは無い。
+新しい版で表が増えれば足されるが、既存の表の列の追加や変更は、既存の DB には反映されない。
+更新の前に `src/db.ts` の差分を見て、既存の表が変わっていれば、移行の手順が示されていない限りその版へは更新しない。
+戻すときは、前の版のイメージと、更新前に写した `/data` を一緒に戻す。
 
 ## バックアップと復元
 

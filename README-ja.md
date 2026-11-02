@@ -47,6 +47,8 @@ Mattermost は公式の MCP サーバーを [Mattermost Agents プラグイン](
 | `list_scheduled_messages` | 自分の予約を、状態とパーマリンクとともに一覧する |
 | `update_scheduled_message` / `cancel_scheduled_message` | 待機中の予約を変える、取り消す |
 
+時刻は JST で扱う。`schedule_message` の時刻（`YYYY-MM-DDTHH:mm[:ss[.sss]]`）はオフセットが無ければ `+09:00` として読むので、ほかのタイムゾーンなら `Z` か `+hh:mm`（`-hh:mm`）を付ける。検索の日付（`on:`、`before:`、`after:`）は JST の日として扱い、出力の時刻は UTC と JST を併記する。
+
 読み取り系のツールには MCP の `readOnlyHint` を付けており、クライアントは書き込みの前に利用者へ確認を求められる。
 
 ## 構成
@@ -77,7 +79,7 @@ pnpm install
 pnpm dev:up    # http://localhost:8065 で Mattermost 11.7.8 を起動し、dev/.state.json を書く
 ```
 
-`pnpm dev:up` は、ユーザー `admin`、`alice`、`bob`（パスワード `Passw0rd!dev123`）、2 つのチーム、コールバックが `http://localhost:3000/mcp/oauth/callback` の OAuth アプリを作る。
+`pnpm dev:up` は、ユーザー `admin`、`alice`、`bob`（パスワード `Passw0rd!dev123`）、2 つのチーム、負荷の確認に使う `load1`〜`load6`、コールバックが `http://localhost:3000/mcp/oauth/callback` の OAuth アプリを作る。
 ほかの版の Mattermost を試すときは `MATTERMOST_IMAGE_TAG` を指定する。
 
 このローカルの Mattermost に向けてサーバーを起動する。
@@ -121,7 +123,7 @@ URL は `<PUBLIC_URL>/mcp`（例 `https://mcp.example.com/mcp`）。
 ## 文書
 
 - [docs/deployment.md](docs/deployment.md): 自分の環境への導入
-- [docs/operations.md](docs/operations.md): 導入後の確認、ログ、管理コマンド、更新、バックアップと復元、障害対応
+- [docs/operations.md](docs/operations.md): 導入後の確認、ログ、管理コマンド、Mattermost とこのサーバーの更新、バックアップと復元、障害対応
 - [docs/measurements.md](docs/measurements.md): Mattermost の OAuth の実測、クライアント互換性、負荷
 - [docs/superpowers/specs/2026-11-01-mattermost-mcp-design.md](docs/superpowers/specs/2026-11-01-mattermost-mcp-design.md): 設計
 
