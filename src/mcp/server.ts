@@ -14,7 +14,7 @@ export type ToolContext = { mm: MmClient; mmUserId: string; cfg: Config; store: 
 export const text = (t: string, isError = false): CallToolResult => ({ content: [{ type: 'text', text: t }], ...(isError ? { isError } : {}) });
 
 // SDK's Streamable HTTP has already committed 200 by the time a tool runs, so failures surface as tool results.
-function failure(e: unknown): { outcome: string; result: CallToolResult } {
+export function failure(e: unknown): { outcome: string; result: CallToolResult } {
   if (e instanceof InputError) return { outcome: 'input_error', result: text(e.message, true) };
   if (e instanceof Reauthorize) {
     return { outcome: 'reauthorize', result: text('Mattermost への再ログインが必要です。コネクタを再接続してください。', true) };
