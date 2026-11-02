@@ -369,3 +369,80 @@ describe('get_channel', () => {
     expect(await call('get_channel', { channel: 'no-team/town' }, true)).toContain('Mattermost がエラーを返しました（404）');
   });
 });
+
+describe('get_user', () => {
+  const BOB = 'b'.repeat(26);
+  const profile = (timezone?: Record<string, string>) => () => ({ id: BOB, username: 'bob', ...(timezone ? { timezone } : {}) });
+  const status = (o: Record<string, unknown>) => () => ({ user_id: BOB, status: 'online', manual: false, last_activity_at: 0, dnd_end_time: 0, ...o });
+  const tz = (useAutomaticTimezone: string, automaticTimezone: string, manualTimezone: string) => ({ useAutomaticTimezone, automaticTimezone, manualTimezone });
+  const call = (routesFor: Record<string, Route>) => {
+    routes = { 'GET /users/username/bob': profile(tz('true', 'Asia/Tokyo', '')), [`GET /users/${BOB}/status`]: status({}), ...routesFor };
+    return setup();
+  };
+
+  test('shows the automatic time zone when useAutomaticTimezone is the string "true", with the local time now', async () => {
+    const out = await call({})('get_user', { user: '@bob' });
+    expect(out).toContain('タイムゾーン: Asia/Tokyo（自動）');
+    expect(out).toMatch(/現地時刻: \d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\+09:00/);
+  });
+
+  test('shows the manual time zone when useAutomaticTimezone is the string "false"', async () => {
+    const out = await call({ 'GET /users/username/bob': profile(tz('false', 'Asia/Tokyo', 'America/New_York')) })('get_user', { user: '@bob' });
+    expect(out).toContain('タイムゾーン: America/New_York（手動）');
+    expect(out).toMatch(/現地時刻: \S+-0[45]:00/);
+  });
+
+  test('says the time zone is not set, without a local time, when it is empty, unknown to Intl, or missing', async () => {
+    for (const p of [profile(tz('true', '', 'Asia/Tokyo')), profile(tz('false', '', 'Mars/Olympus_Mons')), profile()]) {
+      const out = await call({ 'GET /users/username/bob': p })('get_user', { user: '@bob' });
+      expect(out).toContain('タイムゾーン: 未設定');
+      expect(out).not.toContain('現地時刻');
+    }
+  });
+
+  test('shows each presence status in Japanese', async () => {
+    const names = { online: 'オンライン', away: '離席', dnd: '取り込み中', offline: 'オフライン', ooo: '不在' };
+    for (const [s, ja] of Object.entries(names)) {
+      const out = await call({ [`GET /users/${BOB}/status`]: status({ status: s }) })('get_user', { user: '@bob' });
+      expect(out, s).toContain(`在席: ${ja}`);
+    }
+  });
+
+  test('adds the end of do-not-disturb in UTC and JST only while dnd has an end time', async () => {
+    const end = Date.UTC(2026, 10, 1, 20, 4, 0) / 1000;
+    const until = await call({ [`GET /users/${BOB}/status`]: status({ status: 'dnd', manual: true, dnd_end_time: end }) })('get_user', { user: '@bob' });
+    expect(until).toContain('在席: 取り込み中（終了: 2026-11-01T20:04:00Z | 2026-11-02T05:04:00+09:00）（手動で設定）');
+    const open = await call({ [`GET /users/${BOB}/status`]: status({ status: 'dnd', dnd_end_time: 0 }) })('get_user', { user: '@bob' });
+    expect(open).toMatch(/在席: 取り込み中$/m);
+    const stale = await call({ [`GET /users/${BOB}/status`]: status({ status: 'away', dnd_end_time: end }) })('get_user', { user: '@bob' });
+    expect(stale).toMatch(/在席: 離席$/m);
+  });
+
+  test('says when the status was set by hand', async () => {
+    const out = await call({ [`GET /users/${BOB}/status`]: status({ status: 'away', manual: true }) })('get_user', { user: '@bob' });
+    expect(out).toContain('在席: 離席（手動で設定）');
+  });
+
+  test('still returns the profile when the status API answers with a Mattermost error', async () => {
+    const out = await call({ [`GET /users/${BOB}/status`]: () => Response.json({ id: 'x', message: 'm' }, { status: 403 }) })('get_user', { user: '@bob' });
+    expect(out).toContain('username: @bob');
+    expect(out).toContain('在席: 取得できませんでした');
+  });
+
+  test('fails the tool when the status API is rate limited, unavailable, or needs re-authorization', async () => {
+    const cases: Route[] = [
+      () => new Response(null, { status: 429, headers: { 'x-ratelimit-reset': '7' } }),
+      () => new Response('oops', { status: 503 }),
+      () => Response.json({ id: 'api.context.session_expired.app_error' }, { status: 401 }),
+    ];
+    for (const r of cases) {
+      const out = await call({ [`GET /users/${BOB}/status`]: r })('get_user', { user: '@bob' }, true);
+      expect(out).not.toContain('username:');
+    }
+  });
+
+  test('calls the status API after the profile, with the resolved user id', async () => {
+    await call({})('get_user', { user: '@bob' });
+    expect(hits).toEqual(['GET /users/username/bob', `GET /users/${BOB}/status`]);
+  });
+});
