@@ -1,7 +1,8 @@
 import type { McpServer, ToolCallback } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod';
 import { MmError } from '../mattermost/client.ts';
-import { BAD_CURSOR, decodeCursor, encodeCursor, formatPost, InputError, truncate, type MmPost } from './format.ts';
+import { BAD_CURSOR, decodeCursor, encodeCursor, formatPost, formatTime, InputError, truncate, type MmPost } from './format.ts';
+import { pageCursor, paginate } from './paging.ts';
 import { parsePostRef } from './permalink.ts';
 import { myTeams, resolveChannel, resolveUser, teamNameOf, type ChannelRef, type Mm, type MmChannel, type MmTeam, type UserRef } from './resolve.ts';
 import { guarded, text, type ToolContext } from './server.ts';
@@ -16,6 +17,7 @@ const limitArg = (def: number, max: number) => z.number().int().min(1).max(max).
   .describe(`件数（既定 ${def}、最大 ${max}）。cursor を渡したときは無視する`);
 const cursorArg = z.string().optional().describe('前回の出力の next_cursor');
 const perPage = (max: number) => z.number().int().min(1).max(max);
+const channelKinds = z.array(z.enum(['public', 'private', 'dm', 'group_dm'])).min(1);
 
 function cursorOf<S extends z.ZodType>(schema: S, cursor: string | undefined): z.infer<S> | undefined {
   if (cursor === undefined) return undefined;
@@ -204,6 +206,48 @@ export function registerReadTools(server: McpServer, ctx: ToolContext): void {
       })];
       if (!shown.length) lines.push('一致するチャンネルはありません。');
       return render({ lines, next, notes: capNote(capped, 'ほかの公開チャンネル') });
+    });
+
+  tool('list_my_channels', '参加しているチャンネル（公開、非公開、DM、グループ DM）を、最終投稿の新しい順に一覧する。アーカイブ済みは含まない',
+    {
+      types: channelKinds.optional().describe('種類で絞る（省略すると全部）。cursor を渡したときは無視する'),
+      limit: limitArg(50, 200),
+      cursor: cursorArg,
+    },
+    async ({ types, limit, cursor }, mm) => {
+      const startedAt = Date.now();
+      const c = cursorOf(pageCursor(z.object({ t: z.number().int(), id: z.string() })).extend({ per_page: perPage(200), types: channelKinds }), cursor);
+      const per = c?.per_page ?? limit ?? 50;
+      const kinds = c?.types ?? types ?? channelKinds.element.options;
+      const code = { public: 'O', private: 'P', dm: 'D', group_dm: 'G' };
+      const wanted = new Set(kinds.map((k) => code[k]));
+      const mine = (await mm.call<(MmChannel & { last_post_at: number })[]>(uid, 'GET', '/users/me/channels')).filter((x) => wanted.has(x.type));
+      const teamName = new Map((await myTeams(mm, uid)).map((t) => [t.id, t.name]));
+      const p = paginate(mine.map((x) => ({ ...x, key: { t: x.last_post_at, id: x.id }, updatedAt: x.last_post_at })),
+        (a, b) => b.t - a.t || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0), c, per, startedAt);
+      const shown = [...p.updated, ...p.body];
+      const other = (x: MmChannel) => x.name.split('__').find((id) => id !== uid) ?? uid;
+      const dms = shown.filter((x) => x.type === 'D');
+      const partners = dms.length
+        ? new Map((await mm.call<UserRef[]>(uid, 'POST', '/users/ids', [...new Set(dms.map(other))])).map((u) => [u.id, u.username]))
+        : new Map<string, string>();
+      const kind: Record<string, string> = { O: '公開', P: '非公開', D: 'DM', G: 'グループ DM' };
+      const line = (x: (typeof shown)[number]) => {
+        const team = teamName.get(x.team_id);
+        const label = x.type === 'D' ? `@${partners.get(other(x)) ?? other(x)}` : x.display_name || x.name;
+        const where = team ? `${team}/${x.name}` : x.type === 'D' || x.type === 'G' ? label : x.name;
+        return `- ${where}（表示名: ${label}、種類: ${kind[x.type] ?? x.type}、channel_id: ${x.id}${x.team_id ? `、team_id: ${x.team_id}` : ''}、最終投稿: ${x.last_post_at ? formatTime(x.last_post_at) : '投稿なし'}）`;
+      };
+      const lines = [
+        '参加しているチャンネル（最終投稿の新しい順）',
+        ...(p.updated.length ? ['前のページの後に更新されたチャンネル（前のページまでに出したものを含むことがあります）:', ...p.updated.map(line)] : []),
+        ...(p.updated.length && p.body.length ? ['続き:'] : []),
+        ...p.body.map(line),
+      ];
+      if (!shown.length && !c) lines.push('参加しているチャンネルはありません。');
+      // Not ending with render()'s "no more pages": the listing is not finished, it has to start over.
+      if (p.rest) return [...lines, `（更新されたチャンネルがほかに ${p.rest} 件あり、このページに収まりませんでした。cursor を付けずに最初のページから取り直してください）`].join('\n');
+      return render({ lines, next: p.next && { ...p.next, per_page: per, types: kinds } });
     });
 
   tool('search_users', '名前やユーザー名でユーザーを探す',
