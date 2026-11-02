@@ -5,7 +5,7 @@ export type Mm = Pick<MmClient, 'call'>;
 export type ChannelRef = { id: string; name: string; displayName: string; teamId: string; teamName: string };
 export type UserRef = {
   id: string; username: string; first_name?: string; last_name?: string; nickname?: string; position?: string;
-  email?: string; locale?: string; is_bot?: boolean; delete_at?: number;
+  email?: string; locale?: string; is_bot?: boolean; delete_at?: number; timezone?: Record<string, string>;
 };
 export type MmChannel = { id: string; name: string; display_name: string; team_id: string; type: string };
 export type MmChannelFull = MmChannel & { purpose: string; header: string };

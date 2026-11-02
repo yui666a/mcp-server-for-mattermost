@@ -1,7 +1,7 @@
 import type { McpServer, ToolCallback } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod';
 import { MmError } from '../mattermost/client.ts';
-import { BAD_CURSOR, decodeCursor, encodeCursor, formatPost, formatTime, InputError, truncate, type MmPost } from './format.ts';
+import { BAD_CURSOR, decodeCursor, encodeCursor, formatPost, formatTime, InputError, localTime, truncate, type MmPost } from './format.ts';
 import { pageCursor, paginate } from './paging.ts';
 import { parsePostRef } from './permalink.ts';
 import { ChannelFetchError, myTeams, resolveChannel, resolveUser, teamNameOf, type ChannelRef, type Mm, type MmChannel, type MmTeam, type UserRef } from './resolve.ts';
@@ -59,6 +59,28 @@ const listed = <T>(all: T[], c: { offset: number; per_page: number } | undefined
   const end = offset + per;
   return { shown: all.slice(offset, end), next: all.length > end ? { offset: end, per_page: per } : undefined };
 };
+
+const PRESENCE: Record<string, string> = { online: 'オンライン', away: '離席', dnd: '取り込み中', offline: 'オフライン', ooo: '不在' };
+
+function timeZoneLines(tz: Record<string, string> | undefined): string[] {
+  const auto = tz?.useAutomaticTimezone === 'true';
+  const zone = (auto ? tz?.automaticTimezone : tz?.manualTimezone) ?? '';
+  const now = localTime(zone, Date.now());
+  return now ? [`タイムゾーン: ${zone}（${auto ? '自動' : '手動'}）`, `現地時刻: ${now}`] : ['タイムゾーン: 未設定'];
+}
+
+async function presence(mm: Mm, uid: string, userId: string): Promise<string> {
+  let s: { status: string; manual: boolean; dnd_end_time: number };
+  try {
+    s = await mm.call(uid, 'GET', `/users/${userId}/status`);
+  } catch (e) {
+    if (e instanceof MmError) return '取得できませんでした';
+    throw e;
+  }
+  // dnd_end_time keeps its last value after dnd ends, so it is read only while the status is dnd.
+  const end = s.status === 'dnd' && s.dnd_end_time > 0 ? `（終了: ${formatTime(s.dnd_end_time * 1000)}）` : '';
+  return `${PRESENCE[s.status] ?? s.status}${end}${s.manual ? '（手動で設定）' : ''}`;
+}
 
 export function registerReadTools(server: McpServer, ctx: ToolContext): void {
   const uid = ctx.mmUserId;
@@ -319,6 +341,8 @@ export function registerReadTools(server: McpServer, ctx: ToolContext): void {
         ...(u.email ? [`メール: ${u.email}`] : []),
         ...(u.is_bot ? ['Bot アカウント'] : []),
         ...(u.delete_at ? ['無効化されたアカウント'] : []),
+        ...timeZoneLines(u.timezone),
+        `在席: ${await presence(mm, uid, u.id)}`,
       ].join('\n');
     });
 }
