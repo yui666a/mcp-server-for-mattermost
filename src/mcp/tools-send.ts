@@ -276,17 +276,19 @@ async function syncDraftsOff(mm: Mm, uid: string): Promise<boolean> {
   }
 }
 
+export async function checkRoot(mm: Mm, uid: string, rootId: string, ch: { id: string; name: string }): Promise<void> {
+  const root = await worded(mm.call<MmPost>(uid, 'GET', `/posts/${rootId}`), {
+    status: [[404, `root_id ${rootId} の投稿が見つかりません。`], [403, `root_id ${rootId} の投稿を見られません。`]],
+  });
+  if (root.channel_id !== ch.id) throw new InputError(`root_id ${rootId} の投稿はチャンネル「${ch.name}」にありません。`);
+  if (root.root_id) throw new InputError(`root_id ${rootId} は返信です。スレッドの親投稿の post_id を指定してください。`);
+}
+
 export async function saveDraft(mm: Mm, uid: string, args: DraftArgs): Promise<CallToolResult> {
   const ch = await resolveChannel(mm, uid, args.channel);
   const rootId = args.root_id ?? '';
   // Checked here rather than left to Mattermost: it saves a draft on any root_id, and one on a reply never shows in any thread.
-  if (rootId) {
-    const root = await worded(mm.call<MmPost>(uid, 'GET', `/posts/${rootId}`), {
-      status: [[404, `root_id ${rootId} の投稿が見つかりません。`], [403, `root_id ${rootId} の投稿を見られません。`]],
-    });
-    if (root.channel_id !== ch.id) throw new InputError(`root_id ${rootId} の投稿はチャンネル「${ch.name}」にありません。`);
-    if (root.root_id) throw new InputError(`root_id ${rootId} は返信です。スレッドの親投稿の post_id を指定してください。`);
-  }
+  if (rootId) await checkRoot(mm, uid, rootId, ch);
   if (await syncDraftsOff(mm, uid)) {
     throw new InputError('下書きの同期を切っているため保存していません。保存しても画面に届かないか、書きかけの下書きを上書きするおそれがあります。「設定 > 詳細設定」で下書きの同期を入れてください。');
   }
