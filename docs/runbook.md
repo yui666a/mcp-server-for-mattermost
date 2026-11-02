@@ -225,6 +225,11 @@ MCP クライアントからつなぐ。作業者のアカウントで、claude.
 
 - 読み取り系の 11 ツール（`search_posts`、`read_channel`、`read_thread`、`search_channels`、`search_users`、`get_user`、`get_post`、`list_my_channels`、`get_channel`、`get_unreads`、`get_mentions`）を 1 回ずつ呼び、エラーにならない
   - `get_unreads` は、出力の先頭に CRT の判定の行（`スレッドの折りたたみ（CRT）: 有効（サーバー設定: …）` など）が出る
+- `get_file` の画像がクライアントに届くかを、claude.ai、Claude Code、Codex CLI のそれぞれで確かめる。テスト環境では確かめられない（クライアントからつなげる公開の URL が要る）ので、ここで行う
+  1. Web で、作業者自身の DM（`@<作業者のユーザー名>`）に、文字の入った画像（スクリーンショットなど）を添付して投稿する
+  2. `read_channel` で `@<作業者のユーザー名>` を読み、その投稿に `添付:` の行（`file_id`、名前、種類、大きさ、幅と高さ）が出ることを見る
+  3. その `file_id` で `get_file` を呼び、画像に書かれた文字をモデルに読ませる。クライアントの画面に画像が表示されるかどうかと、モデルが中身を答えられたかを分けて記録する
+  4. 確かめ終えたら、Web でその投稿を消す
 - 書き込み系のツールは、作業者自身の DM（`@<作業者のユーザー名>`）の中だけで確かめる。他のチャンネルや利用者の投稿には触れない
   1. `send_message` で `@<作業者のユーザー名>` に投稿する
   2. その投稿に `add_reaction`（例: `white_check_mark`）を呼び、画面で付いたことを見る。`remove_reaction` で外し、画面で消えたことを見る
@@ -500,6 +505,9 @@ docker compose exec mcp node src/admin.ts list-clients | wc -l
 | 本番での確認: claude.ai から読み取り系 11 ツール | |
 | 本番での確認: Claude Code から読み取り系 11 ツール | |
 | 本番での確認: Codex CLI から読み取り系 11 ツール | |
+| 本番での確認: claude.ai の `get_file`（画像の表示 / モデルが中身を答えたか） | |
+| 本番での確認: Claude Code の `get_file`（画像の表示 / モデルが中身を答えたか） | |
+| 本番での確認: Codex CLI の `get_file`（画像の表示 / モデルが中身を答えたか） | |
 | 本番での確認: `send_message`（作業者自身の DM） | |
 | 本番での確認: `add_reaction` と `remove_reaction`（作業者自身の DM の投稿） | |
 | 本番での確認: `edit_message` と `delete_message`（作業者自身の DM の投稿） | |
