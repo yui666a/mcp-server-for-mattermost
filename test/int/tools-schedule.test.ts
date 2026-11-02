@@ -1,6 +1,9 @@
 import { randomBytes } from 'node:crypto';
 import type request from 'supertest';
 import { afterAll, beforeAll, describe, expect, test, vi } from 'vitest';
+import type { MmClient } from '../../src/mattermost/client.ts';
+import { tick } from '../../src/scheduler.ts';
+import type { Store } from '../../src/store.ts';
 import { intApp, mcpAuthorize, mmDeauthorize, mmLoginCookie, requireMm } from './helpers.ts';
 
 const e = await requireMm();
@@ -9,10 +12,23 @@ const REDIRECT = 'http://127.0.0.1:8123/cb';
 const TAG = `zs${randomBytes(6).toString('hex')}`;
 
 type Result = { isError?: boolean; content: { type: string; text: string }[] };
+type Post = { id: string; message: string; user_id: string };
+
+async function mmApi<T>(token: string, method: string, path: string, body?: unknown): Promise<T> {
+  const res = await fetch(`${e.mmUrl}/api/v4${path}`, {
+    method, headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' }, body: body === undefined ? undefined : JSON.stringify(body),
+  });
+  if (!res.ok) throw new Error(`${method} ${path} -> ${res.status} ${await res.text()}`);
+  return res.json() as Promise<T>;
+}
 
 describe('scheduled messages against the local Mattermost', () => {
   let req: ReturnType<typeof request>;
   let access: string;
+  let store: Store;
+  let mm: MmClient;
+  let aliceMm: string;
+  let channel: { id: string; name: string };
 
   const call = async (name: string, args: Record<string, unknown>): Promise<Result> => {
     const r = await req.post('/mcp')
@@ -26,6 +42,8 @@ describe('scheduled messages against the local Mattermost', () => {
     vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
     const app = intApp();
     req = app.req;
+    store = app.store;
+    mm = app.mm;
     const mmCookie = await mmLoginCookie(e.users.alice);
     await mmDeauthorize(mmCookie, e.oauth.clientId);
     const { clientId, code, verifier } = await mcpAuthorize(req, app.config.resource, mmCookie, REDIRECT);
@@ -34,6 +52,52 @@ describe('scheduled messages against the local Mattermost', () => {
     });
     expect(token.status).toBe(200);
     access = token.body.access_token;
+    aliceMm = /MMAUTHTOKEN=([^;]+)/.exec(await mmLoginCookie(e.users.alice))![1];
+    channel = await mmApi(aliceMm, 'POST', '/channels', { team_id: e.teams.a.id, name: `s11-${TAG}`, display_name: `s11 ${TAG}`, type: 'O' });
+  });
+
+  const inTwoMinutes = () => new Date(Date.now() + 90_000).toISOString().slice(0, 19) + 'Z';
+  const schedule = async (channelId: string, message: string) => {
+    const made = await call('schedule_message', { channel: channelId, message, at: inTwoMinutes() });
+    expect(made.isError, made.content[0].text).toBeFalsy();
+    return /予約 ID: (\S+)/.exec(made.content[0].text)![1];
+  };
+  const rowOf = async (id: string) => {
+    const text = (await call('list_scheduled_messages', {})).content[0].text;
+    return text.split('--- ').find((r) => r.startsWith(`予約 ID: ${id}\n`)) ?? '';
+  };
+  const postsWith = async (channelId: string, message: string) =>
+    Object.values((await mmApi<{ posts: Record<string, Post> }>(aliceMm, 'GET', `/channels/${channelId}/posts?per_page=200`)).posts)
+      .filter((p) => p.message === message);
+
+  test('when its time comes, a schedule is posted to Mattermost with the user\'s account and listed as posted', async () => {
+    const message = `${TAG} scheduled`;
+    const id = await schedule(channel.id, message);
+    await tick(store, mm, Date.now() + 120_000);
+    const [post] = await postsWith(channel.id, message);
+    expect(post?.user_id).toBe(e.users.alice.id);
+    const row = await rowOf(id);
+    expect(row).toContain('状態: 投稿済み');
+    expect(row).toContain(`post_id: ${post.id}`);
+    expect(row).toContain(`/team-a/pl/${post.id}`);
+  });
+
+  test('a cancelled schedule is not posted', async () => {
+    const message = `${TAG} cancelled`;
+    const id = await schedule(channel.id, message);
+    expect((await call('cancel_scheduled_message', { id })).isError).toBeFalsy();
+    await tick(store, mm, Date.now() + 120_000);
+    expect(await postsWith(channel.id, message)).toEqual([]);
+  });
+
+  test('a schedule to a channel archived before its time fails with a reason', async () => {
+    const doomed = await mmApi<{ id: string }>(aliceMm, 'POST', '/channels', { team_id: e.teams.a.id, name: `s11-gone-${TAG}`, display_name: `s11 gone ${TAG}`, type: 'O' });
+    const id = await schedule(doomed.id, `${TAG} to archived`);
+    await mmApi(e.adminToken, 'DELETE', `/channels/${doomed.id}`);
+    await tick(store, mm, Date.now() + 120_000);
+    const row = await rowOf(id);
+    expect(row).toContain('状態: 失敗');
+    expect(/失敗の理由: (.+)/.exec(row)?.[1]).toContain('アーカイブ');
   });
 
   afterAll(() => vi.restoreAllMocks());

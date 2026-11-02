@@ -47,6 +47,34 @@ test('purge-credentials clears credentials but keeps clients, and prints the cou
   for (const t of TABLES) expect(count(db, t), t).toBe(0);
 });
 
+test('invalidate-scheduled fails every pending and sending schedule, telling the user to check Mattermost where a post was attempted or its time has passed, and leaves finished ones', () => {
+  const db = openDb(':memory:');
+  const store = new Store(db, randomBytes(32));
+  const make = (scheduledAt = Date.now() + 3600_000) => store.createScheduled({ mmUserId: 'u1', channelId: 'c'.repeat(26), message: 'm', scheduledAt }, 1000)!;
+  const set = (id: string, sql: string) => db.prepare(`UPDATE scheduled_posts SET ${sql} WHERE id = ?`).run(id);
+  const fresh = make();
+  const passed = make(Date.now() - 60_000);
+  const attempted = make();
+  set(attempted, 'first_attempt_at = 2000');
+  const sending = make();
+  set(sending, "status = 'sending', first_attempt_at = 2000");
+  const posted = make();
+  set(posted, "status = 'posted', post_id = 'p'");
+  const failed = make();
+  set(failed, "status = 'failed', error = 'earlier'");
+  const r = run(db, ['invalidate-scheduled']);
+  expect(r.code).toBe(0);
+  expect(r.out).toBe('invalidated 4 scheduled posts\n');
+  const row = (id: string) => db.prepare('SELECT status, error FROM scheduled_posts WHERE id = ?').get(id);
+  expect(row(fresh)).toEqual({ status: 'failed', error: 'サーバーを復元したため無効にしました。予約を入れ直してください。' });
+  const unknown = { status: 'failed', error: 'サーバーを復元したため無効にしました。投稿されたか不明なので、Mattermost の画面で確かめてください。' };
+  expect(row(attempted)).toEqual(unknown);
+  expect(row(passed)).toEqual(unknown);
+  expect(row(sending)).toEqual(unknown);
+  expect(row(posted)).toEqual({ status: 'posted', error: null });
+  expect(row(failed)).toEqual({ status: 'failed', error: 'earlier' });
+});
+
 test('list-clients shows id, name, created and authorized; --unauthorized filters', () => {
   const db = openDb(':memory:');
   const store = new Store(db, randomBytes(32));
@@ -84,7 +112,7 @@ test('delete-client on an unknown id fails', () => {
   expect(r.err).toContain('nope');
 });
 
-test.each([[[]], [['bogus']], [['delete-client']], [['list-clients', '--wat']]])('bad usage %j prints usage to stderr and fails', (argv) => {
+test.each([[[]], [['bogus']], [['delete-client']], [['list-clients', '--wat']], [['invalidate-scheduled', 'x']]])('bad usage %j prints usage to stderr and fails', (argv) => {
   const db = openDb(':memory:');
   const r = run(db, argv);
   expect(r.code).not.toBe(0);

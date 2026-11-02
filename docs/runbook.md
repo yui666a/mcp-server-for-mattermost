@@ -37,6 +37,7 @@ command -v git patch openssl
 
 - `EnableOAuthServiceProvider` が `false` なら、System Console の Integration Management で「Enable OAuth 2.0 Service Provider」を有効にする（Mattermost の設定変更なので利用者の確認を取る）
 - `mcp` という名前のチームがあれば投入しない
+- 添付の設定を、同じ `https://mattermost.example.com/api/v4/config/client?format=old` で確かめる。`EnableFileAttachments` が `"true"` で、`MaxFileSize` が添付の上限（128KiB）より大きいこと。`"false"` なら `send_message` の添付が 403 で使えないので、そのまま投入するかを利用者と決める。プレビューは設定ではなく、画像のアップロード時に Mattermost が作るので、「本番での確認」の `get_file` の手順で確かめる
 - 下書きの同期が有効であることを、作業者のアカウントでログインしたブラウザで `https://mattermost.example.com/api/v4/config/client?format=old` を開いて確かめる。`AllowSyncedDrafts` が `"true"` であること。ログインしていないと項目が出ない。`config.json` ではなくこの API で見るのは、環境変数で上書きされた値も反映されるため
   - `"false"` なら、`save_draft` は「このサーバーでは下書きの同期が無効です。」を返すだけになる。System Console で下書きの同期（`ServiceSettings.AllowSyncedDrafts`）を有効にするか（Mattermost の設定変更なので利用者の確認を取る）、`save_draft` が使えないまま投入するかを利用者と決める
 - レプリカが設定されていれば、`save_draft` が既存の下書きを確かめてから保存するまでの窓が、レプリカの遅れの分だけ広がる。その間に本人が画面で書いた下書きは上書きされうる。これを `save_draft` の既知の限界として受け入れるかを利用者と決める
@@ -223,7 +224,7 @@ curl -s https://mattermost.example.com/.well-known/oauth-authorization-server/mc
 
 MCP クライアントからつなぐ。作業者のアカウントで、claude.ai のカスタムコネクタ、Claude Code、Codex CLI のそれぞれから `https://mattermost.example.com/mcp` に接続する。
 
-- 読み取り系の 11 ツール（`search_posts`、`read_channel`、`read_thread`、`search_channels`、`search_users`、`get_user`、`get_post`、`list_my_channels`、`get_channel`、`get_unreads`、`get_mentions`）を 1 回ずつ呼び、エラーにならない
+- 読み取り系の 13 ツール（`search_posts`、`read_channel`、`read_thread`、`search_channels`、`search_users`、`get_user`、`get_post`、`get_file`、`list_my_channels`、`get_channel`、`get_unreads`、`get_mentions`、`list_scheduled_messages`）を 1 回ずつ呼び、エラーにならない。`get_file` は下の画像の手順で呼ぶ
   - `get_unreads` は、出力の先頭に CRT の判定の行（`スレッドの折りたたみ（CRT）: 有効（サーバー設定: …）` など）が出る
 - `get_file` の画像がクライアントに届くかを、claude.ai、Claude Code、Codex CLI のそれぞれで確かめる。テスト環境では確かめられない（クライアントからつなげる公開の URL が要る）ので、ここで行う
   1. Web で、作業者自身の DM（`@<作業者のユーザー名>`）に、文字の入った画像（スクリーンショットなど）を添付して投稿する
@@ -235,6 +236,12 @@ MCP クライアントからつなぐ。作業者のアカウントで、claude.
   2. その投稿に `add_reaction`（例: `white_check_mark`）を呼び、画面で付いたことを見る。`remove_reaction` で外し、画面で消えたことを見る
   3. `edit_message` でその投稿の本文を変え、画面で変わったことを見る。`delete_message` で消し、画面から消えたことを見る
   4. `save_draft` で `@<作業者のユーザー名>` に下書きを保存し、作業者の DM を開いて入力欄に出ることを見る。送信せず、画面で入力欄を空にして下書きを消す
+  5. `send_message` で `@<作業者のユーザー名>` に、`files` に `content_text` の小さなファイル（例: `{"name":"check.txt","content_text":"attachment check"}`）を付けて投稿し、画面でその投稿に添付が出ることを見る。確かめたら `delete_message` で消す
+- 予約投稿を、作業者自身の DM（`@<作業者のユーザー名>`）の中だけで確かめる。クライアントは 1 つでよい。本文は、ほかの手順で送った本文とも互いとも違うものにする（同じ本文だと、やり直しの照合が別の投稿と取り違えうる）
+  1. `schedule_message` で、2〜3 分後の時刻に 2 件の予約を入れる
+  2. 1 件は `update_scheduled_message` で時刻を 1 分ほど後ろへずらす。もう 1 件は `cancel_scheduled_message` で取り消す
+  3. 変えた時刻を過ぎたら（巡回は 30 秒ごとなので、1 分ほど待つ）、`list_scheduled_messages` で、時刻を変えた予約が「投稿済み」になり、パーマリンクがその投稿を開くことを見る。取り消した予約は一覧に出ない
+  4. 作業者の DM の画面に、予約の投稿が 1 件だけ出ていることを見る（取り消した予約の本文は出ない）。確かめたら、Web でその投稿を消す
 
 取り消しと再ログインを確かめる。クライアントは 1 つでよい。
 
@@ -251,6 +258,15 @@ logName="projects/my-gcp-project/logs/syslog" "tool_call"
 
 - 上の呼び出しの `tool_call` が、`mm_user_id`、`tool`、`outcome`、`ms` を持って届いている
 - 投稿した本文、検索語、トークン（`Bearer`、`access_token`、`refresh_token`）が含まれていない
+
+続けて `scheduled_post` を検索する。
+
+```text
+logName="projects/my-gcp-project/logs/syslog" "scheduled_post"
+```
+
+- 上の予約の `scheduled_post` が、`mm_user_id` と `outcome`（`posted`）を持って届いている
+- 予約の本文と、添付したファイルの中身が含まれていない
 
 ### 切り戻し
 
@@ -273,6 +289,8 @@ docker network rm compose_mcp_net
 - ネットワーク名は Compose のプロジェクト名（`compose/` のディレクトリ名 `compose`）と `mcp_net` をつないだもの。`docker network ls` の表示と違えば、表示された名前で消す。nginx を作り直して `mcp_net` から外した後でないと消せない
 - ここでは nginx を作り直すので、書き戻しの方法によらず新しい内容が読まれる。それでも `cp` で上書きするのは、`access.conf` のように reload だけで反映させるファイルは同じ inode に書かないとコンテナに見えず、書き戻しの手順をそろえておくため
 - `/srv/mcp` と `.env` の 4 項目は残す。`mcp` がなければ使われず、再投入のときに同じ `TOKEN_ENC_KEY` で `/srv/mcp` のデータをそのまま使えるため。再投入では手順 7 の追記をしない
+- 切り戻しのあいだ、予約は投稿されない。再投入して `mcp` が起動すると、予定時刻から 1 時間以内の予約と、まだ先の予約は投稿され、それより古い予約は「予定時刻を 1 時間過ぎたため投稿していません。」の失敗になる。切り戻したら、利用者に予約が投稿されないことと、再投入の後に `list_scheduled_messages` で確かめるよう知らせる
+- 再投入のときに予約を出したくないなら、`docker compose up -d mcp` の前に `docker compose run --rm --no-deps mcp node src/admin.ts invalidate-scheduled` を実行し、待機中と投稿中の予約をすべて失敗にする（「管理コマンド」）
 
 ## 環境変数
 
@@ -309,10 +327,15 @@ docker compose exec mcp node src/admin.ts list-clients               # 登録さ
 docker compose exec mcp node src/admin.ts list-clients --unauthorized # 未認可の登録だけ
 docker compose exec mcp node src/admin.ts delete-client <client_id>   # 登録を消す。そのクライアントはコネクタの追加し直しが要る
 docker compose exec mcp node src/admin.ts purge-credentials          # 認可途中の状態、grant、トークン、重複防止の記録を消す。登録は残す
+docker compose exec mcp node src/admin.ts invalidate-scheduled       # 待機中と投稿中の予約をすべて失敗にする。投稿済みと失敗の予約は残す
 ```
 
 `purge-credentials` を稼働中に実行すると、全利用者が再ログインになる。
-通常はスナップショットからの復元でだけ使う。
+通常はスナップショットからの復元でだけ使い、そのときは `invalidate-scheduled` も続けて実行する。
+古いスナップショットには、その後に取り消したり変えたりした予約が待機中のまま残っており、利用者が再ログインした後に投稿されてしまうため。
+`invalidate-scheduled` は `invalidated <件数> scheduled posts` を出す。
+失敗にした予約は `list_scheduled_messages` に理由とともに出るので、利用者には予約を確かめて入れ直すよう知らせる。
+投稿を試みた予約と、予定時刻を過ぎた予約は、理由が「投稿されたか不明」になる。失った DB の上では、スナップショットの後に投稿されていたかもしれないため。その利用者には Mattermost の画面で確かめてもらう。
 
 ### 未認可の登録が上限に近いとき
 
@@ -362,7 +385,7 @@ docker compose logs --tail 50 mcp
 | ログ | 原因 | 対処 |
 |---|---|---|
 | `PUBLIC_URL is required` など `... is required` | `.env` の 4 項目が欠けている | 「デプロイ」の手順 7 |
-| `TOKEN_ENC_KEY must be 32 bytes in base64` | 鍵の形式の誤り | 鍵を作り直してよいのは、DB に Mattermost のトークンがないときだけ。あるなら元の鍵を探す |
+| `TOKEN_ENC_KEY must be 32 bytes in base64` | 鍵の形式の誤り | 鍵を作り直してよいのは、DB に Mattermost のトークンがないときだけ。あるなら元の鍵を探す。待機中の予約があれば、それらは本文を復号できず、投稿されずに失敗になる |
 | `unable to open database file` | `/srv/mcp` がない、または UID 1000 が書けない | `ls -ln /srv/mcp`、「デプロイ」の手順 6 |
 
 直したら `docker compose up -d mcp` で作り直す（`.env` の変更は作り直さないと反映されない）。
@@ -408,6 +431,7 @@ ls -ln /mnt/restore/srv/mcp
 docker build -t mattermost-mcp-restore /mnt/restore/opt/mattermost-mcp
 docker run --rm --network none -v /mnt/restore/srv/mcp:/data mattermost-mcp-restore node src/admin.ts list-clients | wc -l
 docker run --rm --network none -v /mnt/restore/srv/mcp:/data mattermost-mcp-restore node src/admin.ts purge-credentials
+docker run --rm --network none -v /mnt/restore/srv/mcp:/data mattermost-mcp-restore node src/admin.ts invalidate-scheduled
 docker run --rm --network none -v /mnt/restore/srv/mcp:/data mattermost-mcp-restore node src/admin.ts list-clients | wc -l
 sync
 umount /mnt/restore
@@ -415,8 +439,10 @@ umount /mnt/restore
 
 - `/srv/mcp` はディレクトリごとマウントする。SQLite の `-wal`、`-shm` も同じディレクトリにある
 - `purge-credentials` は `purged <件数> rows` を出す。前後の `list-clients` の件数が変わらない（DCR の登録は消さない）ことを確かめる
+- `invalidate-scheduled` は、待機中と投稿中の予約を失敗にして `invalidated <件数> scheduled posts` を出す。件数が 0 でなければ、起動後に利用者へ予約を確かめて入れ直すよう知らせる（「管理コマンド」）
+  - `Usage:` が出るなら、そのスナップショットのコードは予約投稿より前のもので、予約は無いので飛ばしてよい
 - `--network none` で動かすので、巻き戻った状態の MCP サーバーがどこからも呼ばれない
-- 鍵（`TOKEN_ENC_KEY`）は作り直さない。Mattermost のトークンを消すので、古い鍵で暗号化された値は残らない
+- 鍵（`TOKEN_ENC_KEY`）は作り直さない。Mattermost のトークンは消すが、失敗にした予約の本文は同じ鍵で暗号化されたまま更新から 7 日残り、作り直すと `list_scheduled_messages` で本文が読めなくなる
 
 手元の端末で、ディスクを外して本番 VM の起動ディスクと差し替える。
 元の起動ディスクは消さずに残す。
@@ -437,7 +463,7 @@ gcloud compute instances start mattermost-vm $P $Z
 
 ### SQLite ファイルを失った場合
 
-「スナップショットからの復元」と同じ手順で、直近のスナップショットから作ったディスクを作業用の VM に接続し、`purge-credentials` まで行う。
+「スナップショットからの復元」と同じ手順で、直近のスナップショットから作ったディスクを作業用の VM に接続し、`purge-credentials` と `invalidate-scheduled` まで行う。
 VM の起動ディスクは差し替えず、`/srv/mcp` の中身だけを本番 VM に戻す。
 
 本番 VM で `mcp` を止め、残っているファイルを退避する。
@@ -479,6 +505,7 @@ docker compose exec mcp node src/admin.ts list-clients | wc -l
 | 事前確認: `EnableOAuthServiceProvider` | |
 | 事前確認: 名前が `mcp` のチーム | |
 | 事前確認: `AllowSyncedDrafts`（`/api/v4/config/client?format=old`）、その扱い | |
+| 事前確認: `EnableFileAttachments` と `MaxFileSize`（`/api/v4/config/client?format=old`）、その扱い | |
 | 事前確認: `DataSourceReplicas` と `DataSourceSearchReplicas` | |
 | 事前確認: `RateLimitSettings` と `TrustedProxyIPHeader`、その扱い | |
 | OAuth アプリの作成方法（画面 / 管理者トークン） | |
@@ -502,9 +529,9 @@ docker compose exec mcp node src/admin.ts list-clients | wc -l
 | `/mcp/healthz` | |
 | 本番での確認: 保護リソースと認可サーバーのメタデータ | |
 | 本番での確認: 既存の利用（ログイン、投稿、WebSocket、Calls） | |
-| 本番での確認: claude.ai から読み取り系 11 ツール | |
-| 本番での確認: Claude Code から読み取り系 11 ツール | |
-| 本番での確認: Codex CLI から読み取り系 11 ツール | |
+| 本番での確認: claude.ai から読み取り系 13 ツール | |
+| 本番での確認: Claude Code から読み取り系 13 ツール | |
+| 本番での確認: Codex CLI から読み取り系 13 ツール | |
 | 本番での確認: claude.ai の `get_file`（画像の表示 / モデルが中身を答えたか） | |
 | 本番での確認: Claude Code の `get_file`（画像の表示 / モデルが中身を答えたか） | |
 | 本番での確認: Codex CLI の `get_file`（画像の表示 / モデルが中身を答えたか） | |
@@ -512,6 +539,10 @@ docker compose exec mcp node src/admin.ts list-clients | wc -l
 | 本番での確認: `add_reaction` と `remove_reaction`（作業者自身の DM の投稿） | |
 | 本番での確認: `edit_message` と `delete_message`（作業者自身の DM の投稿） | |
 | 本番での確認: `save_draft`（作業者自身の DM、入力欄に出ること、画面から消したこと） | |
+| 本番での確認: `send_message` の添付（作業者自身の DM、`content_text`、画面に添付が出ること、消したこと） | |
+| 本番での確認: 予約の作成 2 件、時刻の変更 1 件、取り消し 1 件（作業者自身の DM、使ったクライアント） | |
+| 本番での確認: 予約の投稿（`list_scheduled_messages` の「投稿済み」とパーマリンク、画面に 1 件だけ出たこと、消したこと） | |
+| 本番での確認: Cloud Logging の `scheduled_post`（本文を含まない） | |
 | 本番での確認: 許可の取り消し → 再ログインのエラー → 再ログインの要求 → 再ログイン（使ったクライアント） | |
 | 本番での確認: Cloud Logging の `tool_call`（本文・検索語・トークンを含まない） | |
 
