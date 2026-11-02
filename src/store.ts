@@ -325,6 +325,10 @@ export class Store {
     this.run('DELETE FROM post_claims WHERE id = ? AND updated_at = ?', id, claimedAt);
   }
 
+  forgetPost(mmUserId: string, postId: string): void {
+    this.run('DELETE FROM post_claims WHERE mm_user_id = ? AND post_id = ?', mmUserId, postId);
+  }
+
   purgeCredentials(): number {
     return this.tx(() => {
       let n = 0;

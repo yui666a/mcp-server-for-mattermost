@@ -25,6 +25,10 @@ grep '^MATTERMOST_IMAGE_TAG=' .env
 jq .ServiceSettings.EnableOAuthServiceProvider /srv/mattermost/config/config.json
 # レート制限の設定と、接続元 IP として信頼するヘッダー
 jq '{RateLimitSettings, TrustedProxyIPHeader: .ServiceSettings.TrustedProxyIPHeader}' /srv/mattermost/config/config.json
+# 下書きの一覧を読むレプリカがないこと（どちらも [] か null）。save_draft は既存の下書きを確かめてから保存するので、遅れたレプリカから読むと本人の書きかけを上書きしうる
+jq '.SqlSettings | {DataSourceReplicas, DataSourceSearchReplicas}' /srv/mattermost/config/config.json
+# 環境変数でレプリカを足していないこと（何も出ない）。mattermost のイメージには env も sh も無いので、docker inspect で見る
+docker inspect --format '{{range .Config.Env}}{{println .}}{{end}}' "$(docker compose ps -q mattermost)" | grep -i REPLICA
 # 名前が mcp のチームがないこと（0 行）。nginx の ^~ /mcp/ がチームの URL /mcp/... を取ってしまうため。アーカイブ済みも含めて見る
 docker compose exec -T postgres psql -U mmuser -d mattermost -tAc "SELECT name, deleteat FROM teams WHERE name = 'mcp'"
 # 作業に使うコマンド
@@ -33,6 +37,9 @@ command -v git patch openssl
 
 - `EnableOAuthServiceProvider` が `false` なら、System Console の Integration Management で「Enable OAuth 2.0 Service Provider」を有効にする（Mattermost の設定変更なので利用者の確認を取る）
 - `mcp` という名前のチームがあれば投入しない
+- 下書きの同期が有効であることを、作業者のアカウントでログインしたブラウザで `https://mattermost.example.com/api/v4/config/client?format=old` を開いて確かめる。`AllowSyncedDrafts` が `"true"` であること。ログインしていないと項目が出ない。`config.json` ではなくこの API で見るのは、環境変数で上書きされた値も反映されるため
+  - `"false"` なら、`save_draft` は「このサーバーでは下書きの同期が無効です。」を返すだけになる。System Console で下書きの同期（`ServiceSettings.AllowSyncedDrafts`）を有効にするか（Mattermost の設定変更なので利用者の確認を取る）、`save_draft` が使えないまま投入するかを利用者と決める
+- レプリカが設定されていれば、`save_draft` が既存の下書きを確かめてから保存するまでの窓が、レプリカの遅れの分だけ広がる。その間に本人が画面で書いた下書きは上書きされうる。これを `save_draft` の既知の限界として受け入れるかを利用者と決める
 - `RateLimitSettings.Enable` が `false` なら、Mattermost は `mcp` の呼び出しを制限しない
 - `Enable` が `true` なら、`mcp` の呼び出しも Mattermost のレート制限の枠を消費する。Mattermost は枠を次の単位で分ける（v11.7.8 の `server/channels/app/ratelimit.go`）
   - `VaryByUser` が `true`: 要求のトークンごと。`mcp` は利用者ごとの OAuth のトークンで呼ぶので、利用者ごとに別の枠になり、その利用者の Web やアプリのセッションとも枠を分け合わない
@@ -218,7 +225,11 @@ MCP クライアントからつなぐ。作業者のアカウントで、claude.
 
 - 読み取り系の 11 ツール（`search_posts`、`read_channel`、`read_thread`、`search_channels`、`search_users`、`get_user`、`get_post`、`list_my_channels`、`get_channel`、`get_unreads`、`get_mentions`）を 1 回ずつ呼び、エラーにならない
   - `get_unreads` は、出力の先頭に CRT の判定の行（`スレッドの折りたたみ（CRT）: 有効（サーバー設定: …）` など）が出る
-- `send_message` は作業者自身の DM（`@<作業者のユーザー名>`）にだけ投稿する。他のチャンネルや利用者には投稿しない
+- 書き込み系のツールは、作業者自身の DM（`@<作業者のユーザー名>`）の中だけで確かめる。他のチャンネルや利用者の投稿には触れない
+  1. `send_message` で `@<作業者のユーザー名>` に投稿する
+  2. その投稿に `add_reaction`（例: `white_check_mark`）を呼び、画面で付いたことを見る。`remove_reaction` で外し、画面で消えたことを見る
+  3. `edit_message` でその投稿の本文を変え、画面で変わったことを見る。`delete_message` で消し、画面から消えたことを見る
+  4. `save_draft` で `@<作業者のユーザー名>` に下書きを保存し、作業者の DM を開いて入力欄に出ることを見る。送信せず、画面で入力欄を空にして下書きを消す
 
 取り消しと再ログインを確かめる。クライアントは 1 つでよい。
 
@@ -462,6 +473,8 @@ docker compose exec mcp node src/admin.ts list-clients | wc -l
 | 事前確認: `MATTERMOST_IMAGE_TAG` | |
 | 事前確認: `EnableOAuthServiceProvider` | |
 | 事前確認: 名前が `mcp` のチーム | |
+| 事前確認: `AllowSyncedDrafts`（`/api/v4/config/client?format=old`）、その扱い | |
+| 事前確認: `DataSourceReplicas` と `DataSourceSearchReplicas` | |
 | 事前確認: `RateLimitSettings` と `TrustedProxyIPHeader`、その扱い | |
 | OAuth アプリの作成方法（画面 / 管理者トークン） | |
 | OAuth アプリの ID | |
@@ -488,6 +501,9 @@ docker compose exec mcp node src/admin.ts list-clients | wc -l
 | 本番での確認: Claude Code から読み取り系 11 ツール | |
 | 本番での確認: Codex CLI から読み取り系 11 ツール | |
 | 本番での確認: `send_message`（作業者自身の DM） | |
+| 本番での確認: `add_reaction` と `remove_reaction`（作業者自身の DM の投稿） | |
+| 本番での確認: `edit_message` と `delete_message`（作業者自身の DM の投稿） | |
+| 本番での確認: `save_draft`（作業者自身の DM、入力欄に出ること、画面から消したこと） | |
 | 本番での確認: 許可の取り消し → 再ログインのエラー → 再ログインの要求 → 再ログイン（使ったクライアント） | |
 | 本番での確認: Cloud Logging の `tool_call`（本文・検索語・トークンを含まない） | |
 
