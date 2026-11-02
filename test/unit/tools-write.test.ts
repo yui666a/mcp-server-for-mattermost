@@ -361,6 +361,54 @@ describe('edit_message and delete_message', () => {
     });
   });
 
+  describe('send_message\'s duplicate guard no longer treats the post as already sent', () => {
+    const send = (s: ReturnType<typeof setup>, message: string) => s.call('send_message', { channel: CH, message });
+    const POSTS = 'POST /posts';
+    const sent = () => hits.filter((h) => h === POSTS).length;
+
+    test('after delete_message, sending the same body again posts it', async () => {
+      serve(mine(), { [POSTS]: () => mine() });
+      const s = setup();
+      expect((await send(s, 'old')).isError).toBe(false);
+      expect((await del(s)).isError).toBe(false);
+      const r = await send(s, 'old');
+      expect(r.text).toContain('投稿しました');
+      expect(sent()).toBe(2);
+    });
+
+    test.each([
+      ['the post lookup', GET_POST],
+      ['DELETE', DELETE],
+    ])('after a retried delete_message gets 404 from %s because the first DELETE went through, sending the same body again posts it', async (_, route) => {
+      serve(mine(), { [POSTS]: () => mine(), [route]: mmError(404, 'app.post.get.app_error') });
+      const s = setup();
+      expect((await send(s, 'old')).isError).toBe(false);
+      expect((await del(s)).isError).toBe(true);
+      const r = await send(s, 'old');
+      expect(r.text).toContain('投稿しました');
+      expect(sent()).toBe(2);
+    });
+
+    test('a refused delete_message keeps send_message\'s duplicate guard, since the post is still there', async () => {
+      serve(mine(), { [POSTS]: () => mine(), [DELETE]: mmError(400, 'api.post.delete_post.can_not_delete_post_in_deleted.error') });
+      const s = setup();
+      expect((await send(s, 'old')).isError).toBe(false);
+      expect((await del(s)).isError).toBe(true);
+      expect((await send(s, 'old')).text).toContain('同じ本文を直前に投稿済み');
+      expect(sent()).toBe(1);
+    });
+
+    test('after edit_message, sending the original body again posts it', async () => {
+      serve(mine(), { [POSTS]: () => mine() });
+      const s = setup();
+      expect((await send(s, 'old')).isError).toBe(false);
+      expect((await edit(s)).isError).toBe(false);
+      const r = await send(s, 'old');
+      expect(r.text).toContain('投稿しました');
+      expect(sent()).toBe(2);
+    });
+  });
+
   test('both are marked destructive and idempotent, and delete_message tells the client to confirm with the user', async () => {
     const list = await setup().tools();
     for (const name of ['edit_message', 'delete_message']) {
@@ -369,5 +417,228 @@ describe('edit_message and delete_message', () => {
     const d = list.find((t) => t.name === 'delete_message')!.description;
     expect(d).toContain('取り消せない');
     expect(d).toContain('利用者に確認');
+  });
+});
+
+describe('save_draft', () => {
+  const CH = 'c'.repeat(26);
+  const ROOT = 'r'.repeat(26);
+  const OTHER = 'o'.repeat(26);
+  const PREF = 'GET /users/me/preferences/advanced_settings/name/sync_drafts';
+  const LIST = 'GET /users/u1/teams/t1/drafts';
+  const SAVE = 'POST /drafts';
+  const SYNC_OFF = '設定 > 詳細設定';
+  const LEFT_BEHIND = 'send_message で送っても下書きは消えず、残った下書きをそのまま送ると同じ投稿が 2 回になります';
+  const writes = () => hits.filter((h) => !h.startsWith('GET '));
+  const draft = (over: Record<string, unknown> = {}) => ({ user_id: 'u1', channel_id: CH, root_id: '', message: 'mine', create_at: 1, update_at: 1, ...over });
+  const serve = (extra: Record<string, Route> = {}) => {
+    routes = {
+      [`GET /channels/${CH}`]: () => ({ id: CH, name: 'town', display_name: 'Town', team_id: 't1', type: 'O' }),
+      'GET /teams/t1': () => ({ id: 't1', name: 'team-a' }),
+      [`GET /posts/${ROOT}`]: () => ({ id: ROOT, channel_id: CH, root_id: '', user_id: 'u2', message: 'root', create_at: 1 }),
+      [PREF]: mmError(400, 'app.preference.get.app_error'),
+      [LIST]: () => null,
+      [SAVE]: () => new Response('{}', { status: 201, headers: { 'content-type': 'application/json' } }),
+      ...extra,
+    };
+  };
+  const save = (over: Record<string, unknown> = {}) => setup().call('save_draft', { channel: CH, message: 'hello', ...over });
+
+  describe('saving', () => {
+    test('saves a channel draft and says it is in the input box, that the user sends it, and to reopen the channel if it was open', async () => {
+      serve();
+      const r = await save();
+      expect(r.isError).toBe(false);
+      expect(hits).toEqual([`GET /channels/${CH}`, 'GET /teams/t1', PREF, LIST, SAVE]);
+      expect(bodies['/drafts']).toEqual({ channel_id: CH, root_id: '', message: 'hello' });
+      expect(r.text).toContain('入力欄');
+      expect(r.text).toContain('送信は本人');
+      expect(r.text).toContain(`channel_id: ${CH}`);
+      expect(r.text).toContain('Town');
+      expect(r.text).toContain('チャンネルを開き直して');
+      expect(r.text).toContain('置き換わります');
+      expect(r.text).toContain(LEFT_BEHIND);
+    });
+
+    test('saves a reply draft after checking the root post, saying only that it was saved as a draft', async () => {
+      serve();
+      const r = await save({ root_id: ROOT });
+      expect(r.isError).toBe(false);
+      expect(hits).toEqual([`GET /channels/${CH}`, 'GET /teams/t1', `GET /posts/${ROOT}`, PREF, LIST, SAVE]);
+      expect(bodies['/drafts']).toEqual({ channel_id: CH, root_id: ROOT, message: 'hello' });
+      expect(r.text).toContain('下書きとして保存しました');
+      expect(r.text).toContain(`返信先 post_id: ${ROOT}`);
+      expect(r.text).toContain(LEFT_BEHIND);
+      expect(r.text).toContain('送信は本人');
+      expect(r.text).not.toContain('入力欄');
+      expect(r.text).not.toContain('開き直して');
+    });
+
+    test('a draft list of null (no drafts at all) is treated as empty', async () => {
+      serve({ [LIST]: () => null });
+      expect((await save()).isError).toBe(false);
+      expect(writes()).toEqual([SAVE]);
+    });
+
+    test('drafts for another channel or another thread do not count as an existing draft', async () => {
+      serve({ [LIST]: () => [draft({ channel_id: OTHER }), draft({ root_id: ROOT })] });
+      expect((await save()).isError).toBe(false);
+      expect(writes()).toEqual([SAVE]);
+    });
+
+    test('for a DM, checks the draft list of the caller\'s first team, since DM drafts appear in every team\'s list', async () => {
+      serve({
+        [`GET /channels/${CH}`]: () => ({ id: CH, name: 'u1__u2', display_name: '', team_id: '', type: 'D' }),
+        'GET /users/me/teams': () => [{ id: 't9', name: 'team-z' }, { id: 't1', name: 'team-a' }],
+        'GET /users/u1/teams/t9/drafts': () => [draft({ message: 'dm draft' })],
+      });
+      const r = await save();
+      expect(r.isError).toBe(true);
+      expect(r.text).toContain('dm draft');
+      expect(hits).toContain('GET /users/u1/teams/t9/drafts');
+      expect(hits).not.toContain(LIST);
+      expect(writes()).toEqual([]);
+    });
+
+    test('accepts a 16383-character message and refuses a 16384-character one without calling Mattermost', async () => {
+      serve();
+      expect((await save({ message: 'a'.repeat(16383) })).isError).toBe(false);
+      hits = [];
+      expect((await save({ message: 'a'.repeat(16384) })).isError).toBe(true);
+      expect(hits).toEqual([]);
+    });
+  });
+
+  describe('an existing draft is not overwritten unless asked', () => {
+    test('a different existing draft is kept, quoting its first 200 characters, without sending POST /drafts', async () => {
+      serve({ [LIST]: () => [draft({ message: 'a'.repeat(200) + 'B'.repeat(50) })] });
+      const r = await save();
+      expect(r.isError).toBe(true);
+      expect(r.text).toContain('a'.repeat(200));
+      expect(r.text).not.toContain('B');
+      expect(r.text).toContain('overwrite');
+      expect(writes()).toEqual([]);
+    });
+
+    test('overwrite: true replaces a different existing draft', async () => {
+      serve({ [LIST]: () => [draft({ message: 'old' })] });
+      expect((await save({ overwrite: true })).isError).toBe(false);
+      expect(writes()).toEqual([SAVE]);
+    });
+
+    test.each([false, true])('an existing draft with the same message is reported as already there without sending POST /drafts (overwrite: %s)', async (overwrite) => {
+      serve({ [LIST]: () => [draft({ message: 'hello' })] });
+      const r = await save({ overwrite });
+      expect(r.isError).toBe(false);
+      expect(r.text).toContain('同じ下書きがあります');
+      expect(r.text).toContain(LEFT_BEHIND);
+      expect(writes()).toEqual([]);
+    });
+
+    test('an existing reply draft is matched by both channel and root_id', async () => {
+      serve({ [LIST]: () => [draft({ message: 'other' }), draft({ root_id: ROOT, message: 'thread draft' })] });
+      const r = await save({ root_id: ROOT });
+      expect(r.isError).toBe(true);
+      expect(r.text).toContain('thread draft');
+      expect(writes()).toEqual([]);
+    });
+  });
+
+  describe('root_id', () => {
+    test.each(ESCAPES)('rejects the root_id %j without calling Mattermost', async (root_id) => {
+      serve();
+      const r = await save({ root_id });
+      expect(r.isError).toBe(true);
+      expect(r.text).toContain('root_id');
+      expect(hits).toEqual([]);
+    });
+
+    test.each([
+      ['in another channel', { channel_id: OTHER }, 'ありません'],
+      ['that is itself a reply', { root_id: OTHER }, '返信'],
+    ])('refuses a root post %s without sending POST /drafts', async (_, over, wording) => {
+      serve({ [`GET /posts/${ROOT}`]: () => ({ id: ROOT, channel_id: CH, root_id: '', ...over }) });
+      const r = await save({ root_id: ROOT });
+      expect(r.isError).toBe(true);
+      expect(r.text).toContain(wording);
+      expect(writes()).toEqual([]);
+    });
+
+    test('a root post that does not exist (404) says it was not found', async () => {
+      serve({ [`GET /posts/${ROOT}`]: mmError(404, 'app.post.get.app_error') });
+      const r = await save({ root_id: ROOT });
+      expect(r.isError).toBe(true);
+      expect(r.text).toContain('見つかりません');
+      expect(writes()).toEqual([]);
+    });
+
+    test('a root post the caller cannot see (403) says so, not that drafts cannot be saved', async () => {
+      serve({ [`GET /posts/${ROOT}`]: mmError(403, 'api.context.permissions.app_error') });
+      const r = await save({ root_id: ROOT });
+      expect(r.isError).toBe(true);
+      expect(r.text).toContain('見られません');
+      expect(r.text).not.toContain('下書きを保存する権限');
+      expect(writes()).toEqual([]);
+    });
+  });
+
+  describe('the caller\'s draft sync setting', () => {
+    test('refuses without saving when the caller has turned draft sync off, pointing to the setting', async () => {
+      serve({ [PREF]: () => ({ user_id: 'u1', category: 'advanced_settings', name: 'sync_drafts', value: 'false' }) });
+      const r = await save();
+      expect(r.isError).toBe(true);
+      expect(r.text).toContain('同期');
+      expect(r.text).toContain(SYNC_OFF);
+      expect(writes()).toEqual([]);
+    });
+
+    test('saves when the setting is true', async () => {
+      serve({ [PREF]: () => ({ user_id: 'u1', category: 'advanced_settings', name: 'sync_drafts', value: 'true' }) });
+      expect((await save()).isError).toBe(false);
+      expect(writes()).toEqual([SAVE]);
+    });
+
+    test('saves when the setting is absent (400 app.preference.get.app_error), since absent means on', async () => {
+      serve({ [PREF]: mmError(400, 'app.preference.get.app_error') });
+      expect((await save()).isError).toBe(false);
+      expect(writes()).toEqual([SAVE]);
+    });
+
+    test.each([
+      [404, 'app.preference.get.app_error'],
+      [400, 'other.id'],
+      [403, 'api.context.permissions.app_error'],
+      [500, 'x'],
+    ])('does not save when the setting cannot be read (%i %s)', async (status, id) => {
+      serve({ [PREF]: mmError(status, id) });
+      const r = await save();
+      expect(r.isError).toBe(true);
+      expect(writes()).toEqual([]);
+    });
+  });
+
+  describe('Mattermost errors', () => {
+    test.each([
+      ['draft sync is disabled on the server (501)', SAVE, 501, 'api.drafts.disabled.app_error', 'このサーバーでは下書きの同期が無効です'],
+      ['draft sync is disabled, seen on the list (501)', LIST, 501, 'api.drafts.disabled.app_error', 'このサーバーでは下書きの同期が無効です'],
+      ['the caller may not post there (403)', SAVE, 403, 'api.context.permissions.app_error', 'このチャンネルに下書きを保存する権限がありません'],
+      ['the channel is archived', SAVE, 400, 'api.draft.create_draft.can_not_draft_to_deleted.error', 'アーカイブ済み'],
+    ])('when %s, says so', async (_, route, status, id, wording) => {
+      serve({ [route]: mmError(status, id) });
+      const r = await save();
+      expect(r.isError).toBe(true);
+      expect(r.text).toContain(wording);
+    });
+  });
+
+  test('is marked destructive and idempotent, warns that sending it with send_message leaves the draft behind, and overwrite warns that attachments and priority are lost too', async () => {
+    const list = await setup().tools() as unknown as { name: string; description: string; annotations: object; inputSchema: { properties: Record<string, { description?: string }> } }[];
+    const t = list.find((x) => x.name === 'save_draft')!;
+    expect(t.annotations).toMatchObject({ readOnlyHint: false, destructiveHint: true, idempotentHint: true });
+    expect(t.description).toContain('send_message で送っても下書きは残り');
+    expect(t.description).toContain('同じ投稿が 2 回になる');
+    const d = t.inputSchema.properties.overwrite.description!;
+    expect(d).toContain('添付');
+    expect(d).toContain('優先度');
   });
 });

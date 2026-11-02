@@ -234,6 +234,20 @@ test('other 4xx is an MmError carrying the Mattermost id and message', async () 
   expect(e).toMatchObject({ status: 403, id: 'api.context.permissions.app_error', message: 'msg api.context.permissions.app_error', sent: true });
 });
 
+test('501 is an MmError carrying the Mattermost id, since a disabled feature does not pass on retry', async () => {
+  store.putMmCred('u1', 'a1', 'r1');
+  api = () => mmError(501, 'api.drafts.disabled.app_error');
+  const e = await failure(client.call('u1', 'POST', '/drafts', {}));
+  expect(e).toBeInstanceOf(MmError);
+  expect(e).toMatchObject({ status: 501, id: 'api.drafts.disabled.app_error', sent: true });
+});
+
+test.each([500, 502, 503, 504])('%i stays UpstreamUnavailable', async (status) => {
+  store.putMmCred('u1', 'a1', 'r1');
+  api = () => mmError(status, 'x');
+  expect(await failure(client.call('u1', 'GET', '/users/me'))).toBeInstanceOf(UpstreamUnavailable);
+});
+
 test('each call takes one limiter slot for its whole duration and is rejected unsent beyond the limit', async () => {
   store.putMmCred('u1', 'a1', 'r1');
   const acquire = vi.spyOn(limiter, 'acquire');
