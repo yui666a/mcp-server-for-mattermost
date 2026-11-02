@@ -12,8 +12,8 @@
     "typecheck": "tsc --noEmit",
     "test": "vitest run test/unit",
     "test:int": "vitest run --config vitest.int.config.ts",
-    "dev:up": "dev/compose.sh up -d --wait && node dev/setup.ts",
-    "dev:down": "dev/compose.sh down -v"
+    "dev:up": "docker compose -f dev/compose.yml up -d --wait && node dev/setup.ts",
+    "dev:down": "docker compose -f dev/compose.yml down -v"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "1.32.2",
