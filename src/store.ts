@@ -13,6 +13,9 @@ const USED_REFRESH_KEEP = 7 * 24 * 3600 * SEC;
 const CONSUMED_CODE_KEEP = 24 * 3600 * SEC;
 const SCHEDULED_KEEP = 7 * 24 * 3600 * SEC;
 export const MAX_PENDING_SCHEDULED = 20;
+export const UPLOAD_URL_TTL = 600 * SEC;
+export const MAX_OPEN_UPLOAD_URLS = 5;
+export const UPLOADED_FILE_KEEP = 24 * 3600 * SEC;
 
 export type ClientMeta = { clientName: string; redirectUris: string[] };
 export type Client = ClientMeta & { clientId: string; createdAt: number; authorizedAt: number | null };
@@ -41,7 +44,10 @@ export type PostClaim =
   | { kind: 'inflight' }
   | { kind: 'retry'; id: number; pendingPostId: string; createdAt: number; claimedAt: number };
 
-export type ScheduledStatus = 'pending' | 'sending' | 'posted' | 'failed';
+export type UploadTarget = { mmUserId: string; channelId: string };
+export type UploadedFile = { fileId: string; channelId: string; postId: string | null };
+
+export type ScheduledStatus ='pending' | 'sending' | 'posted' | 'failed';
 export type Scheduled = {
   id: string; channelId: string; rootId: string; message: string | undefined; scheduledAt: number;
   status: ScheduledStatus; postId: string | null; error: string | null;
@@ -269,6 +275,7 @@ export class Store {
       this.run('DELETE FROM grants WHERE mm_user_id = ?', mmUserId);
       this.run('DELETE FROM codes WHERE mm_user_id = ?', mmUserId);
       this.run('DELETE FROM mm_creds WHERE mm_user_id = ?', mmUserId);
+      this.run('DELETE FROM upload_urls WHERE mm_user_id = ?', mmUserId);
     });
   }
 
@@ -348,6 +355,50 @@ export class Store {
 
   forgetPost(mmUserId: string, postId: string): void {
     this.run('DELETE FROM post_claims WHERE mm_user_id = ? AND post_id = ?', mmUserId, postId);
+  }
+
+  // Not a COUNT outside the transaction: two requests at the cap would both get in.
+  createUploadUrl(t: UploadTarget): string | undefined {
+    return this.tx(() => {
+      const now = this.now();
+      const n = Number(this.get('SELECT COUNT(*) AS n FROM upload_urls WHERE mm_user_id = ? AND used_at IS NULL AND expires_at > ?', t.mmUserId, now)?.n ?? 0);
+      if (n >= MAX_OPEN_UPLOAD_URLS) return undefined;
+      const token = randomToken();
+      this.run('INSERT INTO upload_urls (token_hash, mm_user_id, channel_id, expires_at) VALUES (?, ?, ?, ?)',
+        sha256(token), t.mmUserId, t.channelId, now + UPLOAD_URL_TTL);
+      return token;
+    });
+  }
+
+  takeUploadUrl(token: string): UploadTarget | undefined {
+    const r = this.get(
+      'UPDATE upload_urls SET used_at = ? WHERE token_hash = ? AND used_at IS NULL AND expires_at > ? RETURNING mm_user_id, channel_id',
+      this.now(), sha256(token), this.now(),
+    );
+    return r && { mmUserId: r.mm_user_id, channelId: r.channel_id };
+  }
+
+  // Only for a request that sent nothing to Mattermost, so the same URL can be tried again.
+  releaseUploadUrl(token: string): void {
+    this.run('UPDATE upload_urls SET used_at = NULL WHERE token_hash = ?', sha256(token));
+  }
+
+  recordUploadedFile(t: UploadTarget, fileId: string): void {
+    this.run('INSERT OR IGNORE INTO uploaded_files (file_id, mm_user_id, channel_id, created_at) VALUES (?, ?, ?, ?)',
+      fileId, t.mmUserId, t.channelId, this.now());
+  }
+
+  uploadedFiles(mmUserId: string, fileIds: string[]): UploadedFile[] {
+    const stmt = this.db.prepare('SELECT * FROM uploaded_files WHERE file_id = ? AND mm_user_id = ? AND created_at > ?');
+    return fileIds.flatMap((id) => {
+      const r = stmt.get(id, mmUserId, this.now() - UPLOADED_FILE_KEEP) as Row | undefined;
+      return r ? [{ fileId: r.file_id, channelId: r.channel_id, postId: r.post_id }] : [];
+    });
+  }
+
+  markFilesPosted(mmUserId: string, fileIds: string[], postId: string): void {
+    const stmt = this.db.prepare('UPDATE uploaded_files SET post_id = ? WHERE file_id = ? AND mm_user_id = ?');
+    for (const id of fileIds) stmt.run(postId, id, mmUserId);
   }
 
   // Not a COUNT outside the transaction: two requests at the cap would both get in.
@@ -468,7 +519,7 @@ export class Store {
   purgeCredentials(): number {
     return this.tx(() => {
       let n = 0;
-      for (const t of ['post_claims', 'mm_creds', 'refresh_tokens', 'access_tokens', 'grants', 'codes', 'auth_sessions'])
+      for (const t of ['post_claims', 'upload_urls', 'mm_creds', 'refresh_tokens', 'access_tokens', 'grants', 'codes', 'auth_sessions'])
         n += this.run(`DELETE FROM ${t}`);
       return n;
     });
@@ -500,6 +551,8 @@ export class Store {
       this.run('DELETE FROM refresh_tokens WHERE used = 1 AND used_at < ?', now - USED_REFRESH_KEEP);
       this.run('DELETE FROM post_claims WHERE created_at <= ?', now - POST_DEDUP_WINDOW);
       this.run("DELETE FROM scheduled_posts WHERE status IN ('posted', 'failed') AND updated_at <= ?", now - SCHEDULED_KEEP);
+      this.run('DELETE FROM upload_urls WHERE expires_at <= ?', now);
+      this.run('DELETE FROM uploaded_files WHERE created_at <= ?', now - UPLOADED_FILE_KEEP);
     });
   }
 }

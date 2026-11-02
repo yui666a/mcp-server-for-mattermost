@@ -419,3 +419,73 @@ describe('scheduled posts', () => {
     expect(store.listScheduled('u1', { limit: 10 }).map((s) => s.id)).toEqual([pending]);
   });
 });
+
+describe('upload URLs and uploaded files', () => {
+  const target = { mmUserId: 'u1', channelId: 'c1' };
+
+  test('an upload URL can be taken once, for the user and channel it was made for', () => {
+    const token = store.createUploadUrl(target)!;
+    expect(store.takeUploadUrl(token)).toEqual(target);
+    expect(store.takeUploadUrl(token)).toBeUndefined();
+  });
+
+  test('an upload URL cannot be taken after 10 minutes', () => {
+    const token = store.createUploadUrl(target)!;
+    t += 600_000;
+    expect(store.takeUploadUrl(token)).toBeUndefined();
+  });
+
+  test('a released upload URL can be taken again', () => {
+    const token = store.createUploadUrl(target)!;
+    store.takeUploadUrl(token);
+    store.releaseUploadUrl(token);
+    expect(store.takeUploadUrl(token)).toEqual(target);
+  });
+
+  test('a user can hold at most 5 unused upload URLs; taken or expired ones do not count', () => {
+    const tokens = Array.from({ length: 5 }, () => store.createUploadUrl(target)!);
+    expect(store.createUploadUrl(target)).toBeUndefined();
+    expect(store.createUploadUrl({ mmUserId: 'u2', channelId: 'c1' })).toBeDefined();
+    store.takeUploadUrl(tokens[0]);
+    expect(store.createUploadUrl(target)).toBeDefined();
+    t += 600_000;
+    expect(store.createUploadUrl(target)).toBeDefined();
+  });
+
+  test('the token is not stored in plain text', () => {
+    const token = store.createUploadUrl(target)!;
+    expect(JSON.stringify(db.prepare('SELECT * FROM upload_urls').all())).not.toContain(token);
+  });
+
+  test('revokeUser and purgeCredentials remove upload URLs', () => {
+    const a = store.createUploadUrl(target)!;
+    const b = store.createUploadUrl({ mmUserId: 'u2', channelId: 'c1' })!;
+    store.revokeUser('u1');
+    expect(store.takeUploadUrl(a)).toBeUndefined();
+    store.purgeCredentials();
+    expect(store.takeUploadUrl(b)).toBeUndefined();
+  });
+
+  test('uploaded files are found only for their uploader and only for 24 hours', () => {
+    store.recordUploadedFile(target, 'f1');
+    expect(store.uploadedFiles('u1', ['f1', 'f2'])).toEqual([{ fileId: 'f1', channelId: 'c1', postId: null }]);
+    expect(store.uploadedFiles('u2', ['f1'])).toEqual([]);
+    t += DAY;
+    expect(store.uploadedFiles('u1', ['f1'])).toEqual([]);
+  });
+
+  test('a file marked as posted carries the post_id', () => {
+    store.recordUploadedFile(target, 'f1');
+    store.markFilesPosted('u1', ['f1'], 'p1');
+    expect(store.uploadedFiles('u1', ['f1'])).toEqual([{ fileId: 'f1', channelId: 'c1', postId: 'p1' }]);
+  });
+
+  test('sweep removes expired upload URLs and files older than 24 hours', () => {
+    store.createUploadUrl(target);
+    store.recordUploadedFile(target, 'f1');
+    t += DAY;
+    store.sweep();
+    expect(db.prepare('SELECT COUNT(*) AS n FROM upload_urls').get()).toEqual({ n: 0 });
+    expect(db.prepare('SELECT COUNT(*) AS n FROM uploaded_files').get()).toEqual({ n: 0 });
+  });
+});

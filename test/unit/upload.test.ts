@@ -1,0 +1,176 @@
+import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
+import { makeApp } from './helpers.ts';
+
+const UID = 'u'.repeat(26);
+const CH = 'c'.repeat(26);
+const fileId = (n: number) => `f${String(n).padStart(25, '0')}`;
+
+let out: string[];
+let uploads: { query: URLSearchParams; bytes: Uint8Array }[];
+let onUpload: (n: number) => Response | undefined;
+
+beforeEach(() => {
+  out = [];
+  uploads = [];
+  onUpload = () => undefined;
+  vi.spyOn(process.stdout, 'write').mockImplementation((s) => { out.push(String(s)); return true; });
+});
+afterEach(() => vi.restoreAllMocks());
+
+function setup(env: Record<string, string> = {}) {
+  const ctx = makeApp(env, async (input, init) => {
+    const req = new Request(input, init);
+    const path = new URL(req.url).pathname.replace('/api/v4', '');
+    if (req.method === 'POST' && path === '/files') {
+      const n = uploads.length;
+      const refused = onUpload(n);
+      if (refused) return refused;
+      uploads.push({ query: new URL(req.url).searchParams, bytes: new Uint8Array(await req.arrayBuffer()) });
+      return Response.json({ file_infos: [{ id: fileId(n) }] }, { status: 201 });
+    }
+    if (req.method === 'GET' && path === `/channels/${CH}`) return Response.json({ id: CH, name: 'town', display_name: 'Town', team_id: 't1', type: 'O', purpose: '', header: '' });
+    if (req.method === 'GET' && path === '/teams/t1') return Response.json({ id: 't1', name: 'team-a' });
+    return Response.json({ id: 'not_found' }, { status: 404 });
+  });
+  ctx.store.putMmCred(UID, 'mm-access', 'mm-refresh');
+  const url = () => `/mcp/upload/${ctx.store.createUploadUrl({ mmUserId: UID, channelId: CH })}`;
+  return { ...ctx, url };
+}
+
+const logged = () => out.map((l) => JSON.parse(l)).filter((l) => l.event === 'upload');
+
+describe('POST /mcp/upload/:token', () => {
+  test('uploads each file to the channel with the user\'s token and lists their file_ids', async () => {
+    const s = setup();
+    const r = await s.req.post(s.url())
+      .attach('file', Buffer.from('%PDF-1.7'), 'report.pdf')
+      .attach('file', Buffer.from([0x89, 0x50]), 'スクリーンショット.png');
+    expect(r.status).toBe(200);
+    expect(r.headers['content-type']).toMatch(/^text\/plain/);
+    expect(r.text).toContain(`file_id: ${fileId(0)}（report.pdf、8 バイト）`);
+    expect(r.text).toContain(`file_id: ${fileId(1)}（スクリーンショット.png、2 バイト）`);
+    expect(uploads.map((u) => [u.query.get('channel_id'), u.query.get('filename'), [...u.bytes]])).toEqual([
+      [CH, 'report.pdf', [...Buffer.from('%PDF-1.7')]],
+      [CH, 'スクリーンショット.png', [0x89, 0x50]],
+    ]);
+    expect(s.store.uploadedFiles(UID, [fileId(0), fileId(1)])).toEqual([
+      { fileId: fileId(0), channelId: CH, postId: null },
+      { fileId: fileId(1), channelId: CH, postId: null },
+    ]);
+  });
+
+  test('a URL works once', async () => {
+    const s = setup();
+    const url = s.url();
+    await s.req.post(url).attach('file', Buffer.from('x'), 'a.txt');
+    const r = await s.req.post(url).attach('file', Buffer.from('x'), 'a.txt');
+    expect(r.status).toBe(404);
+    expect(r.text).toContain('prepare_upload');
+    expect(uploads).toHaveLength(1);
+  });
+
+  test.each([
+    ['an unknown token', '/mcp/upload/' + 'x'.repeat(43)],
+    ['a malformed token', '/mcp/upload/short'],
+  ])('%s gets 404 without reading the files', async (_, path) => {
+    const s = setup();
+    const r = await s.req.post(path).attach('file', Buffer.from('x'), 'a.txt');
+    expect(r.status).toBe(404);
+    expect(uploads).toHaveLength(0);
+  });
+
+  test('other methods get 405', async () => {
+    const s = setup();
+    const r = await s.req.get(s.url());
+    expect(r.status).toBe(405);
+    expect(r.headers.allow).toBe('POST');
+  });
+
+  test.each([
+    ['a body over UPLOAD_MAX_BYTES', 413, (r: ReturnType<ReturnType<typeof setup>['req']['post']>) => r.attach('file', Buffer.alloc(2048), 'big.bin'), '上限の 1024 バイト'],
+    ['no file field', 400, (r: ReturnType<ReturnType<typeof setup>['req']['post']>) => r.field('other', 'x'), 'file という名前のファイルがありません'],
+    ['a body that is not multipart', 400, (r: ReturnType<ReturnType<typeof setup>['req']['post']>) => r.set('content-type', 'application/octet-stream').send(Buffer.from('x')), 'multipart/form-data'],
+    ['more than 5 files', 400, (r: ReturnType<ReturnType<typeof setup>['req']['post']>) => [0, 1, 2, 3, 4, 5].reduce((q, i) => q.attach('file', Buffer.from('x'), `${i}.txt`), r), '5 件まで'],
+  ])('%s is refused with %i and the same URL can be used again', async (_, status, send, message) => {
+    const s = setup({ UPLOAD_MAX_BYTES: '1024' });
+    const url = s.url();
+    const r = await send(s.req.post(url));
+    expect(r.status).toBe(status);
+    expect(r.text).toContain(message);
+    expect(r.text).toContain('同じ URL で');
+    expect(uploads).toHaveLength(0);
+    expect((await s.req.post(url).attach('file', Buffer.from('x'), 'a.txt')).status).toBe(200);
+  });
+
+  test('a file Mattermost refuses as too large is worded and leaves the URL usable', async () => {
+    const s = setup();
+    onUpload = () => Response.json({ id: 'api.file.upload_file.too_large_detailed.app_error', message: 'm' }, { status: 413 });
+    const url = s.url();
+    const r = await s.req.post(url).attach('file', Buffer.from('x'), 'a.mov');
+    expect(r.status).toBe(400);
+    expect(r.text).toContain('ファイル「a.mov」は大きすぎるため添付できません');
+    expect(r.text).toContain('同じ URL で');
+  });
+
+  test('a failure after some files went to Mattermost lists them and asks for a new URL', async () => {
+    const s = setup();
+    onUpload = (n) => (n === 1 ? new Response('down', { status: 503 }) : undefined);
+    const url = s.url();
+    const r = await s.req.post(url).attach('file', Buffer.from('x'), 'a.txt').attach('file', Buffer.from('y'), 'b.txt');
+    expect(r.status).toBe(502);
+    expect(r.text).toContain('URL を発行し直して');
+    expect(r.text).toContain(`file_id: ${fileId(0)}（a.txt、1 バイト）`);
+    expect(s.store.uploadedFiles(UID, [fileId(0)])).toHaveLength(1);
+    expect((await s.req.post(url).attach('file', Buffer.from('x'), 'a.txt')).status).toBe(404);
+  });
+
+  test('a file name with a slash or a control character is refused', async () => {
+    const s = setup();
+    const r = await s.req.post(s.url()).attach('file', Buffer.from('x'), 'a\u0007b.txt');
+    expect(r.status).toBe(400);
+    expect(uploads).toHaveLength(0);
+  });
+
+  test('the log has the user, the count and the size, but not the file names, contents or the token', async () => {
+    const s = setup();
+    const url = s.url();
+    await s.req.post(url).attach('file', Buffer.from('secret-content'), 'secret-name.txt');
+    expect(logged()).toEqual([expect.objectContaining({ mm_user_id: UID, outcome: 'ok', files: 1, bytes: 14 })]);
+    const all = out.join('');
+    expect(all).not.toContain('secret');
+    expect(all).not.toContain(url.split('/').pop()!);
+  });
+});
+
+describe('prepare_upload', () => {
+  async function call(s: ReturnType<typeof setup>, args: Record<string, unknown>) {
+    const code = s.store.createCode({ mmUserId: UID, clientId: 'c1', redirectUri: 'http://localhost:1/cb', codeChallenge: 'ch', resource: s.config.resource, scope: 'mattermost' });
+    const rec = s.store.consumeCode(code);
+    if (typeof rec !== 'object') throw new Error('code not consumed');
+    const { accessToken } = s.store.createGrant({ mmUserId: UID, clientId: 'c1', scope: 'mattermost', resource: s.config.resource, fromCodeHash: rec.codeHash });
+    const r = await s.req.post('/mcp').set({ authorization: `Bearer ${accessToken}`, accept: 'application/json, text/event-stream', 'content-type': 'application/json' })
+      .send(JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'prepare_upload', arguments: args } }));
+    return { isError: r.body.result.isError ?? false, text: r.body.result.content[0].text as string };
+  }
+
+  test('gives a curl command with a URL that uploads to the resolved channel', async () => {
+    const s = setup();
+    const r = await call(s, { channel: CH });
+    expect(r.isError).toBe(false);
+    expect(r.text).toContain(`Town（channel_id: ${CH}）`);
+    expect(r.text).toContain('利用者に示して、確認を取ってください');
+    const url = /curl -sS -F 'file=@<ファイルのパス>' (\S+)/.exec(r.text)![1];
+    expect(url).toMatch(/^https:\/\/mm\.example\/mcp\/upload\/[A-Za-z0-9_-]{43}$/);
+    const up = await s.req.post(new URL(url).pathname).attach('file', Buffer.from('x'), 'a.txt');
+    expect(up.status).toBe(200);
+    expect(uploads[0].query.get('channel_id')).toBe(CH);
+  });
+
+  test('refuses a sixth unused URL', async () => {
+    const s = setup();
+    for (let i = 0; i < 5; i++) expect((await call(s, { channel: CH })).isError).toBe(false);
+    const r = await call(s, { channel: CH });
+    expect(r.isError).toBe(true);
+    expect(r.text).toContain('使われていないアップロード URL が 5 件あります');
+  });
+});

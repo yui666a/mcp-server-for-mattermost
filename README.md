@@ -38,7 +38,8 @@ This project targets the other case:
 | `get_mentions` | Posts that mention the user |
 | `search_users` | Find users by name or username |
 | `get_user` | A user's profile with time zone, local time, and status |
-| `send_message` | Post to a channel or thread, optionally with small file attachments |
+| `send_message` | Post to a channel or thread, optionally with small inline files or files uploaded through `prepare_upload` |
+| `prepare_upload` | Issue a one-time URL for uploading local files (screenshots, PDFs, photos) with `curl`; for clients that can run commands on the user's machine, such as Claude Code and Codex CLI |
 | `add_reaction` / `remove_reaction` | Add or remove the user's own reaction |
 | `edit_message` / `delete_message` | Edit or delete the user's own post |
 | `save_draft` | Save a Mattermost draft for the user to send from the UI |
