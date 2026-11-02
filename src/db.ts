@@ -90,6 +90,21 @@ CREATE TABLE IF NOT EXISTS scheduled_posts (
 );
 CREATE INDEX IF NOT EXISTS scheduled_posts_user ON scheduled_posts (mm_user_id, scheduled_at, id);
 CREATE INDEX IF NOT EXISTS scheduled_posts_due ON scheduled_posts (status, scheduled_at, id);
+CREATE TABLE IF NOT EXISTS upload_urls (
+  token_hash TEXT PRIMARY KEY,
+  mm_user_id TEXT NOT NULL,
+  channel_id TEXT NOT NULL,
+  expires_at INTEGER NOT NULL,
+  used_at INTEGER
+);
+CREATE INDEX IF NOT EXISTS upload_urls_user ON upload_urls (mm_user_id);
+CREATE TABLE IF NOT EXISTS uploaded_files (
+  file_id TEXT PRIMARY KEY,
+  mm_user_id TEXT NOT NULL,
+  channel_id TEXT NOT NULL,
+  post_id TEXT,
+  created_at INTEGER NOT NULL
+);
 `;
 
 export function openDb(path: string): DatabaseSync {

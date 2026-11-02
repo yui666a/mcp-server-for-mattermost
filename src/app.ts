@@ -11,6 +11,7 @@ import { metadataRouter } from './oauth/metadata.ts';
 import { registerRouter } from './oauth/register.ts';
 import { tokenRouter } from './oauth/token.ts';
 import type { Store } from './store.ts';
+import { uploadHandler } from './upload.ts';
 
 export type AppContext = { config: Config; store: Store; deps: Deps; mm: MmClient };
 
@@ -23,6 +24,9 @@ export function createApp(ctx: AppContext): express.Express {
   app.use(registerRouter(ctx));
   app.use(authorizeRouter(ctx));
   app.use(tokenRouter(ctx));
+  // Not behind requireBearer or checkOrigin: curl on the user's PC holds no MCP token, so the URL itself is the credential.
+  app.post('/mcp/upload/:token', uploadHandler(ctx));
+  app.all('/mcp/upload/:token', (_req, res) => { res.set('Allow', 'POST').status(405).json({ error: 'method_not_allowed' }); });
   app.get('/mcp/healthz', (_req, res) => { res.set('Cache-Control', 'no-store').json({ ok: true }); });
   const guard = [checkOrigin(['https://claude.ai', 'https://claude.com', ...ctx.config.extraOrigins]), requireBearer(ctx.config, ctx.store)];
   app.post('/mcp', ...guard, async (req, res, next) => {

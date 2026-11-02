@@ -12,6 +12,7 @@ export type Config = {
   accessTokenTtlSec: number;
   extraRedirectUris: string[];
   extraOrigins: string[];
+  uploadMaxBytes: number;
 };
 
 const list = (v: string | undefined) => (v ?? '').split(',').map((s) => s.trim()).filter(Boolean);
@@ -49,5 +50,6 @@ export function loadConfig(env: NodeJS.ProcessEnv): Config {
     accessTokenTtlSec: positiveInt(env, 'ACCESS_TOKEN_TTL_SEC', 3600),
     extraRedirectUris: list(env.EXTRA_REDIRECT_URIS),
     extraOrigins: list(env.EXTRA_ALLOWED_ORIGINS),
+    uploadMaxBytes: positiveInt(env, 'UPLOAD_MAX_BYTES', 10 * 1024 * 1024),
   };
 }
