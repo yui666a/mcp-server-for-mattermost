@@ -47,7 +47,7 @@ Mattermost を更新するときは、結合テスト（`pnpm test:int`）でこ
 
 ## クライアント互換性
 
-MCP サーバーの前に一時的な HTTPS トンネルを置いて `/mcp` を公開し、3 つのクライアントからつないだ。`ACCESS_TOKEN_TTL_SEC=120` にして `whoami` を 2 分以上空けて 2 回呼び、リフレッシュ後の呼び出しも確かめた。どれも 2 回とも成功した（2026-11-01）。
+MCP サーバーの前に一時的な HTTPS トンネルを置いて `/mcp` を公開し、3 つのクライアントからつないだ。`ACCESS_TOKEN_TTL_SEC=120` にして、確かめるためだけに置いた一時的なツール（Mattermost の `/api/v4/users/me` を返すもの。いまのツールには無い）を 2 分以上空けて 2 回呼び、リフレッシュ後の呼び出しも確かめた。どれも 2 回とも成功した（2026-11-01）。
 
 | クライアント | 登録（DCR）の `redirect_uris` | 認可要求 | コード交換 | リフレッシュ |
 |---|---|---|---|---|
@@ -64,7 +64,7 @@ MCP サーバーの前に一時的な HTTPS トンネルを置いて `/mcp` を�
 
 ## 負荷
 
-ローカルの Mattermost 11.7.8（`dev/compose.yml`）に、[deployment.md](deployment.md#4-起動) の `compose.yml` の例と同じ上限（`cpus: 0.5`、`mem_limit: 256m`、`pids_limit: 128`、`read_only`）の `mcp` コンテナをつないで測った（2026-11-01、開発機は OrbStack、12 CPU）。`dev/setup.ts` で作る `load1`〜`load6` の 6 人が、それぞれ 4 並列で `read_channel`（`team-a` の `general-dup`、既定の 30 件）を 190 秒呼び続けた。レート制限のエラーが返ったら 250 ms 待って呼び直す。その間、別のセッション（`alice` のログイン）で `GET /api/v4/users/me` を 200 ms おきに呼んで応答時間を測った。
+ローカルの Mattermost 11.7.8（`dev/compose.yml`）に、[deployment.md](deployment.md#4-起動) の `compose.yml` の例と同じ上限（`cpus: 0.5`、`mem_limit: 256m`、`pids_limit: 128`、`read_only`）の `mcp` コンテナをつないで測った（2026-11-01、開発機は Docker、12 CPU）。`dev/setup.ts` で作る `load1`〜`load6` の 6 人が、それぞれ 4 並列で `read_channel`（`team-a` の `general-dup`、既定の 30 件）を 190 秒呼び続けた。レート制限のエラーが返ったら 250 ms 待って呼び直す。その間、別のセッション（`alice` のログイン）で `GET /api/v4/users/me` を 200 ms おきに呼んで応答時間を測った。
 
 | | 件数 | 中央値 | 95 パーセンタイル | 最大 |
 |---|---|---|---|---|
@@ -74,6 +74,6 @@ MCP サーバーの前に一時的な HTTPS トンネルを置いて `/mcp` を�
 
 - 成功したツール呼び出しは 190 秒で 517 回（163 回／分）。`read_channel` 1 回は Mattermost API を約 3.7 回呼ぶので、全体の上限 600 回／分に張り付いていた。残りの 17376 回はレート制限のエラーで、Mattermost には届いていない
 - 上限は 60 秒の移動窓なので、Mattermost への呼び出しは窓が空いた瞬間にまとまって出る（成功は 190 秒のうち 10 秒に集中し、最大 94 回／秒）。その秒でも 95 パーセンタイルは負荷なしより低く、悪化は見られなかった。全体の上限 600 回／分は変えない
-- `mcp` のメモリは最大 86 MiB（上限 256 MiB の 34 %）、CPU は `docker stats` で最大 56 %（1 CPU を 100 % とする値で、`cpus: 0.5` の上限に張り付いていた）
+- `mcp` のメモリは最大 86 MiB（上限 256 MiB の 34 %）、CPU は `docker stats` で最大 56 %（1 CPU を 100 % とする値。`cpus: 0.5` は 50 % にあたり、測定値はその付近にあった）
 - 測定は nginx と TLS を通さず（`mcp` から `http://mattermost:8065` へ直接）、12 CPU の開発機で行った。リバースプロキシと TLS を経由し、CPU の少ないホストで動かす環境では、応答時間の絶対値と余裕は小さくなりうる
 - `docker stop` で `shutting_down` を出して終了コード 0 で止まった

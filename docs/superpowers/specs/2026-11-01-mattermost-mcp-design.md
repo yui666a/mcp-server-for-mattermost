@@ -96,7 +96,7 @@ MCP クライアント ──(MCP トークン)──> MCP サーバー ──(M
 - Protected Resource Metadata にも `scopes_supported: ["mattermost"]` を載せ、`401` の `WWW-Authenticate` にも `scope="mattermost"` を付ける
 
 スコープは `mattermost` の 1 つだけとし、「この利用者の Mattermost アカウントとしてツールを使う」ことを表す。
-読み取りと書き込みを利用者ごとに分けて許可する要望はないため、ツールの数に依らず、読み取りと書き込みでスコープを分けない。
+読み取りと書き込みでスコープを分けない。書き込みの前の確認は、ツールの注釈（`readOnlyHint`）を見た MCP クライアントに任せる（「ツール」）。
 
 - 認可要求で `scope` が省略されたときは `mattermost` を与える。`mattermost` 以外のスコープが含まれていれば `invalid_scope` で拒否する
 - スコープは認可コード、grant、アクセストークン、リフレッシュトークンに結び付け、リフレッシュで広げられないようにする
@@ -428,7 +428,7 @@ MCP サーバー ──(MM_URL、HTTPS)──> Mattermost API
 - リバースプロキシの Mattermost 向けの設定（キャッシュなど）を MCP のパスに適用しない。MCP のパスは専用の設定で受け、キャッシュとバッファリングを無効にする
 - TLS 1.3 の Early Data（0-RTT）を無効にする。0-RTT で送られた要求は再送（リプレイ）されうるため、`send_message` の二重投稿や、リフレッシュ要求の再送によるリフレッシュトークン再利用検知の誤発火を招く。Mattermost 本体の POST も同じ危険を抱えており、0-RTT による短縮は 1 往復分にすぎないため、MCP のパスだけで `425` を返すより、Mattermost と同じオリジンなら全体で無効にする
 - MCP サーバーが止まっても Mattermost とリバースプロキシは動き続けるようにする（nginx なら、起動時に MCP サーバーの名前解決を必要としない書き方にする）
-- Mattermost 側の準備は、System Console で OAuth 2.0 アプリを 1 つ作るだけ（confidential、コールバック URL は MCP サーバーのコールバック）。MCP サーバーが自分の同意画面を出すため、Mattermost 側の「信頼済み」は「はい」にして同意の二重表示を避けてよい。クライアント ID とシークレットは環境変数で渡す
+- Mattermost 側の準備は、OAuth 2.0 サービスプロバイダーを有効にし、Integrations の OAuth 2.0 アプリの画面（`/<チーム名>/integrations/oauth2-apps`）か API で OAuth 2.0 アプリを 1 つ作るだけ（confidential、コールバック URL は MCP サーバーのコールバック）。MCP サーバーが自分の同意画面を出すため、Mattermost 側の「信頼済み」は「はい」にして同意の二重表示を避けてよい。クライアント ID とシークレットは環境変数で渡す
 - 導入と運用の手順は `docs/deployment.md` と `docs/operations.md` に書く
 
 ### 運用
@@ -445,7 +445,7 @@ MCP サーバー ──(MM_URL、HTTPS)──> Mattermost API
 
 ## 実装者に任せること
 
-- TypeScript で書く（利用者の判断）。ランタイム、MCP SDK、Web フレームワーク、SQLite ドライバ、暗号化方式の選定
+- TypeScript で書く。ランタイム、MCP SDK、Web フレームワーク、SQLite ドライバ、暗号化方式の選定
 - 各種有効期限、件数と本文長の上限、リソース上限、レート制限の具体値
 - 同意画面の見た目（上記の表示項目と保護を満たせばよい）
 - OAuth エンドポイントの具体的なパス、ツールの入出力スキーマの細部

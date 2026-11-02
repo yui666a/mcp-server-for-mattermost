@@ -46,6 +46,8 @@ This project targets the other case:
 | `list_scheduled_messages` | List the user's scheduled posts with status and permalink |
 | `update_scheduled_message` / `cancel_scheduled_message` | Change or cancel a pending scheduled post |
 
+Times are in JST: a `schedule_message` time without an offset (`YYYY-MM-DDTHH:mm[:ss[.sss]]`) is read as `+09:00`, so append `Z` or `+hh:mm` (`-hh:mm`) for another zone. Search dates (`on:`, `before:`, `after:`) are JST days, and output shows each time in both UTC and JST.
+
 Read-only tools carry the MCP `readOnlyHint` annotation so clients can ask before writes.
 
 ## Architecture
@@ -76,7 +78,7 @@ pnpm install
 pnpm dev:up    # starts Mattermost 11.7.8 on http://localhost:8065 and writes dev/.state.json
 ```
 
-`pnpm dev:up` creates the users `admin`, `alice`, and `bob` (password `Passw0rd!dev123`), two teams, and an OAuth app whose callback is `http://localhost:3000/mcp/oauth/callback`.
+`pnpm dev:up` creates the users `admin`, `alice`, and `bob` (password `Passw0rd!dev123`), two teams, the load-test users `load1` to `load6`, and an OAuth app whose callback is `http://localhost:3000/mcp/oauth/callback`.
 Set `MATTERMOST_IMAGE_TAG` to try another Mattermost version.
 
 Start the server against it:
@@ -119,7 +121,7 @@ Measured client behavior is in [docs/measurements.md](docs/measurements.md).
 ## Documentation
 
 - [docs/deployment.md](docs/deployment.md): deploying on your own infrastructure
-- [docs/operations.md](docs/operations.md): post-deploy checks, logs, admin commands, upgrades, backup and restore, troubleshooting
+- [docs/operations.md](docs/operations.md): post-deploy checks, logs, admin commands, upgrading Mattermost and this server, backup and restore, troubleshooting
 - [docs/measurements.md](docs/measurements.md): measured Mattermost OAuth behavior, client compatibility, load test
 - [docs/superpowers/specs/2026-11-01-mattermost-mcp-design.md](docs/superpowers/specs/2026-11-01-mattermost-mcp-design.md): design
 
