@@ -24,7 +24,7 @@ test('MM_BROWSER_URL falls back to MM_URL', () => {
 
 test('applies defaults and parses lists', () => {
   const c = loadConfig({ ...base, EXTRA_REDIRECT_URIS: 'https://a/cb, https://b/cb', EXTRA_ALLOWED_ORIGINS: 'https://a' });
-  expect(c).toMatchObject({ dbPath: '/data/mcp.sqlite', port: 3000, accessTokenTtlSec: 3600 });
+  expect(c).toMatchObject({ dbPath: '/data/mcp.sqlite', port: 3000, accessTokenTtlSec: 3600, uploadMaxBytes: 20 * 1024 * 1024 });
   expect(c.extraRedirectUris).toEqual(['https://a/cb', 'https://b/cb']);
   expect(c.extraOrigins).toEqual(['https://a']);
   expect(c.encKey.length).toBe(32);
@@ -40,4 +40,9 @@ test('rejects PUBLIC_URL with trailing slash', () => {
 
 test('rejects missing required variables', () => {
   expect(() => loadConfig({ ...base, MM_OAUTH_CLIENT_ID: undefined })).toThrow(/MM_OAUTH_CLIENT_ID/);
+});
+
+test('UPLOAD_MAX_BYTES sets the upload limit and must be a positive integer', () => {
+  expect(loadConfig({ ...base, UPLOAD_MAX_BYTES: '1048576' }).uploadMaxBytes).toBe(1048576);
+  expect(() => loadConfig({ ...base, UPLOAD_MAX_BYTES: '0' })).toThrow(/UPLOAD_MAX_BYTES/);
 });

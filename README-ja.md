@@ -39,7 +39,8 @@ Mattermost は公式の MCP サーバーを [Mattermost Agents プラグイン](
 | `get_mentions` | 自分へのメンションを一覧する |
 | `search_users` | 名前やユーザー名でユーザーを探す |
 | `get_user` | ユーザーのプロフィールを、タイムゾーン、現地時刻、在席状況とともに読む |
-| `send_message` | チャンネルやスレッドへ投稿する。小さなファイルを添付できる |
+| `send_message` | チャンネルやスレッドへ投稿する。小さなファイルと、`prepare_upload` でアップロードしたファイルを添付できる |
+| `prepare_upload` | PC のファイル（スクリーンショット、PDF、写真など）を `curl` で送るための使い捨ての URL を発行する。Claude Code や Codex CLI のように PC でコマンドを実行できるクライアント向け |
 | `add_reaction` / `remove_reaction` | 自分のリアクションを付ける、外す |
 | `edit_message` / `delete_message` | 自分の投稿を編集する、削除する |
 | `save_draft` | 本人が画面から送る Mattermost の下書きとして保存する |

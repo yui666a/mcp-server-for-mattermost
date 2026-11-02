@@ -3,20 +3,21 @@ import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
 import { z } from 'zod';
 import { randomToken, sha256 } from '../crypto.ts';
 import { MmError, RateLimited } from '../mattermost/client.ts';
-import type { Store } from '../store.ts';
+import { MAX_OPEN_UPLOAD_URLS, type Store } from '../store.ts';
 import { InputError, type MmPost } from './format.ts';
 import { findPosted, postOnce } from './post.ts';
 import { myTeams, resolveChannel, teamNameOf, type Mm, type MmChannel } from './resolve.ts';
 import { guarded, text, type ToolContext } from './server.ts';
 
 type FileArg = { name: string; content_text?: string; content_base64?: string };
-type Args = { channel: string; message: string; root_id?: string; allow_duplicate?: boolean; files?: FileArg[] };
+type Args = { channel: string; message: string; root_id?: string; allow_duplicate?: boolean; files?: FileArg[]; file_ids?: string[] };
 type Upload = { name: string; bytes: Buffer<ArrayBuffer> };
 
 const MAX_MESSAGE = 16383;
+export const MAX_UPLOAD_FILES = 5;
 // Not higher: the MCP path's nginx takes 1 MB per request, and 128KiB of text JSON-escaped up to 6x plus the longest message just fits.
 const MAX_FILES_BYTES = 128 * 1024;
-const FILE_NAME = z.string().min(1).max(100).regex(/^[^/\\\p{Cc}]+$/u, 'ファイル名に / や \\、制御文字は使えません');
+export const FILE_NAME = z.string().min(1).max(100).regex(/^[^/\\\p{Cc}]+$/u, 'ファイル名に / や \\、制御文字は使えません');
 const inputSchema = {
   channel: z.string().min(1),
   message: z.string().min(1).max(MAX_MESSAGE),
@@ -27,6 +28,8 @@ const inputSchema = {
     z.strictObject({ name: FILE_NAME, content_base64: z.string().min(1).describe('バイナリの中身の base64（data URL の接頭辞や改行は付けない）') }),
   ])).min(1).max(5).optional()
     .describe('添付ファイル（1〜5 件、中身の合計 128KiB まで）。各要素は name と、content_text か content_base64 のどちらか一方'),
+  file_ids: z.array(z.string().regex(/^[A-Za-z0-9]{26}$/)).min(1).max(5).optional()
+    .describe('prepare_upload の URL にアップロードして受け取った file_id（1〜5 件）。アップロードしたときと同じチャンネルにだけ使える'),
 };
 
 const B64 = /^[A-Za-z0-9+/]*={0,2}$/;
@@ -47,17 +50,20 @@ function decodeFiles(files: FileArg[]): Upload[] {
 }
 
 // Not joining the parts with a separator: moving text between the message, a name and a content must not give the same hash.
-const bodyHash = (message: string, files: Upload[]) =>
-  files.length ? sha256(JSON.stringify([message, files.map((f) => [f.name, sha256(f.bytes)])])) : sha256(message);
+// Not adding file_ids when there are none: a claim taken before file_ids existed would stop matching its own retry.
+const bodyHash = (message: string, files: Upload[], fileIds: string[]) => {
+  const parts: unknown[] = [message, files.map((f) => [f.name, sha256(f.bytes)])];
+  if (fileIds.length) return sha256(JSON.stringify([...parts, fileIds]));
+  return files.length ? sha256(JSON.stringify(parts)) : sha256(message);
+};
 
-async function upload(mm: Mm, uid: string, channelId: string, f: Upload): Promise<string> {
+export async function uploadFile(mm: Mm, uid: string, channelId: string, name: string, body: Blob): Promise<string> {
   const r = await worded(
-    mm.call<{ file_infos: { id: string }[] }>(uid, 'POST', `/files?channel_id=${channelId}&filename=${encodeURIComponent(f.name)}`,
-      new Blob([f.bytes], { type: 'application/octet-stream' })),
+    mm.call<{ file_infos: { id: string }[] }>(uid, 'POST', `/files?channel_id=${channelId}&filename=${encodeURIComponent(name)}`, body),
     {
       id: [
-        [400, 'api.file.upload_file.large_image_detailed.app_error', `ファイル「${f.name}」は画像の画素数が大きすぎるため添付できません。`],
-        [413, 'api.file.upload_file.too_large_detailed.app_error', `ファイル「${f.name}」は大きすぎるため添付できません。`],
+        [400, 'api.file.upload_file.large_image_detailed.app_error', `ファイル「${name}」は画像の画素数が大きすぎるため添付できません。`],
+        [413, 'api.file.upload_file.too_large_detailed.app_error', `ファイル「${name}」は大きすぎるため添付できません。`],
         [403, 'api.file.attachments.disabled.app_error', 'このサーバーではファイルの添付が無効です。'],
       ],
     },
@@ -65,11 +71,33 @@ async function upload(mm: Mm, uid: string, channelId: string, f: Upload): Promis
   return r.file_infos[0].id;
 }
 
+const upload = (mm: Mm, uid: string, channelId: string, f: Upload) =>
+  uploadFile(mm, uid, channelId, f.name, new Blob([f.bytes], { type: 'application/octet-stream' }));
+
+// Checked against this MCP's own record rather than Mattermost's file info: it tells apart a file of another channel, one already posted, and one not uploaded through prepare_upload.
+function checkUploaded(store: Store, uid: string, channelId: string, fileIds: string[]): void {
+  if (new Set(fileIds).size !== fileIds.length) throw new InputError('file_ids に同じ file_id が重なっています。');
+  const known = new Map(store.uploadedFiles(uid, fileIds).map((f) => [f.fileId, f]));
+  for (const id of fileIds) {
+    const f = known.get(id);
+    if (!f) throw new InputError(`file_id ${id} は、本人が prepare_upload の URL で 24 時間以内にアップロードしたファイルではありません。`);
+    if (f.channelId !== channelId) throw new InputError(`file_id ${id} は別のチャンネル（channel_id: ${f.channelId}）へアップロードしたファイルです。投稿先のチャンネルで prepare_upload からやり直してください。`);
+  }
+}
+
+// Not reserving the files until the post: two different messages racing for one file_id end with Mattermost keeping it on the first, which the second reports as a dropped file.
+function checkUnposted(store: Store, uid: string, fileIds: string[]): void {
+  const used = store.uploadedFiles(uid, fileIds).find((f) => f.postId);
+  if (used) throw new InputError(`file_id ${used.fileId} は既に投稿（post_id: ${used.postId}）に使われています。同じファイルをもう一度送るときは、prepare_upload からアップロードし直してください。`);
+}
+
 const INFLIGHT = '同じ投稿を処理中です。少し待ってから read_channel などで投稿されたかを確かめてください。';
 
 export async function sendMessage(mm: Mm, store: Store, uid: string, baseUrl: string, args: Args): Promise<CallToolResult> {
   const files = decodeFiles(args.files ?? []);
+  const fileIds = args.file_ids ?? [];
   const ch = await resolveChannel(mm, uid, args.channel);
+  checkUploaded(store, uid, ch.id, fileIds);
   const rootId = args.root_id;
   if (rootId) {
     const root = await mm.call<MmPost>(uid, 'GET', `/posts/${rootId}`);
@@ -78,37 +106,42 @@ export async function sendMessage(mm: Mm, store: Store, uid: string, baseUrl: st
   const where = `チャンネル: ${ch.displayName || ch.name}（channel_id: ${ch.id}）${rootId ? `、返信先 post_id: ${rootId}` : ''}`;
   const done = (postId: string, note: string) => text([note, `post_id: ${postId}`, where, `${baseUrl}/${ch.teamName}/pl/${postId}`].join('\n'));
   const spec = { channelId: ch.id, message: args.message, rootId };
-  const posted = (got: number) => {
-    if (!files.length) return '投稿しました。';
-    if (got === files.length) return `投稿しました。ファイル ${files.length} 件を添付しました。`;
-    return `投稿しました。ただし、添付した ${files.length} 件のうち ${files.length - got} 件を Mattermost が外したため、投稿に付いていません。`;
+  const attached = files.length + fileIds.length;
+  const posted = (postId: string, got: number) => {
+    store.markFilesPosted(uid, fileIds, postId);
+    if (!attached) return '投稿しました。';
+    if (got === attached) return `投稿しました。ファイル ${attached} 件を添付しました。`;
+    return `投稿しました。ただし、添付した ${attached} 件のうち ${attached - got} 件を Mattermost が外したため、投稿に付いていません。`;
   };
   const uploadAll = async () => {
     const ids: string[] = [];
     for (const f of files) ids.push(await upload(mm, uid, ch.id, f));
-    return ids;
+    return [...ids, ...fileIds];
   };
 
   if (args.allow_duplicate) {
+    checkUnposted(store, uid, fileIds);
     const r = await postOnce(mm, uid, { ...spec, fileIds: await uploadAll() }, randomToken());
     if (r.kind !== 'posted') throw r.error;
-    return done(r.postId, posted(r.fileCount));
+    return done(r.postId, posted(r.postId, r.fileCount));
   }
 
-  const claim = store.claimPost({ mmUserId: uid, channelId: ch.id, rootId, bodyHash: bodyHash(args.message, files) });
+  const claim = store.claimPost({ mmUserId: uid, channelId: ch.id, rootId, bodyHash: bodyHash(args.message, files, fileIds) });
   if (claim.kind === 'done') return done(claim.postId, '同じ本文を直前に投稿済みのため、やり直しとみなして投稿していません。');
   if (claim.kind === 'inflight') return text(INFLIGHT, true);
   if (claim.kind === 'retry') {
     // Not dropping the claim if this lookup fails: the earlier attempt's outcome is still unknown.
-    const [prev] = await findPosted(mm, uid, { ...spec, fileCount: files.length }, claim.createdAt);
+    const [prev] = await findPosted(mm, uid, { ...spec, fileCount: attached }, claim.createdAt);
     if (prev) {
       store.completePost(claim.id, prev);
+      store.markFilesPosted(uid, fileIds, prev);
       return done(prev, '同じ本文の投稿が既にあったため、やり直しとみなして投稿していません。');
     }
   }
   let claimedAt = claim.claimedAt;
   let postId: string, fileCount: number;
   try {
+    checkUnposted(store, uid, fileIds);
     const ids = await uploadAll();
     // Not posting on the claim taken before the uploads: they can outlast the in-flight grace, and a resend that took the claim over meanwhile posts too.
     const again = store.reclaimPost(claim.id, claimedAt);
@@ -123,7 +156,7 @@ export async function sendMessage(mm: Mm, store: Store, uid: string, baseUrl: st
     throw e;
   }
   store.completePost(claim.id, postId);
-  return done(postId, posted(fileCount));
+  return done(postId, posted(postId, fileCount));
 }
 
 export type Wording = { id?: [status: number, id: string, text: string][]; status?: [status: number, text: string][] };
@@ -320,6 +353,26 @@ export async function saveDraft(mm: Mm, uid: string, args: DraftArgs): Promise<C
     ].join('\n'));
 }
 
+const prepareSchema = { channel: z.string().min(1).describe('投稿先。チャンネル ID、「チーム名/チャンネル名」、チャンネル名、@ユーザー名（DM）のどれか') };
+type PrepareArgs = { channel: string };
+const MiB = 1024 * 1024;
+
+export async function prepareUpload(mm: Mm, store: Store, uid: string, publicUrl: string, maxBytes: number, args: PrepareArgs): Promise<CallToolResult> {
+  const ch = await resolveChannel(mm, uid, args.channel);
+  const token = store.createUploadUrl({ mmUserId: uid, channelId: ch.id });
+  if (!token) throw new InputError(`使われていないアップロード URL が ${MAX_OPEN_UPLOAD_URLS} 件あります。それを使うか、10 分の期限が切れるのを待ってください。`);
+  const limit = maxBytes % MiB ? `${maxBytes} バイト` : `${maxBytes / MiB}MiB`;
+  return text([
+    `アップロード用の URL を発行しました。10 分間、1 回だけ使えます（1 回で ${MAX_UPLOAD_FILES} 件、合計 ${limit} まで）。`,
+    `投稿先: ${ch.displayName || ch.name}（channel_id: ${ch.id}）`,
+    '実行する前に、送るファイルのパスと投稿先を利用者に示して、確認を取ってください。',
+    '',
+    `curl -sS -F 'file=@<ファイルのパス>' ${publicUrl}/mcp/upload/${token}`,
+    '',
+    '複数のファイルは -F \'file=@<パス>\' を繰り返します。返ってきた file_id を send_message の file_ids に渡して、同じチャンネルへ投稿してください。',
+  ].join('\n'));
+}
+
 export function registerSendTools(server: McpServer, ctx: ToolContext): void {
   const mmOf = (signal: AbortSignal): Mm => ({ call: (u, m, p, b) => ctx.mm.call(u, m, p, b, signal) });
   const reactionAnnotations = { readOnlyHint: false, destructiveHint: false, idempotentHint: true };
@@ -358,8 +411,16 @@ export function registerSendTools(server: McpServer, ctx: ToolContext): void {
   }, guarded(ctx, 'save_draft', async (args: DraftArgs, extra: { signal: AbortSignal }) => saveDraft(mmOf(extra.signal), ctx.mmUserId, args),
   ) as unknown as ToolCallback<typeof draftSchema>);
 
+  server.registerTool('prepare_upload', {
+    description: '利用者の PC にあるファイル（スクリーンショット、PDF、写真など）を投稿に添付するための、使い捨てのアップロード URL を発行する。利用者の PC でコマンドを実行できるクライアント（Claude Code、Codex CLI など）から curl で送り、返った file_id を send_message の file_ids に渡す。ファイルの中身はツールの引数を通らない。curl を実行する前に、送るファイルのパスと投稿先を利用者に示して確認を取ること。claude.ai などのブラウザ版からは PC のファイルを送れないので、save_draft で本文を下書きにし、ファイルは Mattermost の画面から添付するよう案内する',
+    inputSchema: prepareSchema,
+    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false },
+  }, guarded(ctx, 'prepare_upload', async (args: PrepareArgs, extra: { signal: AbortSignal }) =>
+    prepareUpload(mmOf(extra.signal), ctx.store, ctx.mmUserId, ctx.cfg.publicUrl, ctx.cfg.uploadMaxBytes, args),
+  ) as unknown as ToolCallback<typeof prepareSchema>);
+
   server.registerTool('send_message', {
-    description: 'チャンネルへ投稿する。root_id を渡すとスレッドへの返信になる。channel はチャンネル ID、「チーム名/チャンネル名」、チャンネル名、@ユーザー名（DM）のどれか。files でファイルを添付できる（1〜5 件、合計 128KiB まで。SVG、CSV、Markdown、コードなどのテキストは content_text、小さなバイナリは content_base64）。同じ投稿先へ同じ本文と添付を 10 分以内に送ると、やり直しとみなして投稿しない',
+    description: 'チャンネルへ投稿する。root_id を渡すとスレッドへの返信になる。channel はチャンネル ID、「チーム名/チャンネル名」、チャンネル名、@ユーザー名（DM）のどれか。files でファイルを添付できる（1〜5 件、合計 128KiB まで。SVG、CSV、Markdown、コードなどのテキストは content_text、小さなバイナリは content_base64）。利用者の PC にあるファイルは、prepare_upload でアップロードして受け取った file_id を file_ids に渡す。同じ投稿先へ同じ本文と添付を 10 分以内に送ると、やり直しとみなして投稿しない',
     inputSchema,
     annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false },
   }, guarded(ctx, 'send_message', async (args: Args, extra: { signal: AbortSignal }) => {
