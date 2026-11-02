@@ -23,50 +23,52 @@ async function mmApi<T>(token: string, method: string, path: string, body?: unkn
   return res.json() as Promise<T>;
 }
 
+let req: ReturnType<typeof request>;
+let access: string;
+let bobMm: string;
+let aliceMm: string;
+const channels: string[] = [];
+let open: { id: string };
+let secret: { id: string };
+
+const call = async (name: string, args: Record<string, unknown>): Promise<Result> => {
+  const r = await req.post('/mcp')
+    .set({ authorization: `Bearer ${access}`, accept: 'application/json, text/event-stream', 'content-type': 'application/json' })
+    .send(JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name, arguments: args } }));
+  expect(r.status).toBe(200);
+  return r.body.result;
+};
+const bobPost = (channelId: string) => mmApi<{ id: string }>(bobMm, 'POST', '/posts', { channel_id: channelId, message: `${TAG} post` });
+const reactions = async (postId: string) => (await mmApi<Reaction[] | null>(bobMm, 'GET', `/posts/${postId}/reactions`)) ?? [];
+const has = (rs: Reaction[], user: string, emoji: string) => rs.some((r) => r.user_id === user && r.emoji_name === emoji);
+
+beforeAll(async () => {
+  vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
+  const app = intApp();
+  req = app.req;
+  const mmCookie = await mmLoginCookie(e.users.alice);
+  await mmDeauthorize(mmCookie, e.oauth.clientId);
+  const { clientId, code, verifier } = await mcpAuthorize(req, app.config.resource, mmCookie, REDIRECT);
+  const token = await req.post('/mcp/oauth/token').type('form').send({
+    grant_type: 'authorization_code', client_id: clientId, code, redirect_uri: REDIRECT, code_verifier: verifier, resource: app.config.resource,
+  });
+  expect(token.status).toBe(200);
+  access = token.body.access_token;
+  bobMm = await mmToken(e.users.bob);
+  aliceMm = await mmToken(e.users.alice);
+  open = await mmApi(bobMm, 'POST', '/channels', { team_id: e.teams.a.id, name: `s6-${TAG}`, display_name: `s6 ${TAG}`, type: 'O' });
+  channels.push(open.id);
+  await mmApi(bobMm, 'POST', `/channels/${open.id}/members`, { user_id: e.users.alice.id });
+  secret = await mmApi(bobMm, 'POST', '/channels', { team_id: e.teams.a.id, name: `s6p-${TAG}`, display_name: `s6p ${TAG}`, type: 'P' });
+  channels.push(secret.id);
+});
+
+afterAll(async () => {
+  for (const id of channels) await mmApi(bobMm, 'DELETE', `/channels/${id}`);
+  vi.restoreAllMocks();
+});
+
 describe('add_reaction and remove_reaction against the local Mattermost', () => {
-  let req: ReturnType<typeof request>;
-  let access: string;
-  let bobMm: string;
-  const channels: string[] = [];
-  let open: { id: string };
-  let secret: { id: string };
-
-  const call = async (name: string, args: Record<string, unknown>): Promise<Result> => {
-    const r = await req.post('/mcp')
-      .set({ authorization: `Bearer ${access}`, accept: 'application/json, text/event-stream', 'content-type': 'application/json' })
-      .send(JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name, arguments: args } }));
-    expect(r.status).toBe(200);
-    return r.body.result;
-  };
-  const bobPost = (channelId: string) => mmApi<{ id: string }>(bobMm, 'POST', '/posts', { channel_id: channelId, message: `${TAG} post` });
-  const reactions = async (postId: string) => (await mmApi<Reaction[] | null>(bobMm, 'GET', `/posts/${postId}/reactions`)) ?? [];
-  const has = (rs: Reaction[], user: string, emoji: string) => rs.some((r) => r.user_id === user && r.emoji_name === emoji);
-
-  beforeAll(async () => {
-    vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
-    const app = intApp();
-    req = app.req;
-    const mmCookie = await mmLoginCookie(e.users.alice);
-    await mmDeauthorize(mmCookie, e.oauth.clientId);
-    const { clientId, code, verifier } = await mcpAuthorize(req, app.config.resource, mmCookie, REDIRECT);
-    const token = await req.post('/mcp/oauth/token').type('form').send({
-      grant_type: 'authorization_code', client_id: clientId, code, redirect_uri: REDIRECT, code_verifier: verifier, resource: app.config.resource,
-    });
-    expect(token.status).toBe(200);
-    access = token.body.access_token;
-    bobMm = await mmToken(e.users.bob);
-    open = await mmApi(bobMm, 'POST', '/channels', { team_id: e.teams.a.id, name: `s6-${TAG}`, display_name: `s6 ${TAG}`, type: 'O' });
-    channels.push(open.id);
-    await mmApi(bobMm, 'POST', `/channels/${open.id}/members`, { user_id: e.users.alice.id });
-    secret = await mmApi(bobMm, 'POST', '/channels', { team_id: e.teams.a.id, name: `s6p-${TAG}`, display_name: `s6p ${TAG}`, type: 'P' });
-    channels.push(secret.id);
-  });
-
-  afterAll(async () => {
-    for (const id of channels) await mmApi(bobMm, 'DELETE', `/channels/${id}`);
-    vi.restoreAllMocks();
-  });
-
   test('alice adds a reaction to bob\'s post, adding it twice succeeds, and she can remove it', async () => {
     const post = await bobPost(open.id);
     for (let i = 0; i < 2; i++) {
@@ -106,5 +108,58 @@ describe('add_reaction and remove_reaction against the local Mattermost', () => 
     expect(r.isError).toBe(true);
     expect(r.content[0].text).toContain('この投稿にリアクションできません');
     expect(await reactions(post.id)).toEqual([]);
+  });
+});
+
+describe('edit_message and delete_message against the local Mattermost', () => {
+  const post = (token: string, message: string, rootId = '') =>
+    mmApi<{ id: string }>(token, 'POST', '/posts', { channel_id: open.id, message: `${TAG} ${message}`, root_id: rootId });
+  const getPost = (id: string) => mmApi<{ message: string; is_pinned: boolean }>(bobMm, 'GET', `/posts/${id}`);
+  const status = async (id: string) => (await fetch(`${e.mmUrl}/api/v4/posts/${id}`, { headers: { authorization: `Bearer ${bobMm}` } })).status;
+
+  test('alice edits and then deletes her own post sent through this MCP, and the edit keeps the pin', async () => {
+    const sent = await call('send_message', { channel: open.id, message: `${TAG} typo` });
+    expect(sent.isError).toBeFalsy();
+    const id = /post_id: ([A-Za-z0-9]{26})/.exec(sent.content[0].text)![1];
+    await mmApi(aliceMm, 'POST', `/posts/${id}/pin`);
+
+    const edited = await call('edit_message', { post_id: id, message: `${TAG} fixed` });
+    expect(edited.isError).toBeFalsy();
+    expect(await getPost(id)).toMatchObject({ message: `${TAG} fixed`, is_pinned: true });
+
+    const deleted = await call('delete_message', { post_id: id });
+    expect(deleted.isError).toBeFalsy();
+    expect(await status(id)).toBe(404);
+  });
+
+  test('bob\'s post is refused for both edit and delete, and stays as it was', async () => {
+    const p = await post(bobMm, 'bob');
+    for (const r of [await call('edit_message', { post_id: p.id, message: `${TAG} hijack` }), await call('delete_message', { post_id: p.id })]) {
+      expect(r.isError).toBe(true);
+      expect(r.content[0].text).toContain('本人の投稿ではありません');
+    }
+    expect((await getPost(p.id)).message).toBe(`${TAG} bob`);
+  });
+
+  test('alice\'s thread root with bob\'s reply is not deleted, and both posts remain', async () => {
+    const root = await post(aliceMm, 'root');
+    const reply = await post(bobMm, 'reply', root.id);
+    const r = await call('delete_message', { post_id: root.id });
+    expect(r.isError).toBe(true);
+    expect(r.content[0].text).toContain('Mattermost の画面');
+    expect(await status(root.id)).toBe(200);
+    expect(await status(reply.id)).toBe(200);
+  });
+
+  test('alice\'s own reply is deleted although it carries the thread\'s reply_count, and the rest of the thread remains', async () => {
+    const root = await post(bobMm, 'root');
+    const mine = await post(aliceMm, 'mine', root.id);
+    const other = await post(bobMm, 'other', root.id);
+    expect((await mmApi<{ reply_count: number }>(aliceMm, 'GET', `/posts/${mine.id}`)).reply_count).toBeGreaterThan(0);
+    const r = await call('delete_message', { post_id: mine.id });
+    expect(r.isError).toBeFalsy();
+    expect(await status(mine.id)).toBe(404);
+    expect(await status(root.id)).toBe(200);
+    expect(await status(other.id)).toBe(200);
   });
 });
