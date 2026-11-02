@@ -5,7 +5,7 @@ export type PageRow<K> = { key: K; updatedAt: number };
 export type PageResult<R, K> = { updated: R[]; body: R[]; rest: number; next?: PageCursor<K> };
 
 // Lagging behind the page start: Mattermost's clock and ours may disagree, and a row updated in that gap must still count as updated.
-const LAG_MS = 5000;
+export const LAG_MS = 5000;
 
 export const pageCursor = <S extends z.ZodType>(key: S) => z.object({ as_of: z.number().int(), checked_at: z.number().int(), last: key });
 

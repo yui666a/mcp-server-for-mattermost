@@ -3,6 +3,7 @@ import { crc32, deflateSync } from 'node:zlib';
 import type request from 'supertest';
 import { afterAll, beforeAll, describe, expect, test, vi } from 'vitest';
 import type { Limiter } from '../../src/mattermost/limiter.ts';
+import { LAG_MS } from '../../src/mcp/paging.ts';
 import { intApp, mcpAuthorize, requireMm, mmDeauthorize, mmLoginCookie, type Cred } from './helpers.ts';
 
 const e = await requireMm();
@@ -275,7 +276,9 @@ describe('read tools against the local Mattermost', () => {
     });
 
     test('paging to the end yields exactly the channels of GET /users/me/channels', async () => {
-      const all = await mmApi<{ id: string }[]>(aliceMm, 'GET', '/users/me/channels');
+      const all = await mmApi<{ id: string; last_post_at: number }[]>(aliceMm, 'GET', '/users/me/channels');
+      // Without the wait, channels this file just posted to fall inside the lag window and are re-reported as updated on every page.
+      await new Promise((r) => setTimeout(r, Math.max(0, Math.max(...all.map((c) => c.last_post_at)) + LAG_MS + 1000 - Date.now())));
       const { seen, pages } = await listAll({ limit: Math.min(200, Math.ceil(all.length / 2)) });
       expect(pages).toBeGreaterThan(1);
       expect(new Set(seen)).toEqual(new Set(all.map((c) => c.id)));
