@@ -57,7 +57,77 @@ export async function sendMessage(mm: Mm, store: Store, uid: string, baseUrl: st
   return done(post.id, '投稿しました。');
 }
 
+type Wording = { id?: [status: number, id: string, text: string][]; status?: [status: number, text: string][] };
+
+// Not matching on status first: one status (403, 404) covers causes that need different wording, told apart only by the id.
+// Not matching on the id alone: Mattermost reuses an id across statuses (app.post.get.app_error is also a 400 from UpdatePost and DeletePost).
+// Not an object keyed by id: an id such as "constructor" would hit Object.prototype.
+async function worded<T>(p: Promise<T>, w: Wording): Promise<T> {
+  try {
+    return await p;
+  } catch (e) {
+    const m = e instanceof MmError
+      ? (w.id?.find(([s, id]) => s === e.status && id === e.id)?.[2] ?? w.status?.find(([s]) => s === e.status)?.[1])
+      : undefined;
+    throw m ? new InputError(m) : e;
+  }
+}
+
+const POST_ID = z.string().regex(/^[A-Za-z0-9]{26}$/);
+const reactionSchema = {
+  post_id: POST_ID.describe('投稿の post_id'),
+  // Not a zod regex: a Unicode emoji such as ✅ would get the SDK's generic validation error instead of the emoji-name hint.
+  emoji: z.string().min(1).max(100).describe('Mattermost の絵文字名（例: white_check_mark、+1）。前後のコロンは付けても付けなくてもよい'),
+};
+type ReactionArgs = { post_id: string; emoji: string };
+
+const emojiHint = (name: string) => `絵文字「${name}」がありません。Mattermost の絵文字名で指定してください（例: white_check_mark、+1）。`;
+// Checked rather than encoded: the name goes into a path, where "." and ".." survive encoding and fetch would normalise them into another endpoint.
+function emojiName(raw: string): string {
+  const name = raw.trim().replace(/^:/, '').replace(/:$/, '');
+  if (!/^[A-Za-z0-9_+-]{1,64}$/.test(name)) throw new InputError(emojiHint(name));
+  return name;
+}
+const reactionWording = (name: string, archived: string): Wording => ({
+  id: [
+    [404, 'app.emoji.get_by_name.no_result', emojiHint(name)],
+    [404, 'app.post.get.app_error', '投稿が見つかりません（削除されたか、存在しません）。'],
+    [403, archived, 'アーカイブ済みのチャンネルの投稿のリアクションは変えられません。'],
+  ],
+  status: [[403, 'この投稿にリアクションできません（見られない投稿、存在しない投稿、アーカイブ済みチャンネルの投稿）。']],
+});
+
+export async function addReaction(mm: Mm, uid: string, args: ReactionArgs): Promise<CallToolResult> {
+  const name = emojiName(args.emoji);
+  await worded(mm.call(uid, 'POST', '/reactions', { user_id: uid, post_id: args.post_id, emoji_name: name }),
+    reactionWording(name, 'api.reaction.save.archived_channel.app_error'));
+  return text(`リアクション :${name}: を付けました。\npost_id: ${args.post_id}`);
+}
+
+export async function removeReaction(mm: Mm, uid: string, args: ReactionArgs): Promise<CallToolResult> {
+  const name = emojiName(args.emoji);
+  // Not reporting whether a reaction was there: Mattermost answers 200 either way, even for an unknown emoji name.
+  await worded(mm.call(uid, 'DELETE', `/users/${uid}/posts/${args.post_id}/reactions/${name}`),
+    reactionWording(name, 'api.reaction.delete.archived_channel.app_error'));
+  return text(`リアクション :${name}: が付いていれば外しました。\npost_id: ${args.post_id}`);
+}
+
 export function registerSendTools(server: McpServer, ctx: ToolContext): void {
+  const mmOf = (signal: AbortSignal): Mm => ({ call: (u, m, p, b) => ctx.mm.call(u, m, p, b, signal) });
+  const reactionAnnotations = { readOnlyHint: false, destructiveHint: false, idempotentHint: true };
+  server.registerTool('add_reaction', {
+    description: '投稿に自分のリアクション（絵文字）を付ける。「確認しました」の意味で white_check_mark を付けるなど、本文を投稿するより軽い返事に使う。付いていても成功する',
+    inputSchema: reactionSchema,
+    annotations: reactionAnnotations,
+  }, guarded(ctx, 'add_reaction', async (args: ReactionArgs, extra: { signal: AbortSignal }) => addReaction(mmOf(extra.signal), ctx.mmUserId, args),
+  ) as unknown as ToolCallback<typeof reactionSchema>);
+  server.registerTool('remove_reaction', {
+    description: '投稿から自分が付けたリアクションを外す。他人のリアクションは外さない。付いていなくても成功する',
+    inputSchema: reactionSchema,
+    annotations: reactionAnnotations,
+  }, guarded(ctx, 'remove_reaction', async (args: ReactionArgs, extra: { signal: AbortSignal }) => removeReaction(mmOf(extra.signal), ctx.mmUserId, args),
+  ) as unknown as ToolCallback<typeof reactionSchema>);
+
   server.registerTool('send_message', {
     description: 'チャンネルへ投稿する。root_id を渡すとスレッドへの返信になる。channel はチャンネル ID、「チーム名/チャンネル名」、チャンネル名、@ユーザー名（DM）のどれか。同じ投稿先へ同じ本文を 10 分以内に送ると、やり直しとみなして投稿しない',
     inputSchema,
