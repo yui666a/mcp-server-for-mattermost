@@ -4,7 +4,7 @@ import { MmError } from '../mattermost/client.ts';
 import { BAD_CURSOR, decodeCursor, encodeCursor, formatPost, formatTime, InputError, truncate, type MmPost } from './format.ts';
 import { pageCursor, paginate } from './paging.ts';
 import { parsePostRef } from './permalink.ts';
-import { myTeams, resolveChannel, resolveUser, teamNameOf, type ChannelRef, type Mm, type MmChannel, type MmTeam, type UserRef } from './resolve.ts';
+import { ChannelFetchError, myTeams, resolveChannel, resolveUser, teamNameOf, type ChannelRef, type Mm, type MmChannel, type MmTeam, type UserRef } from './resolve.ts';
 import { guarded, text, type ToolContext } from './server.ts';
 
 type PostList = { order: string[]; posts: Record<string, MmPost>; has_next?: boolean | null };
@@ -248,6 +248,47 @@ export function registerReadTools(server: McpServer, ctx: ToolContext): void {
       // Not ending with render()'s "no more pages": the listing is not finished, it has to start over.
       if (p.rest) return [...lines, `（更新されたチャンネルがほかに ${p.rest} 件あり、このページに収まりませんでした。cursor を付けずに最初のページから取り直してください）`].join('\n');
       return render({ lines, next: p.next && { ...p.next, per_page: per, types: kinds } });
+    });
+
+  tool('get_channel', 'チャンネルの情報（種類、目的、ヘッダー、メンバー数、ピン留めされた投稿）を読む。channel はチャンネル ID、「チーム名/チャンネル名」、チャンネル名、@ユーザー名（DM）のどれか。ピン留めは新しい順',
+    { channel: z.string().min(1), pinned_limit: limitArg(10, 50), cursor: cursorArg },
+    async ({ channel, pinned_limit, cursor }, mm) => {
+      const c = cursorOf(z.object({ channel_id: z.string(), create_at: z.number().int(), id: z.string(), per_page: perPage(50) }), cursor);
+      const per = c?.per_page ?? pinned_limit ?? 10;
+      const ch = await resolveChannel(mm, uid, channel).catch((e) => {
+        // Not converting a missing team: /teams/name/{team}/channels/name/{channel} answers it with 404 too.
+        if (e instanceof ChannelFetchError && e.id !== 'app.team.get_by_name.missing.app_error') {
+          if (e.status === 403) throw new InputError('このチャンネルを見る権限がありません（参加していない非公開チャンネルなど）');
+          if (e.status === 404) throw new InputError('チャンネルが見つかりません（参加していない非公開チャンネルを名前で指定した場合も、Mattermost はこの結果を返します）');
+        }
+        throw e;
+      });
+      if (c && c.channel_id !== ch.id) throw new InputError(BAD_CURSOR);
+      const kind: Record<string, string> = { O: '公開', P: '非公開', D: 'DM', G: 'グループ DM' };
+      const lines = channelLines(ch);
+      if (!c) {
+        const stats = await mm.call<{ member_count: number }>(uid, 'GET', `/channels/${ch.id}/stats?exclude_files_count=true`).catch((e) => {
+          if (e instanceof MmError && e.status === 403) return undefined;
+          throw e;
+        });
+        lines.push(
+          `種類: ${kind[ch.raw.type] ?? ch.raw.type}`,
+          `目的: ${ch.raw.purpose || 'なし'}`,
+          `ヘッダー: ${ch.raw.header || 'なし'}`,
+          `メンバー数: ${stats ? stats.member_count : '参加していないため取得できません'}`,
+        );
+      }
+      // Sorting here rather than asking Mattermost for a page: /pinned has neither a limit nor paging.
+      const r = await mm.call<PostList>(uid, 'GET', `/channels/${ch.id}/pinned`);
+      const all = r.order.map((id) => r.posts[id]).filter(Boolean)
+        .sort((a, b) => b.create_at - a.create_at || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
+      const rest = c ? all.filter((p) => p.create_at < c.create_at || (p.create_at === c.create_at && p.id > c.id)) : all;
+      const shown = rest.slice(0, per);
+      const users = await usernames(mm, uid, shown);
+      lines.push(c ? 'ピン留め（続き）:' : `ピン留め: ${all.length} 件`, ...shown.map((p) => formatPost(p, { baseUrl: base, teamName: ch.teamName, usernames: users })));
+      if (!all.length) lines.push('ピン留めされた投稿はありません。');
+      const last = shown.at(-1);
+      return render({ lines, posts: shown, next: rest.length > per && last ? { channel_id: ch.id, create_at: last.create_at, id: last.id, per_page: per } : undefined });
     });
 
   tool('search_users', '名前やユーザー名でユーザーを探す',
