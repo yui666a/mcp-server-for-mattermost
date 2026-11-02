@@ -1,3 +1,5 @@
+import { request as httpRequest } from 'node:http';
+import type { AddressInfo } from 'node:net';
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 import { makeApp } from './helpers.ts';
 
@@ -7,7 +9,7 @@ const fileId = (n: number) => `f${String(n).padStart(25, '0')}`;
 
 let out: string[];
 let uploads: { query: URLSearchParams; bytes: Uint8Array }[];
-let onUpload: (n: number) => Response | undefined;
+let onUpload: (n: number) => Response | undefined | Promise<Response | undefined>;
 
 beforeEach(() => {
   out = [];
@@ -23,7 +25,7 @@ function setup(env: Record<string, string> = {}) {
     const path = new URL(req.url).pathname.replace('/api/v4', '');
     if (req.method === 'POST' && path === '/files') {
       const n = uploads.length;
-      const refused = onUpload(n);
+      const refused = await onUpload(n);
       if (refused) return refused;
       uploads.push({ query: new URL(req.url).searchParams, bytes: new Uint8Array(await req.arrayBuffer()) });
       return Response.json({ file_infos: [{ id: fileId(n) }] }, { status: 201 });
@@ -139,6 +141,86 @@ describe('POST /mcp/upload/:token', () => {
     const all = out.join('');
     expect(all).not.toContain('secret');
     expect(all).not.toContain(url.split('/').pop()!);
+  });
+});
+
+// A client that writes the whole body before reading, as a reverse proxy with request buffering does.
+function rawPost(port: number, path: string, body: Buffer, opts: { chunked?: boolean; stopAfter?: number } = {}) {
+  return new Promise<{ status?: number; text: string; error?: string }>((resolve) => {
+    const boundary = 'b0undary';
+    const head = Buffer.from(`--${boundary}\r\nContent-Disposition: form-data; name="file"; filename="a.bin"\r\nContent-Type: application/octet-stream\r\n\r\n`);
+    const tail = Buffer.from(`\r\n--${boundary}--\r\n`);
+    const all = Buffer.concat([head, body, tail]);
+    const req = httpRequest({
+      port, path, method: 'POST',
+      headers: { 'content-type': `multipart/form-data; boundary=${boundary}`, ...(opts.chunked ? {} : { 'content-length': all.length }) },
+    }, (res) => {
+      res.setEncoding('utf8').on('data', (c) => { got.text += c; });
+      got.status = res.statusCode;
+    });
+    // Resolved on close rather than on the response: a write error such as EPIPE can come after the reply has been read.
+    const got: { status?: number; text: string; error?: string } = { text: '' };
+    req.on('error', (e) => { got.error = (e as NodeJS.ErrnoException).code; });
+    req.on('close', () => setTimeout(() => resolve(got), 20));
+    if (opts.stopAfter !== undefined) {
+      req.write(all.subarray(0, opts.stopAfter), () => setTimeout(() => req.destroy(), 50));
+      return;
+    }
+    for (let i = 0; i < all.length; i += 64 * 1024) req.write(all.subarray(i, i + 64 * 1024));
+    req.end();
+  });
+}
+
+describe('replies before the whole body has arrived', () => {
+  let close: () => void;
+  afterEach(() => close?.());
+  async function listen(env: Record<string, string> = {}) {
+    const s = setup(env);
+    const server = s.app.listen(0);
+    await new Promise((r) => server.once('listening', r));
+    close = () => server.close();
+    return { ...s, port: (server.address() as AddressInfo).port };
+  }
+
+  test('an unknown URL reads the body to the end before its 404, so a client still sending gets the reply', async () => {
+    const s = await listen();
+    const r = await rawPost(s.port, '/mcp/upload/' + 'x'.repeat(43), Buffer.alloc(9 * 1024 * 1024));
+    expect([r.status, r.error]).toEqual([404, undefined]);
+  });
+
+  test('a second upload while one is in progress gets 429 after its body, and keeps its URL', async () => {
+    const s = await listen();
+    let release!: () => void;
+    const held = new Promise<undefined>((r) => { release = () => r(undefined); });
+    let entered = false;
+    onUpload = (n) => (n === 0 ? ((entered = true), held) : undefined);
+    const first = rawPost(s.port, s.url(), Buffer.from('first'));
+    await vi.waitFor(() => expect(entered).toBe(true));
+    const url = s.url();
+    const second = await rawPost(s.port, url, Buffer.alloc(9 * 1024 * 1024));
+    expect([second.status, second.error]).toEqual([429, undefined]);
+    release();
+    expect((await first).status).toBe(200);
+    expect((await rawPost(s.port, url, Buffer.from('again'))).status).toBe(200);
+  });
+
+  test('a chunked body just over UPLOAD_MAX_BYTES gets the 413 explanation and keeps the URL', async () => {
+    const s = await listen({ UPLOAD_MAX_BYTES: String(1024 * 1024) });
+    const url = s.url();
+    const r = await rawPost(s.port, url, Buffer.alloc(1024 * 1024 + 1000), { chunked: true });
+    expect([r.status, r.error]).toEqual([413, undefined]);
+    expect(r.text).toContain('同じ URL で');
+    expect((await rawPost(s.port, url, Buffer.from('ok'))).status).toBe(200);
+  });
+
+  test('a client that goes away mid-body leaves the URL usable and is not logged as an unexpected error', async () => {
+    const s = await listen();
+    const url = s.url();
+    await rawPost(s.port, url, Buffer.alloc(1024 * 1024), { chunked: true, stopAfter: 100_000 });
+    await vi.waitFor(() => expect(logged()).toHaveLength(1));
+    expect(logged()[0]).toMatchObject({ outcome: 'client_gone', files: 0 });
+    expect(out.join('')).not.toContain('upload_unhandled_error');
+    expect((await rawPost(s.port, url, Buffer.from('ok'))).status).toBe(200);
   });
 });
 

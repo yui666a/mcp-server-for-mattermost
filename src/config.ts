@@ -50,6 +50,6 @@ export function loadConfig(env: NodeJS.ProcessEnv): Config {
     accessTokenTtlSec: positiveInt(env, 'ACCESS_TOKEN_TTL_SEC', 3600),
     extraRedirectUris: list(env.EXTRA_REDIRECT_URIS),
     extraOrigins: list(env.EXTRA_ALLOWED_ORIGINS),
-    uploadMaxBytes: positiveInt(env, 'UPLOAD_MAX_BYTES', 20 * 1024 * 1024),
+    uploadMaxBytes: positiveInt(env, 'UPLOAD_MAX_BYTES', 10 * 1024 * 1024),
   };
 }

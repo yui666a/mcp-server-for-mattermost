@@ -24,7 +24,7 @@ test('MM_BROWSER_URL falls back to MM_URL', () => {
 
 test('applies defaults and parses lists', () => {
   const c = loadConfig({ ...base, EXTRA_REDIRECT_URIS: 'https://a/cb, https://b/cb', EXTRA_ALLOWED_ORIGINS: 'https://a' });
-  expect(c).toMatchObject({ dbPath: '/data/mcp.sqlite', port: 3000, accessTokenTtlSec: 3600, uploadMaxBytes: 20 * 1024 * 1024 });
+  expect(c).toMatchObject({ dbPath: '/data/mcp.sqlite', port: 3000, accessTokenTtlSec: 3600, uploadMaxBytes: 10 * 1024 * 1024 });
   expect(c.extraRedirectUris).toEqual(['https://a/cb', 'https://b/cb']);
   expect(c.extraOrigins).toEqual(['https://a']);
   expect(c.encKey.length).toBe(32);

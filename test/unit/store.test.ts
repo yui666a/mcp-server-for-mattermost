@@ -480,6 +480,13 @@ describe('upload URLs and uploaded files', () => {
     expect(store.uploadedFiles('u1', ['f1'])).toEqual([{ fileId: 'f1', channelId: 'c1', postId: 'p1' }]);
   });
 
+  test('a file keeps the post_id it was first marked with', () => {
+    store.recordUploadedFile(target, 'f1');
+    store.markFilesPosted('u1', ['f1'], 'p1');
+    store.markFilesPosted('u1', ['f1'], 'p2');
+    expect(store.uploadedFiles('u1', ['f1'])[0].postId).toBe('p1');
+  });
+
   test('sweep removes expired upload URLs and files older than 24 hours', () => {
     store.createUploadUrl(target);
     store.recordUploadedFile(target, 'f1');
