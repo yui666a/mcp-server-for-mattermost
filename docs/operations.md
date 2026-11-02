@@ -21,6 +21,7 @@
   3. `edit_message` で本文を変え、画面で変わったことを見る。`delete_message` で消し、画面から消えたことを見る
   4. `save_draft` で下書きを保存し、DM を開いて入力欄に出ることを見る。送信せず、画面で入力欄を空にして下書きを消す
   5. `send_message` に `files`（例 `{"name":"check.txt","content_text":"attachment check"}`）を付けて投稿し、画面に添付が出ることを見る。確かめたら `delete_message` で消す
+  6. PC でコマンドを実行できるクライアント（Claude Code、Codex CLI など）から、`prepare_upload` で `@<作業者のユーザー名>` の URL を発行し、数 MB の画像を `curl` で送る。返った `file_id` を `send_message` の `file_ids` に渡して投稿し、画面に添付が出ることを見る。同じ URL へもう一度送ると 404 になることも見る。確かめたら `delete_message` で消す
 - 予約投稿を、作業者自身の DM の中だけで確かめる。本文は、ほかの手順で送った本文とも互いとも違うものにする（同じ本文だと、やり直しの照合が別の投稿と取り違えうる）
   1. `schedule_message` で、2〜3 分後の時刻に 2 件の予約を入れる
   2. 1 件は `update_scheduled_message` で時刻を 1 分ほど後ろへずらし、もう 1 件は `cancel_scheduled_message` で取り消す
@@ -30,7 +31,7 @@
   1. Mattermost の「設定 > セキュリティ > OAuth 2.0 アプリ」で、作った OAuth アプリの許可を取り消す
   2. 次のツール呼び出しが「Mattermost への再ログインが必要です。コネクタを再接続してください。」を返す
   3. その次の要求でクライアントが再ログインを求め、再ログインするとツールを呼べる
-- ログ（下の「ログ」）に、上の呼び出しの `tool_call` と予約の `scheduled_post` が出ていて、投稿の本文、検索語、トークン（`Bearer`、`access_token`、`refresh_token`）、添付の中身が含まれていない
+- ログ（下の「ログ」）に、上の呼び出しの `tool_call`、予約の `scheduled_post`、アップロードの `upload` が出ていて、投稿の本文、検索語、トークン（`Bearer`、`access_token`、`refresh_token`、アップロード URL のトークン）、添付のファイル名と中身が含まれていない
 
 ## ログ
 
@@ -46,12 +47,13 @@ docker compose logs --no-log-prefix mcp | grep '"event":"tool_call"'
 |---|---|
 | `tool_call` | ツールの呼び出し。`mm_user_id`、`tool`、`outcome`（`ok`、`tool_error`、`input_error`、`reauthorize`、`rate_limited`、`upstream_unavailable`、`mm_error`、`error`）、`ms` |
 | `scheduled_post` | 予約の投稿の結果。`mm_user_id`、`outcome` |
+| `upload` | `prepare_upload` の URL へのアップロード。`mm_user_id`、`outcome`（`ok`、`too_large`、`client_gone`（本文の途中で接続が切れた）、`stalled`（本文を待つ間に 15 秒データが来なかった）、`InputError`、`MmError`、`RateLimited`、`UpstreamUnavailable` など）、`files`（Mattermost へ送れた件数）、`bytes`（受け取ったファイルの合計）、`ms`。URL が無効なときと、同時に処理できる件数を超えたときは出ない |
 | `token_issued`、`token_refreshed` | MCP のトークンの発行とリフレッシュ。`client_id`、`mm_user_id` |
 | `token_reuse_detected` | 使用済みの認可コードかリフレッシュトークンが再び提示され、その grant を失効させた。`client_id`。そのクライアントは再ログインになる。同じクライアントで繰り返すなら、トークンの漏えいか、クライアントが同じリフレッシュトークンを並行して送っていることを疑う |
 | `mm_refresh_config_error` | Mattermost が、再ログインで直るもの以外の 4xx でリフレッシュを断った。`status`、`id`。`model.oauth.validate_grant.credentials.app_error`（401）なら `MM_OAUTH_CLIENT_SECRET` が OAuth アプリと合っていない（シークレットを作り直した場合など）。ツールは一時的なエラーを返し続ける |
 | `dcr_registered`、`dcr_unauthorized_near_limit` | クライアントの登録と、未認可の登録が上限に近いことの警告（下の「未認可の登録が上限に近いとき」） |
 | `authorize_completed`、`authorize_upstream_failed` | 利用者のログインの完了と、Mattermost との通信の失敗（`step` が `exchange` か `users_me`） |
-| `unhandled_error`、`tool_unhandled_error`、`scheduled_post_error`、`scheduler_failed`、`sweep_failed` | 想定外の失敗。エラーの名前とコードだけを持つ |
+| `unhandled_error`、`tool_unhandled_error`、`upload_unhandled_error`、`scheduled_post_error`、`scheduler_failed`、`sweep_failed` | 想定外の失敗。エラーの名前とコードだけを持つ |
 | `listening`、`shutting_down` | 起動と停止 |
 
 ## 管理コマンド
@@ -63,7 +65,7 @@ docker compose logs --no-log-prefix mcp | grep '"event":"tool_call"'
 docker compose exec mcp node src/admin.ts list-clients               # 登録された MCP クライアント（client_id、名前、登録時刻、認可済みか）
 docker compose exec mcp node src/admin.ts list-clients --unauthorized # 未認可の登録だけ
 docker compose exec mcp node src/admin.ts delete-client <client_id>   # 登録を消す。そのクライアントはコネクタの追加し直しが要る
-docker compose exec mcp node src/admin.ts purge-credentials          # 認可途中の状態、grant、トークン、重複防止の記録を消す。登録は残す
+docker compose exec mcp node src/admin.ts purge-credentials          # 認可途中の状態、grant、トークン、アップロード URL、重複防止の記録を消す。登録は残す
 docker compose exec mcp node src/admin.ts invalidate-scheduled       # 待機中と投稿中の予約をすべて失敗にする。投稿済みと失敗の予約は残す
 ```
 

@@ -82,7 +82,7 @@ function fakeMm(opts: FakeOpts = {}) {
     }) as Mm['call'],
   };
   const send = (args: Parameters<typeof sendMessage>[4]) => sendMessage(mm, store, UID, BASE, args);
-  return { send, created, uploads, posts, advance: (ms: number) => { now += ms; } };
+  return { send, store, created, uploads, posts, advance: (ms: number) => { now += ms; } };
 }
 
 const textOf = (r: { content: unknown[] }) => (r.content[0] as { text: string }).text;
@@ -328,5 +328,120 @@ describe('send_message with files', () => {
     await f.send(args);
     expect(f.uploads).toHaveLength(2);
     expect(f.created).toEqual([expect.objectContaining({ file_ids: [expect.any(String)] }), expect.objectContaining({ file_ids: [expect.any(String)] })]);
+  });
+});
+
+describe('send_message with file_ids from prepare_upload', () => {
+  const F1 = 'a'.repeat(26);
+  const F2 = 'b'.repeat(26);
+  const uploaded = (f: ReturnType<typeof fakeMm>, ids: string[], channelId = CH) => {
+    for (const i of ids) f.store.recordUploadedFile({ mmUserId: UID, channelId }, i);
+  };
+
+  test('posts with the given file_ids after the files sent inline, and marks them as posted', async () => {
+    const f = fakeMm();
+    uploaded(f, [F1, F2]);
+    const r = await f.send({ channel: 'team-a/dup', message: 'pc files', files: [{ name: 'a.txt', content_text: 'x' }], file_ids: [F1, F2] });
+    expect(textOf(r)).toContain('ファイル 3 件を添付しました');
+    expect(f.created).toEqual([expect.objectContaining({ file_ids: [`f${'0'.repeat(25)}`, F1, F2] })]);
+    expect(f.store.uploadedFiles(UID, [F1, F2]).map((x) => x.postId)).toEqual([id(1), id(1)]);
+  });
+
+  test.each([
+    ['a file_id this MCP did not record', () => {}, 'prepare_upload の URL で 24 時間以内にアップロードしたファイルではありません'],
+    ['a file uploaded for another channel', (f: ReturnType<typeof fakeMm>) => uploaded(f, [F1], OTHER), '別のチャンネル'],
+  ])('refuses %s without posting', async (_, arrange, message) => {
+    const f = fakeMm();
+    arrange(f);
+    await expect(f.send({ channel: 'team-a/dup', message: 'x', file_ids: [F1] })).rejects.toThrow(message);
+    expect(f.created).toHaveLength(0);
+  });
+
+  test('refuses the same file_id twice in one call', async () => {
+    const f = fakeMm();
+    uploaded(f, [F1]);
+    await expect(f.send({ channel: 'team-a/dup', message: 'x', file_ids: [F1, F1] })).rejects.toThrow('重なっています');
+  });
+
+  test('refuses a file already used by another post, and a later send of the same message is not blocked by a claim', async () => {
+    const f = fakeMm();
+    uploaded(f, [F1, F2]);
+    await f.send({ channel: 'team-a/dup', message: 'first', file_ids: [F1] });
+    await expect(f.send({ channel: 'team-a/dup', message: 'second', file_ids: [F1] })).rejects.toThrow('既に投稿');
+    expect(f.created).toHaveLength(1);
+    expect((await f.send({ channel: 'team-a/dup', message: 'second', file_ids: [F2] })).isError).toBeFalsy();
+  });
+
+  test('marks only the files the post kept when Mattermost dropped some of them', async () => {
+    const f = fakeMm({ keepFiles: (ids) => ids.slice(0, 1) });
+    uploaded(f, [F1, F2]);
+    const r = await f.send({ channel: 'team-a/dup', message: 'dropped', file_ids: [F1, F2] });
+    expect(textOf(r)).toContain('2 件のうち 1 件');
+    expect(f.store.uploadedFiles(UID, [F1, F2]).map((x) => x.postId)).toEqual([id(1), null]);
+  });
+
+  test('marks the kept file by identity, not by position, when Mattermost dropped the first one', async () => {
+    const f = fakeMm({ keepFiles: (ids) => ids.slice(1) });
+    uploaded(f, [F1, F2]);
+    await f.send({ channel: 'team-a/dup', message: 'dropped first', file_ids: [F1, F2] });
+    expect(f.store.uploadedFiles(UID, [F1, F2]).map((x) => x.postId)).toEqual([null, id(1)]);
+  });
+
+  test('allow_duplicate posts with the file_ids and marks them as posted', async () => {
+    const f = fakeMm();
+    uploaded(f, [F1]);
+    const r = await f.send({ channel: 'team-a/dup', message: 'again', file_ids: [F1], allow_duplicate: true });
+    expect(textOf(r)).toContain('ファイル 1 件を添付しました');
+    expect(f.created).toEqual([expect.objectContaining({ file_ids: [F1] })]);
+    expect(f.store.uploadedFiles(UID, [F1])[0].postId).toBe(id(1));
+  });
+
+  test('a retry does not take a post with the same message and number of files but other file_ids for its own', async () => {
+    let first = true;
+    const f = fakeMm({ failPost: () => (first ? ((first = false), 'lost') : undefined) });
+    uploaded(f, [F1, F2]);
+    const args = { channel: 'team-a/dup', message: 'look alike', file_ids: [F1] };
+    await expect(f.send(args)).rejects.toBeInstanceOf(UpstreamUnavailable);
+    await f.send({ ...args, file_ids: [F2], allow_duplicate: true });
+    f.advance(31_000);
+    const r = await f.send(args);
+    expect(textOf(r)).toContain('投稿しました');
+    expect(f.store.uploadedFiles(UID, [F1, F2]).map((x) => x.postId)).toEqual([id(2), id(1)]);
+  });
+
+  test('allow_duplicate also refuses a file already used by another post', async () => {
+    const f = fakeMm();
+    uploaded(f, [F1]);
+    await f.send({ channel: 'team-a/dup', message: 'once', file_ids: [F1] });
+    await expect(f.send({ channel: 'team-a/dup', message: 'once', file_ids: [F1], allow_duplicate: true })).rejects.toThrow('既に投稿');
+  });
+
+  test('sending the same message and file_ids again within 10 minutes is reported as already posted', async () => {
+    const f = fakeMm();
+    uploaded(f, [F1]);
+    const args = { channel: 'team-a/dup', message: 'same', file_ids: [F1] };
+    await f.send(args);
+    expect(textOf(await f.send(args))).toContain('投稿していません');
+    expect(f.created).toHaveLength(1);
+  });
+
+  test('the same message with different file_ids is a different post', async () => {
+    const f = fakeMm();
+    uploaded(f, [F1, F2]);
+    await f.send({ channel: 'team-a/dup', message: 'm', file_ids: [F1] });
+    await f.send({ channel: 'team-a/dup', message: 'm', file_ids: [F2] });
+    expect(f.created).toHaveLength(2);
+  });
+
+  test('a retry that finds the earlier post counts the file_ids, marks them as posted and does not post', async () => {
+    let first = true;
+    const f = fakeMm({ failPost: () => (first ? ((first = false), 'after') : undefined) });
+    uploaded(f, [F1]);
+    const args = { channel: 'team-a/dup', message: 'lost', file_ids: [F1] };
+    await expect(f.send(args)).rejects.toBeInstanceOf(UpstreamUnavailable);
+    f.advance(31_000);
+    expect(textOf(await f.send(args))).toContain('既にあったため');
+    expect(f.created).toHaveLength(1);
+    expect(f.store.uploadedFiles(UID, [F1])[0].postId).toBe(id(1));
   });
 });

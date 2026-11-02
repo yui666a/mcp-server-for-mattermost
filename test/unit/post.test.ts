@@ -25,10 +25,10 @@ function fake(answer: (c: Call) => unknown) {
 const fails = (e: unknown) => fake(() => { throw e; }).mm;
 
 describe('postOnce は 1 回だけ投稿し、結果を構造で返す', () => {
-  test('pending_post_id を付けて投稿し、post_id と付いたファイルの数を返す', async () => {
+  test('pending_post_id を付けて投稿し、post_id と付いたファイルを返す', async () => {
     const { mm, calls } = fake(() => ({ id: 'p1', file_ids: ['f1'] }));
     const r = await postOnce(mm, UID, { channelId: CH, rootId: ROOT, message: 'hi', fileIds: ['f1', 'f2'] }, PENDING);
-    expect(r).toEqual({ kind: 'posted', postId: 'p1', fileCount: 1 });
+    expect(r).toEqual({ kind: 'posted', postId: 'p1', fileCount: 1, fileIds: ['f1'] });
     expect(calls).toEqual([{
       method: 'POST', path: '/posts',
       body: { channel_id: CH, message: 'hi', root_id: ROOT, file_ids: ['f1', 'f2'], pending_post_id: PENDING },
@@ -38,7 +38,7 @@ describe('postOnce は 1 回だけ投稿し、結果を構造で返す', () => {
   test('返信先とファイルが無ければ、root_id と file_ids を送らない', async () => {
     const { mm, calls } = fake(() => ({ id: 'p1' }));
     const r = await postOnce(mm, UID, { channelId: CH, message: 'hi', fileIds: [] }, PENDING);
-    expect(r).toEqual({ kind: 'posted', postId: 'p1', fileCount: 0 });
+    expect(r).toEqual({ kind: 'posted', postId: 'p1', fileCount: 0, fileIds: [] });
     expect(calls[0].body).toEqual({ channel_id: CH, message: 'hi', pending_post_id: PENDING });
   });
 
