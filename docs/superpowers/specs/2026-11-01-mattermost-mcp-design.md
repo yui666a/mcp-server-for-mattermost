@@ -2,11 +2,11 @@
 
 ## 目的
 
-Claude（claude.ai とデスクトップ版）、Claude Code、Codex から、Slack Connector と同じ感覚で `mattermost.example.com` のメッセージを読み書きできるようにする。
-利用者は URL `https://mattermost.example.com/mcp` をコネクタとして追加し、Mattermost のアカウントでログインするだけで使い始められる。
+Claude（claude.ai とデスクトップ版）、Claude Code、Codex から、Slack Connector と同じ感覚で Mattermost のメッセージを読み書きできるようにする。
+利用者は MCP サーバーの URL（例 `https://mattermost.example.com/mcp`）をコネクタとして追加し、Mattermost のアカウントでログインするだけで使い始められる。
 
-Mattermost は無償の Team Edition で、公式 Agents プラグインの外部 MCP エンドポイントのような有償版限定の機能は使えない。
-そのため、自前の MCP サーバーを既存の Docker Compose 構成に追加する。
+Mattermost の公式 MCP サーバーは Agents プラグインに含まれ、外部の MCP クライアント向けの HTTP エンドポイントには Enterprise 以上のライセンスが要る。
+無償の Team Edition でも使えるよう、Mattermost の外で動く独立した MCP サーバーとして作る。
 
 ## ゴール
 
@@ -48,16 +48,15 @@ Mattermost は無償の Team Edition で、公式 Agents プラグインの外�
 
 | 項目 | 値 |
 |---|---|
-| Mattermost | v11.7.8 Team Edition。VM `mattermost-vm`（e2-medium）の Docker Compose（リポジトリ `mattermost-infra` の `compose/docker-compose.yml`）で稼働 |
-| リバースプロキシ | 同じ Compose の nginx 1.28（`mattermost-infra` の `nginx/mattermost.conf`）。TLS 終端は nginx |
-| ログ収集 | Cloud Ops Agent は既定設定で、journald から `/var/log/syslog` に流れた分を Cloud Logging に送っている。Docker 既定の json-file ドライバーのコンテナ出力は届かない |
+| Mattermost | v11.7.8 Team Edition で挙動を確かめた。ほかの版は結合テストを通してから使う（「テスト」） |
+| リバースプロキシ | TLS を終端するリバースプロキシ（例は nginx）の後ろに置く |
 | OAuth 2.0 Service Provider | 有効。`/.well-known/oauth-authorization-server` を公開しており、`registration_endpoint` はない（Dynamic Client Registration は無効） |
 | Mattermost の OAuth | 認可コードフロー、PKCE は `S256` のみ。public client にはリフレッシュトークンが発行されず、confidential client（`client_secret_post`）には発行される。スコープは `user` のみ |
-| Mattermost のトークン再利用 | 同じユーザーと同じ OAuth アプリの組では、新たに認可しても既存のアクセストークンとリフレッシュトークンが返る。リフレッシュするとリフレッシュトークンは新しいものに替わり、使用済みのものは使えなくなる。古いアクセストークンは、ローカルの v11.7.8 での実測ではリフレッシュ後も少なくとも 826 秒は有効なまま残り、利用者がアプリの許可を取り消すと無効になった（[v11.7.8 `oauth.go`](https://github.com/mattermost/mattermost/blob/v11.7.8/server/channels/app/oauth.go)、実測の詳細は `docs/runbook.md`）。Mattermost のトークンは MCP サーバーの外に出さないため、古いアクセストークンが残ることは設計に影響しない |
-| 下書きの同期 | サーバー設定 `ServiceSettings.AllowSyncedDrafts`（既定 true）が有効なときだけ、API で保存した下書きが本人の画面に届く。無効なら下書きの API は 501 を返す。本番で有効かは、投入前に確かめる（`docs/runbook.md` の「事前確認」） |
-| 添付の設定 | ローカルの v11.7.8 では `FileSettings.EnableFileAttachments` が true、`MaxFileSize` が 100 MiB。`EnableFileAttachments` が false だとアップロードが 403 になり、`send_message` の添付が使えない。プレビュー（`get_file` が返す縮小版）は設定ではなく、画像のアップロード時に Mattermost が作る。本番の値は投入前に確かめる（`docs/runbook.md` の「事前確認」） |
-| Mattermost の台数 | 1 台構成で、下書きの一覧を読むレプリカを持たない。本番にレプリカが無いことは、投入前に確かめる（`docs/runbook.md` の「事前確認」） |
-| 利用者 | 約 20 人、世界中から利用 |
+| Mattermost のトークン再利用 | 同じユーザーと同じ OAuth アプリの組では、新たに認可しても既存のアクセストークンとリフレッシュトークンが返る。リフレッシュするとリフレッシュトークンは新しいものに替わり、使用済みのものは使えなくなる。古いアクセストークンは、ローカルの v11.7.8 での実測ではリフレッシュ後も少なくとも 826 秒は有効なまま残り、利用者がアプリの許可を取り消すと無効になった（[v11.7.8 `oauth.go`](https://github.com/mattermost/mattermost/blob/v11.7.8/server/channels/app/oauth.go)、実測の詳細は `docs/measurements.md`）。Mattermost のトークンは MCP サーバーの外に出さないため、古いアクセストークンが残ることは設計に影響しない |
+| 下書きの同期 | サーバー設定 `ServiceSettings.AllowSyncedDrafts`（既定 true）が有効なときだけ、API で保存した下書きが本人の画面に届く。無効なら下書きの API は 501 を返す。導入先で有効かは、導入前に確かめる（`docs/deployment.md` の「Mattermost の事前確認」） |
+| 添付の設定 | ローカルの v11.7.8 では `FileSettings.EnableFileAttachments` が true、`MaxFileSize` が 100 MiB。`EnableFileAttachments` が false だとアップロードが 403 になり、`send_message` の添付が使えない。プレビュー（`get_file` が返す縮小版）は設定ではなく、画像のアップロード時に Mattermost が作る。導入先の値は導入前に確かめる（`docs/deployment.md` の「Mattermost の事前確認」） |
+| Mattermost の台数 | 下書きの一覧を読むレプリカを持たない構成を前提にする。導入先にレプリカが無いことは、導入前に確かめる（`docs/deployment.md` の「Mattermost の事前確認」） |
+| 利用者 | 1 つの Mattermost につき数十人規模。世界中から利用しうる |
 
 ## 構成
 
@@ -104,11 +103,9 @@ MCP クライアント ──(MCP トークン)──> MCP サーバー ──(M
 
 認可要求とトークン要求の `resource` パラメータは必須とし、欠落しているか MCP エンドポイントの URL と完全一致しなければ `invalid_target` で拒否する。
 発行した認可コードとトークンは、この 1 つのリソースにだけ使える。
-早期接続確認で対象クライアントのどれかが `resource` を送らないと分かった場合は、この設計の変更として利用者に相談する。
+対象の 3 つのクライアントは、どれも認可要求とコード交換で `resource` を送る（`docs/measurements.md` の「クライアント互換性」）。
 
-この形式は RFC 8414 と MCP 仕様の探索手順に沿っており、3 つのクライアントの公式資料も DCR と Streamable HTTP への対応を明記している。
-ただし実クライアントでの動作は未確認なので、実装の早い段階で 3 つのクライアントすべてから接続できることを確かめる。
-どれかが探索に失敗し、MCP サーバー側の工夫で回避できない場合は、サブドメイン（例 `mcp.example.com`）へ移すことを利用者に相談する。
+この形式は RFC 8414 と MCP 仕様の探索手順に沿っており、3 つのクライアントがこの形式のメタデータを見つけて接続できることを実測で確かめた（`docs/measurements.md` の「クライアント互換性」）。
 
 ### 認可フロー
 
@@ -186,7 +183,7 @@ MCP クライアントごとに複製して持つと、どれか 1 つがリフ�
 
 ### 保存先
 
-1 台の VM で 1 プロセスだけ動かすので、保存先は Compose のボリュームに置く SQLite ファイルとする。
+MCP サーバーは 1 プロセスだけで動かすので、保存先はボリュームに置く SQLite ファイルとする。
 保存するのは、登録された MCP クライアント、認可途中の状態、MCP の grant とトークン、Mattermost のトークン、`send_message` の重複防止の記録、予約投稿である。
 
 このうち DCR の登録は、各クライアントが接続ごとに 1 回だけ行い、得た `client_id` を使い続ける。
@@ -199,25 +196,24 @@ MCP クライアントごとに複製して持つと、どれか 1 つがリフ�
 - 未認可の登録を消されたクライアントは、認可を始めた後に 7 日以上放置した場合などに限られ、そのときはコネクタを追加し直す
 - 登録エンドポイントには IP ごとのレート制限もかける（「Mattermost への影響を抑える仕組み」）。未認可の登録が上限に近づいたら警告ログを出す
 
-MCP サーバー専用のバックアップは取らない。
-SQLite ファイルを失った場合は、次の「スナップショットからの復元」と同じ手順で、直近のスナップショットから SQLite ファイルだけを取り出して DCR の登録を戻す。
-スナップショットより後に登録したクライアントは戻らないので、その利用者にはコネクタを追加し直してもらう。
+MCP サーバー専用のバックアップの仕組みは持たない。
+SQLite ファイルのディレクトリと暗号化鍵を、導入先のバックアップ（ファイルのコピーやディスクのスナップショット）に含める。
+SQLite ファイルを失った場合は、直近のバックアップから次の手順で SQLite ファイルを戻し、DCR の登録を戻す。
+バックアップより後に登録したクライアントは戻らないので、その利用者にはコネクタを追加し直してもらう。
 
-ただし SQLite ファイルと暗号化鍵（`compose/.env`）は VM のブートディスク上にあり、既存の日次ディスクスナップショットに含まれる。
-古いスナップショットから復元すると、使用済みのリフレッシュトークンの記録や失効した grant が過去の状態に戻り、ローテーション済みの古いトークンが再び有効になりうる。
-そこで、スナップショットからの復元は次の手順に限る。
+古いバックアップから復元すると、使用済みのリフレッシュトークンの記録や失効した grant が過去の状態に戻り、ローテーション済みの古いトークンが再び有効になりうる。
+そこで、バックアップからの復元は次の手順に限る。
 
-1. 復元したディスクを起動ディスクとして使う前に、作業用の VM にデータディスクとして接続する。復元したディスクから直接起動すると、Compose のコンテナが `restart: unless-stopped` で自動起動し、外部 IP がなくても同じ VPC の内部（`default-allow-internal`）からは巻き戻った状態の MCP サーバーに到達できるため
-2. 作業用の VM で、復元したディスク上の `/opt/mattermost-mcp` から MCP サーバーのイメージをビルドし（イメージはレジストリに置いていないため）、その管理コマンドをネットワークなしで実行し（SQLite の `-wal`、`-shm` を含めてディレクトリごとマウントする）（`docker run --rm --network none -v <SQLite のディレクトリ>:/data <イメージ> <削除コマンド>`）、認可途中の状態、認可コード、grant、MCP のトークン、Mattermost のトークン、`send_message` の重複防止の記録をすべて削除する。登録された MCP クライアント（DCR の登録）は消さない
+1. 復元した SQLite ファイルで MCP サーバーを起動する前に、MCP サーバーのイメージの管理コマンドを、ネットワークなしの単独のコンテナで実行し（SQLite の `-wal`、`-shm` を含めてディレクトリごとマウントする）（`docker run --rm --network none -v <SQLite のディレクトリ>:/data <イメージ> <削除コマンド>`）、認可途中の状態、認可コード、grant、MCP のトークン、Mattermost のトークン、`send_message` の重複防止の記録をすべて削除する。登録された MCP クライアント（DCR の登録）は消さない
    続けて、待機中と投稿中の予約をすべて失敗にする（「予約投稿」の「復元」）
-3. ディスクを作業用の VM から外し、そのディスクから VM を起動する
+2. その後で MCP サーバーを起動する。ディスクのスナップショットのように、復元すると MCP サーバーが自動で起動する形で戻すときは、巻き戻った状態の MCP サーバーに届く経路ができないよう、自動起動の前に 1 を済ませる
 
 DCR の登録を残すので、各クライアントはコネクタを追加し直す必要がなく、手元のリフレッシュトークンが `invalid_grant` で拒否された後の通常の再ログインだけで戻る。
 DCR の登録は利用者の権限を持たないため、巻き戻っても実害はない。
 暗号化鍵は作り直さない。Mattermost のトークンは削除するが、失敗にした予約の本文は同じ鍵で暗号化されたまま更新から 7 日残り、作り直すと一覧で本文が読めなくなるため。
-この手順を運用手順書に書く。
+この手順を運用手順書（`docs/operations.md`）に書く。
 
-既存の PostgreSQL に DB を追加する方式は採らない。
+Mattermost の PostgreSQL に DB を追加する方式は採らない。
 Mattermost の DB と運用（ダンプ、リストア、メジャーバージョン更新）を共有することになり、MCP サーバーの都合で Mattermost の DB に手を入れる場面を作りたくないからだ。
 
 ### MCP の転送方式
@@ -308,7 +304,7 @@ Mattermost v11.7.8 には、投稿の `pending_post_id` が同じ要求を 30 �
 ### ファイルを添付した投稿
 
 - `send_message` の `files` の各要素は、名前と、`content_text`（UTF-8 のテキストとしてそのまま添付する）か `content_base64`（小さなバイナリ）のどちらか一方である。SVG、CSV、Markdown、コードなど、LLM が本文として書ける形式は `content_text` で渡す
-- 件数は 1〜5 件、名前は 1〜100 文字で `/`、`\`、制御文字を含まない。中身の合計（base64 は解いた後）は 128KiB まで。本番の nginx は MCP のパスの要求を 1MB までに制限しており、テキストが JSON のエスケープで最大 6 倍に膨らんでも、最長の本文と合わせて収まる値にした。上限を上げるには nginx の設定を変える
+- 件数は 1〜5 件、名前は 1〜100 文字で `/`、`\`、制御文字を含まない。中身の合計（base64 は解いた後）は 128KiB まで。MCP サーバーとリバースプロキシは MCP のパスの要求を 1MB までに制限しており、テキストが JSON のエスケープで最大 6 倍に膨らんでも、最長の本文と合わせて収まる値にした。上限を上げるには両方の設定を変える
 - `content_base64` は、標準の base64 で、長さが 4 の倍数で、解いて符号化し直すと元に戻るものだけを受け付ける。data URL の接頭辞や改行が付いたまま解くと、壊れた中身を黙って添付するため
 - 各ファイルを `POST /files?channel_id=&filename=` で、中身をそのまま本文にして逐次アップロードし、返った `file_ids` を付けて投稿する。アップロードした後で投稿の前に失敗すると、そのファイルは消せずに残る（Mattermost にファイルを消す API も、使われなかったファイルを消すジョブも無い）。そこで、投稿先の解決と重複防止の記録を含め、すべての検査をアップロードの前に済ませる
 - アップロードを Mattermost が明確に断ったら（`4xx`、レート制限、送る前の失敗）、重複防止の記録を消す。投稿はされていないため。画素数や大きさで断られたときは、ファイル名を添えて利用者向けの文言にする
@@ -388,7 +384,7 @@ DM での通知はしない。この MCP は Bot を持たないので、本人�
 
 **画面での見分け**: 予約の投稿は、本人の普通の投稿として出る。props で印を付けても標準の画面には出ないため、見分けられるようにはしない。
 
-**復元**: 古いスナップショットには、その後に取り消したり変えたりした予約が待機中のまま入っている。そこで復元の手順で、管理コマンド `invalidate-scheduled` によって待機中と投稿中の予約をすべて失敗にする。投稿を試みた予約と、予定時刻を過ぎた予約は、理由を「投稿されたか不明」にする。失った DB の上では、スナップショットの後に投稿されていたかもしれないため。利用者には、それ以外の予約を入れ直すよう知らせる。
+**復元**: 古いバックアップには、その後に取り消したり変えたりした予約が待機中のまま入っている。そこで復元の手順で、管理コマンド `invalidate-scheduled` によって待機中と投稿中の予約をすべて失敗にする。投稿を試みた予約と、予定時刻を過ぎた予約は、理由を「投稿されたか不明」にする。失った DB の上では、バックアップの後に投稿されていたかもしれないため。利用者には、それ以外の予約を入れ直すよう知らせる。
 
 **既知の限界**
 
@@ -400,51 +396,52 @@ DM での通知はしない。この MCP は Bot を持たないので、本人�
 
 ### Mattermost への影響を抑える仕組み
 
-`mcp` コンテナは Mattermost と同じ VM（e2-medium）の CPU、メモリ、ディスクを共有する。
+MCP サーバーは Mattermost と同じホストで動かすことが多く、CPU、メモリ、ディスクを共有しうる。
 攻撃、不具合、メモリリーク、DB の肥大で Mattermost を巻き込まないよう、次を必須とする。
 
-- `mcp` サービスに CPU、メモリ、プロセス数の上限を設ける（Compose の `cpus`、`mem_limit`、`pids_limit`）。具体値は実装者が決めるが、Mattermost と PostgreSQL の使用量を見てから決める
-- nginx で MCP のパスの要求本文の大きさに上限を設け、DCR、認可、トークンの各エンドポイントには IP ごとのレート制限（`limit_req`）をかける
+- MCP サーバーのコンテナに CPU、メモリ、プロセス数の上限を設ける（Compose なら `cpus`、`mem_limit`、`pids_limit`）。具体値は実装者が決めるが、Mattermost と PostgreSQL の使用量を見てから決める
+- リバースプロキシで MCP のパスの要求本文の大きさに上限を設け、DCR、認可、トークンの各エンドポイントには IP ごとのレート制限（`limit_req`）をかける
 - MCP サーバー内で、Mattermost API の呼び出しにタイムアウトと同時実行数の上限を設ける
-- ツール呼び出しにはアプリケーション内でレート制限をかける（MCP 2025-11-25 の Tools の Security Considerations）。claude.ai からの要求は Anthropic の共有の送信元から来るため、nginx の IP 単位の制限では代わりにならない
+- ツール呼び出しにはアプリケーション内でレート制限をかける（MCP 2025-11-25 の Tools の Security Considerations）。claude.ai からの要求は Anthropic の共有の送信元から来るため、リバースプロキシの IP 単位の制限では代わりにならない
   - 数えるのはツールの呼び出し回数ではなく、実際に Mattermost API を呼んだ回数とする。1 回のツール呼び出しが複数の API 呼び出しになる場合（チームごとの検索など）も、その分を数える
   - Mattermost ユーザーごとの上限と、サーバー全体の上限の 2 段階にする
   - 上限を超えたら待たせ続けずに、すぐレート制限のエラーをツールの結果として返す
   - Mattermost が `429` を返したら自動で再試行せず、リセット時刻を添えてレート制限のエラーとして返す
-  - 具体値は実装者が決める。目安は、利用者 1 人が会話の中で普通に使う量（数十回／分）を妨げず、全員が同時に上限まで使っても Mattermost の応答時間が目に見えて悪化しないこと。本番投入前にローカルで負荷をかけて確かめる
-  - 利用者 1 人あたり 300 回／分、全体で 600 回／分とする。`list_my_channels` を起点に既定の 50 チャンネルを `read_channel` で巡回すると約 200 回かかるため 1 人あたりをこの値にし、全体の上限は runbook の「負荷の確認」で応答時間が悪化しないと確かめた値なので、1 人の上限を上げても Mattermost にかかる負荷の最大は変わらない
+  - 具体値は実装者が決める。目安は、利用者 1 人が会話の中で普通に使う量（数十回／分）を妨げず、全員が同時に上限まで使っても Mattermost の応答時間が目に見えて悪化しないこと。ローカルで負荷をかけて確かめる
+  - 利用者 1 人あたり 300 回／分、全体で 600 回／分とする。`list_my_channels` を起点に既定の 50 チャンネルを `read_channel` で巡回すると約 200 回かかるため 1 人あたりをこの値にし、全体の上限は `docs/measurements.md` の「負荷」で応答時間が悪化しないと確かめた値なので、1 人の上限を上げても Mattermost にかかる負荷の最大は変わらない
 - 認可途中の状態と認可コードは短い期限（10 分程度）で消す。失効や期限切れになった grant とトークン、期限の過ぎた `send_message` の重複防止の記録も定期的に消す。DCR の登録は自動では消さず、総数の上限で抑える（「保存先」を参照）
-- ログは journald ドライバー（`logging.driver: journald`）で出し、journald の容量制限に従わせる
+- ログは標準出力に出し、容量の制限はコンテナのログドライバーに任せる
 
 ### 配置
 
 ```text
-インターネット ── nginx（443）─┬─ /mcp、/mcp/…、/.well-known/oauth-protected-resource/mcp、
-                               │  /.well-known/oauth-authorization-server/mcp ─> mcp（新規コンテナ）
-                               └─ それ以外 ─> mattermost:8065
-mcp ──(https://mattermost.example.com、Compose 内部で nginx に解決)──> nginx ──> Mattermost API
+インターネット ── リバースプロキシ（443）─┬─ /mcp、/mcp/…、/.well-known/oauth-protected-resource/mcp、
+                                          │  /.well-known/oauth-authorization-server/mcp ─> MCP サーバー
+                                          └─ それ以外 ─> Mattermost
+MCP サーバー ──(MM_URL、HTTPS)──> Mattermost API
 ```
 
-- ソースは独立したリポジトリ `mattermost-mcp` に置く。本番 VM では `/opt/mattermost-mcp` に置き、`mattermost-infra` の Compose（`/opt/mattermost-infra/compose`）の新サービス `mcp` が `build: ../../mattermost-mcp` でビルドする。開発機でも 2 つのリポジトリを同じ親ディレクトリに並べる
-- `mcp` のポートはホストに公開しない。nginx からだけ到達させる
-- `mcp` から Mattermost の API とトークンエンドポイントへは、クライアントシークレットとトークンを送るため、証明書を検証する HTTPS で `https://mattermost.example.com` を呼ぶ（OAuth 2.1 と RFC 6750 は TLS を必須としている）。外部 IP を経由して VM に戻る通信にしないよう、Compose で nginx サービスにネットワークエイリアス `mattermost.example.com` を付け、`mcp` からはこの名前が nginx コンテナに解決されるようにする。証明書は既存のものがそのまま使える。`mcp` コンテナの接続元 IP が nginx の `access.conf` で拒否されないことを確かめる
-- 利用者のブラウザを送る Mattermost の認可 URL と、パーマリンクにも同じ公開 URL を使う
-- 既存の nginx の `location /` の設定（キャッシュなど）を MCP のパスに適用しない。MCP のパスは専用の `location` で受け、キャッシュとバッファリングを無効にする
-- 既存の nginx で `server` 全体に有効になっている TLS 1.3 の Early Data（`ssl_early_data on`）を `off` にする。0-RTT で送られた要求は再送（リプレイ）されうるため、`send_message` の二重投稿や、リフレッシュ要求の再送によるリフレッシュトークン再利用検知の誤発火を招く。Mattermost 本体の POST も同じ危険を抱えており、0-RTT による短縮は 1 往復分にすぎないため、MCP のパスだけで `425` を返すより全体で無効にする
-- `mcp` コンテナが止まっても Mattermost と nginx は動き続ける（nginx は起動時に `mcp` の名前解決を必要としない書き方にする。既存の `$mattermost_upstream` と同じ方式）
-- Mattermost 側の準備は、System Console で OAuth 2.0 アプリを 1 つ作るだけ（confidential、コールバック URL は MCP サーバーのコールバック）。MCP サーバーが自分の同意画面を出すため、Mattermost 側の「信頼済み」は「はい」にして同意の二重表示を避けてよい。クライアント ID とシークレットは `mattermost-infra` の `compose/.env` で渡す
+- MCP サーバーは、Mattermost と同じオリジンの `/mcp` 以下にも、別のホストにも置ける。URL は環境変数（`PUBLIC_URL`、`MM_URL`、`MM_BROWSER_URL`）で与え、要求の `Host` や `X-Forwarded-*` からは組み立てない。同じオリジンに置くと、名前が `mcp` のチームの URL（`/mcp/...`）が MCP サーバーに取られるので、そのチームは作れない
+- MCP サーバーのポートはインターネットに公開しない。リバースプロキシからだけ到達させる
+- MCP サーバーから Mattermost の API とトークンエンドポイントへは、クライアントシークレットとトークンを送るため、証明書を検証する HTTPS で呼ぶ（OAuth 2.1 と RFC 6750 は TLS を必須としている）
+- 利用者のブラウザを送る Mattermost の認可 URL と、パーマリンクには、Mattermost の公開 URL（`MM_BROWSER_URL`）を使う
+- リバースプロキシの Mattermost 向けの設定（キャッシュなど）を MCP のパスに適用しない。MCP のパスは専用の設定で受け、キャッシュとバッファリングを無効にする
+- TLS 1.3 の Early Data（0-RTT）を無効にする。0-RTT で送られた要求は再送（リプレイ）されうるため、`send_message` の二重投稿や、リフレッシュ要求の再送によるリフレッシュトークン再利用検知の誤発火を招く。Mattermost 本体の POST も同じ危険を抱えており、0-RTT による短縮は 1 往復分にすぎないため、MCP のパスだけで `425` を返すより、Mattermost と同じオリジンなら全体で無効にする
+- MCP サーバーが止まっても Mattermost とリバースプロキシは動き続けるようにする（nginx なら、起動時に MCP サーバーの名前解決を必要としない書き方にする）
+- Mattermost 側の準備は、System Console で OAuth 2.0 アプリを 1 つ作るだけ（confidential、コールバック URL は MCP サーバーのコールバック）。MCP サーバーが自分の同意画面を出すため、Mattermost 側の「信頼済み」は「はい」にして同意の二重表示を避けてよい。クライアント ID とシークレットは環境変数で渡す
+- 導入と運用の手順は `docs/deployment.md` と `docs/operations.md` に書く
 
 ### 運用
 
 - ログは JSON で出す。記録するのは時刻、Mattermost ユーザー ID、ツール名（予約の巡回では予約ごとの結果の状態）、結果（成功、失敗の種別）、所要時間。メッセージ本文、検索語、トークンは記録しない
-- `/mcp/healthz` を Compose の healthcheck に使う
+- `/mcp/healthz` をコンテナの healthcheck に使う
 
 ### テスト
 
-- 認可フローとツールは、ローカルの Docker Compose で Mattermost Team Edition を立てて自動テストする。本番の Mattermost にテストのための書き込みをしない
-- テストに使う Mattermost のバージョンは環境変数 `MATTERMOST_IMAGE_TAG` で指定し、未指定なら隣の `mattermost-infra` の `compose/.env`（なければ `compose/env.example`）の値を使う。どれも見つからなければテストを始めない。トークンの再利用、リフレッシュの競合、アプリの取り消しの挙動もこのテストで確かめる
-- 「前提」の Mattermost のトークン再利用の挙動は v11.7.8 の実装に基づく。MCP サーバーの本番投入は Mattermost が v11.7.8 のうちに行い、その後 Mattermost を更新するときは、新しいバージョンでこのテストを通してから本番を更新する。テストが通らなければ、Mattermost の更新を止めて設計を見直す
-- 本番投入後の確認は、作業者のアカウントで 3 つのクライアントから接続し、読み取り系のツールを一通り呼ぶ。書き込み系のツール（添付と予約投稿を含む）は、作業者自身の DM（自分宛て）の中だけで確かめ、他のチャンネルや利用者の投稿には触れない。予約投稿は、時刻の変更と取り消しをした予約が予定どおりに 1 件だけ投稿されることと、巡回のログに本文が出ないことを確かめる
+- 認可フローとツールは、ローカルの Docker Compose で Mattermost Team Edition を立てて自動テストする。利用中の Mattermost にテストのための書き込みをしない
+- テストに使う Mattermost のバージョンは環境変数 `MATTERMOST_IMAGE_TAG` で指定し、未指定なら挙動を確かめた v11.7.8 を使う。トークンの再利用、リフレッシュの競合、アプリの取り消しの挙動もこのテストで確かめる
+- 「前提」の Mattermost のトークン再利用の挙動は v11.7.8 の実装に基づく。Mattermost を v11.7.8 から更新するときは、新しいバージョンでこのテストを通してから更新する。テストが通らなければ、Mattermost の更新を止めて設計を見直す
+- 導入後の確認は、作業者のアカウントで 3 つのクライアントから接続し、読み取り系のツールを一通り呼ぶ。書き込み系のツール（添付と予約投稿を含む）は、作業者自身の DM（自分宛て）の中だけで確かめ、他のチャンネルや利用者の投稿には触れない。予約投稿は、時刻の変更と取り消しをした予約が予定どおりに 1 件だけ投稿されることと、巡回のログに本文が出ないことを確かめる
 
 ## 実装者に任せること
 
@@ -460,5 +457,4 @@ mcp ──(https://mattermost.example.com、Compose 内部で nginx に解決)�
 | Mattermost の DCR を有効にし、MCP クライアントを Mattermost に直接登録させる | token passthrough になる。public client にはリフレッシュトークンが出ず、再ログインが頻発する。DCR の登録エンドポイントが認証なしで公開され、Mattermost に OAuth アプリが無制限に作られる |
 | Personal Access Token を利用者に発行してもらい、MCP クライアントに設定させる | 「URL を追加してログインするだけ」にならない。claude.ai の固定ヘッダーによる認証は限定提供で、組織共通の資格情報になるため、利用者ごとの権限で動くという要件を満たさない。トークンが失効しない |
 | 同意を記憶して 2 回目以降の同意画面を省略する | 省略の判定には、Mattermost へ送る前に利用者を特定するセッション管理が要る。認可はクライアント追加時にしか起きないため、毎回表示しても負担は小さい |
-| サブドメイン `mcp.example.com` で公開する | 利用者が `/mcp` を望んでいる。DNS と証明書の追加が要る。パス形式が使えなかった場合の代替として残す |
-| 既存の PostgreSQL に保存する | 「保存先」を参照 |
+| Mattermost の PostgreSQL に保存する | 「保存先」を参照 |
