@@ -8,6 +8,11 @@ export type UserRef = {
   email?: string; locale?: string; is_bot?: boolean; delete_at?: number;
 };
 export type MmChannel = { id: string; name: string; display_name: string; team_id: string; type: string };
+export type MmChannelFull = MmChannel & { purpose: string; header: string };
+export type ResolvedChannel = ChannelRef & { raw: MmChannelFull };
+
+// A subclass rather than converting to a message here: the other tools keep the generic Mattermost error, and only get_channel words it.
+export class ChannelFetchError extends MmError {}
 export type MmTeam = { id: string; name: string; display_name?: string };
 type Candidate = { team: string; name: string; id: string };
 
@@ -32,7 +37,10 @@ function plain(name: string, what: string): string {
   return name;
 }
 const missing = (e: unknown) => e instanceof MmError && (e.status === 403 || e.status === 404);
-const ref = (c: MmChannel, teamName: string): ChannelRef => ({ id: c.id, name: c.name, displayName: c.display_name, teamId: c.team_id, teamName });
+const ref = (c: MmChannelFull, teamName: string): ResolvedChannel => ({ id: c.id, name: c.name, displayName: c.display_name, teamId: c.team_id, teamName, raw: c });
+const fetchChannel = (mm: Mm, userId: string, path: string) => mm.call<MmChannelFull>(userId, 'GET', path).catch((e) => {
+  throw e instanceof MmError ? new ChannelFetchError(e.status, e.id, e.message) : e;
+});
 
 export const myTeams = (mm: Mm, userId: string) => mm.call<MmTeam[]>(userId, 'GET', '/users/me/teams');
 
@@ -49,16 +57,16 @@ export async function resolveUser(mm: Mm, userId: string, spec: string): Promise
   throw new InputError('ユーザーはユーザー ID か @ユーザー名 で指定してください。');
 }
 
-export async function resolveChannel(mm: Mm, userId: string, spec: string): Promise<ChannelRef> {
+export async function resolveChannel(mm: Mm, userId: string, spec: string): Promise<ResolvedChannel> {
   const s = spec.trim();
   if (ID.test(s)) {
-    const c = await mm.call<MmChannel>(userId, 'GET', `/channels/${s}`);
+    const c = await fetchChannel(mm, userId, `/channels/${s}`);
     return ref(c, await teamNameOf(mm, userId, c.team_id));
   }
   const slash = s.indexOf('/');
   if (slash > 0) {
     const team = plain(s.slice(0, slash), 'チーム名');
-    const c = await mm.call<MmChannel>(userId, 'GET', `/teams/name/${team}/channels/name/${plain(s.slice(slash + 1), 'チャンネル名')}`);
+    const c = await fetchChannel(mm, userId, `/teams/name/${team}/channels/name/${plain(s.slice(slash + 1), 'チャンネル名')}`);
     return ref(c, team);
   }
   if (!s.startsWith('@')) plain(s, 'チャンネル名');
@@ -68,16 +76,16 @@ export async function resolveChannel(mm: Mm, userId: string, spec: string): Prom
     if (!teams.length) throw new InputError('所属しているチームがないため DM を探せません。');
     // POST /channels/direct is not used: it creates the DM, and this is a read.
     const name = [userId, other.id].sort().join('__');
-    const c = await mm.call<MmChannel>(userId, 'GET', `/teams/${teams[0].id}/channels/name/${name}`).catch((e) => {
+    const c = await mm.call<MmChannelFull>(userId, 'GET', `/teams/${teams[0].id}/channels/name/${name}`).catch((e) => {
       if (missing(e)) throw new InputError(`@${other.username} との DM はまだありません。`);
       throw e;
     });
     return { ...ref(c, teams[0].name), displayName: `@${other.username}` };
   }
-  const found: ChannelRef[] = [];
+  const found: ResolvedChannel[] = [];
   // Sequential rather than Promise.all: parallel lookups would exceed the per-user concurrency limit.
   for (const t of teams) {
-    const c = await mm.call<MmChannel>(userId, 'GET', `/teams/${t.id}/channels/name/${s}`).catch((e) => {
+    const c = await mm.call<MmChannelFull>(userId, 'GET', `/teams/${t.id}/channels/name/${s}`).catch((e) => {
       if (missing(e)) return undefined;
       throw e;
     });
