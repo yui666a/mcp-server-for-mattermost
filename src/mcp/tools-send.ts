@@ -5,7 +5,7 @@ import { randomToken, sha256 } from '../crypto.ts';
 import { MmError, RateLimited } from '../mattermost/client.ts';
 import type { Store } from '../store.ts';
 import { InputError, type MmPost } from './format.ts';
-import { resolveChannel, type Mm } from './resolve.ts';
+import { resolveChannel, teamNameOf, type Mm, type MmChannel } from './resolve.ts';
 import { guarded, text, type ToolContext } from './server.ts';
 
 type Args = { channel: string; message: string; root_id?: string; allow_duplicate?: boolean };
@@ -112,6 +112,65 @@ export async function removeReaction(mm: Mm, uid: string, args: ReactionArgs): P
   return text(`リアクション :${name}: が付いていれば外しました。\npost_id: ${args.post_id}`);
 }
 
+type OwnPost = MmPost & { type: string; props?: Record<string, unknown>; reply_count?: number };
+type Where = { line: string; teamName: string };
+const GONE = '投稿が見つかりません。直前の呼び出しで削除済みの可能性があります。';
+const goneWording: Wording = { id: [[404, 'app.post.get.app_error', GONE]] };
+
+// Not trusting user_id alone: a webhook post carries its creator's user_id, and Mattermost would let that creator edit or delete it.
+// Not refusing from_oauth_app or from_plugin: this MCP's own send_message posts carry from_oauth_app.
+async function ownPost(mm: Mm, uid: string, postId: string): Promise<OwnPost> {
+  const post = await worded(mm.call<OwnPost>(uid, 'GET', `/posts/${postId}`), goneWording);
+  if (post.user_id !== uid) throw new InputError('本人の投稿ではありません。この MCP からは本人の投稿だけを編集・削除できます。');
+  if (post.props?.from_webhook || post.props?.from_bot) throw new InputError('webhook や Bot が投稿したものは扱えません。');
+  if (post.type) throw new InputError(`この種類の投稿は扱えません（type: ${post.type}）。`);
+  return post;
+}
+
+// Looked up before the write rather than after: once DELETE has succeeded, a failing lookup would report an irreversible success as an error.
+async function whereOf(mm: Mm, uid: string, post: OwnPost): Promise<Where> {
+  const ch = await mm.call<MmChannel>(uid, 'GET', `/channels/${post.channel_id}`);
+  return { line: `チャンネル: ${ch.display_name || ch.name}（channel_id: ${ch.id}）`, teamName: await teamNameOf(mm, uid, ch.team_id) };
+}
+
+const MAX_MESSAGE = 16383;
+const editSchema = {
+  post_id: POST_ID.describe('編集する、本人の投稿の post_id'),
+  message: z.string().min(1).max(MAX_MESSAGE).describe('新しい本文（全体を置き換える）'),
+};
+type EditArgs = { post_id: string; message: string };
+
+export async function editMessage(mm: Mm, uid: string, baseUrl: string, args: EditArgs): Promise<CallToolResult> {
+  if (!args.message.trim()) throw new InputError('本文が空白だけです。投稿を消したいときは delete_message を使ってください。');
+  const where = await whereOf(mm, uid, await ownPost(mm, uid, args.post_id));
+  // Not PUT /posts/{id}: it clears is_pinned when the field is left out.
+  await worded(mm.call(uid, 'PUT', `/posts/${args.post_id}/patch`, { message: args.message }), {
+    id: [
+      [400, 'api.post.update_post.permissions_time_limit.app_error', '編集できる期間を過ぎています。'],
+      [400, 'api.post.patch_post.can_not_update_post_in_deleted.error', 'アーカイブ済みのチャンネルの投稿は編集できません。'],
+    ],
+  });
+  return text(['編集しました。編集で足したメンションは通知されません。', `post_id: ${args.post_id}`, where.line, `${baseUrl}/${where.teamName}/pl/${args.post_id}`].join('\n'));
+}
+
+export async function deleteMessage(mm: Mm, uid: string, args: { post_id: string }): Promise<CallToolResult> {
+  const post = await ownPost(mm, uid, args.post_id);
+  // Not using reply_count alone: Mattermost puts the whole thread's count on replies too, which would block deleting a reply.
+  // Not defaulting a missing reply_count to 0: the delete cannot be undone, so an unknown count is treated as having replies.
+  // Not closing the race with a reply posted after this check: Mattermost has no conditional delete.
+  if (!post.root_id && post.reply_count !== 0) {
+    throw new InputError('返信のあるスレッドの親投稿は消せません。消すとほかの人の返信も消えるためです。消す場合は Mattermost の画面から操作してください。');
+  }
+  const where = await whereOf(mm, uid, post);
+  await worded(mm.call(uid, 'DELETE', `/posts/${args.post_id}`), {
+    id: [
+      ...goneWording.id!,
+      [400, 'api.post.delete_post.can_not_delete_post_in_deleted.error', 'アーカイブ済みのチャンネルの投稿は削除できません。'],
+    ],
+  });
+  return text(['削除しました。', `post_id: ${args.post_id}`, where.line].join('\n'));
+}
+
 export function registerSendTools(server: McpServer, ctx: ToolContext): void {
   const mmOf = (signal: AbortSignal): Mm => ({ call: (u, m, p, b) => ctx.mm.call(u, m, p, b, signal) });
   const reactionAnnotations = { readOnlyHint: false, destructiveHint: false, idempotentHint: true };
@@ -127,6 +186,21 @@ export function registerSendTools(server: McpServer, ctx: ToolContext): void {
     annotations: reactionAnnotations,
   }, guarded(ctx, 'remove_reaction', async (args: ReactionArgs, extra: { signal: AbortSignal }) => removeReaction(mmOf(extra.signal), ctx.mmUserId, args),
   ) as unknown as ToolCallback<typeof reactionSchema>);
+
+  const destructive = { readOnlyHint: false, destructiveHint: true, idempotentHint: true };
+  server.registerTool('edit_message', {
+    description: '本人の投稿の本文を書き換える。他人、webhook、Bot の投稿とシステムメッセージは扱わない。元の本文は上書きされる。編集で足したメンションは通知されない',
+    inputSchema: editSchema,
+    annotations: destructive,
+  }, guarded(ctx, 'edit_message', async (args: EditArgs, extra: { signal: AbortSignal }) => editMessage(mmOf(extra.signal), ctx.mmUserId, ctx.cfg.mmBrowserUrl, args),
+  ) as unknown as ToolCallback<typeof editSchema>);
+  const deleteSchema = { post_id: POST_ID.describe('削除する、本人の投稿の post_id') };
+  server.registerTool('delete_message', {
+    description: '本人の投稿を削除する。削除は取り消せない。実行の前に利用者に確認すること。他人、webhook、Bot の投稿とシステムメッセージ、返信のあるスレッドの親投稿は消さない',
+    inputSchema: deleteSchema,
+    annotations: destructive,
+  }, guarded(ctx, 'delete_message', async (args: { post_id: string }, extra: { signal: AbortSignal }) => deleteMessage(mmOf(extra.signal), ctx.mmUserId, args),
+  ) as unknown as ToolCallback<typeof deleteSchema>);
 
   server.registerTool('send_message', {
     description: 'チャンネルへ投稿する。root_id を渡すとスレッドへの返信になる。channel はチャンネル ID、「チーム名/チャンネル名」、チャンネル名、@ユーザー名（DM）のどれか。同じ投稿先へ同じ本文を 10 分以内に送ると、やり直しとみなして投稿しない',

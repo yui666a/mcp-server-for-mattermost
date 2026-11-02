@@ -20,7 +20,7 @@ function setup() {
   const ctx = makeApp({}, async (input, init) => {
     const req = new Request(input, init);
     const path = new URL(req.url).pathname.replace('/api/v4', '');
-    if (req.method === 'POST') bodies[path] = await req.clone().json();
+    if (req.method === 'POST' || req.method === 'PUT') bodies[path] = await req.clone().json();
     hits.push(`${req.method} ${path}`);
     const r = routes[`${req.method} ${path}`];
     if (!r) return Response.json({ id: 'not_found' }, { status: 404 });
@@ -192,3 +192,182 @@ test('add_reaction and remove_reaction are marked as non-read-only, non-destruct
   }
 });
 
+
+describe('edit_message and delete_message', () => {
+  const CH = 'c'.repeat(26);
+  const OTHER = 'o'.repeat(26);
+  const mine = (over: Record<string, unknown> = {}) => ({
+    id: POST, user_id: 'u1', channel_id: CH, root_id: '', message: 'old', create_at: 1, type: '', props: {}, reply_count: 0, ...over,
+  });
+  const GET_POST = `GET /posts/${POST}`;
+  const PATCH = `PUT /posts/${POST}/patch`;
+  const DELETE = `DELETE /posts/${POST}`;
+  const writes = () => hits.filter((h) => !h.startsWith('GET '));
+  const serve = (post: object, extra: Record<string, Route> = {}) => {
+    routes = {
+      [GET_POST]: () => post,
+      [`GET /channels/${CH}`]: () => ({ id: CH, name: 'town', display_name: 'Town', team_id: 't1', type: 'O' }),
+      'GET /teams/t1': () => ({ id: 't1', name: 'team-a' }),
+      [PATCH]: () => mine({ message: 'new' }),
+      [DELETE]: () => ({ status: 'OK' }),
+      ...extra,
+    };
+  };
+  const edit = (s: ReturnType<typeof setup>, over: Record<string, unknown> = {}) => s.call('edit_message', { post_id: POST, message: 'new', ...over });
+  const del = (s: ReturnType<typeof setup>) => s.call('delete_message', { post_id: POST });
+
+  describe('only the caller\'s own posts are edited or deleted', () => {
+    test.each([
+      ['another user\'s post', { user_id: 'u2' }, '本人の投稿ではありません'],
+      ['the caller\'s webhook post', { props: { from_webhook: 'true' } }, 'webhook'],
+      ['the caller\'s bot post', { props: { from_bot: 'true' } }, 'Bot'],
+      ['the caller\'s system message', { type: 'system_join_channel' }, 'この種類の投稿は扱えません（type: system_join_channel）'],
+      ['the caller\'s /me post', { type: 'me' }, 'この種類の投稿は扱えません（type: me）'],
+    ])('refuses %s, reading the post and sending neither PATCH nor DELETE', async (_, over, wording) => {
+      serve(mine(over));
+      const s = setup();
+      for (const r of [await edit(s), await del(s)]) {
+        expect(r.isError).toBe(true);
+        expect(r.text).toContain(wording);
+      }
+      expect(hits).toEqual([GET_POST, GET_POST]);
+    });
+
+    test('accepts the caller\'s post made through an OAuth app, such as this MCP\'s send_message', async () => {
+      serve(mine({ props: { from_oauth_app: 'true' } }));
+      const s = setup();
+      expect((await edit(s)).isError).toBe(false);
+      expect((await del(s)).isError).toBe(false);
+      expect(writes()).toEqual([PATCH, DELETE]);
+    });
+
+    test.each(ESCAPES)('rejects the post_id %j without calling Mattermost', async (post_id) => {
+      serve(mine());
+      const s = setup();
+      for (const r of [await s.call('edit_message', { post_id, message: 'new' }), await s.call('delete_message', { post_id })]) {
+        expect(r.isError).toBe(true);
+        expect(r.text).toContain('post_id');
+      }
+      expect(hits).toEqual([]);
+    });
+
+    test('a post that no longer exists says it may have been deleted by the previous call', async () => {
+      serve(mine(), { [GET_POST]: mmError(404, 'app.post.get.app_error') });
+      const s = setup();
+      for (const r of [await edit(s), await del(s)]) {
+        expect(r.isError).toBe(true);
+        expect(r.text).toContain('投稿が見つかりません。直前の呼び出しで削除済みの可能性があります');
+      }
+      expect(writes()).toEqual([]);
+    });
+  });
+
+  describe('edit_message', () => {
+    test('replaces only the message through the patch API and reports the post_id, channel and permalink', async () => {
+      serve(mine({ is_pinned: true }));
+      const r = await edit(setup());
+      expect(r.isError).toBe(false);
+      expect(writes()).toEqual([PATCH]);
+      expect(bodies[`/posts/${POST}/patch`]).toEqual({ message: 'new' });
+      expect(r.text).toContain(`post_id: ${POST}`);
+      expect(r.text).toContain('Town');
+      expect(r.text).toContain(`https://mm.example/team-a/pl/${POST}`);
+    });
+
+    test('says mentions added by the edit are not notified', async () => {
+      serve(mine());
+      expect((await edit(setup())).text).toContain('編集で足したメンションは通知されません');
+    });
+
+    test.each(['   ', ' \n\t '])('refuses a whitespace-only message %j, pointing to delete_message, without calling Mattermost', async (message) => {
+      serve(mine());
+      const r = await edit(setup(), { message });
+      expect(r.isError).toBe(true);
+      expect(r.text).toContain('delete_message');
+      expect(hits).toEqual([]);
+    });
+
+    test('accepts a 16383-character message and refuses a 16384-character one without calling Mattermost', async () => {
+      serve(mine());
+      const s = setup();
+      expect((await edit(s, { message: 'a'.repeat(16383) })).isError).toBe(false);
+      hits = [];
+      expect((await edit(s, { message: 'a'.repeat(16384) })).isError).toBe(true);
+      expect(hits).toEqual([]);
+    });
+
+    test.each([
+      ['the edit time limit has passed', 'api.post.update_post.permissions_time_limit.app_error', '編集できる期間を過ぎています'],
+      ['the channel is archived', 'api.post.patch_post.can_not_update_post_in_deleted.error', 'アーカイブ済み'],
+    ])('when %s, says so', async (_, id, wording) => {
+      serve(mine(), { [PATCH]: mmError(400, id) });
+      const r = await edit(setup());
+      expect(r.isError).toBe(true);
+      expect(r.text).toContain(wording);
+    });
+  });
+
+  describe('delete_message', () => {
+    test('deletes the caller\'s post and reports the post_id and channel', async () => {
+      serve(mine());
+      const r = await del(setup());
+      expect(r.isError).toBe(false);
+      expect(writes()).toEqual([DELETE]);
+      expect(r.text).toContain(`post_id: ${POST}`);
+      expect(r.text).toContain('Town');
+    });
+
+    test('refuses a thread root that has replies, pointing to the Mattermost UI, without sending DELETE', async () => {
+      serve(mine({ root_id: '', reply_count: 2 }));
+      const r = await del(setup());
+      expect(r.isError).toBe(true);
+      expect(r.text).toContain('返信');
+      expect(r.text).toContain('Mattermost の画面');
+      expect(hits).toEqual([GET_POST]);
+    });
+
+    test('deletes the caller\'s reply even though Mattermost reports the whole thread\'s reply_count on it', async () => {
+      serve(mine({ root_id: OTHER, reply_count: 3 }));
+      const r = await del(setup());
+      expect(r.isError).toBe(false);
+      expect(writes()).toEqual([DELETE]);
+    });
+
+    test.each([
+      ['has no reply_count', { reply_count: undefined }],
+      ['has a non-numeric reply_count', { reply_count: '2' }],
+      ['has no root_id and no reply_count', { root_id: undefined, reply_count: undefined }],
+      ['has no root_id and replies', { root_id: undefined, reply_count: 1 }],
+    ])('refuses a post that %s, treating it as a thread root that may have replies, without sending DELETE', async (_, over) => {
+      serve(mine(over));
+      const r = await del(setup());
+      expect(r.isError).toBe(true);
+      expect(r.text).toContain('Mattermost の画面');
+      expect(hits).toEqual([GET_POST]);
+    });
+
+    test('an archived channel is reported as such', async () => {
+      serve(mine(), { [DELETE]: mmError(400, 'api.post.delete_post.can_not_delete_post_in_deleted.error') });
+      const r = await del(setup());
+      expect(r.isError).toBe(true);
+      expect(r.text).toContain('アーカイブ済み');
+    });
+
+    test('a post deleted between the check and DELETE says it may have been deleted by the previous call', async () => {
+      serve(mine(), { [DELETE]: mmError(404, 'app.post.get.app_error') });
+      const r = await del(setup());
+      expect(r.isError).toBe(true);
+      expect(r.text).toContain('直前の呼び出しで削除済みの可能性があります');
+    });
+  });
+
+  test('both are marked destructive and idempotent, and delete_message tells the client to confirm with the user', async () => {
+    const list = await setup().tools();
+    for (const name of ['edit_message', 'delete_message']) {
+      expect(list.find((t) => t.name === name)?.annotations, name).toMatchObject({ readOnlyHint: false, destructiveHint: true, idempotentHint: true });
+    }
+    const d = list.find((t) => t.name === 'delete_message')!.description;
+    expect(d).toContain('取り消せない');
+    expect(d).toContain('利用者に確認');
+  });
+});
