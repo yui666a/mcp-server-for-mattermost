@@ -446,3 +446,418 @@ describe('get_user', () => {
     expect(hits).toEqual(['GET /users/username/bob', `GET /users/${BOB}/status`]);
   });
 });
+
+describe('get_unreads', () => {
+  const T1 = '1'.repeat(26);
+  const T2 = '2'.repeat(26);
+  const QUIET = 'a'.repeat(26);
+  const OLD = 'b'.repeat(26);
+  const NEW = 'c'.repeat(26);
+  const MENTIONED = 'd'.repeat(26);
+  const MUTED = 'e'.repeat(26);
+  const MUTED_MENTION = 'f'.repeat(26);
+  const DM = 'g'.repeat(26);
+  const ARCHIVED = 'h'.repeat(26);
+  const TH1 = 'k'.repeat(26);
+  const TH2 = 'm'.repeat(26);
+  const TH_DM = 'n'.repeat(26);
+  const ch = (id: string, name: string, o: Record<string, unknown>) => ({
+    id, name, display_name: name.toUpperCase(), team_id: T1, type: 'O', last_post_at: 0, last_root_post_at: 0, total_msg_count: 0, total_msg_count_root: 0, ...o,
+  });
+  const channels = () => [
+    ch(QUIET, 'quiet', { total_msg_count: 5, total_msg_count_root: 5, last_post_at: 9000, last_root_post_at: 9000 }),
+    ch(OLD, 'old', { total_msg_count: 10, total_msg_count_root: 6, last_post_at: 8000, last_root_post_at: 1000 }),
+    ch(NEW, 'new', { team_id: T2, total_msg_count: 4, total_msg_count_root: 3, last_post_at: 3000, last_root_post_at: 2000 }),
+    ch(MENTIONED, 'mentioned', { total_msg_count: 2, total_msg_count_root: 2, last_post_at: 500, last_root_post_at: 500 }),
+    ch(MUTED, 'muted', { total_msg_count: 3, total_msg_count_root: 3, last_post_at: 7000, last_root_post_at: 7000 }),
+    ch(MUTED_MENTION, 'muted-mention', { total_msg_count: 3, total_msg_count_root: 3, last_post_at: 600, last_root_post_at: 600 }),
+    ch(DM, 'u1__u2', { team_id: '', type: 'D', display_name: '', total_msg_count: 1, total_msg_count_root: 1, last_post_at: 400, last_root_post_at: 400 }),
+  ];
+  const mem = (channel_id: string, o: Record<string, unknown> = {}) => ({
+    channel_id, msg_count: 0, msg_count_root: 0, mention_count: 0, mention_count_root: 0, notify_props: { mark_unread: 'all' }, ...o,
+  });
+  const members = () => [
+    mem(QUIET, { msg_count: 5, msg_count_root: 5 }),
+    mem(OLD, { msg_count: 7, msg_count_root: 4, mention_count: 1 }),
+    mem(NEW, { msg_count: 2, msg_count_root: 1 }),
+    mem(MENTIONED, { msg_count: 1, msg_count_root: 1, mention_count: 1, mention_count_root: 1 }),
+    mem(MUTED, { notify_props: { mark_unread: 'mention' } }),
+    mem(MUTED_MENTION, { msg_count: 2, msg_count_root: 2, mention_count: 1, notify_props: { mark_unread: 'mention' } }),
+    mem(DM, { mention_count: 1, mention_count_root: 1 }),
+    mem(ARCHIVED, { msg_count: 0, mention_count: 3 }),
+  ];
+  const thread = (id: string, channel_id: string, last_reply_at: number, o: Record<string, unknown> = {}) => ({
+    id, last_reply_at, reply_count: 3, unread_replies: 2, unread_mentions: 0,
+    post: { id, user_id: 'u2', channel_id, root_id: '', message: `root ${id[0]}`, create_at: 100 }, ...o,
+  });
+  const threadPage = (threads: unknown[], total = threads.length) => ({ total: 999, total_unread_threads: total, total_unread_mentions: 0, threads });
+  const pref = (value?: string) => () => (value ? { user_id: 'u1', category: 'display_settings', name: 'collapsed_reply_threads', value }
+    : Response.json({ id: 'app.preference.get.app_error', message: 'm', status_code: 400 }, { status: 400 }));
+  const base = (crt = 'always_on'): Record<string, Route> => ({
+    'GET /config/client': () => ({ CollapsedThreads: crt }),
+    'GET /users/me/channels': () => channels(),
+    'GET /users/me/channel_members': () => members(),
+    'GET /users/me/teams': () => [{ id: T1, name: 'team-a' }, { id: T2, name: 'team-b' }],
+    [`GET /users/u1/teams/${T1}/threads`]: () => threadPage([thread(TH1, OLD, 5000, { unread_mentions: 1 }), thread(TH_DM, DM, 4000)]),
+    [`GET /users/u1/teams/${T2}/threads`]: () => threadPage([thread(TH2, NEW, 6000), thread(TH_DM, DM, 4000)]),
+    'POST /users/ids': () => [{ id: 'u2', username: 'bob' }],
+  });
+  const order = (out: string) => [...out.matchAll(/^(?:- .*?channel_id: |--- post_id: )([a-z0-9]{26})/gm)].map((m) => m[1]);
+  const cursorIn = (out: string) => /next_cursor: (\S+)/.exec(out)?.[1];
+
+  test('decides whether collapsed reply threads apply from the server setting and, for default_on/default_off only, the user\'s preference', async () => {
+    const cases: [string, string | undefined, string][] = [
+      ['always_on', undefined, '有効（サーバー設定: always_on）'],
+      ['disabled', undefined, '無効（サーバー設定: disabled）'],
+      ['default_on', undefined, '有効（サーバー設定: default_on、利用者の設定: なし）'],
+      ['default_off', undefined, '無効（サーバー設定: default_off、利用者の設定: なし）'],
+      ['default_on', 'off', '無効（サーバー設定: default_on、利用者の設定: off）'],
+      ['default_off', 'on', '有効（サーバー設定: default_off、利用者の設定: on）'],
+    ];
+    for (const [server, user, expected] of cases) {
+      routes = { ...base(server), 'GET /users/me/preferences/display_settings/name/collapsed_reply_threads': pref(user) };
+      hits = [];
+      urls = [];
+      const out = await setup()('get_unreads', {});
+      expect(out.split('\n')[0], `${server}/${user}`).toBe(`スレッドの折りたたみ（CRT）: ${expected}`);
+      expect(hits.includes('GET /users/me/preferences/display_settings/name/collapsed_reply_threads'), server).toBe(server.startsWith('default_'));
+      expect(urls).toContain('GET /config/client?format=old');
+      expect(hits.some((h) => h.includes('/threads')), server).toBe(expected.startsWith('有効'));
+    }
+  });
+
+  test('with CRT on, counts root posts only, puts channels with mentions first, then newest root post first, and hides read, archived and mention-only channels without mentions', async () => {
+    routes = base();
+    const out = await setup()('get_unreads', {});
+    expect(order(out).slice(0, 4)).toEqual([MENTIONED, DM, NEW, OLD]);
+    expect(out).toContain(`- team-a/mentioned（表示名: MENTIONED、channel_id: ${MENTIONED}、team_id: ${T1}）未読: 1、メンション: 1、最終のルート投稿: ${'1970-01-01T00:00:00Z | 1970-01-01T09:00:00+09:00'}`);
+    expect(out).toContain(`- team-a/old（表示名: OLD、channel_id: ${OLD}、team_id: ${T1}）未読: 2、メンション: 0、最終のルート投稿:`);
+    expect(out).toContain(`- @bob（表示名: @bob、channel_id: ${DM}）未読: 1、メンション: 1`);
+    for (const hidden of [QUIET, MUTED, ARCHIVED]) expect(out).not.toContain(hidden);
+    expect(out).not.toContain(`channel_id: ${MUTED_MENTION}`);
+  });
+
+  test('a mention-only channel is shown when it has a mention', async () => {
+    routes = { ...base('disabled') };
+    const out = await setup()('get_unreads', {});
+    expect(out).toContain(`channel_id: ${MUTED_MENTION}`);
+    expect(out).not.toContain(`channel_id: ${MUTED}`);
+  });
+
+  test('with CRT off, counts replies too, orders by the last post, and does not ask for threads', async () => {
+    routes = base('disabled');
+    const out = await setup()('get_unreads', {});
+    expect(order(out)).toEqual([OLD, MUTED_MENTION, MENTIONED, DM, NEW]);
+    expect(out).toContain(`channel_id: ${OLD}、team_id: ${T1}）未読: 3、メンション: 1、最終投稿:`);
+    expect(out).toContain('- team-b/new');
+    expect(hits.some((h) => h.includes('/threads'))).toBe(false);
+    expect(out).toContain('未読のあるチャンネル: 5 件');
+  });
+
+  test('pages through channel_members 200 at a time until a short page', async () => {
+    const many = Array.from({ length: 200 }, (_, i) => mem(`z${String(i).padStart(25, '0')}`));
+    routes = { ...base(), 'GET /users/me/channel_members': (req) => (new URL(req.url).searchParams.get('page') === '0' ? many : members()) };
+    const out = await setup()('get_unreads', {});
+    expect(urls.filter((u) => u.startsWith('GET /users/me/channel_members'))).toEqual([
+      'GET /users/me/channel_members?page=0&per_page=200', 'GET /users/me/channel_members?page=1&per_page=200',
+    ]);
+    expect(out).toContain(`channel_id: ${MENTIONED}`);
+  });
+
+  test('lists unread threads newest reply first after the channels, taking DM threads from the first team only and counting a thread once', async () => {
+    routes = base();
+    const out = await setup()('get_unreads', {});
+    expect(urls).toContain(`GET /users/u1/teams/${T1}/threads?unread=true&per_page=50`);
+    expect(urls).toContain(`GET /users/u1/teams/${T2}/threads?unread=true&per_page=50&excludeDirect=true`);
+    expect(order(out).slice(-3)).toEqual([TH2, TH1, TH_DM]);
+    expect(out.match(new RegExp(`post_id: ${TH_DM}`, 'g'))).toHaveLength(1);
+    expect(out).toContain('未読のあるチャンネル: 4 件、未読のスレッド: 3 件');
+    expect(out).toContain(`--- post_id: ${TH1}\n@bob | `);
+    expect(out).toContain(`https://mm.example/team-a/pl/${TH1}`);
+    expect(out).toContain(`https://mm.example/team-b/pl/${TH2}`);
+    expect(out).toContain('未読の返信: 2、未読のメンション: 1、最終返信: 1970-01-01T00:00:05Z | 1970-01-01T09:00:05+09:00');
+    expect(out.indexOf(`post_id: ${TH2}`)).toBeGreaterThan(out.indexOf(`channel_id: ${OLD}`));
+  });
+
+  test('leaves out unread threads in channels that /users/me/channels does not list (archived ones) and does not count them', async () => {
+    routes = { ...base(), [`GET /users/u1/teams/${T2}/threads`]: () => threadPage([thread(TH2, ARCHIVED, 6000), thread(TH_DM, DM, 4000)]) };
+    const out = await setup()('get_unreads', {});
+    expect(out).not.toContain(TH2);
+    expect(out).not.toContain(ARCHIVED);
+    expect(order(out).slice(-2)).toEqual([TH1, TH_DM]);
+    expect(out).toContain('未読のあるチャンネル: 4 件、未読のスレッド: 2 件');
+  });
+
+  test('follows a team\'s unread threads with before= for at most 4 pages, then says it stopped and gives total_unread_threads', async () => {
+    let n = 0;
+    const full = () => threadPage(Array.from({ length: 50 }, () => thread(`t${String(n++).padStart(25, '0')}`, OLD, 5000)), 321);
+    routes = { ...base(), [`GET /users/u1/teams/${T1}/threads`]: full, [`GET /users/u1/teams/${T2}/threads`]: () => threadPage([]) };
+    const out = await setup()('get_unreads', { limit: 100 });
+    const t1 = urls.filter((u) => u.includes(`/teams/${T1}/threads`));
+    expect(t1).toHaveLength(4);
+    expect(t1[1]).toBe(`GET /users/u1/teams/${T1}/threads?unread=true&per_page=50&before=t${String(49).padStart(25, '0')}`);
+    expect(out).toContain('team-a の未読スレッドは 200 件までしか取得していません（total_unread_threads: 321）');
+  });
+
+  test('when the threads API answers 4xx, returns the channel unreads and says the threads could not be fetched', async () => {
+    routes = { ...base(), [`GET /users/u1/teams/${T2}/threads`]: () => Response.json({ id: 'x', message: 'nope' }, { status: 403 }) };
+    const out = await setup()('get_unreads', {});
+    expect(out).toContain(`channel_id: ${MENTIONED}`);
+    expect(out).not.toContain(`post_id: ${TH1}`);
+    expect(out).toContain('未読のスレッドを取得できませんでした');
+  });
+
+  test('when the threads API answers 4xx after a team hit the 4-page cap, drops that cap note and says the thread count is unavailable', async () => {
+    let n = 0;
+    const full = () => threadPage(Array.from({ length: 50 }, () => thread(`t${String(n++).padStart(25, '0')}`, OLD, 5000)), 321);
+    routes = { ...base(), [`GET /users/u1/teams/${T1}/threads`]: full, [`GET /users/u1/teams/${T2}/threads`]: () => Response.json({ id: 'x', message: 'nope' }, { status: 403 }) };
+    const out = await setup()('get_unreads', {});
+    expect(out).not.toContain('200 件までしか');
+    expect(out).toContain('未読のあるチャンネル: 4 件、未読のスレッド: 取得できませんでした');
+    expect(out).toContain('未読のスレッドを取得できませんでした');
+  });
+
+  test('when the threads API fails otherwise, the tool fails', async () => {
+    routes = { ...base(), [`GET /users/u1/teams/${T1}/threads`]: () => new Response('oops', { status: 503 }) };
+    const out = await setup()('get_unreads', {}, true);
+    expect(out).not.toContain('channel_id');
+  });
+
+  test('names the DM of a DM thread by the other user', async () => {
+    routes = {
+      ...base(),
+      'GET /users/me/channel_members': () => members().filter((m) => m.channel_id !== DM),
+      [`GET /users/u1/teams/${T1}/threads`]: () => threadPage([thread(TH_DM, DM, 4000, { post: { id: TH_DM, user_id: 'u1', channel_id: DM, root_id: '', message: 'mine', create_at: 100 } })]),
+      [`GET /users/u1/teams/${T2}/threads`]: () => threadPage([]),
+      'POST /users/ids': () => [{ id: 'u1', username: 'alice' }, { id: 'u2', username: 'bob' }].filter((u) => (bodies['/users/ids'] as string[]).includes(u.id)),
+    };
+    const out = await setup()('get_unreads', {});
+    expect(out).toContain(`チャンネル: @bob（name: u1__u2、channel_id: ${DM}）`);
+  });
+
+  test('says when there is nothing unread', async () => {
+    routes = { ...base(), 'GET /users/me/channel_members': () => [], [`GET /users/u1/teams/${T1}/threads`]: () => threadPage([]), [`GET /users/u1/teams/${T2}/threads`]: () => threadPage([]) };
+    const out = await setup()('get_unreads', {});
+    expect(out).toContain('未読はありません。');
+    expect(out).toContain('（続きはありません）');
+  });
+
+  test('pages channels then threads with limit, and a cursor keeps the page size', async () => {
+    routes = base();
+    const call = setup();
+    const seen: string[] = [];
+    let cursor: string | undefined;
+    for (let i = 0; i < 10; i++) {
+      const out = await call('get_unreads', cursor ? { cursor, limit: 50 } : { limit: 2 });
+      const rows = order(out);
+      expect(rows.length).toBeLessThanOrEqual(2);
+      seen.push(...rows);
+      cursor = cursorIn(out);
+      if (!cursor) break;
+    }
+    expect(seen).toEqual([MENTIONED, DM, NEW, OLD, TH2, TH1, TH_DM]);
+  });
+
+  test('a later page first lists channels and threads updated since the previous page, newest first', async () => {
+    routes = base();
+    const call = setup();
+    const first = await call('get_unreads', { limit: 2 });
+    const now = Date.now() + 60_000;
+    routes['GET /users/me/channels'] = () => channels().map((c) => (c.id === OLD ? { ...c, last_root_post_at: now } : c));
+    routes[`GET /users/u1/teams/${T1}/threads`] = () => threadPage([thread(TH1, OLD, now + 1, { unread_mentions: 1 }), thread(TH_DM, DM, 4000)]);
+    const out = await call('get_unreads', { cursor: cursorIn(first) });
+    expect(out).toContain('前のページの後に更新されたチャンネルとスレッド（前のページまでに出したものを含むことがあります）:');
+    expect(order(out)).toEqual([TH1, OLD]);
+  });
+
+  test('when the updated rows do not fit, says how many are left and asks to start over instead of giving a cursor', async () => {
+    routes = base();
+    const call = setup();
+    const first = await call('get_unreads', { limit: 1 });
+    const now = Date.now() + 60_000;
+    routes['GET /users/me/channels'] = () => channels().map((c) => ({ ...c, last_root_post_at: now }));
+    const out = await call('get_unreads', { cursor: cursorIn(first) });
+    expect(out).toContain('ほかに 3 件');
+    expect(out).toContain('cursor を付けずに最初のページから取り直してください');
+    expect(cursorIn(out)).toBeUndefined();
+  });
+
+  test('when the CRT decision changes between pages, refuses the cursor and asks to start over', async () => {
+    routes = base();
+    const call = setup();
+    const first = await call('get_unreads', { limit: 1 });
+    routes['GET /config/client'] = () => ({ CollapsedThreads: 'disabled' });
+    const out = await call('get_unreads', { cursor: cursorIn(first) }, true);
+    expect(out).toContain('スレッドの折りたたみ（CRT）の判定がページの合間に変わりました');
+    expect(out).toContain('cursor を付けずに最初のページから取り直してください');
+  });
+
+  test('rejects a cursor from another tool', async () => {
+    routes = base();
+    const out = await setup()('get_unreads', { cursor: Buffer.from(JSON.stringify({ offset: 0, per_page: 5 })).toString('base64url') }, true);
+    expect(out).toContain('cursor が不正です');
+  });
+
+  test('stays within 2 + 1 + (members pages) + 1 + 4T + 1 Mattermost calls, in that order, and never marks anything read', async () => {
+    routes = { ...base('default_on'), 'GET /users/me/preferences/display_settings/name/collapsed_reply_threads': pref('on') };
+    await setup()('get_unreads', {});
+    expect(hits.length).toBeLessThanOrEqual(2 + 1 + 1 + 1 + 4 * 2 + 1);
+    expect(hits).toEqual([
+      'GET /config/client', 'GET /users/me/preferences/display_settings/name/collapsed_reply_threads', 'GET /users/me/channels',
+      'GET /users/me/channel_members', 'GET /users/me/teams', `GET /users/u1/teams/${T1}/threads`, `GET /users/u1/teams/${T2}/threads`, 'POST /users/ids',
+    ]);
+    expect(hits.some((h) => h.includes('/view'))).toBe(false);
+  });
+});
+
+describe('get_mentions', () => {
+  const C = 'c'.repeat(26);
+  const T = 't'.repeat(26);
+  type P = { id: string; user_id: string; channel_id: string; root_id: string; message: string; create_at: number };
+  let corpus: P[];
+  let searches: string[];
+  let n: number;
+  const at = (day: number, i: number) => Date.parse(`2026-10-${day}T03:00:00Z`) + i * 1000;
+  const add = (day: number, count: number, message = '@alice hi') => {
+    for (let i = 0; i < count; i++) corpus.push({ id: `p${String(n++).padStart(25, '0')}`, user_id: 'u2', channel_id: C, root_id: '', message, create_at: at(day, i) });
+  };
+  const jstDay = (ms: number) => new Date(ms + 9 * 3600_000).toISOString().slice(0, 10);
+  // Like Mattermost's database search: up to 100 hits, newest first, "@alice" also hitting a bare "alice", before: excluding that JST day.
+  const search = () => {
+    const { terms } = bodies['/posts/search'] as { terms: string };
+    searches.push(terms);
+    const before = /before:(\S+)/.exec(terms)?.[1];
+    const hits = corpus.filter((p) => /alice/i.test(p.message) && (!before || jstDay(p.create_at) < before))
+      .sort((a, b) => b.create_at - a.create_at).slice(0, 100);
+    return { order: hits.map((p) => p.id), posts: Object.fromEntries(hits.map((p) => [p.id, p])) };
+  };
+  const base = (): Record<string, Route> => ({
+    'GET /users/me': () => ({ id: 'u1', username: 'alice', first_name: 'Alice', notify_props: { mention_keys: ' aiso ,,say "hi"', first_name: 'false' } }),
+    'POST /posts/search': search,
+    'GET /users/me/channels': () => [{ id: C, name: 'town', display_name: 'Town', team_id: T, type: 'O' }],
+    'GET /users/me/teams': () => [{ id: T, name: 'team-a' }],
+    'POST /users/ids': () => [{ id: 'u2', username: 'bob' }],
+  });
+  const ids = (out: string) => [...out.matchAll(/^--- post_id: (\S{26})/gm)].map((m) => m[1]);
+  const cursorIn = (out: string) => /next_cursor: (\S+)/.exec(out)?.[1];
+  const mentions = () => corpus.filter((p) => p.message.startsWith('@alice')).sort((a, b) => b.create_at - a.create_at).map((p) => p.id);
+  const pageAll = async (call: ReturnType<typeof setup>, limit: number, between?: (page: number) => void) => {
+    const seen: string[] = [];
+    let cursor: string | undefined;
+    for (let page = 0; page < 50; page++) {
+      const out = await call('get_mentions', cursor ? { cursor } : { limit });
+      seen.push(...ids(out));
+      cursor = cursorIn(out);
+      if (!cursor) return seen;
+      between?.(page);
+    }
+    throw new Error('did not finish');
+  };
+
+  beforeEach(() => {
+    corpus = [];
+    searches = [];
+    n = 0;
+  });
+
+  test('searches the user\'s mention terms, each quoted, as an OR search over all teams in JST, asking for 100', async () => {
+    add(22, 1);
+    routes = base();
+    await setup()('get_mentions', {});
+    expect(hits.slice(0, 2)).toEqual(['GET /users/me', 'POST /posts/search']);
+    expect(bodies['/posts/search']).toEqual({ terms: '"@alice" "aiso"', is_or_search: true, include_deleted_channels: false, time_zone_offset: 32400, page: 0, per_page: 100 });
+  });
+
+  test('keeps only posts the server would count as a mention, newest first, with channel, team and permalink', async () => {
+    add(21, 1, '@alice older');
+    add(22, 1, 'alice without the at sign');
+    add(22, 1, 'mail x@alice.example');
+    add(22, 1, '`@alice` in code');
+    add(23, 1, '@alice newest');
+    routes = base();
+    const out = await setup()('get_mentions', {});
+    expect(ids(out)).toEqual([corpus[4].id, corpus[0].id]);
+    expect(out).toContain(`channel_id: ${C}`);
+    expect(out).toContain(`team_id: ${T}`);
+    expect(out).toContain(`https://mm.example/team-a/pl/${corpus[4].id}`);
+    expect(out).toContain('（続きはありません）');
+  });
+
+  test('says when there are no mentions', async () => {
+    routes = base();
+    const out = await setup()('get_mentions', {});
+    expect(out).toContain('メンションはありません。');
+    expect(out).toContain('（続きはありません）');
+  });
+
+  test('pages within one search with limit, and the cursor keeps the page size', async () => {
+    add(22, 5);
+    routes = base();
+    const call = setup();
+    const first = await call('get_mentions', { limit: 2 });
+    expect(ids(first)).toHaveLength(2);
+    expect(ids(await call('get_mentions', { cursor: cursorIn(first), limit: 50 }))).toHaveLength(2);
+    expect(searches.every((t) => !t.includes('before:'))).toBe(true);
+  });
+
+  test('when a search hits 100, holds back the oldest day D and continues with before:<D+1>, so every mention comes out once', async () => {
+    add(20, 30);
+    add(21, 40);
+    add(21, 20, 'alice no mention');
+    add(22, 60);
+    routes = base();
+    const seen = await pageAll(setup(), 50);
+    expect(seen).toEqual(mentions());
+    expect(searches).toContain('"@alice" "aiso" before:2026-10-22');
+  });
+
+  test('re-derives D on every page, so mentions pushed out of the 100 by new ones are not skipped', async () => {
+    add(20, 20);
+    add(21, 50);
+    add(22, 30);
+    const original = mentions();
+    routes = base();
+    const seen = await pageAll(setup(), 50, (page) => page === 0 && add(23, 30));
+    for (const id of original) expect(seen).toContain(id);
+    expect(new Set(seen).size).toBe(seen.length);
+  });
+
+  test('when a single day has 100 hits, shows what it can of that day, says the day is not complete, and moves to the day before', async () => {
+    add(20, 5);
+    add(22, 150);
+    routes = base();
+    const call = setup();
+    const outs: string[] = [];
+    let cursor: string | undefined;
+    for (let i = 0; i < 10; i++) {
+      const out = await call('get_mentions', cursor ? { cursor } : { limit: 50 });
+      outs.push(out);
+      cursor = cursorIn(out);
+      if (!cursor) break;
+    }
+    const seen = outs.flatMap(ids);
+    expect(seen).toEqual([...mentions().slice(0, 100), ...mentions().slice(150)]);
+    expect(outs.join('\n')).toContain('2026-10-22 のメンションは 1 日で 100 件を超えるため、新しい 100 件だけを照合しました');
+    expect(searches).toContain('"@alice" "aiso" before:2026-10-22');
+  });
+
+  test('when no hit is a mention, searches again up to 3 times, then says so and gives a cursor to go further back', async () => {
+    for (const day of [22, 21, 20, 19]) add(day, 60, 'alice no mention');
+    add(18, 5);
+    routes = base();
+    const call = setup();
+    const first = await call('get_mentions', {});
+    expect(searches).toEqual(['"@alice" "aiso"', '"@alice" "aiso" before:2026-10-22', '"@alice" "aiso" before:2026-10-21']);
+    expect(ids(first)).toEqual([]);
+    expect(first).toContain('この範囲には照合に当たる投稿がありませんでした');
+    const second = await call('get_mentions', { cursor: cursorIn(first) });
+    expect(searches.at(-1)).toBe('"@alice" "aiso" before:2026-10-20');
+    expect(ids(second)).toEqual(mentions());
+  });
+
+  test('rejects a cursor from another tool', async () => {
+    routes = base();
+    const out = await setup()('get_mentions', { cursor: Buffer.from(JSON.stringify({ page: 1, per_page: 5 })).toString('base64url') }, true);
+    expect(out).toContain('cursor が不正です');
+  });
+});

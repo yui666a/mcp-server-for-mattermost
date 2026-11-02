@@ -9,7 +9,7 @@ import { Store } from './store.ts';
 const config = loadConfig(process.env);
 const store = new Store(openDb(config.dbPath), config.encKey, Date.now, config.accessTokenTtlSec);
 const deps = { fetch, now: Date.now };
-const limiter = new Limiter({ perUserConcurrency: 4, globalConcurrency: 16, perUserPerMin: 120, globalPerMin: 600 }, Date.now);
+const limiter = new Limiter({ perUserConcurrency: 4, globalConcurrency: 16, perUserPerMin: 300, globalPerMin: 600 }, Date.now);
 const app = createApp({ config, store, deps, mm: new MmClient(config, store, limiter, deps) });
 
 const server = app.listen(config.port, () => log('listening', { port: config.port }));
