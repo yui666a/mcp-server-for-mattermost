@@ -107,9 +107,10 @@ export async function sendMessage(mm: Mm, store: Store, uid: string, baseUrl: st
   const done = (postId: string, note: string) => text([note, `post_id: ${postId}`, where, `${baseUrl}/${ch.teamName}/pl/${postId}`].join('\n'));
   const spec = { channelId: ch.id, message: args.message, rootId };
   const attached = files.length + fileIds.length;
-  const posted = (postId: string, got: number) => {
-    // Not marking when Mattermost dropped some: which of the files it dropped is not known, and a dropped one may sit on another post.
-    if (got === attached) store.markFilesPosted(uid, fileIds, postId);
+  // Only the files the post kept: a dropped one may sit on another post, and one left unmarked would pass checkUnposted and be dropped again in silence.
+  const posted = (postId: string, kept: string[]) => {
+    const got = kept.length;
+    store.markFilesPosted(uid, fileIds.filter((id) => kept.includes(id)), postId);
     if (!attached) return '投稿しました。';
     if (got === attached) return `投稿しました。ファイル ${attached} 件を添付しました。`;
     return `投稿しました。ただし、添付した ${attached} 件のうち ${attached - got} 件を Mattermost が外したため、投稿に付いていません。`;
@@ -124,7 +125,7 @@ export async function sendMessage(mm: Mm, store: Store, uid: string, baseUrl: st
     checkUnposted(store, uid, fileIds);
     const r = await postOnce(mm, uid, { ...spec, fileIds: await uploadAll() }, randomToken());
     if (r.kind !== 'posted') throw r.error;
-    return done(r.postId, posted(r.postId, r.fileCount));
+    return done(r.postId, posted(r.postId, r.fileIds));
   }
 
   const claim = store.claimPost({ mmUserId: uid, channelId: ch.id, rootId, bodyHash: bodyHash(args.message, files, fileIds) });
@@ -140,7 +141,7 @@ export async function sendMessage(mm: Mm, store: Store, uid: string, baseUrl: st
     }
   }
   let claimedAt = claim.claimedAt;
-  let postId: string, fileCount: number;
+  let postId: string, kept: string[];
   try {
     checkUnposted(store, uid, fileIds);
     const ids = await uploadAll();
@@ -150,14 +151,14 @@ export async function sendMessage(mm: Mm, store: Store, uid: string, baseUrl: st
     claimedAt = again;
     const r = await postOnce(mm, uid, { ...spec, fileIds: ids }, claim.pendingPostId);
     if (r.kind !== 'posted') throw r.error;
-    ({ postId, fileCount } = r);
+    ({ postId, fileIds: kept } = r);
   } catch (e) {
     // Not leaving out InputError: here it can only be an upload that Mattermost refused, so nothing was posted.
     if (e instanceof MmError || e instanceof InputError || e instanceof RateLimited || (e as { sent?: boolean })?.sent === false) store.dropPost(claim.id, claimedAt);
     throw e;
   }
   store.completePost(claim.id, postId);
-  return done(postId, posted(postId, fileCount));
+  return done(postId, posted(postId, kept));
 }
 
 export type Wording = { id?: [status: number, id: string, text: string][]; status?: [status: number, text: string][] };

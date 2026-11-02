@@ -47,7 +47,7 @@ docker compose logs --no-log-prefix mcp | grep '"event":"tool_call"'
 |---|---|
 | `tool_call` | ツールの呼び出し。`mm_user_id`、`tool`、`outcome`（`ok`、`tool_error`、`input_error`、`reauthorize`、`rate_limited`、`upstream_unavailable`、`mm_error`、`error`）、`ms` |
 | `scheduled_post` | 予約の投稿の結果。`mm_user_id`、`outcome` |
-| `upload` | `prepare_upload` の URL へのアップロード。`mm_user_id`、`outcome`（`ok`、`too_large`、`client_gone`（本文の途中で接続が切れた）、`stalled`（本文の途中で 15 秒データが来なかった）、`InputError`、`MmError`、`RateLimited`、`UpstreamUnavailable` など）、`files`（Mattermost へ送れた件数）、`bytes`（受け取ったファイルの合計）、`ms`。URL が無効なときと、同時に処理できる件数を超えたときは出ない |
+| `upload` | `prepare_upload` の URL へのアップロード。`mm_user_id`、`outcome`（`ok`、`too_large`、`client_gone`（本文の途中で接続が切れた）、`stalled`（本文を待つ間に 15 秒データが来なかった）、`InputError`、`MmError`、`RateLimited`、`UpstreamUnavailable` など）、`files`（Mattermost へ送れた件数）、`bytes`（受け取ったファイルの合計）、`ms`。URL が無効なときと、同時に処理できる件数を超えたときは出ない |
 | `token_issued`、`token_refreshed` | MCP のトークンの発行とリフレッシュ。`client_id`、`mm_user_id` |
 | `token_reuse_detected` | 使用済みの認可コードかリフレッシュトークンが再び提示され、その grant を失効させた。`client_id`。そのクライアントは再ログインになる。同じクライアントで繰り返すなら、トークンの漏えいか、クライアントが同じリフレッシュトークンを並行して送っていることを疑う |
 | `mm_refresh_config_error` | Mattermost が、再ログインで直るもの以外の 4xx でリフレッシュを断った。`status`、`id`。`model.oauth.validate_grant.credentials.app_error`（401）なら `MM_OAUTH_CLIENT_SECRET` が OAuth アプリと合っていない（シークレットを作り直した場合など）。ツールは一時的なエラーを返し続ける |
