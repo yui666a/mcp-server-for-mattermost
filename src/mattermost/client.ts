@@ -201,10 +201,11 @@ export class MmClient {
     try {
       res = await this.deps.fetch(`${this.cfg.mmUrl}/api/v4${path}`, {
         method,
-        headers: body === undefined
+        // Not a stream body: the resend after a 401 needs the same bytes again, which a Blob gives and a read stream does not.
+        headers: body === undefined || body instanceof Blob
           ? { authorization: `Bearer ${access}` }
           : { authorization: `Bearer ${access}`, 'content-type': 'application/json' },
-        body: body === undefined ? undefined : JSON.stringify(body),
+        body: body === undefined || body instanceof Blob ? body : JSON.stringify(body),
         // Not following redirects keeps the bearer token from being sent anywhere but MM_URL.
         redirect: 'manual',
         signal: AbortSignal.any([AbortSignal.timeout(Math.min(TIMEOUT_MS, ms)), ...(at.signal ? [at.signal] : [])]),

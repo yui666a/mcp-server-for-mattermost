@@ -320,6 +320,11 @@ export class Store {
     this.run('UPDATE post_claims SET post_id = ?, updated_at = ? WHERE id = ?', postId, this.now(), id);
   }
 
+  reclaimPost(id: number, claimedAt: number): number | undefined {
+    const now = this.now();
+    return this.run('UPDATE post_claims SET updated_at = ? WHERE id = ? AND updated_at = ?', now, id, claimedAt) === 1 ? now : undefined;
+  }
+
   // claimedAt guards against a slow first request deleting a claim that a retry has since taken over.
   dropPost(id: number, claimedAt: number): void {
     this.run('DELETE FROM post_claims WHERE id = ? AND updated_at = ?', id, claimedAt);

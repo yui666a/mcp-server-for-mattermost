@@ -11,7 +11,7 @@ const REDIRECT = 'http://127.0.0.1:8123/cb';
 const TAG = `zs${randomBytes(6).toString('hex')}`;
 
 type Result = { isError?: boolean; content: { type: string; text: string }[] };
-type Post = { id: string; root_id: string; message: string; user_id: string };
+type Post = { id: string; root_id: string; message: string; user_id: string; file_ids?: string[]; metadata?: { files?: { name: string; mime_type: string; width?: number; height?: number }[] } };
 
 async function mmApi<T>(token: string, method: string, path: string, body?: unknown): Promise<T> {
   const res = await fetch(`${e.mmUrl}/api/v4${path}`, {
@@ -112,6 +112,32 @@ describe('send_message against the local Mattermost', () => {
     const found = await messages(message);
     expect(found).toHaveLength(1);
     expect(found[0].root_id).toBe(root.id);
+  });
+
+  test('attaches a text file and a small PNG to the post', async () => {
+    const message = `${TAG} files`;
+    const png = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==', 'base64');
+    const r = await call({ channel: channel.id, message, files: [{ name: 'note.md', content_text: '# 見出し' }, { name: 'dot.png', content_base64: png.toString('base64') }] });
+    expect(r.isError).toBeFalsy();
+    const [posted] = await messages(message);
+    expect(r.content[0].text).toContain(`post_id: ${posted.id}`);
+    const got = await mmApi<Post>(aliceMm, 'GET', `/posts/${posted.id}`);
+    expect(got.file_ids).toHaveLength(2);
+    expect(got.metadata?.files?.map((f) => [f.name, f.mime_type, f.width, f.height])).toEqual([
+      ['note.md', expect.stringContaining('text/'), undefined, undefined],
+      ['dot.png', 'image/png', 1, 1],
+    ]);
+  });
+
+  test('files over the total size limit are refused before anything is uploaded to Mattermost', async () => {
+    const message = `${TAG} too big`;
+    const before = vi.mocked(process.stdout.write).mock.calls.length;
+    const r = await call({ channel: channel.id, message, files: [{ name: 'big.txt', content_text: 'a'.repeat(128 * 1024 + 1) }] });
+    expect(r.isError).toBe(true);
+    expect(r.content[0].text).toContain('128KiB');
+    const apiPaths = vi.mocked(process.stdout.write).mock.calls.slice(before).map((c) => JSON.parse(String(c[0]))).filter((l) => l.event === 'mm_api').map((l) => l.path);
+    expect(apiPaths).toEqual([]);
+    expect(await messages(message)).toHaveLength(0);
   });
 
   test('ambiguous channel name is rejected without posting', async () => {
