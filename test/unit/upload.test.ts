@@ -1,5 +1,7 @@
 import { request as httpRequest } from 'node:http';
 import type { AddressInfo } from 'node:net';
+import express from 'express';
+import { uploadHandler } from '../../src/upload.ts';
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 import { makeApp } from './helpers.ts';
 
@@ -145,8 +147,8 @@ describe('POST /mcp/upload/:token', () => {
 });
 
 // A client that writes the whole body before reading, as a reverse proxy with request buffering does.
-function rawPost(port: number, path: string, body: Buffer, opts: { chunked?: boolean; stopAfter?: number } = {}) {
-  return new Promise<{ status?: number; text: string; error?: string }>((resolve) => {
+function rawPost(port: number, path: string, body: Buffer, opts: { chunked?: boolean; stopAfter?: number; stallAfter?: number } = {}) {
+  return new Promise<{ status?: number; text: string; error?: string; connection?: string }>((resolve) => {
     const boundary = 'b0undary';
     const head = Buffer.from(`--${boundary}\r\nContent-Disposition: form-data; name="file"; filename="a.bin"\r\nContent-Type: application/octet-stream\r\n\r\n`);
     const tail = Buffer.from(`\r\n--${boundary}--\r\n`);
@@ -157,11 +159,16 @@ function rawPost(port: number, path: string, body: Buffer, opts: { chunked?: boo
     }, (res) => {
       res.setEncoding('utf8').on('data', (c) => { got.text += c; });
       got.status = res.statusCode;
+      got.connection = res.headers.connection;
     });
     // Resolved on close rather than on the response: a write error such as EPIPE can come after the reply has been read.
-    const got: { status?: number; text: string; error?: string } = { text: '' };
+    const got: { status?: number; text: string; error?: string; connection?: string } = { text: '' };
     req.on('error', (e) => { got.error = (e as NodeJS.ErrnoException).code; });
     req.on('close', () => setTimeout(() => resolve(got), 20));
+    if (opts.stallAfter !== undefined) {
+      req.write(all.subarray(0, opts.stallAfter));
+      return;
+    }
     if (opts.stopAfter !== undefined) {
       req.write(all.subarray(0, opts.stopAfter), () => setTimeout(() => req.destroy(), 50));
       return;
@@ -204,13 +211,21 @@ describe('replies before the whole body has arrived', () => {
     expect((await rawPost(s.port, url, Buffer.from('again'))).status).toBe(200);
   });
 
-  test('a chunked body just over UPLOAD_MAX_BYTES gets the 413 explanation and keeps the URL', async () => {
+  test('a chunked body over UPLOAD_MAX_BYTES gets the 413 explanation and keeps the URL', async () => {
     const s = await listen({ UPLOAD_MAX_BYTES: String(1024 * 1024) });
     const url = s.url();
     const r = await rawPost(s.port, url, Buffer.alloc(1024 * 1024 + 1000), { chunked: true });
     expect([r.status, r.error]).toEqual([413, undefined]);
     expect(r.text).toContain('同じ URL で');
     expect((await rawPost(s.port, url, Buffer.from('ok'))).status).toBe(200);
+  });
+
+  test('the bytes read before a 413 count toward the drain limit, so a body over UPLOAD_MAX_BYTES + 1MiB is not read to its end', async () => {
+    const s = await listen({ UPLOAD_MAX_BYTES: String(1024 * 1024) });
+    const within = await rawPost(s.port, s.url(), Buffer.alloc(1024 * 1024 + 512 * 1024), { chunked: true });
+    expect([within.status, within.connection]).toEqual([413, 'keep-alive']);
+    const over = await rawPost(s.port, s.url(), Buffer.alloc(2 * 1024 * 1024 + 512 * 1024), { chunked: true });
+    expect([over.status, over.connection]).toEqual([413, 'close']);
   });
 
   test('a client that goes away mid-body leaves the URL usable and is not logged as an unexpected error', async () => {
@@ -221,6 +236,39 @@ describe('replies before the whole body has arrived', () => {
     expect(logged()[0]).toMatchObject({ outcome: 'client_gone', files: 0 });
     expect(out.join('')).not.toContain('upload_unhandled_error');
     expect((await rawPost(s.port, url, Buffer.from('ok'))).status).toBe(200);
+  });
+});
+
+describe('a client that stops sending mid-body', () => {
+  let close: () => void;
+  afterEach(() => close?.());
+  async function listen(idleMs: number) {
+    const s = setup();
+    const app = express().post('/mcp/upload/:token', uploadHandler({ config: s.config, store: s.store, mm: s.mm, deps: { fetch, now: Date.now } }, idleMs));
+    const server = app.listen(0);
+    await new Promise((r) => server.once('listening', r));
+    close = () => server.close();
+    return { ...s, port: (server.address() as AddressInfo).port };
+  }
+
+  test('gets 408 once no data has come for the idle limit, leaves the URL usable and frees the slot for others', async () => {
+    const s = await listen(200);
+    const url = s.url();
+    const started = Date.now();
+    const r = await rawPost(s.port, url, Buffer.alloc(1024 * 1024), { stallAfter: 100_000 });
+    expect(Date.now() - started).toBeLessThan(2000);
+    expect([r.status, r.connection]).toEqual([408, 'close']);
+    expect(r.text).toContain('同じ URL で');
+    expect(logged()[0]).toMatchObject({ outcome: 'stalled', files: 0 });
+    expect((await rawPost(s.port, url, Buffer.from('ok'))).status).toBe(200);
+  });
+
+  test('to an unknown URL gets its 404 once no data has come for the idle limit', async () => {
+    const s = await listen(200);
+    const started = Date.now();
+    const r = await rawPost(s.port, '/mcp/upload/' + 'x'.repeat(43), Buffer.alloc(1024 * 1024), { stallAfter: 100_000 });
+    expect(Date.now() - started).toBeLessThan(2000);
+    expect(r.status).toBe(404);
   });
 });
 

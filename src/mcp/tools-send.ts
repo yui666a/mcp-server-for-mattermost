@@ -108,7 +108,8 @@ export async function sendMessage(mm: Mm, store: Store, uid: string, baseUrl: st
   const spec = { channelId: ch.id, message: args.message, rootId };
   const attached = files.length + fileIds.length;
   const posted = (postId: string, got: number) => {
-    store.markFilesPosted(uid, fileIds, postId);
+    // Not marking when Mattermost dropped some: which of the files it dropped is not known, and a dropped one may sit on another post.
+    if (got === attached) store.markFilesPosted(uid, fileIds, postId);
     if (!attached) return '投稿しました。';
     if (got === attached) return `投稿しました。ファイル ${attached} 件を添付しました。`;
     return `投稿しました。ただし、添付した ${attached} 件のうち ${attached - got} 件を Mattermost が外したため、投稿に付いていません。`;

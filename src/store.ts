@@ -397,7 +397,7 @@ export class Store {
   }
 
   markFilesPosted(mmUserId: string, fileIds: string[], postId: string): void {
-    // Not overwriting a post_id already set: when two posts raced for a file, Mattermost kept it on the one recorded first.
+    // Not overwriting a post_id already set: Mattermost keeps a file on the first post that took it.
     const stmt = this.db.prepare('UPDATE uploaded_files SET post_id = ? WHERE file_id = ? AND mm_user_id = ? AND post_id IS NULL');
     for (const id of fileIds) stmt.run(postId, id, mmUserId);
   }
