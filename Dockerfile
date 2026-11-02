@@ -7,6 +7,7 @@ RUN npm install -g pnpm@11.25.0 \
  && rm -rf "$(pnpm store path)" ~/.cache/pnpm \
  && npm uninstall -g pnpm && npm cache clean --force
 COPY src ./src
+RUN mkdir /data && chown node:node /data
 USER node
 VOLUME /data
 EXPOSE 3000
