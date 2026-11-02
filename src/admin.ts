@@ -5,6 +5,7 @@ import { Store } from './store.ts';
 
 const USAGE = `Usage: node src/admin.ts <command>
   purge-credentials
+  invalidate-scheduled
   list-clients [--unauthorized]
   delete-client <client_id>`;
 
@@ -19,6 +20,14 @@ export function runAdmin(argv: string[], db: DatabaseSync, io: Io): number {
   const [cmd, ...args] = argv;
   if (cmd === 'purge-credentials' && args.length === 0) {
     io.out(`purged ${store.purgeCredentials()} rows\n`);
+    return 0;
+  }
+  if (cmd === 'invalidate-scheduled' && args.length === 0) {
+    const n = store.invalidateScheduled(Date.now(), {
+      unattempted: 'サーバーを復元したため無効にしました。予約を入れ直してください。',
+      unknown: 'サーバーを復元したため無効にしました。投稿されたか不明なので、Mattermost の画面で確かめてください。',
+    });
+    io.out(`invalidated ${n} scheduled posts\n`);
     return 0;
   }
   if (cmd === 'list-clients' && args.every((a) => a === '--unauthorized') && args.length <= 1) {

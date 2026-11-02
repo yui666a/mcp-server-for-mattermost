@@ -90,7 +90,7 @@ describe('findPosted は、since より後の同じ投稿を探す', () => {
     { ...base, id: 'match2', create_at: SINCE + 10 },
   ];
 
-  test('本人・同じ返信先・同じ本文・同じファイルの数・削除されていない・since 以降の投稿の id を、Mattermost の順で返す', async () => {
+  test('本人・同じ返信先・同じ本文・同じファイルの数・削除されていない・since 以降の投稿の id を返す', async () => {
     const { mm, calls } = fake(() => ({ order: posts.map((p) => p.id), posts: Object.fromEntries(posts.map((p) => [p.id, p])) }));
     const ids = await findPosted(mm, UID, { channelId: CH, rootId: ROOT, message: 'hi', fileCount: 1 }, SINCE);
     expect(ids).toEqual(['match1', 'match2']);
