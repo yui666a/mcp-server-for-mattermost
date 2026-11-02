@@ -73,6 +73,22 @@ CREATE TABLE IF NOT EXISTS post_claims (
   updated_at INTEGER NOT NULL,
   UNIQUE (mm_user_id, channel_id, root_id, body_hash)
 );
+CREATE TABLE IF NOT EXISTS scheduled_posts (
+  id TEXT PRIMARY KEY,
+  mm_user_id TEXT NOT NULL,
+  channel_id TEXT NOT NULL,
+  root_id TEXT NOT NULL,
+  message_sealed TEXT NOT NULL,
+  scheduled_at INTEGER NOT NULL,
+  status TEXT NOT NULL CHECK (status IN ('pending', 'sending', 'posted', 'failed')),
+  pending_post_id TEXT,
+  first_attempt_at INTEGER,
+  post_id TEXT,
+  error TEXT,
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS scheduled_posts_user ON scheduled_posts (mm_user_id, scheduled_at, id);
 `;
 
 export function openDb(path: string): DatabaseSync {

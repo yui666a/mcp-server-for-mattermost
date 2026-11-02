@@ -11,6 +11,8 @@ const POST_DEDUP_WINDOW = 600 * SEC;
 export const INFLIGHT_GRACE = 30 * SEC;
 const USED_REFRESH_KEEP = 7 * 24 * 3600 * SEC;
 const CONSUMED_CODE_KEEP = 24 * 3600 * SEC;
+const SCHEDULED_KEEP = 7 * 24 * 3600 * SEC;
+export const MAX_PENDING_SCHEDULED = 20;
 
 export type ClientMeta = { clientName: string; redirectUris: string[] };
 export type Client = ClientMeta & { clientId: string; createdAt: number; authorizedAt: number | null };
@@ -38,6 +40,12 @@ export type PostClaim =
   | { kind: 'done'; postId: string }
   | { kind: 'inflight' }
   | { kind: 'retry'; id: number; pendingPostId: string; createdAt: number; claimedAt: number };
+
+export type ScheduledStatus = 'pending' | 'sending' | 'posted' | 'failed';
+export type Scheduled = {
+  id: string; channelId: string; rootId: string; message: string | undefined; scheduledAt: number;
+  status: ScheduledStatus; postId: string | null; error: string | null;
+};
 
 type Row = Record<string, any>;
 
@@ -334,6 +342,61 @@ export class Store {
     this.run('DELETE FROM post_claims WHERE mm_user_id = ? AND post_id = ?', mmUserId, postId);
   }
 
+  // Not a COUNT outside the transaction: two requests at the cap would both get in.
+  createScheduled(s: { mmUserId: string; channelId: string; rootId?: string; message: string; scheduledAt: number }, now: number): string | undefined {
+    return this.tx(() => {
+      const n = Number(this.get("SELECT COUNT(*) AS n FROM scheduled_posts WHERE mm_user_id = ? AND status = 'pending'", s.mmUserId)?.n ?? 0);
+      if (n >= MAX_PENDING_SCHEDULED) return undefined;
+      const id = randomToken();
+      this.run(
+        `INSERT INTO scheduled_posts (id, mm_user_id, channel_id, root_id, message_sealed, scheduled_at, status, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, 'pending', ?, ?)`,
+        id, s.mmUserId, s.channelId, s.rootId ?? '', seal(this.encKey, s.message), s.scheduledAt, now, now,
+      );
+      return id;
+    });
+  }
+
+  private scheduled(r: Row): Scheduled {
+    let message: string | undefined;
+    // Not throwing: one row sealed under an old TOKEN_ENC_KEY must not hide the rest of the list, which is where failures are reported.
+    try {
+      message = open(this.encKey, r.message_sealed);
+    } catch {
+      message = undefined;
+    }
+    return {
+      id: r.id, channelId: r.channel_id, rootId: r.root_id, message, scheduledAt: r.scheduled_at,
+      status: r.status, postId: r.post_id, error: r.error,
+    };
+  }
+
+  listScheduled(mmUserId: string, q: { status?: ScheduledStatus; after?: { at: number; id: string }; limit: number }): Scheduled[] {
+    const rows = this.db.prepare(
+      `SELECT * FROM scheduled_posts WHERE mm_user_id = ? AND (? IS NULL OR status = ?)
+         AND (? IS NULL OR scheduled_at > ? OR (scheduled_at = ? AND id > ?))
+       ORDER BY scheduled_at, id LIMIT ?`,
+    ).all(mmUserId, q.status ?? null, q.status ?? null, q.after?.at ?? null, q.after?.at ?? null, q.after?.at ?? null, q.after?.id ?? null, q.limit) as Row[];
+    return rows.map((r) => this.scheduled(r));
+  }
+
+  // Not changing a row that has been attempted: a retry looks for the post by its old message, and a new one would post a second time.
+  updateScheduled(mmUserId: string, id: string, c: { message?: string; scheduledAt?: number }, now: number): Scheduled | undefined {
+    const r = this.get(
+      `UPDATE scheduled_posts SET message_sealed = COALESCE(?, message_sealed), scheduled_at = COALESCE(?, scheduled_at), updated_at = ?
+       WHERE id = ? AND mm_user_id = ? AND status = 'pending' AND first_attempt_at IS NULL RETURNING *`,
+      c.message === undefined ? null : seal(this.encKey, c.message), c.scheduledAt ?? null, now, id, mmUserId,
+    );
+    return r && this.scheduled(r);
+  }
+
+  cancelScheduled(mmUserId: string, id: string): boolean {
+    return this.run(
+      "DELETE FROM scheduled_posts WHERE id = ? AND mm_user_id = ? AND status = 'pending' AND first_attempt_at IS NULL",
+      id, mmUserId,
+    ) === 1;
+  }
+
   purgeCredentials(): number {
     return this.tx(() => {
       let n = 0;
@@ -368,6 +431,7 @@ export class Store {
       this.run('DELETE FROM grants WHERE last_used_at < ?', now - REFRESH_IDLE);
       this.run('DELETE FROM refresh_tokens WHERE used = 1 AND used_at < ?', now - USED_REFRESH_KEEP);
       this.run('DELETE FROM post_claims WHERE created_at <= ?', now - POST_DEDUP_WINDOW);
+      this.run("DELETE FROM scheduled_posts WHERE status IN ('posted', 'failed') AND updated_at <= ?", now - SCHEDULED_KEEP);
     });
   }
 }

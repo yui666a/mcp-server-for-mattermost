@@ -41,13 +41,13 @@ const jstDay = (ms: number) => new Date(ms + JST_OFFSET_SEC * 1000).toISOString(
 const nextDay = (day: string) => new Date(Date.parse(day) + DAY_MS).toISOString().slice(0, 10);
 const newestFirst = (a: MmPost, b: MmPost) => b.create_at - a.create_at || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
 
-const limitArg = (def: number, max: number) => z.number().int().min(1).max(max).optional()
+export const limitArg = (def: number, max: number) => z.number().int().min(1).max(max).optional()
   .describe(`件数（既定 ${def}、最大 ${max}）。cursor を渡したときは無視する`);
-const cursorArg = z.string().optional().describe('前回の出力の next_cursor');
-const perPage = (max: number) => z.number().int().min(1).max(max);
+export const cursorArg = z.string().optional().describe('前回の出力の next_cursor');
+export const perPage = (max: number) => z.number().int().min(1).max(max);
 const channelKinds = z.array(z.enum(['public', 'private', 'dm', 'group_dm'])).min(1);
 
-function cursorOf<S extends z.ZodType>(schema: S, cursor: string | undefined): z.infer<S> | undefined {
+export function cursorOf<S extends z.ZodType>(schema: S, cursor: string | undefined): z.infer<S> | undefined {
   if (cursor === undefined) return undefined;
   const r = schema.safeParse(decodeCursor(cursor));
   if (!r.success) throw new InputError(BAD_CURSOR);

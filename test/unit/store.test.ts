@@ -1,5 +1,5 @@
 import { randomBytes } from 'node:crypto';
-import { beforeEach, expect, test } from 'vitest';
+import { beforeEach, describe, expect, test } from 'vitest';
 import { openDb } from '../../src/db.ts';
 import { sha256 } from '../../src/crypto.ts';
 import { Store } from '../../src/store.ts';
@@ -311,4 +311,111 @@ test('the upstream PKCE verifier is not stored in plain text', () => {
   const s = store.createAuthSession(sessionInput);
   const a = store.approveAuthSession(s.sessionId, s.cookieSecret, s.csrf)!;
   expect(JSON.stringify(db.prepare('SELECT * FROM auth_sessions').all())).not.toContain(a.upstreamVerifier);
+});
+
+describe('scheduled posts', () => {
+  const MIN = 60_000;
+  const at = (n: number) => t + n * MIN;
+  const make = (over: Partial<{ mmUserId: string; channelId: string; rootId: string; message: string; scheduledAt: number }> = {}) =>
+    store.createScheduled({ mmUserId: 'u1', channelId: 'c1', message: 'hello', scheduledAt: at(10), ...over }, t);
+  const setRow = (id: string, sql: string, ...p: (string | number)[]) => db.prepare(`UPDATE scheduled_posts SET ${sql} WHERE id = ?`).run(...p, id);
+
+  test('a new schedule gets an unguessable id and is listed as pending with its own fields', () => {
+    const id = make({ rootId: 'r1' })!;
+    expect(id).toMatch(/^[A-Za-z0-9_-]{43}$/);
+    expect(make({ scheduledAt: at(20) })).not.toBe(id);
+    expect(store.listScheduled('u1', { limit: 10 })[0]).toMatchObject({
+      id, channelId: 'c1', rootId: 'r1', message: 'hello', scheduledAt: at(10), status: 'pending', postId: null, error: null,
+    });
+  });
+
+  test('lists only the owner\'s schedules, earliest first, filtered by status and continued after a key', () => {
+    const late = make({ scheduledAt: at(30) })!;
+    const early = make({ scheduledAt: at(5) })!;
+    const mid = make({ scheduledAt: at(20) })!;
+    make({ mmUserId: 'u2', scheduledAt: at(1) });
+    setRow(mid, "status = 'failed', error = 'x'");
+    expect(store.listScheduled('u1', { limit: 10 }).map((s) => s.id)).toEqual([early, mid, late]);
+    expect(store.listScheduled('u1', { status: 'pending', limit: 10 }).map((s) => s.id)).toEqual([early, late]);
+    expect(store.listScheduled('u1', { limit: 1, after: { at: at(5), id: early } }).map((s) => s.id)).toEqual([mid]);
+  });
+
+  test('ties on the scheduled time are ordered by id so a page boundary neither repeats nor skips', () => {
+    const ids = [make(), make(), make()].map((x) => x!).sort();
+    const first = store.listScheduled('u1', { limit: 2 });
+    expect(first.map((s) => s.id)).toEqual(ids.slice(0, 2));
+    expect(store.listScheduled('u1', { limit: 2, after: { at: at(10), id: ids[1] } }).map((s) => s.id)).toEqual([ids[2]]);
+  });
+
+  test('a user can hold 20 pending schedules; the 21st is refused, and finished ones do not count', () => {
+    const ids = Array.from({ length: 20 }, () => make());
+    expect(ids.every(Boolean)).toBe(true);
+    expect(make()).toBeUndefined();
+    expect(make({ mmUserId: 'u2' })).toBeDefined();
+    setRow(ids[0]!, "status = 'posted', post_id = 'p'");
+    expect(make()).toBeDefined();
+  });
+
+  test('update changes the message and the time of a pending schedule that has not been attempted', () => {
+    const id = make()!;
+    t += MIN;
+    expect(store.updateScheduled('u1', id, { message: 'changed' }, t)).toMatchObject({ message: 'changed', scheduledAt: at(9) });
+    expect(store.updateScheduled('u1', id, { scheduledAt: at(60) }, t)).toMatchObject({ message: 'changed', scheduledAt: at(60) });
+  });
+
+  test.each([
+    ['another user\'s schedule', (id: string) => id, 'u2'],
+    ['an unknown id', () => 'nope', 'u1'],
+  ])('update and cancel treat %s as missing', (_, idOf, user) => {
+    const id = make()!;
+    expect(store.updateScheduled(user, idOf(id), { message: 'x' }, t)).toBeUndefined();
+    expect(store.cancelScheduled(user, idOf(id))).toBe(false);
+    expect(store.listScheduled('u1', { limit: 10 })).toMatchObject([{ id, message: 'hello' }]);
+  });
+
+  test.each([
+    ["status = 'sending'"],
+    ["status = 'posted', post_id = 'p'"],
+    ["status = 'failed', error = 'e'"],
+    ['first_attempt_at = 1'],
+  ])('update and cancel refuse a schedule with %s', (sql) => {
+    const id = make()!;
+    setRow(id, sql);
+    expect(store.updateScheduled('u1', id, { message: 'x' }, t)).toBeUndefined();
+    expect(store.cancelScheduled('u1', id)).toBe(false);
+    expect(store.listScheduled('u1', { limit: 10 })).toMatchObject([{ id, message: 'hello' }]);
+  });
+
+  test('cancel removes the row', () => {
+    const id = make()!;
+    expect(store.cancelScheduled('u1', id)).toBe(true);
+    expect(store.listScheduled('u1', { limit: 10 })).toEqual([]);
+    expect(db.prepare('SELECT COUNT(*) AS n FROM scheduled_posts').get()).toEqual({ n: 0 });
+  });
+
+  test('the message is not stored in plain text', () => {
+    const id = make({ message: 'very secret plan' })!;
+    store.updateScheduled('u1', id, { message: 'another secret plan' }, t);
+    expect(JSON.stringify(db.prepare('SELECT * FROM scheduled_posts').all())).not.toMatch(/secret/);
+  });
+
+  test('a message sealed under another key lists as unreadable rather than failing the list', () => {
+    const id = make()!;
+    const other = new Store(db, randomBytes(32), () => t, 3600);
+    expect(other.listScheduled('u1', { limit: 10 })).toMatchObject([{ id, message: undefined }]);
+  });
+
+  test('sweep removes posted and failed schedules 7 days after their last update and keeps the rest', () => {
+    const posted = make()!;
+    const failed = make()!;
+    const pending = make()!;
+    setRow(posted, "status = 'posted', post_id = 'p', updated_at = ?", t);
+    setRow(failed, "status = 'failed', error = 'e', updated_at = ?", t + 1);
+    t += 7 * DAY;
+    store.sweep();
+    expect(store.listScheduled('u1', { limit: 10 }).map((s) => s.id).sort()).toEqual([failed, pending].sort());
+    t += 1;
+    store.sweep();
+    expect(store.listScheduled('u1', { limit: 10 }).map((s) => s.id)).toEqual([pending]);
+  });
 });
