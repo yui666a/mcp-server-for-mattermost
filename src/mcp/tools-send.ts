@@ -133,7 +133,7 @@ export async function sendMessage(mm: Mm, store: Store, uid: string, baseUrl: st
   if (claim.kind === 'inflight') return text(INFLIGHT, true);
   if (claim.kind === 'retry') {
     // Not dropping the claim if this lookup fails: the earlier attempt's outcome is still unknown.
-    const [prev] = await findPosted(mm, uid, { ...spec, fileCount: attached }, claim.createdAt);
+    const [prev] = await findPosted(mm, uid, { ...spec, fileCount: attached, fileIds }, claim.createdAt);
     if (prev) {
       store.completePost(claim.id, prev);
       store.markFilesPosted(uid, fileIds, prev);
