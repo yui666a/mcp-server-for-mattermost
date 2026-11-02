@@ -53,7 +53,7 @@ export function guarded<A extends unknown[]>(ctx: ToolContext, tool: string, fn:
 }
 
 export function buildServer(ctx: ToolContext): McpServer {
-  const server = new McpServer({ name: 'mattermost-mcp', version: '0.1.0' });
+  const server = new McpServer({ name: 'mcp-server-for-mattermost', version: '0.1.0' });
   registerReadTools(server, ctx);
   registerSendTools(server, ctx);
   registerScheduleTools(server, ctx);
