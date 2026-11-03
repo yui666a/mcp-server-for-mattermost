@@ -158,7 +158,7 @@ export function registerScheduleTools(server: McpServer, ctx: ToolContext): void
     cursor: cursorArg,
   };
   server.registerTool('list_scheduled_messages', {
-    description: '本人の予約投稿を、予定時刻の順に返す。状態、失敗の理由、投稿済みなら post_id とパーマリンクを出す。投稿済みと失敗の予約は 7 日で消える',
+    description: '本人の予約投稿を、予定時刻の順に返す。状態、失敗の理由、添付するファイル（あるとき）、投稿済みなら post_id とパーマリンクを出す。投稿済みと失敗の予約は 7 日で消える',
     inputSchema: listSchema,
     annotations: { readOnlyHint: true },
   }, guarded(ctx, 'list_scheduled_messages', async (args: { status?: ScheduledStatus; limit?: number; cursor?: string }, extra: { signal: AbortSignal }) =>

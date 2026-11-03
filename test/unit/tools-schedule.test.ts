@@ -196,6 +196,18 @@ describe('schedule_message with file_ids', () => {
     expect(s.store.listScheduled('u1', { limit: 10 })).toHaveLength(0);
   });
 
+  test('takes 1 to 5 file_ids', async () => {
+    const s = setup();
+    const six = ['a', 'b', 'c', 'd', 'e', 'f'].map((c) => c.repeat(26));
+    uploaded(s, six);
+    for (const file_ids of [six, []]) {
+      const r = await s.call('schedule_message', { channel: CH, message: 'hello', at: '2026-11-03T10:00', file_ids });
+      expect(r.isError).toBe(true);
+      expect(r.text).toContain('file_ids');
+    }
+    await s.schedule({ file_ids: six.slice(0, 5) });
+  });
+
   test('refuses a file another schedule holds, naming that schedule, also after it failed once attempted', async () => {
     const s = setup();
     uploaded(s);

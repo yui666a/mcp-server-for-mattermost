@@ -95,7 +95,7 @@ export function checkUnposted(store: Store, uid: string, fileIds: string[]): voi
 }
 
 export const heldError = (h: HeldFile) =>
-  new InputError(`file_id ${h.fileId} は予約（予約 ID: ${h.scheduledId}）の添付に使われています。同じファイルを別に送るときは、prepare_upload からアップロードし直してください。`);
+  new InputError(`file_id ${h.fileId} は予約（予約 ID: ${h.scheduledId}）の添付に使われています。投稿を試みる前の待機中の予約なら、cancel_scheduled_message で取り消すと使えます。同じファイルを別に送るときは、prepare_upload からアップロードし直してください。`);
 
 const INFLIGHT = '同じ投稿を処理中です。少し待ってから read_channel などで投稿されたかを確かめてください。';
 
@@ -377,7 +377,7 @@ export async function prepareUpload(mm: Mm, store: Store, uid: string, publicUrl
     '',
     `curl -sS -F 'file=@<ファイルのパス>' ${publicUrl}/mcp/upload/${token}`,
     '',
-    '複数のファイルは -F \'file=@<パス>\' を繰り返します。返ってきた file_id を send_message の file_ids に渡して、同じチャンネルへ投稿してください。',
+    '複数のファイルは -F \'file=@<パス>\' を繰り返します。返ってきた file_id を send_message の file_ids に渡して、同じチャンネルへ投稿してください。予約するときは schedule_message の file_ids に渡します。',
   ].join('\n'));
 }
 
@@ -420,7 +420,7 @@ export function registerSendTools(server: McpServer, ctx: ToolContext): void {
   ) as unknown as ToolCallback<typeof draftSchema>);
 
   server.registerTool('prepare_upload', {
-    description: '利用者の PC にあるファイル（スクリーンショット、PDF、写真など）を投稿に添付するための、使い捨てのアップロード URL を発行する。利用者の PC でコマンドを実行できるクライアント（Claude Code、Codex CLI など）から curl で送り、返った file_id を send_message の file_ids に渡す。ファイルの中身はツールの引数を通らない。curl を実行する前に、送るファイルのパスと投稿先を利用者に示して確認を取ること。claude.ai などのブラウザ版からは PC のファイルを送れないので、save_draft で本文を下書きにし、ファイルは Mattermost の画面から添付するよう案内する',
+    description: '利用者の PC にあるファイル（スクリーンショット、PDF、写真など）を投稿に添付するための、使い捨てのアップロード URL を発行する。利用者の PC でコマンドを実行できるクライアント（Claude Code、Codex CLI など）から curl で送り、返った file_id を send_message の file_ids に渡す（予約するときは schedule_message の file_ids に渡す）。ファイルの中身はツールの引数を通らない。curl を実行する前に、送るファイルのパスと投稿先を利用者に示して確認を取ること。claude.ai などのブラウザ版からは PC のファイルを送れないので、save_draft で本文を下書きにし、ファイルは Mattermost の画面から添付するよう案内する',
     inputSchema: prepareSchema,
     annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false },
   }, guarded(ctx, 'prepare_upload', async (args: PrepareArgs, extra: { signal: AbortSignal }) =>
