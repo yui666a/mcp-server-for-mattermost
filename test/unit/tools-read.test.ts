@@ -981,3 +981,132 @@ describe('get_file', () => {
     expect(logged).not.toContain('SECRETPIXELS');
   });
 });
+
+describe('read_channel', () => {
+  const CH = 'c'.repeat(26);
+  const TEAM = 't'.repeat(26);
+  const p = (n: number, o: Record<string, unknown> = {}) => ({ id: id(n), user_id: 'u2', channel_id: CH, root_id: '', message: `m${n}`, create_at: 1000 + n, ...o });
+  // Mattermost answers newest first and puts posts outside the page (the thread of the first unread post) in posts only.
+  const list = (ns: number[], extra: number[] = []) => ({
+    order: [...ns].sort((a, b) => b - a).map(id),
+    posts: Object.fromEntries([...ns, ...extra].map((n) => [id(n), p(n)])),
+  });
+  const base = (crt = 'always_on', lastViewedAt = 1000): Record<string, Route> => ({
+    [`GET /channels/${CH}`]: () => ({ id: CH, name: 'town', display_name: 'Town', team_id: TEAM, type: 'O' }),
+    [`GET /teams/${TEAM}`]: () => ({ id: TEAM, name: 'team-a' }),
+    'GET /config/client': () => ({ CollapsedThreads: crt }),
+    'GET /users/me/preferences/display_settings/name/collapsed_reply_threads': () => Response.json({ id: 'app.preference.get.app_error', message: 'm', status_code: 400 }, { status: 400 }),
+    [`GET /channels/${CH}/members/me`]: () => ({ channel_id: CH, last_viewed_at: lastViewedAt }),
+    'POST /users/ids': () => [{ id: 'u2', username: 'bob' }],
+  });
+  const shownIds = (out: string) => [...out.matchAll(/^--- post_id: ([a-z0-9]{26})/gm)].map((m) => m[1]);
+  const cursorIn = (out: string) => /next_cursor: (\S+)/.exec(out)?.[1];
+  const query = (prefix: string) => new URLSearchParams(urls.find((u) => u.startsWith(prefix))!.split('?')[1]);
+
+  test('without from, reads newest first, with no line about the direction', async () => {
+    routes = { ...base(), [`GET /channels/${CH}/posts`]: () => list([1, 2, 3]) };
+    const out = await setup()('read_channel', { channel: CH, limit: 2 });
+    expect(shownIds(out)).toEqual([id(3), id(2)]);
+    expect(out).not.toContain('古い順');
+    expect(hits).not.toContain(`GET /channels/${CH}/members/me`);
+    expect(query(`GET /channels/${CH}/posts`).get('per_page')).toBe('3');
+  });
+
+  test('from unread starts at the first unread post, oldest first, asking for one more than the limit and ignoring posts outside order', async () => {
+    routes = { ...base(), [`GET /users/u1/channels/${CH}/posts/unread`]: () => list([4, 5, 6], [0]) };
+    const out = await setup()('read_channel', { channel: CH, from: 'unread', limit: 2 });
+    expect(shownIds(out)).toEqual([id(4), id(5)]);
+    expect(out).toContain('未読の先頭から古い順');
+    const q = query(`GET /users/u1/channels/${CH}/posts/unread`);
+    expect(Object.fromEntries(q)).toEqual({ limit_before: '0', limit_after: '3', collapsedThreads: 'true', skipFetchThreads: 'true' });
+    expect(cursorIn(out)).toBeDefined();
+  });
+
+  test('the next page continues after the last post shown, oldest first, keeping the CRT decision of the first page', async () => {
+    routes = { ...base(), [`GET /users/u1/channels/${CH}/posts/unread`]: () => list([4, 5, 6]), [`GET /channels/${CH}/posts`]: () => list([6, 7]) };
+    const call = setup();
+    const first = await call('read_channel', { channel: CH, from: 'unread', limit: 2 });
+    routes['GET /config/client'] = () => ({ CollapsedThreads: 'disabled' });
+    hits = []; urls = [];
+    const out = await call('read_channel', { channel: CH, cursor: cursorIn(first) });
+    expect(shownIds(out)).toEqual([id(6), id(7)]);
+    expect(Object.fromEntries(query(`GET /channels/${CH}/posts`))).toEqual({ after: id(5), per_page: '3', collapsedThreads: 'true', skipFetchThreads: 'true' });
+    expect(hits).not.toContain('GET /config/client');
+    expect(out).toContain('（続きはありません）');
+    expect(out).toContain('ルート投稿だけ');
+  });
+
+  test('with CRT off, asks for replies too and says so', async () => {
+    routes = { ...base('disabled'), [`GET /users/u1/channels/${CH}/posts/unread`]: () => list([4]) };
+    const out = await setup()('read_channel', { channel: CH, from: 'unread' });
+    expect(query(`GET /users/u1/channels/${CH}/posts/unread`).get('collapsedThreads')).toBe('false');
+    expect(out).toContain('返信も含みます');
+    expect(out).not.toContain('ルート投稿だけ');
+  });
+
+  test('says there is nothing unread when Mattermost returns no posts', async () => {
+    routes = { ...base(), [`GET /users/u1/channels/${CH}/posts/unread`]: () => ({ order: [], posts: {} }) };
+    const out = await setup()('read_channel', { channel: CH, from: 'unread' });
+    expect(out).toContain('未読はありません。');
+    expect(out).toContain('（続きはありません）');
+  });
+
+  test('when no read position is recorded, says so and reads newest first with a newest-first cursor', async () => {
+    routes = { ...base('always_on', 0), [`GET /channels/${CH}/posts`]: () => list([1, 2, 3]) };
+    const out = await setup()('read_channel', { channel: CH, from: 'unread', limit: 2 });
+    expect(out).toContain('新しい順に読んでいます');
+    expect(shownIds(out)).toEqual([id(3), id(2)]);
+    expect(hits).not.toContain(`GET /users/u1/channels/${CH}/posts/unread`);
+    expect(JSON.parse(Buffer.from(cursorIn(out)!, 'base64url').toString())).toMatchObject({ before: id(2) });
+  });
+
+  test.each([
+    [403, 'api.context.permissions.app_error'],
+    [404, 'app.channel.get_member.missing.app_error'],
+  ])('for a channel the user has not joined (%i from members/me), says there is no unread position and to use from latest', async (status, mmId) => {
+    routes = { ...base(), [`GET /channels/${CH}/members/me`]: () => Response.json({ id: mmId, message: 'm', status_code: status }, { status }) };
+    const out = await setup()('read_channel', { channel: CH, from: 'unread' }, true);
+    expect(out).toContain('参加していないため、未読の位置がありません');
+    expect(out).toContain('from: "latest"');
+  });
+
+  test('a newest-first cursor keeps reading newest first even with from unread', async () => {
+    routes = { ...base('always_on', 0), [`GET /channels/${CH}/posts`]: () => list([1, 2, 3]) };
+    const call = setup();
+    const first = await call('read_channel', { channel: CH, from: 'unread', limit: 2 });
+    hits = []; urls = [];
+    await call('read_channel', { channel: CH, from: 'unread', cursor: cursorIn(first) });
+    expect(hits).not.toContain(`GET /channels/${CH}/members/me`);
+    expect(hits).not.toContain(`GET /users/u1/channels/${CH}/posts/unread`);
+    expect(query(`GET /channels/${CH}/posts`).get('before')).toBe(id(2));
+  });
+
+  test('a later unread page with no posts left says there are no posts rather than no unread', async () => {
+    routes = { ...base(), [`GET /users/u1/channels/${CH}/posts/unread`]: () => list([4, 5, 6]), [`GET /channels/${CH}/posts`]: () => ({ order: [], posts: {} }) };
+    const call = setup();
+    const first = await call('read_channel', { channel: CH, from: 'unread', limit: 2 });
+    const out = await call('read_channel', { channel: CH, cursor: cursorIn(first) });
+    expect(out).toContain('投稿はありません。');
+    expect(out).not.toContain('未読はありません。');
+  });
+
+  test('orders unread posts with the same create_at by post_id', async () => {
+    const same = (n: number) => ({ ...p(n), create_at: 5000 });
+    routes = { ...base(), [`GET /users/u1/channels/${CH}/posts/unread`]: () => ({ order: [id(9), id(8)], posts: { [id(9)]: same(9), [id(8)]: same(8) } }) };
+    const out = await setup()('read_channel', { channel: CH, from: 'unread' });
+    expect(shownIds(out)).toEqual([id(8), id(9)]);
+  });
+
+  test('rejects an unread cursor issued for another channel', async () => {
+    const OTHER = 'o'.repeat(26);
+    routes = {
+      ...base(), [`GET /users/u1/channels/${OTHER}/posts/unread`]: () => list([4, 5, 6]),
+      [`GET /channels/${OTHER}`]: () => ({ id: OTHER, name: 'other', display_name: 'Other', team_id: TEAM, type: 'O' }),
+      [`GET /channels/${OTHER}/members/me`]: () => ({ last_viewed_at: 1000 }),
+    };
+    const call = setup();
+    const first = await call('read_channel', { channel: OTHER, from: 'unread', limit: 2 });
+    const out = await call('read_channel', { channel: CH, cursor: cursorIn(first) }, true);
+    expect(out).toContain('cursor');
+  });
+});
