@@ -412,6 +412,54 @@ test('callBytes returns the response body as bytes, after a 401 → refresh → 
   expect(cred()).toMatchObject({ access: 'a2', refresh: 'r2' });
 });
 
+test('callBytes without maxBytes sends no Range header', async () => {
+  store.putMmCred('u1', 'a1', 'r1');
+  api = () => new Response(Uint8Array.from([1, 2, 3]));
+  await client.callBytes('u1', '/files/f1/preview');
+  expect(apiCalls[0].req.headers.get('range')).toBeNull();
+});
+
+test('callBytes with maxBytes asks for that many bytes with a Range header, also on the resend after a 401 → refresh', async () => {
+  store.putMmCred('u1', 'a1', 'r1');
+  api = (access) => (access === 'a2'
+    ? new Response(Uint8Array.from([1, 2, 3]), { status: 206 })
+    : mmError(401, 'api.context.session_expired.app_error'));
+  expect(await client.callBytes('u1', '/files/f1', undefined, { maxBytes: 40_000 })).toEqual(Uint8Array.from([1, 2, 3]));
+  expect(apiCalls.map((c) => [c.access, c.req.headers.get('range')])).toEqual([['a1', 'bytes=0-39999'], ['a2', 'bytes=0-39999']]);
+});
+
+test('callBytes with maxBytes stops reading at that many bytes when Mattermost ignores the Range and sends an endless body', async () => {
+  store.putMmCred('u1', 'a1', 'r1');
+  const cancel = vi.fn();
+  api = () => new Response(new ReadableStream({
+    pull: (c) => c.enqueue(new Uint8Array(7).fill(0x61)),
+    cancel,
+  }));
+  const b = await client.callBytes('u1', '/files/f1', undefined, { maxBytes: 20 });
+  expect(b).toEqual(new Uint8Array(20).fill(0x61));
+  expect(cancel).toHaveBeenCalled();
+});
+
+test('callBytes with maxBytes returns the bytes up to the limit even if the body fails right after them', async () => {
+  store.putMmCred('u1', 'a1', 'r1');
+  let n = 0;
+  api = () => new Response(new ReadableStream({
+    pull: (c) => (n++ === 0 ? c.enqueue(Uint8Array.from([1, 2, 3, 4])) : c.error(new Error('reset'))),
+  }));
+  expect(await client.callBytes('u1', '/files/f1', undefined, { maxBytes: 4 })).toEqual(Uint8Array.from([1, 2, 3, 4]));
+});
+
+test('callBytes with maxBytes turns a body that fails midway into UpstreamUnavailable', async () => {
+  store.putMmCred('u1', 'a1', 'r1');
+  let n = 0;
+  api = () => new Response(new ReadableStream({
+    pull: (c) => (n++ === 0 ? c.enqueue(Uint8Array.from([1, 2])) : c.error(new Error('reset'))),
+  }));
+  const e = await failure(client.callBytes('u1', '/files/f1', undefined, { maxBytes: 100 }));
+  expect(e).toBeInstanceOf(UpstreamUnavailable);
+  expect(e).toMatchObject({ sent: true });
+});
+
 test('callBytes reads the id of a 4xx JSON error into an MmError', async () => {
   store.putMmCred('u1', 'a1', 'r1');
   api = () => mmError(400, 'api.file.get_file_preview.no_preview.app_error');

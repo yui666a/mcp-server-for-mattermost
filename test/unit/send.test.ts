@@ -1,5 +1,5 @@
 import { randomBytes } from 'node:crypto';
-import { describe, expect, test } from 'vitest';
+import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 import { openDb } from '../../src/db.ts';
 import { CALL_DEADLINE_MS, MmError, RateLimited, UpstreamUnavailable } from '../../src/mattermost/client.ts';
 import type { MmPost } from '../../src/mcp/format.ts';
@@ -10,6 +10,7 @@ import { INFLIGHT_GRACE, Store } from '../../src/store.ts';
 const UID = 'u'.repeat(26);
 const CH = 'c'.repeat(26);
 const OTHER = 'o'.repeat(26);
+const DM = 'd'.repeat(26);
 const BASE = 'https://mm.example';
 const id = (n: number) => `p${String(n).padStart(25, '0')}`;
 
@@ -19,6 +20,7 @@ type Upload = { query: URLSearchParams; type: string; bytes: Uint8Array };
 type FakeOpts = {
   failPost?: () => Mode; postDelay?: Promise<void>; failSearch?: () => boolean;
   onUpload?: (n: number) => Promise<void> | void; failUpload?: (n: number) => Mode; keepFiles?: (ids: string[]) => string[];
+  drafts?: (signal?: AbortSignal) => unknown; syncOff?: boolean; failDelete?: () => Error | undefined; teams?: { id: string; name: string }[];
 };
 
 function fakeMm(opts: FakeOpts = {}) {
@@ -28,10 +30,23 @@ function fakeMm(opts: FakeOpts = {}) {
   const created: unknown[] = [];
   const byPending = new Map<string, MmPost>();
   const uploads: Upload[] = [];
+  const calls: { method: string; path: string; signal?: AbortSignal }[] = [];
   const mm: Mm = {
-    call: (async (_u: string, method: string, path: string, body?: any) => {
+    call: (async (_u: string, method: string, path: string, body?: any, signal?: AbortSignal) => {
       const p = path.split('?')[0];
-      if (method === 'GET' && p === '/users/me/teams') return [{ id: 'ta', name: 'team-a' }, { id: 'tb', name: 'team-b' }];
+      calls.push({ method, path: p, signal });
+      if (method === 'GET' && p === '/users/me/teams') return opts.teams ?? [{ id: 'ta', name: 'team-a' }, { id: 'tb', name: 'team-b' }];
+      if (method === 'GET' && p === `/channels/${DM}`) return { id: DM, name: `${UID}__${OTHER}`, display_name: '', team_id: '', type: 'D' };
+      if (method === 'GET' && /^\/users\/[^/]+\/teams\/[^/]+\/drafts$/.test(p)) return opts.drafts ? opts.drafts(signal) : [];
+      if (method === 'GET' && p === '/users/me/preferences/advanced_settings/name/sync_drafts') {
+        if (opts.syncOff) return { value: 'false' };
+        throw new MmError(400, 'app.preference.get.app_error', 'not found');
+      }
+      if (method === 'DELETE' && p.startsWith(`/users/${UID}/channels/`)) {
+        const e = opts.failDelete?.();
+        if (e) throw e;
+        return { status: 'OK' };
+      }
       if (method === 'GET' && p === '/teams/ta/channels/name/dup') return { id: CH, name: 'dup', display_name: 'Dup', team_id: 'ta', type: 'O' };
       if (method === 'GET' && p === '/teams/tb/channels/name/dup') return { id: OTHER, name: 'dup', display_name: 'Dup', team_id: 'tb', type: 'O' };
       if (method === 'GET' && p === '/teams/name/team-a/channels/name/dup') return { id: CH, name: 'dup', display_name: 'Dup', team_id: 'ta', type: 'O' };
@@ -82,7 +97,7 @@ function fakeMm(opts: FakeOpts = {}) {
     }) as Mm['call'],
   };
   const send = (args: Parameters<typeof sendMessage>[4]) => sendMessage(mm, store, UID, BASE, args);
-  return { send, store, created, uploads, posts, advance: (ms: number) => { now += ms; } };
+  return { send, store, created, uploads, posts, calls, advance: (ms: number) => { now += ms; } };
 }
 
 const textOf = (r: { content: unknown[] }) => (r.content[0] as { text: string }).text;
@@ -482,5 +497,193 @@ describe('send_message with file_ids from prepare_upload', () => {
     expect(textOf(await f.send(args))).toContain('既にあったため');
     expect(f.created).toHaveLength(1);
     expect(f.store.uploadedFiles(UID, [F1])[0].postId).toBe(id(1));
+  });
+});
+
+describe('a draft with the sent message is cleared after the post', () => {
+  const ROOT = id(9);
+  const LIST = `/users/${UID}/teams/ta/drafts`;
+  const PREF = '/users/me/preferences/advanced_settings/name/sync_drafts';
+  const draft = (over: Record<string, unknown> = {}) => ({ user_id: UID, channel_id: CH, root_id: '', message: 'hello', ...over });
+  const paths = (f: ReturnType<typeof fakeMm>) => f.calls.map((c) => `${c.method} ${c.path}`);
+  const deletes = (f: ReturnType<typeof fakeMm>) => paths(f).filter((c) => c.startsWith('DELETE '));
+  const CLEARED = '同じ本文の下書きを消しました';
+  const FAILED = '同じ本文の下書きを確かめられなかったか、消せませんでした。下書きが残っていれば、そのまま送ると同じ投稿が 2 回になります。';
+  let logged: string[];
+  beforeEach(() => {
+    logged = [];
+    vi.spyOn(process.stdout, 'write').mockImplementation((line) => (logged.push(String(line)), true));
+  });
+  afterEach(() => vi.restoreAllMocks());
+
+  test('a channel draft with the same message is deleted, telling the user to empty the input box if the channel is open', async () => {
+    const f = fakeMm({ drafts: () => [draft()] });
+    const r = await f.send({ channel: 'team-a/dup', message: 'hello' });
+    expect(r.isError).toBeFalsy();
+    expect(deletes(f)).toEqual([`DELETE /users/${UID}/channels/${CH}/drafts`]);
+    expect(textOf(r)).toContain(`${CLEARED}。そのチャンネルを画面で開いている場合は、入力欄に本文が残っているので、送らずに消してください。`);
+    expect(textOf(r)).not.toContain('優先度');
+  });
+
+  test('a reply draft with the same message is deleted by its root_id', async () => {
+    const f = fakeMm({ drafts: () => [draft({ root_id: ROOT })] });
+    f.posts.push({ id: ROOT, user_id: UID, channel_id: CH, root_id: '', message: 'root', create_at: 0 });
+    const r = await f.send({ channel: 'team-a/dup', message: 'hello', root_id: ROOT });
+    expect(deletes(f)).toEqual([`DELETE /users/${UID}/channels/${CH}/drafts/${ROOT}`]);
+    expect(textOf(r)).toContain(`${CLEARED}。そのスレッドを画面で開いている場合は`);
+  });
+
+  test.each([
+    ['a different message', draft({ message: 'hello!' })],
+    ['another channel', draft({ channel_id: OTHER })],
+    ['another thread', draft({ root_id: ROOT })],
+  ])('a draft with %s is kept without reading the sync setting, and nothing is added to the output', async (_, d) => {
+    const f = fakeMm({ drafts: () => [d] });
+    const r = await f.send({ channel: 'team-a/dup', message: 'hello' });
+    expect(paths(f)).toContain(`GET ${LIST}`);
+    expect(paths(f)).not.toContain(`GET ${PREF}`);
+    expect(deletes(f)).toEqual([]);
+    expect(textOf(r)).not.toContain('下書き');
+  });
+
+  test('no drafts at all (null) adds nothing and reads no sync setting', async () => {
+    const f = fakeMm({ drafts: () => null });
+    const r = await f.send({ channel: 'team-a/dup', message: 'hello' });
+    expect(paths(f)).not.toContain(`GET ${PREF}`);
+    expect(textOf(r)).not.toContain('下書き');
+  });
+
+  test('a matching draft with attachments is kept and the output says why', async () => {
+    const f = fakeMm({ drafts: () => [draft({ file_ids: ['f'.repeat(26)] })] });
+    const r = await f.send({ channel: 'team-a/dup', message: 'hello' });
+    expect(deletes(f)).toEqual([]);
+    expect(textOf(r)).toContain('同じ本文の下書きがありますが、添付ファイルが付いているため消していません');
+  });
+
+  test('a matching draft of a caller with draft sync off is kept and the output says why', async () => {
+    const f = fakeMm({ drafts: () => [draft()], syncOff: true });
+    const r = await f.send({ channel: 'team-a/dup', message: 'hello' });
+    expect(deletes(f)).toEqual([]);
+    expect(textOf(r)).toContain('下書きの同期を切っているため消していません');
+  });
+
+  test.each([
+    ['priority', { priority: 'urgent' }],
+    ['requested_ack', { priority: '', requested_ack: true }],
+    ['persistent_notifications', { priority: 'urgent', persistent_notifications: true }],
+  ])('a matching draft with %s is deleted and the output says the post went without it', async (_, priority) => {
+    const f = fakeMm({ drafts: () => [draft({ priority })] });
+    const r = await f.send({ channel: 'team-a/dup', message: 'hello' });
+    expect(deletes(f)).toHaveLength(1);
+    expect(textOf(r)).toContain('下書きに付いていた優先度は、この投稿には付いていません。');
+  });
+
+  test('an empty priority on the draft does not add the priority note', async () => {
+    const f = fakeMm({ drafts: () => [draft({ priority: { priority: '', requested_ack: false } })] });
+    expect(textOf(await f.send({ channel: 'team-a/dup', message: 'hello' }))).not.toContain('優先度');
+  });
+
+  test('drafts disabled on the server (501) adds nothing', async () => {
+    const f = fakeMm({ drafts: () => { throw new MmError(501, 'api.drafts.disabled.app_error', 'off'); } });
+    const r = await f.send({ channel: 'team-a/dup', message: 'hello' });
+    expect(r.isError).toBeFalsy();
+    expect(textOf(r)).not.toContain('下書き');
+  });
+
+  test('a DM of a caller with no team does not read any draft list', async () => {
+    const f = fakeMm({ teams: [] });
+    const r = await f.send({ channel: DM, message: 'hello' });
+    expect(r.isError).toBeFalsy();
+    expect(paths(f).filter((c) => c.endsWith('/drafts'))).toEqual([]);
+    expect(textOf(r)).not.toContain('下書き');
+  });
+
+  test('a DM draft is looked up in the caller\'s first team\'s list', async () => {
+    const f = fakeMm({ drafts: () => [draft({ channel_id: DM })] });
+    await f.send({ channel: DM, message: 'hello' });
+    expect(paths(f)).toContain(`GET /users/${UID}/teams/ta/drafts`);
+    expect(deletes(f)).toEqual([`DELETE /users/${UID}/channels/${DM}/drafts`]);
+  });
+
+  test.each([
+    ['the list fails', { drafts: () => { throw new MmError(500, 'app.draft.get_drafts.app_error', 'x'); } }],
+    ['the list is rate limited', { drafts: () => { throw new RateLimited(5, false); } }],
+    ['Mattermost is unreachable', { drafts: () => { throw new UpstreamUnavailable('Mattermost unreachable', true); } }],
+    ['the DELETE fails', { drafts: () => [draft()], failDelete: () => new MmError(500, 'app.draft.delete.app_error', 'x') }],
+  ])('when %s, the post still succeeds and the output says the draft may be left', async (_, opts) => {
+    const f = fakeMm(opts);
+    const r = await f.send({ channel: 'team-a/dup', message: 'hello' });
+    expect(r.isError).toBeFalsy();
+    expect(textOf(r)).toContain('投稿しました。');
+    expect(textOf(r)).toContain(FAILED);
+    expect(f.created).toHaveLength(1);
+    expect(logged.map((l) => JSON.parse(l).event)).toEqual(['draft_cleanup_failed']);
+  });
+
+  test('the cleanup calls share one 5-second deadline, and running past it is reported as a failure without failing the post', async () => {
+    const ac = new AbortController();
+    const timeout = vi.spyOn(AbortSignal, 'timeout').mockReturnValue(ac.signal);
+    const f = fakeMm({
+      teams: [{ id: 'ta', name: 'team-a' }],
+      drafts: (signal) => new Promise((_, reject) => signal!.addEventListener('abort', () => reject(signal!.reason))),
+    });
+    const sending = f.send({ channel: DM, message: 'hello' });
+    await vi.waitFor(() => expect(paths(f)).toContain(`GET /users/${UID}/teams/ta/drafts`));
+    ac.abort(new DOMException('timed out', 'TimeoutError'));
+    const r = await sending;
+    expect(timeout).toHaveBeenCalledWith(5000);
+    const cleanup = f.calls.slice(f.calls.findIndex((c) => c.method === 'POST' && c.path === '/posts') + 1);
+    expect(cleanup.map((c) => c.path)).toEqual(['/users/me/teams', `/users/${UID}/teams/ta/drafts`]);
+    expect(cleanup.every((c) => c.signal === ac.signal)).toBe(true);
+    expect(r.isError).toBeFalsy();
+    expect(textOf(r)).toContain(FAILED);
+  });
+
+  test('the sync setting and the DELETE get the same deadline signal', async () => {
+    const ac = new AbortController();
+    vi.spyOn(AbortSignal, 'timeout').mockReturnValue(ac.signal);
+    const f = fakeMm({ drafts: () => [draft()] });
+    await f.send({ channel: 'team-a/dup', message: 'hello' });
+    const after = f.calls.filter((c) => c.path === PREF || c.method === 'DELETE');
+    expect(after.map((c) => c.method)).toEqual(['GET', 'DELETE']);
+    expect(after.every((c) => c.signal === ac.signal)).toBe(true);
+  });
+
+  test('allow_duplicate posts also clear the draft', async () => {
+    const f = fakeMm({ drafts: () => [draft()] });
+    const r = await f.send({ channel: 'team-a/dup', message: 'hello', allow_duplicate: true });
+    expect(deletes(f)).toHaveLength(1);
+    expect(textOf(r)).toContain(CLEARED);
+  });
+
+  test('a resend reported as already posted clears a draft left by a failed earlier cleanup', async () => {
+    let fail = true;
+    const f = fakeMm({ drafts: () => [draft()], failDelete: () => (fail ? new MmError(500, 'app.draft.delete.app_error', 'x') : undefined) });
+    expect(textOf(await f.send({ channel: 'team-a/dup', message: 'hello' }))).toContain(FAILED);
+    fail = false;
+    const r = await f.send({ channel: 'team-a/dup', message: 'hello' });
+    expect(textOf(r)).toContain('直前に投稿済み');
+    expect(textOf(r)).toContain(CLEARED);
+    expect(f.created).toHaveLength(1);
+  });
+
+  test('a retry that finds the earlier post clears the draft', async () => {
+    let first = true;
+    const f = fakeMm({ drafts: () => [draft()], failPost: () => (first ? ((first = false), 'after') : undefined) });
+    await expect(f.send({ channel: 'team-a/dup', message: 'hello' })).rejects.toBeInstanceOf(UpstreamUnavailable);
+    expect(deletes(f)).toEqual([]);
+    f.advance(31_000);
+    const r = await f.send({ channel: 'team-a/dup', message: 'hello' });
+    expect(textOf(r)).toContain('既にあったため');
+    expect(deletes(f)).toHaveLength(1);
+  });
+
+  test('a send reported as in progress reads no draft list', async () => {
+    const f = fakeMm({ drafts: () => [draft()], failPost: () => 'after' });
+    await expect(f.send({ channel: 'team-a/dup', message: 'hello' })).rejects.toBeInstanceOf(UpstreamUnavailable);
+    f.advance(10_000);
+    const r = await f.send({ channel: 'team-a/dup', message: 'hello' });
+    expect(textOf(r)).toContain('処理中');
+    expect(paths(f).filter((c) => c.endsWith('/drafts'))).toEqual([]);
   });
 });
