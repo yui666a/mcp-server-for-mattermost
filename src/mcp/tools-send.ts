@@ -4,7 +4,7 @@ import { z } from 'zod';
 import { randomToken, sha256 } from '../crypto.ts';
 import { log } from '../log.ts';
 import { MmError, RateLimited } from '../mattermost/client.ts';
-import { MAX_OPEN_UPLOAD_URLS, type Store } from '../store.ts';
+import { MAX_OPEN_UPLOAD_URLS, type HeldFile, type Store } from '../store.ts';
 import { InputError, type MmPost } from './format.ts';
 import { findPosted, postOnce } from './post.ts';
 import { myTeams, resolveChannel, teamNameOf, type ChannelRef, type Mm, type MmChannel } from './resolve.ts';
@@ -76,7 +76,7 @@ const upload = (mm: Mm, uid: string, channelId: string, f: Upload) =>
   uploadFile(mm, uid, channelId, f.name, new Blob([f.bytes], { type: 'application/octet-stream' }));
 
 // Checked against this MCP's own record rather than Mattermost's file info: it tells apart a file of another channel, one already posted, and one not uploaded through prepare_upload.
-function checkUploaded(store: Store, uid: string, channelId: string, fileIds: string[]): void {
+export function checkUploaded(store: Store, uid: string, channelId: string, fileIds: string[]): void {
   if (new Set(fileIds).size !== fileIds.length) throw new InputError('file_ids に同じ file_id が重なっています。');
   const known = new Map(store.uploadedFiles(uid, fileIds).map((f) => [f.fileId, f]));
   for (const id of fileIds) {
@@ -87,10 +87,16 @@ function checkUploaded(store: Store, uid: string, channelId: string, fileIds: st
 }
 
 // Not reserving the files until the post: two different messages racing for one file_id end with Mattermost keeping it on the first, which the second reports as a dropped file.
-function checkUnposted(store: Store, uid: string, fileIds: string[]): void {
+// Not checking the schedules first: a file a posted schedule holds is already posted, and that is the reason to give.
+export function checkUnposted(store: Store, uid: string, fileIds: string[]): void {
   const used = store.uploadedFiles(uid, fileIds).find((f) => f.postId);
   if (used) throw new InputError(`file_id ${used.fileId} は既に投稿（post_id: ${used.postId}）に使われています。同じファイルをもう一度送るときは、prepare_upload からアップロードし直してください。`);
+  const [held] = store.heldScheduledFiles(uid, fileIds);
+  if (held) throw heldError(held);
 }
+
+export const heldError = (h: HeldFile) =>
+  new InputError(`file_id ${h.fileId} は予約（予約 ID: ${h.scheduledId}）の添付に使われています。投稿を試みる前の待機中の予約なら、cancel_scheduled_message で取り消すと使えます。同じファイルを別に送るときは、prepare_upload からアップロードし直してください。`);
 
 const INFLIGHT = '同じ投稿を処理中です。少し待ってから read_channel などで投稿されたかを確かめてください。';
 
@@ -158,7 +164,7 @@ export async function sendMessage(mm: Mm, store: Store, uid: string, baseUrl: st
     if (r.kind !== 'posted') throw r.error;
     ({ postId, fileIds: kept } = r);
   } catch (e) {
-    // Not leaving out InputError: here it can only be an upload that Mattermost refused, so nothing was posted.
+    // Not leaving out InputError: here it can only be a file refused before the post or an upload that Mattermost refused, so nothing was posted.
     if (e instanceof MmError || e instanceof InputError || e instanceof RateLimited || (e as { sent?: boolean })?.sent === false) store.dropPost(claim.id, claimedAt);
     throw e;
   }
@@ -412,7 +418,7 @@ export async function prepareUpload(mm: Mm, store: Store, uid: string, publicUrl
     '',
     `curl -sS -F 'file=@<ファイルのパス>' ${publicUrl}/mcp/upload/${token}`,
     '',
-    '複数のファイルは -F \'file=@<パス>\' を繰り返します。返ってきた file_id を send_message の file_ids に渡して、同じチャンネルへ投稿してください。',
+    '複数のファイルは -F \'file=@<パス>\' を繰り返します。返ってきた file_id を send_message の file_ids に渡して、同じチャンネルへ投稿してください。予約するときは schedule_message の file_ids に渡します。',
   ].join('\n'));
 }
 
@@ -455,7 +461,7 @@ export function registerSendTools(server: McpServer, ctx: ToolContext): void {
   ) as unknown as ToolCallback<typeof draftSchema>);
 
   server.registerTool('prepare_upload', {
-    description: '利用者の PC にあるファイル（スクリーンショット、PDF、写真など）を投稿に添付するための、使い捨てのアップロード URL を発行する。利用者の PC でコマンドを実行できるクライアント（Claude Code、Codex CLI など）から curl で送り、返った file_id を send_message の file_ids に渡す。ファイルの中身はツールの引数を通らない。curl を実行する前に、送るファイルのパスと投稿先を利用者に示して確認を取ること。claude.ai などのブラウザ版からは PC のファイルを送れないので、save_draft で本文を下書きにし、ファイルは Mattermost の画面から添付するよう案内する',
+    description: '利用者の PC にあるファイル（スクリーンショット、PDF、写真など）を投稿に添付するための、使い捨てのアップロード URL を発行する。利用者の PC でコマンドを実行できるクライアント（Claude Code、Codex CLI など）から curl で送り、返った file_id を send_message の file_ids に渡す（予約するときは schedule_message の file_ids に渡す）。ファイルの中身はツールの引数を通らない。curl を実行する前に、送るファイルのパスと投稿先を利用者に示して確認を取ること。claude.ai などのブラウザ版からは PC のファイルを送れないので、save_draft で本文を下書きにし、ファイルは Mattermost の画面から添付するよう案内する',
     inputSchema: prepareSchema,
     annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false },
   }, guarded(ctx, 'prepare_upload', async (args: PrepareArgs, extra: { signal: AbortSignal }) =>

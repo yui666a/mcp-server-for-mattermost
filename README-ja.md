@@ -27,7 +27,7 @@ Mattermost は公式の MCP サーバーを [Mattermost Agents プラグイン](
 
 | ツール | 内容 |
 |---|---|
-| `search_posts` | 参加しているチームのメッセージを、Mattermost の検索構文（`from:`、`in:`、`before:` など）で検索する |
+| `search_posts` | 参加しているチームのメッセージを、Mattermost の検索構文（`from:`、`in:`、`before:` など）で検索する。`in:` にはチャンネル名や `@ユーザー名` も渡せる（DM は作らない） |
 | `read_channel` | チャンネルの投稿を新しい順に読む |
 | `read_thread` | スレッドの親投稿と返信を古い順に読む |
 | `get_post` | post_id かパーマリンクの URL で 1 件の投稿を読む |
@@ -47,7 +47,7 @@ Mattermost は公式の MCP サーバーを [Mattermost Agents プラグイン](
 | `add_reaction` / `remove_reaction` | 自分のリアクションを付ける、外す |
 | `edit_message` / `delete_message` | 自分の投稿を編集する、削除する |
 | `save_draft` | 本人が画面から送る Mattermost の下書きとして保存する。同じ本文を `send_message` で送ると消える |
-| `schedule_message` | 投稿を予約する（1 分後から 30 日後まで） |
+| `schedule_message` | 投稿を予約する（1 分後から 30 日後まで）。`prepare_upload` でアップロードしたファイルを添付できる |
 | `list_scheduled_messages` | 自分の予約を、状態とパーマリンクとともに一覧する |
 | `update_scheduled_message` / `cancel_scheduled_message` | 待機中の予約を変える、取り消す |
 

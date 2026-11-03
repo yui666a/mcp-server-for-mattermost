@@ -163,6 +163,98 @@ describe('schedule_message', () => {
   });
 });
 
+describe('schedule_message with file_ids', () => {
+  const F1 = 'a'.repeat(26);
+  const F2 = 'b'.repeat(26);
+  const uploaded = (s: ReturnType<typeof setup>, ids = [F1, F2], channelId = CH) => {
+    for (const i of ids) s.store.recordUploadedFile({ mmUserId: 'u1', channelId }, i);
+  };
+  const refused = async (s: ReturnType<typeof setup>, args: Record<string, unknown>) => {
+    const r = await s.call('schedule_message', { channel: CH, message: 'hello', at: '2026-11-03T10:00', ...args });
+    expect(r.isError).toBe(true);
+    return r.text;
+  };
+
+  test('keeps the file_ids with the schedule and lists them in its output', async () => {
+    const s = setup();
+    uploaded(s);
+    const r = await s.call('schedule_message', { channel: CH, message: 'hello', at: '2026-11-03T10:00', file_ids: [F1, F2] });
+    expect(r.isError).toBe(false);
+    expect(r.text).toContain(`添付: ${F1}, ${F2}`);
+    expect(s.store.listScheduled('u1', { limit: 1 })[0].fileIds).toEqual([F1, F2]);
+  });
+
+  test('refuses files the way send_message does: not uploaded by the user, uploaded to another channel, repeated, or already posted', async () => {
+    const s = setup();
+    uploaded(s, [F1]);
+    uploaded(s, [F2], CH2);
+    expect(await refused(s, { file_ids: ['z'.repeat(26)] })).toContain('24 時間以内にアップロードしたファイルではありません');
+    expect(await refused(s, { file_ids: [F2] })).toContain('別のチャンネル');
+    expect(await refused(s, { file_ids: [F1, F1] })).toContain('重なっています');
+    s.store.markFilesPosted('u1', [F1], POSTED);
+    expect(await refused(s, { file_ids: [F1] })).toContain('既に投稿');
+    expect(s.store.listScheduled('u1', { limit: 10 })).toHaveLength(0);
+  });
+
+  test('takes 1 to 5 file_ids', async () => {
+    const s = setup();
+    const six = ['a', 'b', 'c', 'd', 'e', 'f'].map((c) => c.repeat(26));
+    uploaded(s, six);
+    for (const file_ids of [six, []]) {
+      const r = await s.call('schedule_message', { channel: CH, message: 'hello', at: '2026-11-03T10:00', file_ids });
+      expect(r.isError).toBe(true);
+      expect(r.text).toContain('file_ids');
+    }
+    await s.schedule({ file_ids: six.slice(0, 5) });
+  });
+
+  test('refuses a file another schedule holds, naming that schedule, also after it failed once attempted', async () => {
+    const s = setup();
+    uploaded(s);
+    const first = await s.schedule({ file_ids: [F1] });
+    expect(await refused(s, { file_ids: [F2, F1] })).toContain(`予約（予約 ID: ${first}）の添付に使われています`);
+    s.setRow(first, "status = 'failed', first_attempt_at = ?", NOW);
+    expect(await refused(s, { file_ids: [F1] })).toContain(first);
+  });
+
+  test('a schedule that takes the file between the check and the save is refused with the same reason', async () => {
+    const s = setup();
+    uploaded(s);
+    const first = await s.schedule({ file_ids: [F1] });
+    vi.spyOn(s.store, 'heldScheduledFiles').mockReturnValueOnce([]);
+    expect(await refused(s, { file_ids: [F1] })).toContain(`予約（予約 ID: ${first}）の添付に使われています`);
+  });
+
+  test('takes a file again once the schedule holding it failed before any attempt or was cancelled', async () => {
+    const s = setup();
+    uploaded(s);
+    s.setRow(await s.schedule({ file_ids: [F1] }), "status = 'failed'");
+    await s.schedule({ file_ids: [F1] });
+    expect((await s.call('cancel_scheduled_message', { id: await s.schedule({ message: 'b', file_ids: [F2] }) })).isError).toBe(false);
+    await s.schedule({ file_ids: [F2] });
+  });
+
+  test('the list shows the files, a note on a posted schedule, and how to send the files again on a failed one', async () => {
+    const s = setup();
+    uploaded(s);
+    const posted = await s.schedule({ file_ids: [F1], at: '2026-11-03T10:00' });
+    s.setRow(posted, "status = 'posted', post_id = ?, error = ?", POSTED, '添付した 1 件のうち 1 件を Mattermost が外したため、投稿に付いていません。');
+    const failed = await s.schedule({ file_ids: [F2], at: '2026-11-04T10:00' });
+    s.setRow(failed, "status = 'failed', error = ?", 'nope');
+    const plain = await s.schedule({ message: 'plain', at: '2026-11-05T10:00' });
+    s.setRow(plain, "status = 'failed', error = ?", 'nope');
+    const r = await s.call('list_scheduled_messages', {});
+    const [p, f, n] = r.text.split('--- ').slice(1);
+    expect(p).toContain(`添付: ${F1}`);
+    expect(p).toContain('注意: 添付した 1 件のうち 1 件を Mattermost が外したため');
+    expect(p).not.toContain('失敗の理由');
+    expect(f).toContain(`添付: ${F2}`);
+    expect(f).toContain('失敗の理由: nope ファイルを付けて送り直すときは、prepare_upload からアップロードし直してください。');
+    expect(n).not.toContain('添付');
+    expect(n).toContain('失敗の理由: nope\n');
+  });
+});
+
 describe('list_scheduled_messages', () => {
   const rows = (text: string) => [...text.matchAll(/予約 ID: (\S+)/g)].map((m) => m[1]);
 
