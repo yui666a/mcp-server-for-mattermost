@@ -515,6 +515,24 @@ describe('a schedule with files', () => {
     expect(s.row(id)).toMatchObject({ status: 'failed', error: UNKNOWN });
   });
 
+  test('posts again when no post with other files counts: another user\'s, another thread\'s, from before the first attempt, or one another schedule recorded', async () => {
+    const s = setup();
+    const owned = 'owned'.padEnd(26, 'x');
+    const other = s.make();
+    s.set(other, "status = 'posted', post_id = ?", owned);
+    const withFile = (id: string, over: object = {}) => mine(id, { file_ids: [F1], ...over });
+    routes[`GET /channels/${CH}/posts`] = () => postList(
+      withFile('a'.repeat(26), { user_id: 'x'.repeat(26) }),
+      withFile('b'.repeat(26), { root_id: ROOT }),
+      withFile('c'.repeat(26), { create_at: NOW - 1 }),
+      withFile(owned),
+    );
+    const id = attempted(s);
+    await s.run(NOW + MIN);
+    expect(s.posts()).toHaveLength(1);
+    expect(s.row(id)).toMatchObject({ status: 'posted' });
+  });
+
   test('a 403 names the upload permission too, only when the schedule has files', async () => {
     const s = setup();
     routes['POST /posts'] = () => mmError(403, 'api.context.permissions.app_error');

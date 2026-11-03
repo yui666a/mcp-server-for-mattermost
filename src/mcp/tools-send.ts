@@ -3,7 +3,7 @@ import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
 import { z } from 'zod';
 import { randomToken, sha256 } from '../crypto.ts';
 import { MmError, RateLimited } from '../mattermost/client.ts';
-import { MAX_OPEN_UPLOAD_URLS, type Store } from '../store.ts';
+import { MAX_OPEN_UPLOAD_URLS, type HeldFile, type Store } from '../store.ts';
 import { InputError, type MmPost } from './format.ts';
 import { findPosted, postOnce } from './post.ts';
 import { myTeams, resolveChannel, teamNameOf, type Mm, type MmChannel } from './resolve.ts';
@@ -75,7 +75,7 @@ const upload = (mm: Mm, uid: string, channelId: string, f: Upload) =>
   uploadFile(mm, uid, channelId, f.name, new Blob([f.bytes], { type: 'application/octet-stream' }));
 
 // Checked against this MCP's own record rather than Mattermost's file info: it tells apart a file of another channel, one already posted, and one not uploaded through prepare_upload.
-function checkUploaded(store: Store, uid: string, channelId: string, fileIds: string[]): void {
+export function checkUploaded(store: Store, uid: string, channelId: string, fileIds: string[]): void {
   if (new Set(fileIds).size !== fileIds.length) throw new InputError('file_ids に同じ file_id が重なっています。');
   const known = new Map(store.uploadedFiles(uid, fileIds).map((f) => [f.fileId, f]));
   for (const id of fileIds) {
@@ -86,10 +86,16 @@ function checkUploaded(store: Store, uid: string, channelId: string, fileIds: st
 }
 
 // Not reserving the files until the post: two different messages racing for one file_id end with Mattermost keeping it on the first, which the second reports as a dropped file.
-function checkUnposted(store: Store, uid: string, fileIds: string[]): void {
+// Not checking the schedules first: a file a posted schedule holds is already posted, and that is the reason to give.
+export function checkUnposted(store: Store, uid: string, fileIds: string[]): void {
   const used = store.uploadedFiles(uid, fileIds).find((f) => f.postId);
   if (used) throw new InputError(`file_id ${used.fileId} は既に投稿（post_id: ${used.postId}）に使われています。同じファイルをもう一度送るときは、prepare_upload からアップロードし直してください。`);
+  const [held] = store.heldScheduledFiles(uid, fileIds);
+  if (held) throw heldError(held);
 }
+
+export const heldError = (h: HeldFile) =>
+  new InputError(`file_id ${h.fileId} は予約（予約 ID: ${h.scheduledId}）の添付に使われています。同じファイルを別に送るときは、prepare_upload からアップロードし直してください。`);
 
 const INFLIGHT = '同じ投稿を処理中です。少し待ってから read_channel などで投稿されたかを確かめてください。';
 
