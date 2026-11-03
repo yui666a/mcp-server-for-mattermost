@@ -135,17 +135,17 @@ describe('read_channel from unread and mark_as_read against the local Mattermost
     expect((await unreadOf(ch)).msg_count_root).toBe(0);
   });
 
-  test('mark_as_read marks a thread read only up to last_post_id, leaving later replies unread', async () => {
+  test('mark_as_read marks a thread read through last_post_id, clearing a mention on it and leaving later replies unread', async () => {
     const ch = await newChannel('thread');
     const root = await say(aliceMm, ch, 'root');
     await say(bobMm, ch, 'r1', root);
-    const r2 = await say(bobMm, ch, 'r2', root);
+    const r2 = await say(bobMm, ch, `r2 @${e.users.alice.username}`, root);
     await say(bobMm, ch, 'r3', root);
     const r = await call('mark_as_read', { threads: [{ post_id: root, last_post_id: r2 }] });
     expect(r.isError, r.content[0].text).toBeFalsy();
     expect(r.content[0].text).toContain(`スレッド（親 post_id: ${root}）: 既読にしました。`);
-    const state = await mmApi<{ unread_replies: number }>(aliceMm, 'GET', `/users/${e.users.alice.id}/teams/${e.teams.a.id}/threads/${root}`);
-    expect(state.unread_replies).toBe(1);
+    const state = await mmApi<{ unread_replies: number; unread_mentions: number }>(aliceMm, 'GET', `/users/${e.users.alice.id}/teams/${e.teams.a.id}/threads/${root}`);
+    expect(state).toMatchObject({ unread_replies: 1, unread_mentions: 0 });
     await mmApi(aliceMm, 'PUT', `/users/${e.users.alice.id}/teams/${e.teams.a.id}/threads/${root}/read/${Date.now() + 60_000}`);
   });
 });
