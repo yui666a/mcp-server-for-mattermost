@@ -115,7 +115,7 @@ export async function markAsRead(mm: Mm, uid: string, args: Args): Promise<CallT
       // Not looking for the team the user has open: for a DM or group DM thread the team only tells clients which team's thread counts to update, and no API tells which one is open.
       const team = ch.team_id || (anyTeam ??= (await myTeams(mm, uid))[0]?.id);
       if (!team) throw new InputError('所属しているチームがないため、スレッドを既読にできません。');
-      const state = await mm.call<{ last_viewed_at: number; last_reply_at: number }>(uid, 'GET', `/users/${uid}/teams/${team}/threads/${root}`).catch((e) => {
+      const state = await mm.call<{ last_viewed_at: number; last_reply_at: number; unread_mentions: number }>(uid, 'GET', `/users/${uid}/teams/${team}/threads/${root}`).catch((e) => {
         if (e instanceof MmError && e.status === 404) throw new InputError('このスレッドには既読の状態がありません（スレッドに参加もフォローもしていません）。');
         throw e;
       });
@@ -125,13 +125,16 @@ export async function markAsRead(mm: Mm, uid: string, args: Args): Promise<CallT
         if (last.id !== root && last.root_id !== root) throw new InputError(`last_post_id ${last.id} の投稿はこのスレッドにありません。`);
         at = last.create_at;
       }
-      // Not writing a position at or before the current one: the threads API moves it backwards too, which would unread what the user has read since.
-      if (at <= state.last_viewed_at) {
-        results.push({ line: `- ${label}: すでに既読です。`, ok: true });
+      // Not writing the read post's own time: Mattermost counts unread replies after the position but mentions from it, so a mention on that post would stay.
+      // Not writing a position before the current one: the threads API moves it backwards too, which would unread what the user has read since.
+      const to = Math.max(at + 1, state.last_viewed_at);
+      if (to === state.last_viewed_at && !state.unread_mentions) {
+        results.push({ line: `- ${label}: ${item.last_post_id ? 'last_post_id までは既読です。' : 'すでに既読です。'}`, ok: true });
         continue;
       }
-      await mm.call(uid, 'PUT', `/users/${uid}/teams/${team}/threads/${root}/read/${at}`);
-      results.push({ line: `- ${label}: ${item.last_post_id ? '既読にしました。' : '呼んだ時点の最終返信までを既読にしました。'}`, ok: true });
+      await mm.call(uid, 'PUT', `/users/${uid}/teams/${team}/threads/${root}/read/${to}`);
+      const done = to === state.last_viewed_at ? `${item.last_post_id ? 'last_post_id までは' : 'すでに'}既読です（メンションの数を数え直させました）。` : item.last_post_id ? '既読にしました。' : '呼んだ時点の最終返信までを既読にしました。';
+      results.push({ line: `- ${label}: ${done}`, ok: true });
     } catch (e) {
       results.push({ line: `- ${label}: 既読にできませんでした。${itemFailure(e)}`, ok: false });
     }
@@ -141,9 +144,9 @@ export async function markAsRead(mm: Mm, uid: string, args: Args): Promise<CallT
 
 export function registerMarkReadTool(server: McpServer, ctx: ToolContext): void {
   server.registerTool('mark_as_read', {
-    description: '本人のチャンネルとスレッドを既読にする（合わせて 20 件まで）。last_post_id には、そのチャンネルやスレッドで読んだ投稿のうち最も新しいものの post_id を渡す。チャンネルは、それより後に自分以外の投稿があれば既読にしないが、それより前の投稿はすべて既読にするので、未読を片付けるときは read_channel の from: "unread" で未読を最後まで読んでから渡すこと。スレッドは、その投稿までを既読にする。last_post_id を省くと呼んだ時点までのすべてが既読になるので、利用者がすべての既読を求めたときだけ省くこと。失敗したら、そのまま再実行してよい',
+    description: '本人のチャンネルとスレッドを既読にする（合わせて 20 件まで）。last_post_id には、そのチャンネルやスレッドで読んだ投稿のうち最も新しいものの post_id を渡す。チャンネルは、それより後に自分以外の投稿があれば既読にしないが、それより前の投稿はすべて既読にするので、未読を片付けるときは read_channel の from: "unread" で未読を最後まで読んでから渡すこと。スレッドは、その投稿までを既読にする。last_post_id を省くと呼んだ時点までのすべてが既読になるので、利用者がすべての既読を求めたときだけ省くこと。last_post_id を付けた呼び出しは、失敗したらそのまま再実行してよい',
     inputSchema: schema,
-    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true },
+    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false },
   }, guarded(ctx, 'mark_as_read', async (args: Args, extra: { signal: AbortSignal }) =>
     markAsRead({ call: (u, m, p, b) => ctx.mm.call(u, m, p, b, extra.signal) }, ctx.mmUserId, args),
   // Cast for the same reason as in tools-read.ts: the SDK's callback type does not resolve for this shape.

@@ -222,39 +222,59 @@ describe('mark_as_read for threads', () => {
     ...base(crt),
     [`GET /posts/${ROOT}`]: () => post(0, { id: ROOT }),
     [`GET /posts/${id(5)}`]: () => reply(5),
-    [`GET /users/u1/teams/${TEAM}/threads/${ROOT}`]: () => ({ id: ROOT, last_viewed_at: 1001, last_reply_at: 1009 }),
-    [`PUT /users/u1/teams/${TEAM}/threads/${ROOT}/read/1005`]: () => ({ id: ROOT }),
-    [`PUT /users/u1/teams/${TEAM}/threads/${ROOT}/read/1009`]: () => ({ id: ROOT }),
+    [`GET /users/u1/teams/${TEAM}/threads/${ROOT}`]: () => ({ id: ROOT, last_viewed_at: 1001, last_reply_at: 1009, unread_mentions: 0 }),
+    [`PUT /users/u1/teams/${TEAM}/threads/${ROOT}/read/1006`]: () => ({ id: ROOT }),
+    [`PUT /users/u1/teams/${TEAM}/threads/${ROOT}/read/1010`]: () => ({ id: ROOT }),
     ...o,
   });
 
-  test('takes a reply\'s post_id as its thread and marks it read up to last_post_id', async () => {
+  test('takes a reply\'s post_id as its thread and marks it read through last_post_id, writing one millisecond past it so a mention on it is cleared too', async () => {
     routes = threads();
     const r = await setup().call({ threads: [{ post_id: id(5), last_post_id: id(5) }] });
     expect(r.isError).toBe(false);
     expect(r.text).toContain(`スレッド（親 post_id: ${ROOT}）: 既読にしました。`);
-    expect(hits).toContain(`PUT /users/u1/teams/${TEAM}/threads/${ROOT}/read/1005`);
+    expect(hits).toContain(`PUT /users/u1/teams/${TEAM}/threads/${ROOT}/read/1006`);
   });
 
-  test('without last_post_id, marks it read up to the last reply Mattermost reported', async () => {
+  test('without last_post_id, marks it read through the last reply Mattermost reported', async () => {
     routes = threads();
     await setup().call({ threads: [{ post_id: ROOT }] });
-    expect(hits).toContain(`PUT /users/u1/teams/${TEAM}/threads/${ROOT}/read/1009`);
+    expect(hits).toContain(`PUT /users/u1/teams/${TEAM}/threads/${ROOT}/read/1010`);
   });
 
-  test('says it is already read, without moving the position back, when last_post_id is not past the current one', async () => {
-    routes = threads({ [`GET /users/u1/teams/${TEAM}/threads/${ROOT}`]: () => ({ id: ROOT, last_viewed_at: 1005, last_reply_at: 1009 }) });
+  test.each([1006, 1008])('says it is read through last_post_id, without writing or moving the position back, when the position is already %i', async (lva) => {
+    routes = threads({ [`GET /users/u1/teams/${TEAM}/threads/${ROOT}`]: () => ({ id: ROOT, last_viewed_at: lva, last_reply_at: 1009, unread_mentions: 0 }) });
     const r = await setup().call({ threads: [{ post_id: ROOT, last_post_id: id(5) }] });
     expect(r.isError).toBe(false);
+    expect(r.text).toContain('last_post_id までは既読です。');
+    expect(hits.some((h) => h.startsWith('PUT '))).toBe(false);
+  });
+
+  test('says a thread is already read when nothing is left past the last reply', async () => {
+    routes = threads({ [`GET /users/u1/teams/${TEAM}/threads/${ROOT}`]: () => ({ id: ROOT, last_viewed_at: 1010, last_reply_at: 1009, unread_mentions: 0 }) });
+    const r = await setup().call({ threads: [{ post_id: ROOT }] });
     expect(r.text).toContain('すでに既読です。');
     expect(hits.some((h) => h.startsWith('PUT '))).toBe(false);
   });
 
+  test('rewrites the same position when the mention count may be stale, without moving it back, and says it was already read', async () => {
+    routes = threads({
+      [`GET /users/u1/teams/${TEAM}/threads/${ROOT}`]: () => ({ id: ROOT, last_viewed_at: 1008, last_reply_at: 1009, unread_mentions: 1 }),
+      [`PUT /users/u1/teams/${TEAM}/threads/${ROOT}/read/1008`]: () => ({ id: ROOT }),
+    });
+    const r = await setup().call({ threads: [{ post_id: ROOT, last_post_id: id(5) }] });
+    expect(r.text).toContain('last_post_id までは既読です（メンションの数を数え直させました）。');
+    expect(hits).toContain(`PUT /users/u1/teams/${TEAM}/threads/${ROOT}/read/1008`);
+    routes[`GET /users/u1/teams/${TEAM}/threads/${ROOT}`] = () => ({ id: ROOT, last_viewed_at: 1010, last_reply_at: 1009, unread_mentions: 1 });
+    routes[`PUT /users/u1/teams/${TEAM}/threads/${ROOT}/read/1010`] = () => ({ id: ROOT });
+    expect((await setup().call({ threads: [{ post_id: ROOT }] })).text).toContain('すでに既読です（メンションの数を数え直させました）。');
+  });
+
   test('accepts the root post itself as last_post_id', async () => {
-    routes = threads({ [`PUT /users/u1/teams/${TEAM}/threads/${ROOT}/read/1000`]: () => ({ id: ROOT }), [`GET /users/u1/teams/${TEAM}/threads/${ROOT}`]: () => ({ id: ROOT, last_viewed_at: 900, last_reply_at: 1009 }) });
+    routes = threads({ [`PUT /users/u1/teams/${TEAM}/threads/${ROOT}/read/1001`]: () => ({ id: ROOT }), [`GET /users/u1/teams/${TEAM}/threads/${ROOT}`]: () => ({ id: ROOT, last_viewed_at: 900, last_reply_at: 1009, unread_mentions: 0 }) });
     const r = await setup().call({ threads: [{ post_id: ROOT, last_post_id: ROOT }] });
     expect(r.isError).toBe(false);
-    expect(hits).toContain(`PUT /users/u1/teams/${TEAM}/threads/${ROOT}/read/1000`);
+    expect(hits).toContain(`PUT /users/u1/teams/${TEAM}/threads/${ROOT}/read/1001`);
   });
 
   test('a thread post_id that cannot be fetched is an error for that item only', async () => {
@@ -299,8 +319,8 @@ describe('mark_as_read for threads', () => {
       [`GET /posts/${ROOT}`]: () => post(0, { id: ROOT, channel_id: DM }),
       [`GET /channels/${DM}`]: () => channel(DM, 'u1__u2', { team_id: '', type: 'D' }),
       'GET /users/me/teams': () => [{ id: TEAM2, name: 'team-b' }, { id: TEAM, name: 'team-a' }],
-      [`GET /users/u1/teams/${TEAM2}/threads/${ROOT}`]: () => ({ id: ROOT, last_viewed_at: 1001, last_reply_at: 1009 }),
-      [`PUT /users/u1/teams/${TEAM2}/threads/${ROOT}/read/1009`]: () => ({ id: ROOT }),
+      [`GET /users/u1/teams/${TEAM2}/threads/${ROOT}`]: () => ({ id: ROOT, last_viewed_at: 1001, last_reply_at: 1009, unread_mentions: 0 }),
+      [`PUT /users/u1/teams/${TEAM2}/threads/${ROOT}/read/1010`]: () => ({ id: ROOT }),
     });
     const r = await setup().call({ threads: [{ post_id: ROOT }] });
     expect(r.text).toContain('既読にしました。');
@@ -326,10 +346,11 @@ describe('mark_as_read input and annotations', () => {
     expect(hits).toEqual([]);
   });
 
-  test('is marked non-read-only, non-destructive and idempotent, and asks for the last post read', async () => {
+  test('is marked non-read-only, non-destructive and not idempotent, and asks for the newest post read', async () => {
     routes = base();
     const t = (await setup().tools()).find((x) => x.name === 'mark_as_read')!;
-    expect(t.annotations).toEqual({ readOnlyHint: false, destructiveHint: false, idempotentHint: true });
+    expect(t.annotations).toEqual({ readOnlyHint: false, destructiveHint: false, idempotentHint: false });
+    expect(t.description).toContain('last_post_id を付けた呼び出しは、失敗したらそのまま再実行してよい');
     expect(t.description).toContain('last_post_id には、そのチャンネルやスレッドで読んだ投稿のうち最も新しいものの post_id を渡す');
     expect(t.description).toContain('read_channel の from: "unread" で未読を最後まで読んでから渡すこと');
   });
