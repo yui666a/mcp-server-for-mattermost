@@ -21,7 +21,7 @@ Mattermost は公式の MCP サーバーを [Mattermost Agents プラグイン](
 - **Team Edition で動く**: Mattermost Team Edition 11.7.8 で開発し、テストしている
 - **利用者ごとの OAuth と、自前の認可サーバー**: MCP クライアントは自分を登録し（Dynamic Client Registration）、このサーバーでだけ使えるトークンを受け取る。利用者の Mattermost のトークンはサーバー側に暗号化して保存し、MCP クライアントには渡さない（token passthrough をしない）。認可のたびに、クライアントのリダイレクト URI を示す同意画面を出す
 - **Team Edition でも予約投稿ができる**: Team Edition では Mattermost の予約投稿の API を使えないので、サーバーが予約を保存し、時刻が来たら本人のトークンで投稿する
-- **LLM が呼ぶ前提の安全策**: クライアントがやり直したときの二重投稿を防ぐ。編集と削除は本人の投稿に限り、返信のあるスレッドの親投稿は消さない。下書きは、本文の違う既存の下書きを指示なしに上書きしない
+- **LLM が呼ぶ前提の安全策**: クライアントがやり直したときの二重投稿を防ぐ。編集と削除は本人の投稿に限り、返信のあるスレッドの親投稿は消さない。下書きは、本文の違う既存の下書きを指示なしに上書きせず、同じ本文を投稿したら消す
 
 ## ツール
 
@@ -39,7 +39,7 @@ Mattermost は公式の MCP サーバーを [Mattermost Agents プラグイン](
 | `get_mentions` | 自分へのメンションを一覧する |
 | `search_users` | 名前やユーザー名でユーザーを探す |
 | `get_user` | ユーザーのプロフィールを、タイムゾーン、現地時刻、在席状況とともに読む |
-| `send_message` | チャンネルやスレッドへ投稿する。小さなファイルと、`prepare_upload` でアップロードしたファイルを添付できる |
+| `send_message` | チャンネルやスレッドへ投稿する。小さなファイルと、`prepare_upload` でアップロードしたファイルを添付できる。投稿の後に、同じ本文の下書きを消す |
 | `prepare_upload` | PC のファイル（スクリーンショット、PDF、写真など）を `curl` で送るための使い捨ての URL を発行する。Claude Code や Codex CLI のように PC でコマンドを実行できるクライアント向け |
 | `add_reaction` / `remove_reaction` | 自分のリアクションを付ける、外す |
 | `edit_message` / `delete_message` | 自分の投稿を編集する、削除する |

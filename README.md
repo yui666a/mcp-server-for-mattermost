@@ -20,7 +20,7 @@ This project targets the other case:
 - **Works with Team Edition.** It is developed and tested against Mattermost Team Edition 11.7.8.
 - **Per-user OAuth with its own authorization server.** MCP clients register themselves (Dynamic Client Registration) and receive tokens that are valid only for this server. The user's Mattermost tokens are kept server-side, encrypted, and are never handed to the MCP client (no token passthrough). Every authorization shows a consent page that displays the client's redirect URI.
 - **Scheduled posts on Team Edition.** Mattermost's scheduled-post API is not available on Team Edition, so the server stores scheduled posts itself and posts them with the user's token when they are due.
-- **Guard rails for an LLM caller.** It suppresses duplicate posts when a client retries, edits and deletes only the user's own posts, refuses to delete a thread root that has replies, and does not overwrite a different draft unless asked.
+- **Guard rails for an LLM caller.** It suppresses duplicate posts when a client retries, edits and deletes only the user's own posts, refuses to delete a thread root that has replies, does not overwrite a different draft unless asked, and clears a draft with the same text once it is sent through this server.
 
 ## Tools
 
@@ -38,7 +38,7 @@ This project targets the other case:
 | `get_mentions` | Posts that mention the user |
 | `search_users` | Find users by name or username |
 | `get_user` | A user's profile with time zone, local time, and status |
-| `send_message` | Post to a channel or thread, optionally with small inline files or files uploaded through `prepare_upload` |
+| `send_message` | Post to a channel or thread, optionally with small inline files or files uploaded through `prepare_upload`; clears a draft with the same text afterwards |
 | `prepare_upload` | Issue a one-time URL for uploading local files (screenshots, PDFs, photos) with `curl`; for clients that can run commands on the user's machine, such as Claude Code and Codex CLI |
 | `add_reaction` / `remove_reaction` | Add or remove the user's own reaction |
 | `edit_message` / `delete_message` | Edit or delete the user's own post |
