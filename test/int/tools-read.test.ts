@@ -410,6 +410,38 @@ describe('read tools against the local Mattermost', () => {
       expect(r.content[0].text).toContain('application/pdf');
     });
 
+    test('get_file returns the content of a UTF-8 Markdown file as text', async () => {
+      const md = `# ${TAG}\n\n在庫の棚卸しは月末に行う。\n`;
+      const fileId = await upload(aliceMm, channel.id, `${TAG}.md`, Buffer.from(md));
+      await mmApi(aliceMm, 'POST', '/posts', { channel_id: channel.id, message: `${TAG} with md`, file_ids: [fileId] });
+      const r = await call('bob', 'get_file', { file_id: fileId });
+      expect(r.isError).toBeFalsy();
+      expect(r.content.map((c) => c.type)).toEqual(['text', 'text']);
+      expect(r.content[0].text).toContain(`${TAG}.md`);
+      expect(r.content[0].text).toContain('文字コード: UTF-8');
+      expect(r.content[1].text).toBe(md);
+    });
+
+    test('get_file reads a Shift_JIS CSV, which Mattermost labels utf-8', async () => {
+      const sjis = Buffer.from([0x95, 0x69, 0x96, 0xbc, 0x2c, 0x90, 0x94, 0x0a, 0x82, 0xe8, 0x82, 0xf1, 0x82, 0xb2, 0x2c, 0x33, 0x0a]);
+      const fileId = await upload(aliceMm, channel.id, `${TAG}.csv`, sjis);
+      await mmApi(aliceMm, 'POST', '/posts', { channel_id: channel.id, message: `${TAG} with csv`, file_ids: [fileId] });
+      const r = await call('bob', 'get_file', { file_id: fileId });
+      expect(r.isError).toBeFalsy();
+      expect(r.content[0].text).toContain('charset=utf-8');
+      expect(r.content[0].text).toContain('文字コード: Shift_JIS');
+      expect(r.content[1].text).toBe('品名,数\nりんご,3\n');
+    });
+
+    test('get_file cuts a large text file to its first 10,000 characters and says so', async () => {
+      const fileId = await upload(aliceMm, channel.id, `${TAG}-big.log`, Buffer.alloc(100_000, 'x'));
+      await mmApi(aliceMm, 'POST', '/posts', { channel_id: channel.id, message: `${TAG} with log`, file_ids: [fileId] });
+      const r = await call('bob', 'get_file', { file_id: fileId });
+      expect(r.isError).toBeFalsy();
+      expect(r.content[1].text).toBe('x'.repeat(10_000));
+      expect(r.content[0].text).toContain('先頭の 10000 文字だけを返しました（ファイル全体は 100000 バイト）');
+    });
+
     test('get_file refuses a file in a private channel the caller has not joined', async () => {
       const priv = e.teams.a.privateChannelId!;
       const fileId = await upload(aliceMm, priv, `${TAG}-private.png`, png(4, 4));
