@@ -110,6 +110,8 @@ describe('search_posts in: filters', () => {
     ['foo "bar in:only-a', `foo "bar in:${CX}`],
     [`x in:only-a in:${CB}`, `x in:${CX} in:${CB}`],
     ['x -channel:only-a', `x -in:${CX}`],
+    ['"a  b" in:only-a', `"a  b" in:${CX}`],
+    ['x -"in:town" in:only-a', `x -"in:town" in:${CX}`],
   ])('sends %j to Mattermost as %j', async (terms, expected) => {
     routes = base();
     await setup()('search_posts', { terms });
