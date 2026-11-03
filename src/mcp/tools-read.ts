@@ -22,6 +22,12 @@ const PREVIEW_MAX_WIDTH = 1920;
 const IMAGE_MAX_SIDE = 3000;
 // Decimal MB rather than MiB: base64 of 3.75e6 bytes is 5e6, inside a 5MB request limit whichever unit it means.
 const IMAGE_MAX_BYTES = 3_750_000;
+const TEXT_MAX_CHARS = 10_000;
+// 4 bytes per code point rather than per grapheme: a grapheme has no byte limit, so text of long graphemes is cut by bytes first.
+const TEXT_FETCH_BYTES = 4 * TEXT_MAX_CHARS;
+// Shift_JIS only for these: its decoder also accepts the head of binary files such as PDF.
+const SJIS_EXTENSIONS = new Set(['csv', 'tsv', 'txt', 'log']);
+const graphemes = new Intl.Segmenter();
 const FILE_WORDING: Wording = {
   id: [[404, 'app.file_info.get.app_error', 'ファイルが見つかりません（投稿が削除されたか、存在しません）']],
   status: [[403, 'このファイルを見る権限がありません']],
@@ -35,6 +41,46 @@ function imageType(b: Uint8Array): string | undefined {
   if (at(0, [0x47, 0x49, 0x46, 0x38])) return 'image/gif';
   if (at(0, [0x52, 0x49, 0x46, 0x46]) && at(8, [0x57, 0x45, 0x42, 0x50])) return 'image/webp';
   return undefined;
+}
+
+// Not by mime_type: Mattermost guesses it from the extension, so a Shift_JIS CSV is labelled utf-8 and a file without an extension gets none.
+function decodeText(b: Uint8Array, name: string): { text: string; encoding: string } | undefined {
+  if (b.includes(0) || Buffer.from(b.subarray(0, 5)).toString('latin1') === '%PDF-') return undefined;
+  // stream: true rather than a plain decode, which would reject the whole text for a character cut at the end of the fetched bytes.
+  const decode = (enc: string) => {
+    try {
+      return new TextDecoder(enc, { fatal: true }).decode(b, { stream: true });
+    } catch {
+      return undefined;
+    }
+  };
+  const utf8 = decode('utf-8');
+  if (utf8 !== undefined) return { text: utf8, encoding: 'UTF-8' };
+  const ext = name.includes('.') ? name.split('.').pop()!.toLowerCase() : '';
+  const sjis = SJIS_EXTENSIONS.has(ext) ? decode('shift_jis') : undefined;
+  return sjis === undefined ? undefined : { text: sjis, encoding: 'Shift_JIS' };
+}
+
+async function fileText(mm: ReadMm, uid: string, fileId: string, f: MmFileInfo, about: string): Promise<string | CallToolResult> {
+  if (f.size === 0) return `${about}\n中身は空です。`;
+  let b: Uint8Array;
+  try {
+    b = await mm.callBytes(uid, `/files/${fileId}`, undefined, { maxBytes: TEXT_FETCH_BYTES });
+  } catch (e) {
+    if (!(e instanceof MmError)) throw e;
+    return e.id === 'api.file.get_file.rejected_by_plugin'
+      ? `${about}\nMattermost が中身のダウンロードを拒否しました（プラグインによる制限）。`
+      : `${about}\n中身を取得できませんでした（HTTP ${e.status}）。`;
+  }
+  const t = decodeText(b, f.name);
+  if (!t) return `${about}\nテキストとして読めない形式のため、中身は返しません。`;
+  if (!t.text) return `${about}\n中身は空です。`;
+  const { text: shown, truncated } = truncate(t.text, TEXT_MAX_CHARS);
+  const head = [about, `文字コード: ${t.encoding}`];
+  if (truncated || f.size > b.length) {
+    head.push(`先頭の ${[...graphemes.segment(shown)].length} 文字だけを返しました（ファイル全体は ${f.size} バイト）。`);
+  }
+  return { content: [{ type: 'text', text: head.join('\n') }, { type: 'text', text: shown }] };
 }
 
 const jstDay = (ms: number) => new Date(ms + JST_OFFSET_SEC * 1000).toISOString().slice(0, 10);
@@ -141,7 +187,7 @@ export function registerReadTools(server: McpServer, ctx: ToolContext): void {
   function tool<S extends z.ZodRawShape>(name: string, description: string, inputSchema: S, fn: (args: z.infer<z.ZodObject<S>>, mm: ReadMm) => Promise<string | CallToolResult>) {
     server.registerTool(name, { description, inputSchema, annotations: { readOnlyHint: true } },
       guarded(ctx, name, async (args: z.infer<z.ZodObject<S>>, extra: { signal: AbortSignal }) => {
-        const mm: ReadMm = { call: (u, m, p, b) => ctx.mm.call(u, m, p, b, extra.signal), callBytes: (u, p) => ctx.mm.callBytes(u, p, extra.signal) };
+        const mm: ReadMm = { call: (u, m, p, b) => ctx.mm.call(u, m, p, b, extra.signal), callBytes: (u, p, _s, o) => ctx.mm.callBytes(u, p, extra.signal, o) };
         const r = await fn(args, mm);
         return typeof r === 'string' ? text(r) : r;
       // Cast rather than typed directly: the SDK's callback type is a conditional type TypeScript cannot resolve for a generic shape.
@@ -244,13 +290,13 @@ export function registerReadTools(server: McpServer, ctx: ToolContext): void {
       ].join('\n');
     });
 
-  tool('get_file', '投稿に添付されたファイルを読む。画像なら縮小版（プレビュー）を画像として返し、画像でなければ名前・種類・大きさだけを返す。file_id は投稿の「添付:」の行にある',
+  tool('get_file', `投稿に添付されたファイルを読む。画像なら縮小版（プレビュー）を画像として返す。テキスト（UTF-8、または拡張子が csv・tsv・txt・log の Shift_JIS）なら中身を先頭の ${TEXT_MAX_CHARS} 文字まで返す。それ以外（PDF など）は名前・種類・大きさだけを返す。file_id は投稿の「添付:」の行にある`,
     { file_id: z.string().regex(/^[A-Za-z0-9]{26}$/) },
     async ({ file_id }, mm) => {
       const f = await worded(mm.call<MmFileInfo>(uid, 'GET', `/files/${file_id}/info`), FILE_WORDING);
       const about = `ファイル: ${fileLine(f)}`;
       // Not filtering on mime_type or has_preview_image: Mattermost decodes by content, and a GIF has a preview despite has_preview_image false.
-      if (!f.width || !f.height) return about;
+      if (!f.width || !f.height) return fileText(mm, uid, file_id, f, about);
       const w = Math.min(f.width, PREVIEW_MAX_WIDTH);
       if (Math.max(w, Math.round((f.height * w) / f.width)) > IMAGE_MAX_SIDE) {
         return `${about}\n縦横が大きすぎるため画像は返しません（プレビューの長い辺が ${IMAGE_MAX_SIDE}px を超えます）。`;
