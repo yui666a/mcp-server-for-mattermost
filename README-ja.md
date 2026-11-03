@@ -27,14 +27,17 @@ Mattermost は公式の MCP サーバーを [Mattermost Agents プラグイン](
 
 | ツール | 内容 |
 |---|---|
-| `search_posts` | 参加しているチームのメッセージを、Mattermost の検索構文（`from:`、`in:`、`before:` など）で検索する |
+| `search_posts` | 参加しているチームのメッセージを、Mattermost の検索構文（`from:`、`in:`、`before:` など）で検索する。`in:` にはチャンネル名や `@ユーザー名` も渡せる（DM は作らない） |
 | `read_channel` | チャンネルの投稿を新しい順に読む。未読の先頭から古い順にも読める |
 | `read_thread` | スレッドの親投稿と返信を古い順に読む |
 | `get_post` | post_id かパーマリンクの URL で 1 件の投稿を読む |
 | `get_file` | 添付ファイルを読む。画像は縮小版を画像として、テキスト（UTF-8、または csv・tsv・txt・log の Shift_JIS）は先頭から 10,000 文字までを返す |
+| `search_files` | 添付ファイルを、名前と Mattermost の検索構文（`from:`、`in:`、`ext:` など）で探す |
+| `list_saved_posts` | 自分が保存した（フラグを付けた）投稿を新しい順に一覧する |
 | `search_channels` | 名前でチャンネル（公開、参加している非公開、DM、グループ DM）を探す |
 | `list_my_channels` | 参加しているチャンネルを最終投稿の新しい順に一覧する |
 | `get_channel` | チャンネルの種類、目的、ヘッダー、メンバー数、ピン留めされた投稿を読む |
+| `list_channel_members` | 参加しているチャンネルのメンバーを、ユーザー名の順に一覧する |
 | `get_unreads` | 未読のあるチャンネルと、スレッドの折りたたみが有効なら未読のスレッドを一覧する |
 | `get_mentions` | 自分へのメンションを一覧する |
 | `mark_as_read` | チャンネルとスレッドを既読にする。読んだ中で最も新しい投稿より後に自分以外の投稿があるチャンネルは既読にしない |
@@ -45,7 +48,7 @@ Mattermost は公式の MCP サーバーを [Mattermost Agents プラグイン](
 | `add_reaction` / `remove_reaction` | 自分のリアクションを付ける、外す |
 | `edit_message` / `delete_message` | 自分の投稿を編集する、削除する |
 | `save_draft` | 本人が画面から送る Mattermost の下書きとして保存する。同じ本文を `send_message` で送ると消える |
-| `schedule_message` | 投稿を予約する（1 分後から 30 日後まで） |
+| `schedule_message` | 投稿を予約する（1 分後から 30 日後まで）。`prepare_upload` でアップロードしたファイルを添付できる |
 | `list_scheduled_messages` | 自分の予約を、状態とパーマリンクとともに一覧する |
 | `update_scheduled_message` / `cancel_scheduled_message` | 待機中の予約を変える、取り消す |
 

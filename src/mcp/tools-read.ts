@@ -6,7 +6,7 @@ import { BAD_CURSOR, decodeCursor, encodeCursor, fileLine, formatPost, formatTim
 import { pageCursor, paginate } from './paging.ts';
 import { mentionsMe, mentionTerms, type MentionUser } from './mentions.ts';
 import { parsePostRef } from './permalink.ts';
-import { ChannelFetchError, myTeams, resolveChannel, resolveUser, teamNameOf, type ChannelRef, type Mm, type MmChannel, type MmTeam, type UserRef } from './resolve.ts';
+import { Ambiguous, ChannelFetchError, myTeams, NoDirectChannel, resolveChannel, resolveUser, teamNameOf, type ChannelRef, type Mm, type MmChannel, type MmTeam, type UserRef } from './resolve.ts';
 import { guarded, text, type ToolContext } from './server.ts';
 import { worded, type Wording } from './tools-send.ts';
 
@@ -14,8 +14,12 @@ type PostList = { order: string[]; posts: Record<string, MmPost>; has_next?: boo
 type Page = { lines: string[]; next?: object; posts?: MmPost[]; notes?: string[] };
 
 type ReadMm = Mm & Pick<MmClient, 'callBytes'>;
+type FoundFile = MmFileInfo & { user_id: string; post_id: string; channel_id: string; create_at: number };
+type FileList = { order: string[]; file_infos: Record<string, FoundFile> };
 
 const MM_SEARCH_CAP = 100;
+const SAVED_PAGE = 200;
+const SAVED_PAGES = 5;
 const JST_OFFSET_SEC = 9 * 3600;
 const DAY_MS = 86_400_000;
 const PREVIEW_MAX_WIDTH = 1920;
@@ -116,6 +120,15 @@ function channelLines(c: ChannelRef): string[] {
   ];
 }
 
+function channelError(e: unknown): never {
+  // Not converting a missing team: /teams/name/{team}/channels/name/{channel} answers it with 404 too.
+  if (e instanceof ChannelFetchError && e.id !== 'app.team.get_by_name.missing.app_error') {
+    if (e.status === 403) throw new InputError('このチャンネルを見る権限がありません（参加していない非公開チャンネルなど）');
+    if (e.status === 404) throw new InputError('チャンネルが見つかりません（参加していない非公開チャンネルを名前で指定した場合も、Mattermost はこの結果を返します）');
+  }
+  throw e;
+}
+
 async function usernames(mm: Mm, uid: string, posts: MmPost[]): Promise<Map<string, string>> {
   const ids = [...new Set(posts.flatMap(postUserIds))];
   if (!ids.length) return new Map();
@@ -126,6 +139,91 @@ async function usernames(mm: Mm, uid: string, posts: MmPost[]): Promise<Map<stri
 const capNote = (n: number, what: string) => (n >= MM_SEARCH_CAP
   ? [`（Mattermost の検索は ${MM_SEARCH_CAP} 件までしか返さないため、${what}は出ていない可能性があります。条件を絞ってください）`]
   : []);
+
+// Go's unicode.IsSpace, which Mattermost's strings.Fields splits on. Not JS's \s: it adds U+FEFF and lacks U+0085.
+const SEARCH_SPACE = /[\t\n\v\f\r \u0085\u00a0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000]+/;
+const SEARCH_FLAGS = ['from', 'channel', 'in', 'before', 'after', 'on', 'ext'];
+const fields = (s: string) => s.split(SEARCH_SPACE).filter(Boolean);
+
+// Ported from Mattermost's model.splitWords, so that a quoted "in:x" stays a search word as the server reads it.
+function splitWords(text: string): string[] {
+  const words: string[] = [];
+  let quoted = false;
+  let start = 0;
+  for (let i = 0; i < text.length; i++) {
+    if (text[i] !== '"') continue;
+    if (quoted) {
+      words.push(text.slice(start, i + 1));
+      quoted = false;
+      start = i + 1;
+    } else {
+      const from = i > 0 && text[i - 1] === '-' ? i - 1 : i;
+      words.push(...fields(text.slice(start, from)));
+      quoted = true;
+      start = from;
+    }
+  }
+  return [...words, ...fields(text.slice(start))];
+}
+
+// Every flag is walked, not just in:, because any flag with an empty value takes the next word: in "from: in:x" the in:x is the from value.
+function channelFilters(words: string[]): { at: number; span: number; value: string; exclude: boolean }[] {
+  const found = [];
+  for (let i = 0; i < words.length; i++) {
+    const w = words[i];
+    const colon = w.indexOf(':');
+    const exclude = w.startsWith('-');
+    if (colon < 0 || !SEARCH_FLAGS.includes(w.slice(exclude ? 1 : 0, colon).toLowerCase())) continue;
+    let value = w.slice(colon + 1);
+    let span = 1;
+    if (!value) {
+      if (i === words.length - 1) continue;
+      value = words[i + 1];
+      span = 2;
+    }
+    if (/^-?(in|channel):/i.test(w)) found.push({ at: i, span, value, exclude });
+    i += span - 1;
+  }
+  return found;
+}
+
+async function filterChannelIds(mm: Mm, userId: string, spec: string, exclude: boolean, notes: string[]): Promise<string[]> {
+  try {
+    return [(await resolveChannel(mm, userId, spec)).id];
+  } catch (e) {
+    if (e instanceof Ambiguous) {
+      const ids = [...new Set(e.candidates.map((c) => c.id))];
+      if (ids.length > 1 && !exclude) notes.push(`in:${spec} は複数のチームにあるため、すべてで探しました（${e.candidates.map((c) => c.team).join('、')}）。`);
+      return ids;
+    }
+    // No DM means no posts to exclude, so the condition is dropped rather than failing the search.
+    if (e instanceof NoDirectChannel && exclude) return [];
+    if (e instanceof ChannelFetchError && (e.status === 403 || e.status === 404)) throw new InputError(`チャンネル「${spec}」が見つかりません。`);
+    if (spec.startsWith('@') && e instanceof MmError && e.status === 404) throw new InputError(`ユーザー「${spec}」が見つかりません。`);
+    throw e;
+  }
+}
+
+// Rewritten here rather than left to Mattermost: a search across all teams looks channel names up without a team and matches nothing,
+// and in:@user creates the DM (GetOrCreateDirectChannel) from a read-only tool.
+export async function resolveInFilters(mm: Mm, userId: string, terms: string): Promise<{ terms: string; notes: string[] }> {
+  const words = splitWords(terms);
+  const filters = channelFilters(words);
+  if (!filters.length) return { terms, notes: [] };
+  const notes: string[] = [];
+  const out = words.map((w) => [w]);
+  // Sequential rather than Promise.all: parallel lookups would exceed the per-user concurrency limit.
+  for (const f of filters) {
+    const spec = f.value.replace(/^~+/, '');
+    // Group DMs are left to Mattermost: it only looks them up (GetGroupChannel) and never creates one.
+    if (spec.startsWith('@') && spec.includes(',')) continue;
+    const ids = await filterChannelIds(mm, userId, spec, f.exclude, notes);
+    out.splice(f.at, f.span, ids.map((id) => `${f.exclude ? '-' : ''}in:${id}`), ...(f.span === 2 ? [[]] : []));
+  }
+  const rewritten = out.flat().join(' ');
+  if (!rewritten) throw new InputError('検索語か条件を 1 つ以上指定してください。');
+  return { terms: rewritten, notes };
+}
 
 const listed = <T>(all: T[], c: { offset: number; per_page: number } | undefined, limit: number) => {
   const per = c?.per_page ?? limit;
@@ -209,19 +307,93 @@ export function registerReadTools(server: McpServer, ctx: ToolContext): void {
     });
   }
 
-  tool('search_posts', '参加しているチームのメッセージを検索する。Mattermost の検索構文（from:、in:、before:、after:、on: など）をそのまま使える。日付は日本時間（JST）で解釈する。新しい順。メッセージ添付（Bot や webhook などが付ける整形表示）の中身は検索の対象外（Mattermost の標準のデータベース検索は添付を検索しないため。その中身を探すなら read_channel で読む）',
+  tool('search_posts', '参加しているチームのメッセージを検索する。Mattermost の検索構文（from:、in:、before:、after:、on: など）をそのまま使える。in: にはチャンネル ID、「チーム名/チャンネル名」、チャンネル名、@ユーザー名（DM）を渡せる。同じ名前が複数のチームにあれば、すべてで探す。見つからなければエラー。参加していないチャンネルは 0 件になる。DM は作らない。日付は日本時間（JST）で解釈する。新しい順。メッセージ添付（Bot や webhook などが付ける整形表示）の中身は検索の対象外（Mattermost の標準のデータベース検索は添付を検索しないため。その中身を探すなら read_channel で読む）',
     { terms: z.string().min(1), limit: limitArg(20, 50), cursor: cursorArg },
     async ({ terms, limit, cursor }, mm) => {
       const c = cursorOf(z.object({ page: z.number().int().min(0), per_page: perPage(50) }), cursor);
       const per = c?.per_page ?? limit ?? 20;
       const page = c?.page ?? 0;
+      const filtered = await resolveInFilters(mm, uid, terms);
       // Not passing the cursor's page to Mattermost: its database search ignores per_page and returns nothing for page > 0.
-      const r = await mm.call<PostList>(uid, 'POST', '/posts/search', { terms, is_or_search: false, include_deleted_channels: false, time_zone_offset: JST_OFFSET_SEC, page: 0, per_page: MM_SEARCH_CAP });
+      const r = await mm.call<PostList>(uid, 'POST', '/posts/search', { terms: filtered.terms, is_or_search: false, include_deleted_channels: false, time_zone_offset: JST_OFFSET_SEC, page: 0, per_page: MM_SEARCH_CAP });
       const all = r.order.map((id) => r.posts[id]).filter(Boolean);
       const shown = all.slice(page * per, (page + 1) * per);
       const lines = [`検索: ${terms}`, ...(shown.length ? await withChannels(mm, shown) : ['一致する投稿はありません。'])];
       const more = all.length > (page + 1) * per;
-      return render({ lines, posts: shown, next: more ? { page: page + 1, per_page: per } : undefined, notes: capNote(all.length, 'これより古い一致') });
+      return render({ lines, posts: shown, next: more ? { page: page + 1, per_page: per } : undefined, notes: [...filtered.notes, ...capNote(all.length, 'これより古い一致')] });
+    });
+
+  tool('list_saved_posts', '自分が保存した（フラグを付けた）投稿を新しい順に一覧する。参加しているチャンネルの投稿だけが対象で、アーカイブ済みのチャンネルの投稿も含む（そのチャンネルは channel_id だけを出す）',
+    { limit: limitArg(20, 50), cursor: cursorArg },
+    async ({ limit, cursor }, mm) => {
+      const c = cursorOf(z.object({ create_at: z.number().int(), id: z.string(), per_page: perPage(50) }).strict(), cursor);
+      const per = c?.per_page ?? limit ?? 20;
+      const older = (p: MmPost) => !c || p.create_at < c.create_at || (p.create_at === c.create_at && p.id > c.id);
+      const found = new Map<string, MmPost>();
+      let rest: MmPost[] = [];
+      let capped = false;
+      // Not putting Mattermost's offset in the cursor: saving or unsaving between pages would shift it.
+      for (let k = 0; ; k++) {
+        if (k === SAVED_PAGES) {
+          capped = true;
+          break;
+        }
+        // Not sending k as page: Mattermost uses page as the row offset, not as a page number.
+        const r = await mm.call<PostList>(uid, 'GET', `/users/${uid}/posts/flagged?page=${k * SAVED_PAGE}&per_page=${SAVED_PAGE}`);
+        const got = r.order.map((id) => r.posts[id]).filter(Boolean);
+        // Not stopping at a short page: Mattermost drops posts the user may not read after counting the page.
+        if (!got.length) break;
+        for (const p of got) found.set(p.id, p);
+        rest = [...found.values()].filter(older).sort(newestFirst);
+        if (rest.length > per && Math.min(...got.map((p) => p.create_at)) < rest[per - 1].create_at) break;
+      }
+      const shown = rest.slice(0, per);
+      const last = shown.at(-1);
+      const lines = ['保存した投稿（新しい順）', ...(shown.length ? await withChannels(mm, shown) : c ? [] : ['保存した投稿はありません。'])];
+      const notes = capped ? [`（保存した投稿のうち新しい ${SAVED_PAGE * SAVED_PAGES} 件だけを見ています）`] : [];
+      return render({ lines, posts: shown, notes, next: rest.length > per && last ? { create_at: last.create_at, id: last.id, per_page: per } : undefined });
+    });
+
+  tool('search_files', 'ファイルを名前で探す（サーバーが中身を抽出していれば中身にも当たる）。参加しているチャンネル、DM、グループ DM のファイルが対象で、参加していない公開チャンネルとアーカイブ済みのチャンネルのファイルは出ない。Mattermost の検索構文（from:、in:、ext:、before:、after:、on: など）を使え、日付は日本時間（JST）で解釈する。in: にはチャンネル ID、「チーム名/チャンネル名」、チャンネル名、@ユーザー名（DM）を渡せる。同じ名前が複数のチームにあれば、すべてで探す。見つからなければエラー。DM は作らない。名前は語の単位で当たり、日本語の名前は名前全体か先頭からの前方一致（例: 2026年10月*）でしか当たらない。新しい順。file_id は get_file に、post_id は get_post に渡せる',
+    { terms: z.string().min(1), limit: limitArg(20, 50), cursor: cursorArg },
+    async ({ terms, limit, cursor }, mm) => {
+      const c = cursorOf(z.object({ page: z.number().int().min(0), per_page: perPage(50) }).strict(), cursor);
+      const per = c?.per_page ?? limit ?? 20;
+      const page = c?.page ?? 0;
+      const q = await resolveInFilters(mm, uid, terms);
+      // Not passing the cursor's page to Mattermost: its database search returns nothing for page > 0.
+      const r = await mm.call<FileList>(uid, 'POST', '/files/search', {
+        terms: q.terms, is_or_search: false, include_deleted_channels: false, time_zone_offset: JST_OFFSET_SEC, page: 0, per_page: MM_SEARCH_CAP,
+      }).catch((e) => {
+        if (e instanceof MmError && e.status === 501 && e.id === 'store.sql_file_info.search.disabled') {
+          throw new InputError('この Mattermost ではファイルの検索が無効になっています（システムコンソールの設定）。ファイル名を含む投稿は search_posts で探せます。');
+        }
+        throw e;
+      });
+      const all = r.order.map((id) => r.file_infos[id]).filter(Boolean);
+      const shown = all.slice(page * per, (page + 1) * per);
+      const lines = [`ファイルの検索: ${terms}`];
+      if (shown.length) {
+        const channels = new Map((await mm.call<MmChannel[]>(uid, 'GET', '/users/me/channels')).map((x) => [x.id, x]));
+        const teams = await myTeams(mm, uid);
+        const teamName = new Map(teams.map((t) => [t.id, t.name]));
+        // Not looking up the uploader of a channel bookmark file: its user_id is the fixed string "bookmark".
+        const ids = [...new Set(shown.filter((f) => f.post_id).map((f) => f.user_id))];
+        const users = ids.length ? new Map((await mm.call<UserRef[]>(uid, 'POST', '/users/ids', ids)).map((u) => [u.id, u.username])) : new Map<string, string>();
+        for (const f of shown) {
+          const ch = channels.get(f.channel_id);
+          const team = ch?.team_id ? teamName.get(ch.team_id) : undefined;
+          const who = users.get(f.user_id);
+          lines.push(
+            `--- ${fileLine(f)}`,
+            `${f.post_id ? (who ? `@${who}` : `user_id: ${f.user_id}`) : 'チャンネルのブックマークのファイル（投稿なし）'} | ${formatTime(f.create_at)}`,
+            ch ? channelLines({ id: ch.id, name: ch.name, displayName: ch.display_name, teamId: ch.team_id, teamName: team ?? '' }).join(' | ') : `channel_id: ${f.channel_id}`,
+            ...(f.post_id ? [`post_id: ${f.post_id}`, `${base}/${team ?? teams[0]?.name ?? ''}/pl/${f.post_id}`] : []),
+          );
+        }
+      } else lines.push('一致するファイルはありません。');
+      const more = all.length > (page + 1) * per;
+      return render({ lines, notes: [...q.notes, ...capNote(all.length, 'これより古い一致')], next: more ? { page: page + 1, per_page: per } : undefined });
     });
 
   tool('read_channel', 'チャンネルの投稿を読む。既定は新しい順。from: "unread" なら未読の先頭から古い順に読み、スレッドの折りたたみ（CRT）が有効ならルート投稿だけを返す。読むだけで、既読にはしない。channel はチャンネル ID、「チーム名/チャンネル名」、チャンネル名、@ユーザー名（DM）のどれか',
@@ -438,14 +610,7 @@ export function registerReadTools(server: McpServer, ctx: ToolContext): void {
     async ({ channel, pinned_limit, cursor }, mm) => {
       const c = cursorOf(z.object({ channel_id: z.string(), create_at: z.number().int(), id: z.string(), per_page: perPage(50) }), cursor);
       const per = c?.per_page ?? pinned_limit ?? 10;
-      const ch = await resolveChannel(mm, uid, channel).catch((e) => {
-        // Not converting a missing team: /teams/name/{team}/channels/name/{channel} answers it with 404 too.
-        if (e instanceof ChannelFetchError && e.id !== 'app.team.get_by_name.missing.app_error') {
-          if (e.status === 403) throw new InputError('このチャンネルを見る権限がありません（参加していない非公開チャンネルなど）');
-          if (e.status === 404) throw new InputError('チャンネルが見つかりません（参加していない非公開チャンネルを名前で指定した場合も、Mattermost はこの結果を返します）');
-        }
-        throw e;
-      });
+      const ch = await resolveChannel(mm, uid, channel).catch(channelError);
       if (c && c.channel_id !== ch.id) throw new InputError(BAD_CURSOR);
       const kind: Record<string, string> = { O: '公開', P: '非公開', D: 'DM', G: 'グループ DM' };
       const lines = channelLines(ch);
@@ -472,6 +637,31 @@ export function registerReadTools(server: McpServer, ctx: ToolContext): void {
       if (!all.length) lines.push('ピン留めされた投稿はありません。');
       const last = shown.at(-1);
       return render({ lines, posts: shown, next: rest.length > per && last ? { channel_id: ch.id, create_at: last.create_at, id: last.id, per_page: per } : undefined });
+    });
+
+  tool('list_channel_members', 'チャンネルのメンバーをユーザー名の順に一覧する。channel はチャンネル ID、「チーム名/チャンネル名」、チャンネル名、@ユーザー名（DM）のどれか。無効化されたユーザーは含まない。参加していないチャンネルのメンバーは、公開チャンネルでも見られない（システム管理者を除く）。在席状況は get_user で読める',
+    { channel: z.string().min(1), limit: limitArg(50, 200), cursor: cursorArg },
+    async ({ channel, limit, cursor }, mm) => {
+      const c = cursorOf(z.object({ channel_id: z.string(), page: z.number().int().min(0), per_page: perPage(200) }).strict(), cursor);
+      const per = c?.per_page ?? limit ?? 50;
+      const page = c?.page ?? 0;
+      const ch = await resolveChannel(mm, uid, channel).catch(channelError);
+      if (c && c.channel_id !== ch.id) throw new InputError(BAD_CURSOR);
+      // Not joining /channels/{id}/members with the users: /users?in_channel gives the profiles in one call.
+      const q = new URLSearchParams({ in_channel: ch.id, active: 'true', page: String(page), per_page: String(per) });
+      const users = await mm.call<UserRef[]>(uid, 'GET', `/users?${q}`).catch((e) => {
+        if (e instanceof MmError && e.status === 403) throw new InputError('参加していないチャンネルのメンバーは見られません（公開チャンネルでも同じです）。');
+        throw e;
+      });
+      const lines = channelLines(ch);
+      if (!c) lines.push(`メンバー数: ${(await mm.call<{ member_count: number }>(uid, 'GET', `/channels/${ch.id}/stats?exclude_files_count=true`)).member_count}`);
+      lines.push(...users.map((u) => {
+        const name = [u.first_name, u.last_name].filter(Boolean).join(' ');
+        return `- @${u.username}（${[name && `名前: ${name}`, u.nickname && `ニックネーム: ${u.nickname}`, u.position && `役職: ${u.position}`, u.is_bot && 'Bot アカウント', `user_id: ${u.id}`].filter(Boolean).join('、')}）`;
+      }));
+      if (!users.length && !c) lines.push('メンバーはいません。');
+      // Not asking for one more row to tell the last page: Mattermost pages by page * per_page, so a full last page is followed by an empty one.
+      return render({ lines, next: users.length === per ? { channel_id: ch.id, page: page + 1, per_page: per } : undefined });
     });
 
   tool('get_unreads', '自分の未読を一覧する。未読のあるチャンネル（未読数とメンション数）と、スレッドの折りたたみ（CRT）が有効なら未読の返信があるスレッド。メンションのあるチャンネルが先。読むだけで、既読にはしない',

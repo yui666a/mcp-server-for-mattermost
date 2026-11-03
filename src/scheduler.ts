@@ -18,6 +18,11 @@ const POST_WORDING: Wording = {
     [400, 'api.post.create_post.root_id.app_error', '返信先のスレッドの親投稿が削除されたため投稿していません。'],
   ],
 };
+// Not the plain wording for a post with files: Mattermost also checks the upload permission then, and answers the same 403 for either.
+const FILE_POST_WORDING: Wording = {
+  id: POST_WORDING.id!.map(([status, id, text]) => [status, id,
+    id === 'api.context.permissions.app_error' ? 'このチャンネルに投稿する権限か、ファイルを添付する権限がありません（チャンネルから抜けた、権限が変わった、など）。' : text]),
+};
 
 const failed = (error: string): ScheduledOutcome => ({ status: 'failed', error });
 
@@ -44,31 +49,38 @@ async function attempt(store: Store, mm: Mm, s: ClaimedScheduled, now: number): 
   // Not "not posted" for an attempted row: the earlier attempt may have posted before the key was made again.
   if (s.message === undefined) return failed(s.firstAttemptAt === null ? UNSEALED : UNKNOWN);
   const spec = { channelId: s.channelId, rootId: s.rootId, message: s.message };
+  const fileIds = s.fileIds;
   const late = s.scheduledAt < now - LATE_AFTER;
   if (s.retry) {
     let found: string | undefined;
     let touched = false;
     try {
       const owned = store.otherScheduledPostIds(s.mmUserId, s.id);
-      const r = await lookPosted(mm, s.mmUserId, { ...spec, fileCount: 0 }, s.firstAttemptAt!);
+      const r = await lookPosted(mm, s.mmUserId, { ...spec, fileCount: fileIds.length, fileIds }, s.firstAttemptAt!);
       found = r.found.find((p) => !owned.has(p));
-      touched = [...r.deleted, ...r.edited].some((p) => !owned.has(p));
+      touched = [...r.deleted, ...r.edited, ...r.mismatched].some((p) => !owned.has(p));
     } catch (e) {
       // Not posting without a lookup: the earlier attempt may have posted, and a new post would be a second one.
       if (!late && (e instanceof RateLimited || e instanceof UpstreamUnavailable)) return { status: 'pending', forgetAttempt: false };
       return failed(UNKNOWN);
     }
-    if (found) return { status: 'posted', postId: found };
-    // Not posting again: a deleted or edited post may be this schedule's, changed by the user, and its text can no longer be compared.
+    // Not the found post's own file_ids: the lookup only matches posts that carry every file of the schedule, so those are the kept ones.
+    if (found) return { status: 'posted', postId: found, fileIds };
+    // Not posting again: a deleted or edited post may be this schedule's, changed by the user, and its text can no longer be compared; a post with other files may be the earlier attempt with files Mattermost dropped.
     if (touched) return failed(UNKNOWN);
   }
   if (late) return failed(LATE);
-  const r = await postOnce(mm, s.mmUserId, { ...spec, fileIds: [] }, s.pendingPostId!);
-  if (r.kind === 'posted') return { status: 'posted', postId: r.postId };
+  const r = await postOnce(mm, s.mmUserId, { ...spec, fileIds }, s.pendingPostId!);
+  if (r.kind === 'posted') {
+    const kept = fileIds.filter((id) => r.fileIds.includes(id));
+    const dropped = fileIds.length - kept.length;
+    const note = dropped ? `添付した ${fileIds.length} 件のうち ${dropped} 件を Mattermost が外したため、投稿に付いていません。` : undefined;
+    return { status: 'posted', postId: r.postId, fileIds: kept, note };
+  }
   // Not forgetting a retry's attempt: the next retry would then skip the lookup and post under a new pending_post_id.
   if (r.kind === 'retryable') return { status: 'pending', forgetAttempt: !r.sent && !s.retry };
   if (r.error instanceof Reauthorize && r.error.sent) return failed(UNKNOWN);
-  return failed(wordOf(r.error, POST_WORDING) ?? r.reason);
+  return failed(wordOf(r.error, fileIds.length ? FILE_POST_WORDING : POST_WORDING) ?? r.reason);
 }
 
 // Not setInterval: a tick slower than the interval would overlap the next one and claim rows the first is still posting.

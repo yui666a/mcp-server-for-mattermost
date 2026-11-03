@@ -86,7 +86,8 @@ CREATE TABLE IF NOT EXISTS scheduled_posts (
   post_id TEXT,
   error TEXT,
   created_at INTEGER NOT NULL,
-  updated_at INTEGER NOT NULL
+  updated_at INTEGER NOT NULL,
+  file_ids TEXT NOT NULL DEFAULT '[]'
 );
 CREATE INDEX IF NOT EXISTS scheduled_posts_user ON scheduled_posts (mm_user_id, scheduled_at, id);
 CREATE INDEX IF NOT EXISTS scheduled_posts_due ON scheduled_posts (status, scheduled_at, id);
@@ -111,5 +112,19 @@ export function openDb(path: string): DatabaseSync {
   const db = new DatabaseSync(path);
   db.exec('PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON; PRAGMA busy_timeout=5000;');
   db.exec(SCHEMA);
+  migrate(db);
   return db;
+}
+
+// Not a bare ALTER: the server and an admin command can open the same file at once, and the second ALTER would fail on a duplicate column.
+function migrate(db: DatabaseSync): void {
+  db.exec('BEGIN IMMEDIATE');
+  try {
+    const cols = db.prepare('PRAGMA table_info(scheduled_posts)').all() as { name: string }[];
+    if (!cols.some((c) => c.name === 'file_ids')) db.exec("ALTER TABLE scheduled_posts ADD COLUMN file_ids TEXT NOT NULL DEFAULT '[]'");
+    db.exec('COMMIT');
+  } catch (e) {
+    db.exec('ROLLBACK');
+    throw e;
+  }
 }
