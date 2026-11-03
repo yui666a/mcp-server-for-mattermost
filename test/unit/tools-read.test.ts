@@ -209,6 +209,23 @@ describe('search_posts in: filters', () => {
   });
 });
 
+test('search_posts looks up the names of the users who reacted, and notes a post whose message attachments were cut', async () => {
+  const P = id(0);
+  routes = {
+    'POST /posts/search': () => ({ order: [P], posts: { [P]: {
+      id: P, user_id: 'u1', channel_id: 'c'.repeat(26), root_id: '', message: '', create_at: 0,
+      props: { attachments: [{ text: 'x'.repeat(4001) }] }, metadata: { reactions: [{ user_id: 'u2', emoji_name: '+1' }] },
+    } } }),
+    'GET /users/me/channels': () => [{ id: 'c'.repeat(26), name: 'alerts', display_name: 'Alerts', team_id: 't'.repeat(26), type: 'O' }],
+    'GET /users/me/teams': () => [{ id: 't'.repeat(26), name: 'team-a' }],
+    'POST /users/ids': () => [{ id: 'u1', username: 'alice' }, { id: 'u2', username: 'bob' }],
+  };
+  const out = await setup()('search_posts', { terms: 'x' });
+  expect(bodies['/users/ids']).toEqual(['u1', 'u2']);
+  expect(out).toContain('リアクション: :+1: 1（@bob）');
+  expect(out).toContain('（本文かメッセージ添付を 4000 文字で切った投稿があります）');
+});
+
 test('search_users notes the 100-result cap', async () => {
   routes = { 'POST /users/search': () => Array.from({ length: 100 }, (_, i) => ({ id: `u${i}`, username: `user${i}` })) };
   const call = setup();
@@ -239,6 +256,11 @@ describe('get_post', () => {
     expect(out).toContain(`https://mm.example/team-b/pl/${ROOT}`);
     expect(out).toContain('返信数: 0');
     expect(out).not.toContain('read_thread');
+  });
+
+  test('notes that the message attachments were cut', async () => {
+    routes = { ...base, [`GET /posts/${ROOT}`]: () => post({ id: ROOT, message: '', props: { attachments: [{ text: 'x'.repeat(4001) }] } }) };
+    expect(await setup()('get_post', { post: ROOT })).toContain('（本文かメッセージ添付を 4000 文字で切りました）');
   });
 
   test('accepts a bare post_id', async () => {
@@ -779,6 +801,36 @@ describe('get_unreads', () => {
     expect(out).toContain(`チャンネル: @bob（name: u1__u2、channel_id: ${DM}）`);
   });
 
+  test('names the users who reacted to a thread root when the threads API gives the reactions', async () => {
+    routes = {
+      ...base(),
+      'GET /users/me/channel_members': () => members().filter((m) => m.channel_id !== DM),
+      [`GET /users/u1/teams/${T1}/threads`]: () => threadPage([thread(TH_DM, DM, 4000, { post: {
+        id: TH_DM, user_id: 'u1', channel_id: DM, root_id: '', message: 'mine', create_at: 100, metadata: { reactions: [{ user_id: 'u3', emoji_name: 'eyes' }] },
+      } })]),
+      [`GET /users/u1/teams/${T2}/threads`]: () => threadPage([]),
+      'POST /users/ids': () => [{ id: 'u1', username: 'alice' }, { id: 'u2', username: 'bob' }, { id: 'u3', username: 'carol' }],
+    };
+    const out = await setup()('get_unreads', {});
+    expect(bodies['/users/ids']).toContain('u3');
+    expect(out).toContain('リアクション: :eyes: 1（@carol）');
+  });
+
+  test('says that a thread root has reactions when the threads API gives only has_reactions', async () => {
+    routes = {
+      ...base(),
+      'GET /users/me/channel_members': () => members().filter((m) => m.channel_id !== DM),
+      [`GET /users/u1/teams/${T1}/threads`]: () => threadPage([thread(TH_DM, DM, 4000, { post: {
+        id: TH_DM, user_id: 'u1', channel_id: DM, root_id: '', message: 'mine', create_at: 100, has_reactions: true,
+      } })]),
+      [`GET /users/u1/teams/${T2}/threads`]: () => threadPage([]),
+      'POST /users/ids': () => [{ id: 'u1', username: 'alice' }, { id: 'u2', username: 'bob' }],
+    };
+    const out = await setup()('get_unreads', {});
+    expect([...(bodies['/users/ids'] as string[])].sort()).toEqual(['u1', 'u2']);
+    expect(out).toContain('リアクションあり（get_post で確認できます）');
+  });
+
   test('says when there is nothing unread', async () => {
     routes = { ...base(), 'GET /users/me/channel_members': () => [], [`GET /users/u1/teams/${T1}/threads`]: () => threadPage([]), [`GET /users/u1/teams/${T2}/threads`]: () => threadPage([]) };
     const out = await setup()('get_unreads', {});
@@ -1010,6 +1062,8 @@ describe('get_file', () => {
   const F = 'f'.repeat(26);
   const INFO = `GET /files/${F}/info`;
   const PREVIEW = `GET /files/${F}/preview`;
+  const FILE = `GET /files/${F}`;
+  const body = (b: Uint8Array) => () => new Response(b as Uint8Array<ArrayBuffer>, { status: 206 });
   const PNG = [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a];
   const JPEG = [0xff, 0xd8, 0xff, 0xe0];
   const GIF = [...Buffer.from('GIF89a')];
@@ -1044,12 +1098,127 @@ describe('get_file', () => {
     expect(image()?.mimeType).toBe('image/jpeg');
   });
 
-  test('for a file without width and height (HEIC, PDF), returns only its information without fetching a preview', async () => {
-    routes = { [INFO]: info({ name: 'IMG.heic', mime_type: 'image/heic', size: 900 }) };
+  test('for a file without width and height that is not text (HEIC), returns only its information without fetching a preview', async () => {
+    routes = { [INFO]: info({ name: 'IMG.heic', mime_type: 'image/heic', size: 900 }), [FILE]: body(bytes([0, 0, 0, 0x18, ...Buffer.from('ftypheic')])) };
     const out = await setup()('get_file', { file_id: F });
-    expect(hits).toEqual([INFO]);
-    expect(image()).toBeUndefined();
-    for (const s of ['IMG.heic', 'image/heic', '900 バイト']) expect(out).toContain(s);
+    expect(hits).toEqual([INFO, FILE]);
+    expect(last.content).toHaveLength(1);
+    for (const s of ['IMG.heic', 'image/heic', '900 バイト', 'テキストとして読めない形式']) expect(out).toContain(s);
+  });
+
+  describe('text files', () => {
+    const textInfo = (name: string, size: number, mime_type = '') => info({ name, extension: name.split('.').pop(), mime_type, size });
+    const content = () => last.content[1]?.text;
+
+    test('returns a UTF-8 file as a second text content, fetching only its head with a Range, whatever its mime_type', async () => {
+      const csv = 'name,qty\nりんご,3\n';
+      let range: string | null = null;
+      routes = { [INFO]: textInfo('stock', Buffer.byteLength(csv)), [FILE]: (req) => { range = req.headers.get('range'); return new Response(csv, { status: 206 }); } };
+      const out = await setup()('get_file', { file_id: F });
+      expect(hits).toEqual([INFO, FILE]);
+      expect(range).toBe('bytes=0-39999');
+      expect(last.content.map((c) => c.type)).toEqual(['text', 'text']);
+      expect(content()).toBe(csv);
+      expect(out).toContain('stock');
+      expect(out).toContain('UTF-8');
+      expect(out).not.toContain('切');
+    });
+
+    test('drops a UTF-8 BOM', async () => {
+      routes = { [INFO]: textInfo('a.md', 9), [FILE]: body(Uint8Array.from([0xef, 0xbb, 0xbf, ...Buffer.from('# hi\n\n')])) };
+      await setup()('get_file', { file_id: F });
+      expect(content()).toBe('# hi\n\n');
+    });
+
+    test('says the content is empty for a file holding only a BOM, and for a file of size 0 without fetching it', async () => {
+      routes = { [INFO]: textInfo('a.txt', 3), [FILE]: body(Uint8Array.from([0xef, 0xbb, 0xbf])) };
+      expect(await setup()('get_file', { file_id: F })).toContain('中身は空です');
+      expect(last.content).toHaveLength(1);
+      hits = [];
+      routes = { [INFO]: textInfo('a.txt', 0) };
+      expect(await setup()('get_file', { file_id: F })).toContain('中身は空です');
+      expect(hits).toEqual([INFO]);
+    });
+
+    const SJIS = Uint8Array.from([0x95, 0x69, 0x96, 0xbc, 0x2c, 0x90, 0x94, 0x0a, 0x82, 0xe8, 0x82, 0xf1, 0x82, 0xb2, 0x2c, 0x33, 0x0a]);
+
+    test.each(['DATA.CSV', 'a.tsv', 'a.Txt', 'a.log'])('reads a Shift_JIS file named %s, its extension being csv, tsv, txt or log in any case', async (name) => {
+      routes = { [INFO]: textInfo(name, SJIS.length, 'text/csv; charset=utf-8'), [FILE]: body(SJIS) };
+      const out = await setup()('get_file', { file_id: F });
+      expect(content()).toBe('品名,数\nりんご,3\n');
+      expect(out).toContain('Shift_JIS');
+    });
+
+    test.each([
+      ['UTF-8', 'a.txt', [...Buffer.from('aあ'), 0xe3, 0x81], 'aあ'],
+      ['Shift_JIS', 'a.csv', [0x61, 0x82, 0xa0, 0x82], 'aあ'],
+    ])('drops a %s character cut at the end of the fetched bytes and notes the cut', async (encoding, name, b, shown) => {
+      routes = { [INFO]: textInfo(name as string, 1_000_000), [FILE]: body(Uint8Array.from(b as number[])) };
+      const out = await setup()('get_file', { file_id: F });
+      expect(content()).toBe(shown);
+      expect(out).toContain(encoding as string);
+      expect(out).toContain('先頭の 2 文字だけを返しました');
+    });
+
+    test('does not read the same Shift_JIS bytes under another extension', async () => {
+      routes = { [INFO]: textInfo('data.bin', SJIS.length), [FILE]: body(SJIS) };
+      expect(await setup()('get_file', { file_id: F })).toContain('テキストとして読めない形式');
+      expect(last.content).toHaveLength(1);
+    });
+
+    test.each([
+      ['a NUL byte', 'notes.txt', Uint8Array.from([...Buffer.from('abc'), 0, ...Buffer.from('def')])],
+      ['a PDF with a binary comment line', 'doc.pdf', Uint8Array.from([...Buffer.from('%PDF-1.7\n%'), 0xe2, 0xe3, 0xcf, 0xd3, 0x0a])],
+      ['an all-ASCII PDF', 'doc.pdf', new Uint8Array(Buffer.from('%PDF-1.4\n%%EOF\n'))],
+    ])('returns only the information of a file with %s', async (_, name, b) => {
+      routes = { [INFO]: textInfo(name, b.length), [FILE]: body(b) };
+      expect(await setup()('get_file', { file_id: F })).toContain('テキストとして読めない形式');
+      expect(last.content).toHaveLength(1);
+    });
+
+    test('returns 10,000 characters whole, and cuts 10,001 characters to 10,000 with a note', async () => {
+      const s = 'あ'.repeat(10_000);
+      routes = { [INFO]: textInfo('a.txt', Buffer.byteLength(s)), [FILE]: body(new Uint8Array(Buffer.from(s))) };
+      expect(await setup()('get_file', { file_id: F })).not.toContain('先頭の');
+      expect(content()).toBe(s);
+      const t = 'a'.repeat(10_001);
+      routes = { [INFO]: textInfo('a.txt', 10_001), [FILE]: body(new Uint8Array(Buffer.from(t))) };
+      const out = await setup()('get_file', { file_id: F });
+      expect(content()).toBe(t.slice(0, 10_000));
+      expect(out).toContain('先頭の 10000 文字だけを返しました（ファイル全体は 10001 バイト）');
+    });
+
+    test('notes the cut when the file is larger than the bytes fetched, counting the characters returned', async () => {
+      const head = '👨‍👩‍👧'.repeat(2);
+      routes = { [INFO]: textInfo('a.log', 1_000_000), [FILE]: body(new Uint8Array(Buffer.from(head))) };
+      const out = await setup()('get_file', { file_id: F });
+      expect(content()).toBe(head);
+      expect(out).toContain('先頭の 2 文字だけを返しました（ファイル全体は 1000000 バイト）');
+    });
+
+    test.each([
+      [mmError(403, 'api.file.get_file.rejected_by_plugin'), 'Mattermost が中身のダウンロードを拒否しました（プラグインによる制限）'],
+      [mmError(404, 'api.file.file_reader.app_error'), '中身を取得できませんでした（HTTP 404）'],
+    ])('when fetching the content fails with a 4xx, still returns the information with the reason', async (route, reason) => {
+      routes = { [INFO]: textInfo('a.txt', 5), [FILE]: route };
+      const out = await setup()('get_file', { file_id: F });
+      expect(out).toContain('a.txt');
+      expect(out).toContain(reason);
+      expect(last.content).toHaveLength(1);
+    });
+
+    test('a 503 while fetching the content is an error', async () => {
+      routes = { [INFO]: textInfo('a.txt', 5), [FILE]: () => new Response('down', { status: 503 }) };
+      await setup()('get_file', { file_id: F }, true);
+    });
+
+    test('does not log the content', async () => {
+      routes = { [INFO]: textInfo('a.txt', 12), [FILE]: body(new Uint8Array(Buffer.from('SECRETTEXT!\n'))) };
+      await setup()('get_file', { file_id: F });
+      const logged = vi.mocked(process.stdout.write).mock.calls.map((c) => String(c[0])).join('');
+      expect(logged).toContain('get_file');
+      expect(logged).not.toContain('SECRETTEXT');
+    });
   });
 
   test('when Mattermost has no preview for the file (SVG), returns only its information', async () => {
