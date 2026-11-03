@@ -1,6 +1,7 @@
 import type { McpServer, ToolCallback } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { CallToolResult, ToolAnnotations } from '@modelcontextprotocol/sdk/types.js';
 import { z } from 'zod';
+import { MmError } from '../mattermost/client.ts';
 import { formatPost, formatTime, InputError, postUserIds, type MmPost } from './format.ts';
 import { pageCursor, paginate } from './paging.ts';
 import { myTeams, type Mm, type MmChannel, type UserRef } from './resolve.ts';
@@ -14,7 +15,12 @@ type Key = { t: number; id: string };
 // Not following before= across pages: its strict < on last_reply_at skips threads that share the boundary's time. One page of Mattermost's maximum per team instead.
 const THREAD_PAGE = 200;
 
-export const CRT_OFF = 'スレッドの折りたたみ（CRT）が無効なため、スレッドのフォローは画面にも通知にも効きません。返信の通知はスレッドごとには止められず、Mattermost の通知の設定（すべてのスレッドに効く）で変えます。';
+const CRT_OFF = 'スレッドの折りたたみ（CRT）が無効なため、スレッドのフォローは画面にも通知にも効きません。返信の通知はスレッドごとには止められず、Mattermost の通知の設定（すべてのスレッドに効く）で変えます。';
+
+const POST_ID = z.string().regex(/^[A-Za-z0-9]{26}$/).describe('スレッドの親投稿か、スレッド内の投稿の post_id');
+const missing = (e: unknown) => e instanceof MmError && (e.status === 403 || e.status === 404);
+// Idempotent for follow too: it skips the PUT when the thread is already followed.
+const followAnnotations: ToolAnnotations = { readOnlyHint: false, destructiveHint: false, idempotentHint: true };
 
 const newestReplyFirst = (a: Key, b: Key) => b.t - a.t || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
 
@@ -35,7 +41,7 @@ export function registerThreadTools(server: McpServer, ctx: ToolContext): void {
     { limit: limitArg(20, 50), cursor: cursorArg }, { readOnlyHint: true },
     async ({ limit, cursor }, mm) => {
       const startedAt = Date.now();
-      const c = cursorOf(pageCursor(z.object({ t: z.number().int(), id: z.string() })).extend({ per_page: perPage(50) }), cursor);
+      const c = cursorOf(pageCursor(z.object({ t: z.number().int(), id: z.string() }).strict()).extend({ per_page: perPage(50) }).strict(), cursor);
       const per = c?.per_page ?? limit ?? 20;
       const crt = await collapsedThreads(mm, uid);
       if (!crt.on) return text(CRT_OFF, true);
@@ -90,5 +96,56 @@ export function registerThreadTools(server: McpServer, ctx: ToolContext): void {
       ];
       if (p.rest) return [...lines, ...notes, `（前のページの後に返信があったスレッドがほかに ${p.rest} 件あり、このページに収まりませんでした。cursor を付けずに最初のページから取り直してください）`].join('\n');
       return render({ lines, posts, notes, next: p.next && { ...p.next, per_page: per } });
+    });
+
+  async function rootOf(mm: Mm, postId: string): Promise<{ root: string; channelId: string; replies: number } | CallToolResult> {
+    if (!(await collapsedThreads(mm, uid)).on) return text(CRT_OFF, true);
+    const p = await mm.call<MmPost & { reply_count?: number }>(uid, 'GET', `/posts/${postId}`).catch((e) => {
+      if (missing(e)) throw new InputError('投稿が見つかりません（削除されたか、見る権限がありません）。');
+      throw e;
+    });
+    return { root: p.root_id || p.id, channelId: p.channel_id, replies: p.reply_count ?? 0 };
+  }
+
+  // Not looking for the team the user has open: the follow API checks no team, which only names where Mattermost sends the change event.
+  async function teamOf(mm: Mm, channelId: string): Promise<string> {
+    const ch = await mm.call<{ team_id: string }>(uid, 'GET', `/channels/${channelId}`);
+    const team = ch.team_id || (await myTeams(mm, uid))[0]?.id;
+    if (!team) throw new InputError('所属しているチームがないため、スレッドのフォローを変えられません。');
+    return team;
+  }
+
+  tool('follow_thread', 'スレッドをフォローする。フォロー中のスレッドの返信は、スレッドの通知の設定に従って通知され、list_followed_threads に出る。post_id はスレッド内のどの投稿でもよい。フォローすると、その時点までの返信が既読になる（Mattermost の動作）。すでにフォロー中なら何もしない。返信がまだないルート投稿は、最初の返信まで list_followed_threads に出ない。参加していないチャンネルのスレッドはフォローできない',
+    { post_id: POST_ID }, followAnnotations,
+    async ({ post_id }, mm) => {
+      const r = await rootOf(mm, post_id);
+      if ('content' in r) return r;
+      await mm.call(uid, 'GET', `/channels/${r.channelId}/members/me`).catch((e) => {
+        if (missing(e)) throw new InputError('このチャンネルに参加していません。参加していないチャンネルのスレッドは、フォローしても一覧にも通知にも出ません。');
+        throw e;
+      });
+      const team = await teamOf(mm, r.channelId);
+      const label = `スレッド（親 post_id: ${r.root}）`;
+      const following = await mm.call(uid, 'GET', `/users/${uid}/teams/${team}/threads/${r.root}`).then(() => true, (e) => {
+        if (e instanceof MmError && e.status === 404) return false;
+        throw e;
+      });
+      // Not calling PUT for a followed thread: Mattermost marks the thread read on every follow, which would drop unread replies the user has not seen.
+      if (following) return `${label}はすでにフォローしています。`;
+      await mm.call(uid, 'PUT', `/users/${uid}/teams/${team}/threads/${r.root}/following`);
+      return [
+        `${label}をフォローしました。フォローした時点までの返信は既読になります（Mattermost の動作）。`,
+        ...(r.replies ? [] : ['返信がまだないため、最初の返信があるまで list_followed_threads には出ません。']),
+      ].join('\n');
+    });
+
+  tool('unfollow_thread', 'スレッドのフォローを外し、返信の通知を止める。post_id はスレッド内のどの投稿でもよい。メンションの通知は届き、メンションされるか自分が返信すると、Mattermost は再びフォローする。フォローしていなくても成功する',
+    { post_id: POST_ID }, followAnnotations,
+    async ({ post_id }, mm) => {
+      const r = await rootOf(mm, post_id);
+      if ('content' in r) return r;
+      const team = await teamOf(mm, r.channelId);
+      await mm.call(uid, 'DELETE', `/users/${uid}/teams/${team}/threads/${r.root}/following`);
+      return `スレッド（親 post_id: ${r.root}）のフォローを外しました。このスレッドの返信の通知は届かなくなります。ただし、メンションの通知は届き、メンションされるか自分が返信すると、Mattermost は再びフォローします。`;
     });
 }
