@@ -1022,7 +1022,7 @@ describe('list_saved_posts', () => {
     const seen: string[] = [];
     let cursor: string | undefined;
     do {
-      const out = await call('list_saved_posts', { limit: 2, ...(cursor ? { cursor } : {}) });
+      const out = await call('list_saved_posts', cursor ? { limit: 50, cursor } : { limit: 2 });
       seen.push(...shownIds(out));
       cursor = cursorIn(out);
       if (cursor) expect(shownIds(out)).toHaveLength(2);

@@ -306,7 +306,7 @@ export function registerReadTools(server: McpServer, ctx: ToolContext): void {
       return render({ lines, posts: shown, notes, next: rest.length > per && last ? { create_at: last.create_at, id: last.id, per_page: per } : undefined });
     });
 
-  tool('search_files', 'ファイルを名前で探す。参加しているチームのチャンネル、DM、グループ DM のファイルが対象。Mattermost の検索構文（from:、in:、ext:、before:、after:、on: など）を使え、日付は日本時間（JST）で解釈する。in: にはチャンネル ID、「チーム名/チャンネル名」、チャンネル名、@ユーザー名（DM）を渡せる。名前は語の単位で当たり、日本語の名前は名前全体か先頭からの前方一致（例: 2026年10月*）でしか当たらない。新しい順。file_id は get_file に、post_id は get_post に渡せる',
+  tool('search_files', 'ファイルを名前で探す（サーバーが中身を抽出していれば中身にも当たる）。参加しているチャンネル、DM、グループ DM のファイルが対象で、参加していない公開チャンネルのファイルは出ない。Mattermost の検索構文（from:、in:、ext:、before:、after:、on: など）を使え、日付は日本時間（JST）で解釈する。in: にはチャンネル ID、「チーム名/チャンネル名」、チャンネル名、@ユーザー名（DM）を渡せる。名前は語の単位で当たり、日本語の名前は名前全体か先頭からの前方一致（例: 2026年10月*）でしか当たらない。新しい順。file_id は get_file に、post_id は get_post に渡せる',
     { terms: z.string().min(1), limit: limitArg(20, 50), cursor: cursorArg },
     async ({ terms, limit, cursor }, mm) => {
       const c = cursorOf(z.object({ page: z.number().int().min(0), per_page: perPage(50) }).strict(), cursor);
