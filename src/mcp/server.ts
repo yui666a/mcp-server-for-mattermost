@@ -5,6 +5,7 @@ import { log } from '../log.ts';
 import { MmError, RateLimited, Reauthorize, UpstreamUnavailable, type MmClient } from '../mattermost/client.ts';
 import type { Store } from '../store.ts';
 import { InputError } from './format.ts';
+import { registerMarkReadTool } from './mark-read.ts';
 import { registerReadTools } from './tools-read.ts';
 import { registerScheduleTools } from './tools-schedule.ts';
 import { registerSendTools } from './tools-send.ts';
@@ -57,5 +58,6 @@ export function buildServer(ctx: ToolContext): McpServer {
   registerReadTools(server, ctx);
   registerSendTools(server, ctx);
   registerScheduleTools(server, ctx);
+  registerMarkReadTool(server, ctx);
   return server;
 }
