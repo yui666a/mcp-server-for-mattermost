@@ -199,7 +199,7 @@ describe('save_draft against the local Mattermost', () => {
     expect(await find(reply.id)).toBeUndefined();
   });
 
-  test('a draft with a different message stays after send_message, and so does it after the channel\'s own draft is sent', async () => {
+  test('a draft with a different message stays after send_message, and stays after the channel\'s own draft is sent', async () => {
     const root = await bobPost(open.id);
     drafts.push([open.id, root.id], [open.id, '']);
     expect((await call('save_draft', { channel: open.id, message: `${TAG} still writing`, root_id: root.id })).isError).toBeFalsy();
@@ -234,7 +234,6 @@ describe('save_draft against the local Mattermost', () => {
     expect(sent.content[0].text).toContain('同じ本文の下書きを消しました。そのスレッドを');
     expect(await find(root.id)).toBeUndefined();
   });
-
 
   test('alice with draft sync turned off is refused and nothing is saved', async () => {
     const root = await bobPost(open.id);
