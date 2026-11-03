@@ -27,7 +27,7 @@ This project targets the other case:
 | Tool | Purpose |
 |---|---|
 | `search_posts` | Search messages in the user's teams with Mattermost search syntax (`from:`, `in:`, `before:`, ...) |
-| `read_channel` | Read a channel's posts, newest first |
+| `read_channel` | Read a channel's posts, newest first, or oldest first from the first unread post |
 | `read_thread` | Read a thread's root and replies, oldest first |
 | `get_post` | Read one post by post ID or permalink URL |
 | `get_file` | Read an attached file; images are returned as a preview image |
@@ -36,6 +36,7 @@ This project targets the other case:
 | `get_channel` | Channel type, purpose, header, member count, and pinned posts |
 | `get_unreads` | Unread channels and, with collapsed reply threads, unread threads |
 | `get_mentions` | Posts that mention the user |
+| `mark_as_read` | Mark channels and threads read, skipping channels with posts from others after the last post read |
 | `search_users` | Find users by name or username |
 | `get_user` | A user's profile with time zone, local time, and status |
 | `send_message` | Post to a channel or thread, optionally with small inline files or files uploaded through `prepare_upload` |
