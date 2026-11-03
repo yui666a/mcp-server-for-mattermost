@@ -9,6 +9,7 @@ import { registerMarkReadTool } from './mark-read.ts';
 import { registerReadTools } from './tools-read.ts';
 import { registerScheduleTools } from './tools-schedule.ts';
 import { registerSendTools } from './tools-send.ts';
+import { registerStatusTools } from './tools-status.ts';
 
 export type ToolContext = { mm: MmClient; mmUserId: string; cfg: Config; store: Store };
 
@@ -59,5 +60,6 @@ export function buildServer(ctx: ToolContext): McpServer {
   registerSendTools(server, ctx);
   registerScheduleTools(server, ctx);
   registerMarkReadTool(server, ctx);
+  registerStatusTools(server, ctx);
   return server;
 }
