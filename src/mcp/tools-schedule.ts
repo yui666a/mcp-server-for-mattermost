@@ -1,12 +1,12 @@
 import type { McpServer, ToolCallback } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
 import { z } from 'zod';
-import { MAX_PENDING_SCHEDULED, type Scheduled, type ScheduledStatus, type Store } from '../store.ts';
+import { FileHeld, MAX_PENDING_SCHEDULED, type Scheduled, type ScheduledStatus, type Store } from '../store.ts';
 import { encodeCursor, formatTime, InputError, truncate } from './format.ts';
 import { resolveChannel, teamNameOf, type Mm, type MmChannel, type UserRef } from './resolve.ts';
 import { guarded, text, type ToolContext } from './server.ts';
 import { cursorArg, cursorOf, limitArg, perPage } from './tools-read.ts';
-import { checkRoot } from './tools-send.ts';
+import { checkRoot, checkUnposted, checkUploaded, heldError, MAX_UPLOAD_FILES } from './tools-send.ts';
 import { parseWhen } from './when.ts';
 
 const MIN_AHEAD = 60_000;
@@ -32,20 +32,32 @@ const scheduleSchema = {
   message: MESSAGE,
   root_id: POST_ID.optional().describe('返信にするときの、スレッドの親投稿の post_id'),
   at: AT,
+  file_ids: z.array(z.string().regex(/^[A-Za-z0-9]{26}$/)).min(1).max(MAX_UPLOAD_FILES).optional()
+    .describe('添付するファイルの file_id（1〜5 件）。prepare_upload で、予約の投稿先と同じチャンネルへ 24 時間以内にアップロードしたもの'),
 };
-type ScheduleArgs = { channel: string; message: string; root_id?: string; at: string };
+type ScheduleArgs = { channel: string; message: string; root_id?: string; at: string; file_ids?: string[] };
 
 export async function scheduleMessage(mm: Mm, store: Store, uid: string, args: ScheduleArgs): Promise<CallToolResult> {
   const at = when(args.at);
   const ch = await resolveChannel(mm, uid, args.channel);
   if (args.root_id) await checkRoot(mm, uid, args.root_id, ch);
-  const id = store.createScheduled({ mmUserId: uid, channelId: ch.id, rootId: args.root_id, message: args.message, scheduledAt: at }, Date.now());
+  const fileIds = args.file_ids ?? [];
+  checkUploaded(store, uid, ch.id, fileIds);
+  checkUnposted(store, uid, fileIds);
+  let id: string | undefined;
+  try {
+    id = store.createScheduled({ mmUserId: uid, channelId: ch.id, rootId: args.root_id, message: args.message, scheduledAt: at, fileIds }, Date.now());
+  } catch (e) {
+    if (e instanceof FileHeld) throw heldError(e.held);
+    throw e;
+  }
   if (!id) throw new InputError(`待機中の予約が上限の ${MAX_PENDING_SCHEDULED} 件に達しています。不要な予約を cancel_scheduled_message で取り消してください。`);
   return text([
     '予約しました。',
     `予約 ID: ${id}`,
     `投稿先: チャンネル: ${ch.displayName || ch.name}（channel_id: ${ch.id}）${args.root_id ? `、返信先 post_id: ${args.root_id}` : ''}`,
     `予定時刻: ${formatTime(at)}`,
+    ...(fileIds.length ? [`添付: ${fileIds.join(', ')}`] : []),
     '結果は list_scheduled_messages で確かめられます。',
   ].join('\n'));
 }
@@ -103,7 +115,9 @@ async function row(s: Scheduled, where: string, teamOf: (channelId: string) => P
     `予定時刻: ${formatTime(s.scheduledAt)}`,
     s.message === undefined ? '本文: （復号できません）' : `本文（先頭 200 文字）: ${truncate(s.message, 200).text}`,
   ];
-  if (s.error) out.push(`失敗の理由: ${s.error}`);
+  if (s.fileIds.length) out.push(`添付: ${s.fileIds.join(', ')}`);
+  // Not saving the re-upload hint with the reason: rows fail on several paths (the tick, the late sweep, invalidate-scheduled), and this covers them all.
+  if (s.error) out.push(s.status === 'posted' ? `注意: ${s.error}` : `失敗の理由: ${s.error}${s.fileIds.length ? ' ファイルを付けて送り直すときは、prepare_upload からアップロードし直してください。' : ''}`);
   if (s.postId) {
     out.push(`post_id: ${s.postId}`);
     const team = s.status === 'posted' ? await teamOf(s.channelId) : undefined;
@@ -132,7 +146,7 @@ export function registerScheduleTools(server: McpServer, ctx: ToolContext): void
   const mmOf = (signal: AbortSignal): Mm => ({ call: (u, m, p, b) => ctx.mm.call(u, m, p, b, signal) });
   // Cast for the same reason as in tools-read.ts: the SDK's callback type does not resolve for these shapes.
   server.registerTool('schedule_message', {
-    description: '指定した時刻にチャンネルへ投稿するよう予約する。root_id を渡すとスレッドへの返信になる。投稿先は予約の時点で固定する。時刻はタイムゾーンが無ければ JST。今から 1 分後から 30 日後まで、待機中の予約は 1 人 20 件まで。添付ファイルは予約できない。結果は list_scheduled_messages で確かめる',
+    description: '指定した時刻にチャンネルへ投稿するよう予約する。root_id を渡すとスレッドへの返信になる。投稿先は予約の時点で固定する。時刻はタイムゾーンが無ければ JST。今から 1 分後から 30 日後まで、待機中の予約は 1 人 20 件まで。ファイルを添付するときは、prepare_upload で投稿先のチャンネルへアップロードした file_id を file_ids に渡す（send_message の files のような中身の直接の添付はできない。claude.ai などのブラウザ版からはファイル付きの予約はできない）。結果は list_scheduled_messages で確かめる',
     inputSchema: scheduleSchema,
     annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false },
   }, guarded(ctx, 'schedule_message', async (args: ScheduleArgs, extra: { signal: AbortSignal }) => scheduleMessage(mmOf(extra.signal), ctx.store, uid, args),

@@ -433,6 +433,45 @@ describe('send_message with file_ids from prepare_upload', () => {
     expect(f.created).toHaveLength(2);
   });
 
+  const holdBySchedule = (f: ReturnType<typeof fakeMm>, fileIds: string[]) =>
+    f.store.createScheduled({ mmUserId: UID, channelId: CH, message: 'scheduled', scheduledAt: Date.now() + 3600_000, fileIds }, Date.now())!;
+
+  test('a file a pending schedule holds is refused with the schedule\'s id, and nothing is posted', async () => {
+    const f = fakeMm();
+    uploaded(f, [F1]);
+    const sid = holdBySchedule(f, [F1]);
+    await expect(f.send({ channel: 'team-a/dup', message: 'x', file_ids: [F1] })).rejects.toThrow(`予約（予約 ID: ${sid}）の添付に使われています`);
+    expect(f.created).toHaveLength(0);
+  });
+
+  test('a file that a posted schedule holds is refused as already posted', async () => {
+    const f = fakeMm();
+    uploaded(f, [F1]);
+    holdBySchedule(f, [F1]);
+    f.store.markFilesPosted(UID, [F1], 'p'.repeat(26));
+    await expect(f.send({ channel: 'team-a/dup', message: 'x', file_ids: [F1] })).rejects.toThrow('既に投稿');
+  });
+
+  test('allow_duplicate also refuses a file a schedule holds', async () => {
+    const f = fakeMm();
+    uploaded(f, [F1]);
+    holdBySchedule(f, [F1]);
+    await expect(f.send({ channel: 'team-a/dup', message: 'x', file_ids: [F1], allow_duplicate: true })).rejects.toThrow('添付に使われています');
+    expect(f.created).toHaveLength(0);
+  });
+
+  test('a retry that finds its earlier post is not refused for a file a schedule took since', async () => {
+    let first = true;
+    const f = fakeMm({ failPost: () => (first ? ((first = false), 'after') : undefined) });
+    uploaded(f, [F1]);
+    const args = { channel: 'team-a/dup', message: 'lost', file_ids: [F1] };
+    await expect(f.send(args)).rejects.toBeInstanceOf(UpstreamUnavailable);
+    holdBySchedule(f, [F1]);
+    f.advance(31_000);
+    expect(textOf(await f.send(args))).toContain('既にあったため');
+    expect(f.created).toHaveLength(1);
+  });
+
   test('a retry that finds the earlier post counts the file_ids, marks them as posted and does not post', async () => {
     let first = true;
     const f = fakeMm({ failPost: () => (first ? ((first = false), 'after') : undefined) });
