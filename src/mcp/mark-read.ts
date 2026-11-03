@@ -14,11 +14,11 @@ const AFTER_PAGE = 200;
 const schema = {
   channels: z.array(z.object({
     channel: z.string().min(1).describe('チャンネル ID、「チーム名/チャンネル名」、チャンネル名、@ユーザー名（DM）のどれか'),
-    last_post_id: POST_ID.optional().describe('このチャンネルで最後に読んだ投稿の post_id'),
+    last_post_id: POST_ID.optional().describe('このチャンネルで読んだ投稿のうち最も新しいものの post_id'),
   })).max(MAX_ITEMS).optional(),
   threads: z.array(z.object({
     post_id: POST_ID.describe('スレッドの親投稿か、スレッド内の投稿の post_id'),
-    last_post_id: POST_ID.optional().describe('このスレッドで最後に読んだ投稿の post_id'),
+    last_post_id: POST_ID.optional().describe('このスレッドで読んだ投稿のうち最も新しいものの post_id'),
   })).max(MAX_ITEMS).optional(),
 };
 type Args = z.infer<z.ZodObject<typeof schema>>;
@@ -37,7 +37,7 @@ const missing = (e: unknown) => e instanceof MmError && (e.status === 403 || e.s
 
 function lastPost(mm: Mm, uid: string, id: string, reread: string): Promise<Post> {
   return mm.call<Post>(uid, 'GET', `/posts/${id}`).catch((e) => {
-    if (missing(e)) throw new InputError(`last_post_id ${id} の投稿が見つかりません（削除されたか、見る権限がありません）。${reread} で読み直して、最後に読んだ投稿の post_id を渡してください。`);
+    if (missing(e)) throw new InputError(`last_post_id ${id} の投稿が見つかりません（削除されたか、見る権限がありません）。${reread} で読み直して、読んだ投稿のうち最も新しいものの post_id を渡してください。`);
     throw e;
   });
 }
@@ -55,13 +55,15 @@ export async function markAsRead(mm: Mm, uid: string, args: Args): Promise<CallT
   if (!n || n > MAX_ITEMS) throw new InputError(`channels と threads を合わせて 1〜${MAX_ITEMS} 件を指定してください。`);
   const crt = (await collapsedThreads(mm, uid)).on;
   const results: Result[] = [];
-  const toMark: { id: string; label: string; at: number }[] = [];
+  const seen = new Set<string>();
 
   for (const item of channels) {
     let label = `チャンネル「${item.channel}」`;
     try {
       const ch = await resolveChannel(mm, uid, item.channel);
       label = `チャンネル ${ch.displayName || ch.name}（channel_id: ${ch.id}）`;
+      if (seen.has(ch.id)) throw new InputError('同じチャンネルがほかの項目と重なっています。1 件にまとめてください。');
+      seen.add(ch.id);
       const me = await mm.call<Member>(uid, 'GET', `/channels/${ch.id}/members/me`).catch((e) => {
         if (missing(e)) throw new InputError('このチャンネルに参加していません。');
         throw e;
@@ -81,7 +83,7 @@ export async function markAsRead(mm: Mm, uid: string, args: Args): Promise<CallT
         const after = r.order.map((id) => r.posts[id]).filter(Boolean);
         const mine = (p: Post) => p.user_id === uid && !p.props?.from_webhook && !p.props?.from_bot;
         if (after.some((p) => !mine(p) && !JOIN_LEAVE.has(p.type ?? ''))) {
-          results.push({ line: `- ${label}: last_post_id より後に、読んでいない投稿があります。既読にしていません。read_channel で読み直してから、最後に読んだ投稿を渡してください。`, ok: false });
+          results.push({ line: `- ${label}: last_post_id より後に、読んでいない投稿があります。既読にしていません。read_channel の from: "unread" で最後まで読んでから、読んだ中で最も新しい投稿を渡してください。`, ok: false });
           continue;
         }
         if (after.length >= AFTER_PAGE) {
@@ -89,16 +91,13 @@ export async function markAsRead(mm: Mm, uid: string, args: Args): Promise<CallT
           continue;
         }
       }
-      toMark.push({ id: ch.id, label, at: results.length });
-      results.push({ line: '', ok: false });
+      // Not using /channels/members/{id}/view: it also switches the user's active channel, which changes what they are notified about.
+      // Not batching every channel into one mark_read after all the checks: the gap between a channel's check and its marking would grow to the whole run.
+      await mm.call(uid, 'POST', `/channels/members/${uid}/mark_read`, [ch.id]);
+      results.push({ line: `- ${label}: ${item.last_post_id ? '既読にしました。' : '呼んだ時点までのすべてを既読にしました。'}`, ok: true });
     } catch (e) {
       results.push({ line: `- ${label}: 既読にできませんでした。${itemFailure(e)}`, ok: false });
     }
-  }
-  if (toMark.length) {
-    // Not using /channels/members/{id}/view: it also switches the user's active channel, which changes what they are notified about.
-    const failed = await mm.call(uid, 'POST', `/channels/members/${uid}/mark_read`, toMark.map((x) => x.id)).then(() => undefined, itemFailure);
-    for (const x of toMark) results[x.at] = failed ? { line: `- ${x.label}: 既読にできませんでした。${failed}`, ok: false } : { line: `- ${x.label}: 既読にしました。`, ok: true };
   }
 
   let anyTeam: string | undefined;
@@ -132,7 +131,7 @@ export async function markAsRead(mm: Mm, uid: string, args: Args): Promise<CallT
         continue;
       }
       await mm.call(uid, 'PUT', `/users/${uid}/teams/${team}/threads/${root}/read/${at}`);
-      results.push({ line: `- ${label}: 既読にしました。`, ok: true });
+      results.push({ line: `- ${label}: ${item.last_post_id ? '既読にしました。' : '呼んだ時点の最終返信までを既読にしました。'}`, ok: true });
     } catch (e) {
       results.push({ line: `- ${label}: 既読にできませんでした。${itemFailure(e)}`, ok: false });
     }
@@ -142,7 +141,7 @@ export async function markAsRead(mm: Mm, uid: string, args: Args): Promise<CallT
 
 export function registerMarkReadTool(server: McpServer, ctx: ToolContext): void {
   server.registerTool('mark_as_read', {
-    description: '本人のチャンネルとスレッドを既読にする（合わせて 20 件まで）。last_post_id には、そのチャンネルやスレッドで最後に読んだ投稿の post_id を渡す。チャンネルは、それより後に自分以外の投稿があれば既読にしない。スレッドは、その投稿までを既読にする。last_post_id を省くと呼んだ時点までのすべてが既読になるので、利用者がすべての既読を求めたときだけ省くこと。失敗したら、そのまま再実行してよい',
+    description: '本人のチャンネルとスレッドを既読にする（合わせて 20 件まで）。last_post_id には、そのチャンネルやスレッドで読んだ投稿のうち最も新しいものの post_id を渡す。チャンネルは、それより後に自分以外の投稿があれば既読にしないが、それより前の投稿はすべて既読にするので、未読を片付けるときは read_channel の from: "unread" で未読を最後まで読んでから渡すこと。スレッドは、その投稿までを既読にする。last_post_id を省くと呼んだ時点までのすべてが既読になるので、利用者がすべての既読を求めたときだけ省くこと。失敗したら、そのまま再実行してよい',
     inputSchema: schema,
     annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true },
   }, guarded(ctx, 'mark_as_read', async (args: Args, extra: { signal: AbortSignal }) =>

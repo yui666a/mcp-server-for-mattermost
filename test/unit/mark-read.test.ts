@@ -6,12 +6,14 @@ let routes: Record<string, Route>;
 let bodies: Record<string, unknown>;
 let hits: string[];
 let urls: string[];
+let marked: unknown[];
 
 beforeEach(() => {
   vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
   bodies = {};
   hits = [];
   urls = [];
+  marked = [];
 });
 afterEach(() => vi.restoreAllMocks());
 
@@ -21,6 +23,7 @@ function setup() {
     const url = new URL(req.url);
     const path = url.pathname.replace('/api/v4', '');
     if (req.method === 'POST') bodies[path] = await req.clone().json();
+    if (path.endsWith('/mark_read')) marked.push(bodies[path]);
     hits.push(`${req.method} ${path}`);
     urls.push(`${req.method} ${path}${url.search}`);
     const r = routes[`${req.method} ${path}`];
@@ -86,14 +89,14 @@ function base(crt = 'always_on'): Record<string, Route> {
 const query = (prefix: string) => Object.fromEntries(new URLSearchParams(urls.find((u) => u.startsWith(prefix))!.split('?')[1]));
 
 describe('mark_as_read for channels', () => {
-  test('marks a channel read in one mark_read call when nothing but the user\'s own posts (sent through this app) follow last_post_id', async () => {
+  test('marks each channel read right after checking it when nothing but the user\'s own posts (sent through this app) follow last_post_id', async () => {
     routes = { ...base(), [`GET /channels/${CH}/posts`]: () => after([post(1, { user_id: 'u1', props: { from_oauth_app: 'true' } })]) };
     const r = await setup().call({ channels: [{ channel: CH, last_post_id: LAST }, { channel: CH2 }] });
     expect(r.isError).toBe(false);
     expect(r.text).toContain(`チャンネル TOWN（channel_id: ${CH}）: 既読にしました。`);
-    expect(r.text).toContain(`チャンネル SQUARE（channel_id: ${CH2}）: 既読にしました。`);
-    expect(bodies['/channels/members/u1/mark_read']).toEqual([CH, CH2]);
-    expect(hits.filter((h) => h === 'POST /channels/members/u1/mark_read')).toHaveLength(1);
+    expect(r.text).toContain(`チャンネル SQUARE（channel_id: ${CH2}）: 呼んだ時点までのすべてを既読にしました。`);
+    expect(marked).toEqual([[CH], [CH2]]);
+    expect(hits.indexOf('POST /channels/members/u1/mark_read')).toBeLessThan(hits.indexOf(`GET /channels/${CH2}`));
     expect(query(`GET /channels/${CH}/posts`)).toEqual({ after: LAST, per_page: '200', collapsedThreads: 'true', skipFetchThreads: 'true' });
     expect(hits).not.toContain(`GET /channels/${CH2}/posts`);
   });
@@ -162,6 +165,20 @@ describe('mark_as_read for channels', () => {
     expect(hits).not.toContain('POST /channels/members/u1/mark_read');
   });
 
+  test('rejects a channel given twice, by id and by name, as an input error for the second item', async () => {
+    routes = { ...base(), [`GET /teams/name/team-a/channels/name/town`]: () => channel(CH, 'town') };
+    const r = await setup().call({ channels: [{ channel: CH }, { channel: 'team-a/town' }] });
+    expect(r.isError).toBe(false);
+    expect(r.text).toContain('同じチャンネルがほかの項目と重なっています。');
+    expect(marked).toEqual([[CH]]);
+  });
+
+  test('points to reading the unread posts to the end when it refuses', async () => {
+    routes = { ...base(), [`GET /channels/${CH}/posts`]: () => after([post(1)]) };
+    const r = await setup().call({ channels: [{ channel: CH, last_post_id: LAST }] });
+    expect(r.text).toContain('read_channel の from: "unread" で最後まで読んでから、読んだ中で最も新しい投稿を渡してください。');
+  });
+
   test.each([[403, 'api.context.permissions.app_error'], [404, 'app.channel.get_member.missing.app_error']])('says the user has not joined the channel when members/me answers %i', async (status, mmId) => {
     routes = { ...base(), [`GET /channels/${CH}/members/me`]: mmError(status, mmId) };
     const r = await setup().call({ channels: [{ channel: CH }] });
@@ -177,7 +194,7 @@ describe('mark_as_read for channels', () => {
     expect(query(`GET /channels/${CH}/posts`).collapsedThreads).toBe('false');
   });
 
-  test('when mark_read fails, every channel waiting for it fails with that error, and the others keep their results', async () => {
+  test('when mark_read fails for a channel, that item fails with the error and the others keep their results', async () => {
     routes = {
       ...base(), 'POST /channels/members/u1/mark_read': mmError(400, 'app.channel.update_last_viewed_at.app_error'),
       [`GET /channels/${CH2}/members/me`]: () => ({ msg_count: 10, msg_count_root: 6, mention_count: 0, mention_count_root: 0 }),
@@ -245,7 +262,7 @@ describe('mark_as_read for threads', () => {
     const r = await setup().call({ threads: [{ post_id: id(7) }, { post_id: ROOT }] });
     expect(r.isError).toBe(false);
     expect(r.text).toContain(`スレッド（post_id: ${id(7)}）: 既読にできませんでした。投稿が見つかりません`);
-    expect(r.text).toContain(`スレッド（親 post_id: ${ROOT}）: 既読にしました。`);
+    expect(r.text).toContain(`スレッド（親 post_id: ${ROOT}）: 呼んだ時点の最終返信までを既読にしました。`);
   });
 
   test('says so when the user belongs to no team, for a DM thread', async () => {
@@ -313,6 +330,7 @@ describe('mark_as_read input and annotations', () => {
     routes = base();
     const t = (await setup().tools()).find((x) => x.name === 'mark_as_read')!;
     expect(t.annotations).toEqual({ readOnlyHint: false, destructiveHint: false, idempotentHint: true });
-    expect(t.description).toContain('last_post_id には、そのチャンネルやスレッドで最後に読んだ投稿の post_id を渡す');
+    expect(t.description).toContain('last_post_id には、そのチャンネルやスレッドで読んだ投稿のうち最も新しいものの post_id を渡す');
+    expect(t.description).toContain('read_channel の from: "unread" で未読を最後まで読んでから渡すこと');
   });
 });
