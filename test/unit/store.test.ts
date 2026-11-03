@@ -1,8 +1,12 @@
 import { randomBytes } from 'node:crypto';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { DatabaseSync } from 'node:sqlite';
 import { beforeEach, describe, expect, test } from 'vitest';
 import { openDb } from '../../src/db.ts';
 import { sha256 } from '../../src/crypto.ts';
-import { Store } from '../../src/store.ts';
+import { FileHeld, Store } from '../../src/store.ts';
 
 const DAY = 24 * 3600 * 1000;
 let t: number;
@@ -494,5 +498,88 @@ describe('upload URLs and uploaded files', () => {
     store.sweep();
     expect(db.prepare('SELECT COUNT(*) AS n FROM upload_urls').get()).toEqual({ n: 0 });
     expect(db.prepare('SELECT COUNT(*) AS n FROM uploaded_files').get()).toEqual({ n: 0 });
+  });
+});
+
+describe('files of scheduled posts', () => {
+  const make = (fileIds?: string[], mmUserId = 'u1') =>
+    store.createScheduled({ mmUserId, channelId: 'c1', message: 'hello', scheduledAt: t + DAY, fileIds }, t);
+  const setRow = (id: string, sql: string) => db.prepare(`UPDATE scheduled_posts SET ${sql} WHERE id = ?`).run(id);
+  const heldError = (fn: () => unknown) => {
+    try {
+      fn();
+    } catch (e) {
+      if (e instanceof FileHeld) return e.held;
+      throw e;
+    }
+    return undefined;
+  };
+
+  test('a schedule keeps its file_ids, and one without them has none', () => {
+    const id = make(['f1', 'f2'])!;
+    const none = make()!;
+    expect(Object.fromEntries(store.listScheduled('u1', { limit: 10 }).map((s) => [s.id, s.fileIds]))).toEqual({ [id]: ['f1', 'f2'], [none]: [] });
+  });
+
+  test.each([
+    ['pending', ''],
+    ['sending', "status = 'sending'"],
+    ['posted', "status = 'posted', post_id = 'p1'"],
+    ['failed after an attempt', "status = 'failed', first_attempt_at = 1"],
+  ])('a %s schedule holds its files', (_, sql) => {
+    const id = make(['f1'])!;
+    if (sql) setRow(id, sql);
+    expect(store.heldScheduledFiles('u1', ['f0', 'f1'])).toEqual([{ fileId: 'f1', scheduledId: id }]);
+  });
+
+  test('a schedule that failed before any attempt, a cancelled one, and another user\'s do not hold their files', () => {
+    setRow(make(['f1'])!, "status = 'failed'");
+    store.cancelScheduled('u1', make(['f2'])!);
+    make(['f3'], 'u2');
+    expect(store.heldScheduledFiles('u1', ['f1', 'f2', 'f3'])).toEqual([]);
+  });
+
+  test('a second schedule with a held file is refused and not stored', () => {
+    const id = make(['f1'])!;
+    expect(heldError(() => make(['f2', 'f1']))).toEqual({ fileId: 'f1', scheduledId: id });
+    expect(store.listScheduled('u1', { limit: 10 })).toHaveLength(1);
+  });
+
+  test('settling as posted marks the kept files as posted and keeps the note', () => {
+    store.recordUploadedFile({ mmUserId: 'u1', channelId: 'c1' }, 'f1');
+    store.recordUploadedFile({ mmUserId: 'u1', channelId: 'c1' }, 'f2');
+    const id = make(['f1', 'f2'])!;
+    setRow(id, "status = 'sending'");
+    store.settleScheduled(id, t, { status: 'posted', postId: 'p1', fileIds: ['f1'], note: 'dropped' });
+    expect(store.uploadedFiles('u1', ['f1', 'f2']).map((f) => f.postId)).toEqual(['p1', null]);
+    expect(store.listScheduled('u1', { limit: 1 })[0]).toMatchObject({ status: 'posted', postId: 'p1', error: 'dropped' });
+  });
+
+  test('settling a row that is no longer sending marks no files', () => {
+    store.recordUploadedFile({ mmUserId: 'u1', channelId: 'c1' }, 'f1');
+    const id = make(['f1'])!;
+    store.settleScheduled(id, t, { status: 'posted', postId: 'p1', fileIds: ['f1'] });
+    expect(store.uploadedFiles('u1', ['f1'])[0].postId).toBeNull();
+  });
+});
+
+describe('opening a database made before file_ids', () => {
+  test('adds the column with an empty list to existing schedules, and opening it again changes nothing', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'mcp-db-'));
+    const path = join(dir, 'old.sqlite');
+    try {
+      const old = new DatabaseSync(path);
+      old.exec(`CREATE TABLE scheduled_posts (id TEXT PRIMARY KEY, mm_user_id TEXT NOT NULL, channel_id TEXT NOT NULL, root_id TEXT NOT NULL,
+        message_sealed TEXT NOT NULL, scheduled_at INTEGER NOT NULL, status TEXT NOT NULL, pending_post_id TEXT, first_attempt_at INTEGER,
+        post_id TEXT, error TEXT, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL)`);
+      old.exec("INSERT INTO scheduled_posts VALUES ('s1', 'u1', 'c1', '', 'x', 1, 'pending', NULL, NULL, NULL, NULL, 1, 1)");
+      old.close();
+      openDb(path).close();
+      const again = openDb(path);
+      expect(again.prepare('SELECT file_ids FROM scheduled_posts').all()).toEqual([{ file_ids: '[]' }]);
+      again.close();
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });

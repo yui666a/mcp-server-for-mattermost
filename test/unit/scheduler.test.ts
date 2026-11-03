@@ -58,7 +58,7 @@ function setup() {
   const db = (store as unknown as { db: DatabaseSync }).db;
   const row = (id: string) => db.prepare('SELECT * FROM scheduled_posts WHERE id = ?').get(id) as Record<string, any>;
   const set = (id: string, sql: string, ...p: (string | number | null)[]) => db.prepare(`UPDATE scheduled_posts SET ${sql} WHERE id = ?`).run(...p, id);
-  const make = (over: { mmUserId?: string; rootId?: string; message?: string; scheduledAt?: number } = {}) =>
+  const make = (over: { mmUserId?: string; rootId?: string; message?: string; scheduledAt?: number; fileIds?: string[] } = {}) =>
     store.createScheduled({ mmUserId: UID, channelId: CH, message: 'hello', scheduledAt: NOW, ...over }, NOW - HOUR / 2)!;
   const run = (now = NOW) => tick(store, mm, now);
   const posts = () => hits.filter((h) => h === 'POST /posts');
@@ -448,6 +448,100 @@ test('the timer and a tool request share one refresh of the user\'s Mattermost t
   await Promise.all([ticking, request]);
   expect(refreshes).toBe(1);
   expect(s.row(id)).toMatchObject({ status: 'posted' });
+});
+
+describe('a schedule with files', () => {
+  const F1 = 'f'.repeat(26);
+  const F2 = 'g'.repeat(26);
+  const uploaded = (s: ReturnType<typeof setup>) => {
+    for (const f of [F1, F2]) s.store.recordUploadedFile({ mmUserId: UID, channelId: CH }, f);
+    return () => s.store.uploadedFiles(UID, [F1, F2]).map((f) => f.postId);
+  };
+  const attempted = (s: ReturnType<typeof setup>, over: Parameters<ReturnType<typeof setup>['make']>[0] = {}) => {
+    const id = s.make(over);
+    s.set(id, 'first_attempt_at = ?, pending_post_id = ?', NOW, 'pending-1');
+    return id;
+  };
+
+  test('is posted with its file_ids, and the files are recorded as posted', async () => {
+    const s = setup();
+    const marks = uploaded(s);
+    let sent: any;
+    routes['POST /posts'] = (_req, body) => { sent = body; return { id: 'p'.repeat(26), file_ids: body.file_ids }; };
+    const id = s.make({ fileIds: [F1, F2] });
+    await s.run();
+    expect(sent.file_ids).toEqual([F1, F2]);
+    expect(s.row(id)).toMatchObject({ status: 'posted', post_id: 'p'.repeat(26), error: null });
+    expect(marks()).toEqual(['p'.repeat(26), 'p'.repeat(26)]);
+  });
+
+  test('a post that lost files to Mattermost is posted with a note, and only the kept files are recorded', async () => {
+    const s = setup();
+    const marks = uploaded(s);
+    routes['POST /posts'] = () => ({ id: 'p'.repeat(26), file_ids: [F2] });
+    const id = s.make({ fileIds: [F1, F2] });
+    await s.run();
+    expect(s.row(id)).toMatchObject({ status: 'posted', error: '添付した 2 件のうち 1 件を Mattermost が外したため、投稿に付いていません。' });
+    expect(marks()).toEqual([null, 'p'.repeat(26)]);
+  });
+
+  test('a retry that finds the earlier post with every file records the files without posting', async () => {
+    const s = setup();
+    const marks = uploaded(s);
+    const found = 'found'.padEnd(26, 'x');
+    routes[`GET /channels/${CH}/posts`] = () => postList(mine(found, { file_ids: [F1, F2] }), mine('nofile'.padEnd(26, 'x')));
+    const id = attempted(s, { fileIds: [F1, F2] });
+    await s.run(NOW + MIN);
+    expect(s.posts()).toHaveLength(0);
+    expect(s.row(id)).toMatchObject({ status: 'posted', post_id: found });
+    expect(marks()).toEqual([found, found]);
+  });
+
+  test('a retry that finds only a post with the same text but other files does not post, and fails as maybe posted', async () => {
+    const s = setup();
+    routes[`GET /channels/${CH}/posts`] = () => postList(mine('dropped'.padEnd(26, 'x'), { file_ids: [F2] }));
+    const id = attempted(s, { fileIds: [F1, F2] });
+    await s.run(NOW + MIN);
+    expect(s.posts()).toHaveLength(0);
+    expect(s.row(id)).toMatchObject({ status: 'failed', error: UNKNOWN });
+  });
+
+  test('a schedule without files does not post again when the user posted the same text with a file since the first attempt', async () => {
+    const s = setup();
+    routes[`GET /channels/${CH}/posts`] = () => postList(mine('manual'.padEnd(26, 'x'), { file_ids: [F1] }));
+    const id = attempted(s);
+    await s.run(NOW + MIN);
+    expect(s.posts()).toHaveLength(0);
+    expect(s.row(id)).toMatchObject({ status: 'failed', error: UNKNOWN });
+  });
+
+  test('posts again when no post with other files counts: another user\'s, another thread\'s, from before the first attempt, or one another schedule recorded', async () => {
+    const s = setup();
+    const owned = 'owned'.padEnd(26, 'x');
+    const other = s.make();
+    s.set(other, "status = 'posted', post_id = ?", owned);
+    const withFile = (id: string, over: object = {}) => mine(id, { file_ids: [F1], ...over });
+    routes[`GET /channels/${CH}/posts`] = () => postList(
+      withFile('a'.repeat(26), { user_id: 'x'.repeat(26) }),
+      withFile('b'.repeat(26), { root_id: ROOT }),
+      withFile('c'.repeat(26), { create_at: NOW - 1 }),
+      withFile(owned),
+    );
+    const id = attempted(s);
+    await s.run(NOW + MIN);
+    expect(s.posts()).toHaveLength(1);
+    expect(s.row(id)).toMatchObject({ status: 'posted' });
+  });
+
+  test('a 403 names the upload permission too, only when the schedule has files', async () => {
+    const s = setup();
+    routes['POST /posts'] = () => mmError(403, 'api.context.permissions.app_error');
+    const withFiles = s.make({ fileIds: [F1] });
+    const without = s.make({ message: 'plain' });
+    await s.run();
+    expect(s.row(withFiles).error).toBe('このチャンネルに投稿する権限か、ファイルを添付する権限がありません（チャンネルから抜けた、権限が変わった、など）。');
+    expect(s.row(without).error).toBe('このチャンネルに投稿する権限がありません（チャンネルから抜けた、権限が変わった、など）。');
+  });
 });
 
 describe('every', () => {

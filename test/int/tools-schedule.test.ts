@@ -12,7 +12,7 @@ const REDIRECT = 'http://127.0.0.1:8123/cb';
 const TAG = `zs${randomBytes(6).toString('hex')}`;
 
 type Result = { isError?: boolean; content: { type: string; text: string }[] };
-type Post = { id: string; message: string; user_id: string };
+type Post = { id: string; message: string; user_id: string; file_ids?: string[] };
 
 async function mmApi<T>(token: string, method: string, path: string, body?: unknown): Promise<T> {
   const res = await fetch(`${e.mmUrl}/api/v4${path}`, {
@@ -80,6 +80,30 @@ describe('scheduled messages against the local Mattermost', () => {
     expect(row).toContain('状態: 投稿済み');
     expect(row).toContain(`post_id: ${post.id}`);
     expect(row).toContain(`/team-a/pl/${post.id}`);
+  });
+
+  test('a schedule with a file uploaded beforehand is posted with the file attached, and send_message refuses the file meanwhile', async () => {
+    const res = await fetch(`${e.mmUrl}/api/v4/files?${new URLSearchParams({ channel_id: channel.id, filename: `${TAG}.txt` })}`, {
+      method: 'POST', headers: { authorization: `Bearer ${aliceMm}`, 'content-type': 'application/octet-stream' }, body: new TextEncoder().encode('report'),
+    });
+    if (!res.ok) throw new Error(`upload -> ${res.status} ${await res.text()}`);
+    const fileId = ((await res.json()) as { file_infos: { id: string }[] }).file_infos[0].id;
+    store.recordUploadedFile({ mmUserId: e.users.alice.id, channelId: channel.id }, fileId);
+    const message = `${TAG} scheduled with a file`;
+    const made = await call('schedule_message', { channel: channel.id, message, at: inTwoMinutes(), file_ids: [fileId] });
+    expect(made.isError, made.content[0].text).toBeFalsy();
+    const id = /予約 ID: (\S+)/.exec(made.content[0].text)![1];
+    const sent = await call('send_message', { channel: channel.id, message: `${TAG} steals the file`, file_ids: [fileId] });
+    expect(sent.isError).toBe(true);
+    expect(sent.content[0].text).toContain(id);
+    await tick(store, mm, Date.now() + 120_000);
+    const [post] = await postsWith(channel.id, message);
+    expect(post?.file_ids).toEqual([fileId]);
+    const row = await rowOf(id);
+    expect(row).toContain('状態: 投稿済み');
+    expect(row).toContain(`post_id: ${post.id}`);
+    expect(row).toContain(`添付: ${fileId}`);
+    expect(row).not.toContain('注意');
   });
 
   test('a cancelled schedule is not posted', async () => {
