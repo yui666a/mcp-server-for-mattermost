@@ -8,8 +8,9 @@
 
 作業者のアカウントで、使う予定の MCP クライアント（claude.ai、Claude Code、Codex CLI など）から `<PUBLIC_URL>/mcp` に接続する。
 
-- 読み取り系の 13 ツール（`search_posts`、`read_channel`、`read_thread`、`search_channels`、`search_users`、`get_user`、`get_post`、`get_file`、`list_my_channels`、`get_channel`、`get_unreads`、`get_mentions`、`list_scheduled_messages`）を 1 回ずつ呼び、エラーにならない
+- 読み取り系の 16 ツール（`search_posts`、`search_files`、`read_channel`、`read_thread`、`search_channels`、`search_users`、`get_user`、`get_post`、`get_file`、`list_saved_posts`、`list_my_channels`、`get_channel`、`list_channel_members`、`get_unreads`、`get_mentions`、`list_scheduled_messages`）を 1 回ずつ呼び、エラーにならない
   - `get_unreads` は、出力の先頭に CRT の判定の行（`スレッドの折りたたみ（CRT）: 有効（サーバー設定: …）` など）が出る
+  - `search_files` が「ファイルの検索が無効になっています」を返したら、Mattermost のシステムコンソールでファイル検索が無効にされている。使うなら有効にするよう、Mattermost の管理者に頼む
 - `get_file` の画像がクライアントに届くかを、クライアントごとに確かめる。結合テストはクライアントを使わないので、ここでしか確かめられない
   1. Web で、作業者自身の DM（`@<作業者のユーザー名>`）に、文字の入った画像を添付して投稿する
   2. `read_channel` で `@<作業者のユーザー名>` を読み、その投稿に `添付:` の行（`file_id`、名前、種類、大きさ、幅と高さ）が出ることを見る

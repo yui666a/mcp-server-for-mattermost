@@ -1268,6 +1268,15 @@ describe('list_saved_posts', () => {
     expect(out).not.toContain(NOTE);
   });
 
+  test('looks up the names of the users who reacted, and notes a post whose message attachments were cut, as search_posts does', async () => {
+    const p = { ...post('r'.repeat(26), 1000), props: { attachments: [{ text: 'x'.repeat(4001) }] }, metadata: { reactions: [{ user_id: 'u2', emoji_name: '+1' }] } };
+    routes = { ...base(), [FLAGGED]: byOffset([p]), 'POST /users/ids': () => [{ id: 'u1', username: 'alice' }, { id: 'u2', username: 'bob' }] };
+    const out = await setup()('list_saved_posts', {});
+    expect(bodies['/users/ids']).toEqual(['u1', 'u2']);
+    expect(out).toContain('リアクション: :+1: 1（@bob）');
+    expect(out).toContain('（本文かメッセージ添付を 4000 文字で切った投稿があります）');
+  });
+
   test('says when nothing is saved', async () => {
     routes = { ...base(), [FLAGGED]: byOffset([]) };
     const out = await setup()('list_saved_posts', {});
