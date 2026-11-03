@@ -41,13 +41,16 @@ export async function findPosted(mm: Mm, uid: string, s: PostSpec & { fileCount:
 // Deleted posts are listed apart rather than matched: Mattermost empties their message and file_ids in since, so they cannot be told apart by text.
 // Edited posts are listed apart for the same reason: the text Mattermost returns is the edited one, not the one that was posted.
 // fileIds are the ones known before posting (uploaded through prepare_upload); a post with the same text and count but other files is a different post.
-export async function lookPosted(mm: Mm, uid: string, s: PostSpec & { fileCount: number; fileIds?: string[] }, since: number): Promise<{ found: string[]; deleted: string[]; edited: string[] }> {
+// Posts with the same text but other files are listed apart rather than skipped: one may be the earlier attempt with files Mattermost dropped.
+export async function lookPosted(mm: Mm, uid: string, s: PostSpec & { fileCount: number; fileIds?: string[] }, since: number): Promise<{ found: string[]; deleted: string[]; edited: string[]; mismatched: string[] }> {
   const r = await mm.call<PostList>(uid, 'GET', `/channels/${s.channelId}/posts?since=${since - 1}`);
   const mine = Object.values(r.posts).filter((p) => p.user_id === uid && (p.root_id || '') === (s.rootId || '') && p.create_at >= since);
+  const same = mine.filter((p) => !p.delete_at && p.message === s.message);
+  const filesMatch = (p: MmPost) => (p.file_ids?.length ?? 0) === s.fileCount && (s.fileIds ?? []).every((id) => p.file_ids?.includes(id));
   return {
-    found: mine.filter((p) => !p.delete_at && p.message === s.message && (p.file_ids?.length ?? 0) === s.fileCount
-      && (s.fileIds ?? []).every((id) => p.file_ids?.includes(id))).map((p) => p.id),
+    found: same.filter(filesMatch).map((p) => p.id),
     deleted: mine.filter((p) => p.delete_at).map((p) => p.id),
     edited: mine.filter((p) => !p.delete_at && (p.edit_at ?? 0) > 0 && p.message !== s.message).map((p) => p.id),
+    mismatched: same.filter((p) => !filesMatch(p)).map((p) => p.id),
   };
 }
