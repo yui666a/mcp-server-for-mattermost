@@ -674,6 +674,21 @@ describe('get_unreads', () => {
     expect(out).toContain('リアクション: :eyes: 1（@carol）');
   });
 
+  test('says that a thread root has reactions when the threads API gives only has_reactions', async () => {
+    routes = {
+      ...base(),
+      'GET /users/me/channel_members': () => members().filter((m) => m.channel_id !== DM),
+      [`GET /users/u1/teams/${T1}/threads`]: () => threadPage([thread(TH_DM, DM, 4000, { post: {
+        id: TH_DM, user_id: 'u1', channel_id: DM, root_id: '', message: 'mine', create_at: 100, has_reactions: true,
+      } })]),
+      [`GET /users/u1/teams/${T2}/threads`]: () => threadPage([]),
+      'POST /users/ids': () => [{ id: 'u1', username: 'alice' }, { id: 'u2', username: 'bob' }],
+    };
+    const out = await setup()('get_unreads', {});
+    expect([...(bodies['/users/ids'] as string[])].sort()).toEqual(['u1', 'u2']);
+    expect(out).toContain('リアクションあり（get_post で確認できます）');
+  });
+
   test('says when there is nothing unread', async () => {
     routes = { ...base(), 'GET /users/me/channel_members': () => [], [`GET /users/u1/teams/${T1}/threads`]: () => threadPage([]), [`GET /users/u1/teams/${T2}/threads`]: () => threadPage([]) };
     const out = await setup()('get_unreads', {});
