@@ -432,7 +432,7 @@ describe('save_draft', () => {
   const LIST = 'GET /users/u1/teams/t1/drafts';
   const SAVE = 'POST /drafts';
   const SYNC_OFF = '設定 > 詳細設定';
-  const LEFT_BEHIND = 'この下書きと同じ本文を send_message で送ると、投稿の後にこの下書きを消します';
+  const LEFT_BEHIND = 'この下書きと同じ本文を send_message で送ると、投稿の後にこの下書きを消します（画面で添付を付けた場合は消しません）';
   const writes = () => hits.filter((h) => !h.startsWith('GET '));
   const draft = (over: Record<string, unknown> = {}) => ({ user_id: 'u1', channel_id: CH, root_id: '', message: 'mine', create_at: 1, update_at: 1, ...over });
   const serve = (extra: Record<string, Route> = {}) => {
@@ -640,6 +640,7 @@ describe('save_draft', () => {
     const t = list.find((x) => x.name === 'save_draft')!;
     expect(t.annotations).toMatchObject({ readOnlyHint: false, destructiveHint: true, idempotentHint: true });
     expect(t.description).toContain('この下書きと同じ本文を send_message で送ると、投稿の後に下書きを消す');
+    expect(t.description).toContain('画面で添付を付けた下書きは消さない');
     const d = t.inputSchema.properties.overwrite.description!;
     expect(d).toContain('添付');
     expect(d).toContain('優先度');

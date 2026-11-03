@@ -305,7 +305,7 @@ type Draft = {
   channel_id: string; root_id: string; message: string; file_ids?: string[];
   priority?: { priority?: string; requested_ack?: boolean; persistent_notifications?: boolean };
 };
-const LEFT_BEHIND = 'この下書きと同じ本文を send_message で送ると、投稿の後にこの下書きを消します。';
+const LEFT_BEHIND = 'この下書きと同じ本文を send_message で送ると、投稿の後にこの下書きを消します（画面で添付を付けた場合は消しません）。';
 const DISABLED: [number, string, string] = [501, 'api.drafts.disabled.app_error', 'このサーバーでは下書きの同期が無効です。'];
 
 // Refused rather than saved: with sync off the webapp neither loads the draft nor shows its own unsent text to the check below.
@@ -336,7 +336,7 @@ async function draftsOf(mm: Mm, uid: string, ch: ChannelRef): Promise<Draft[] | 
 const CLEANUP_MS = 5000;
 
 // Not deleting only when the text still matches: Mattermost has no conditional delete, so an edit saved between the list and the DELETE is lost.
-// Not left running past the deadline: a late DELETE could remove a draft the user rewrote after reading that it was not cleared.
+// Not left running past the deadline: a late DELETE could remove a draft the user rewrote after reading that it was not cleared. A DELETE already sent still completes on Mattermost.
 async function clearSentDraft(mm: Mm, uid: string, ch: ChannelRef, rootId: string, message: string): Promise<string> {
   const deadline = AbortSignal.timeout(CLEANUP_MS);
   const quick: Mm = { call: (u, m, p, b) => mm.call(u, m, p, b, deadline) };
@@ -448,7 +448,7 @@ export function registerSendTools(server: McpServer, ctx: ToolContext): void {
   ) as unknown as ToolCallback<typeof deleteSchema>);
 
   server.registerTool('save_draft', {
-    description: '投稿せずに、本人の Mattermost の下書きとして保存する。送信は本人が画面で行う。root_id を渡すとスレッドへの返信の下書きになる。同じ投稿先に本文の違う下書きがあれば、overwrite: true が無い限り上書きしない。下書きの同期を切っている利用者には保存しない。この下書きと同じ本文を send_message で送ると、投稿の後に下書きを消す',
+    description: '投稿せずに、本人の Mattermost の下書きとして保存する。送信は本人が画面で行う。root_id を渡すとスレッドへの返信の下書きになる。同じ投稿先に本文の違う下書きがあれば、overwrite: true が無い限り上書きしない。下書きの同期を切っている利用者には保存しない。この下書きと同じ本文を send_message で送ると、投稿の後に下書きを消す（画面で添付を付けた下書きは消さない）',
     inputSchema: draftSchema,
     annotations: destructive,
   }, guarded(ctx, 'save_draft', async (args: DraftArgs, extra: { signal: AbortSignal }) => saveDraft(mmOf(extra.signal), ctx.mmUserId, args),
