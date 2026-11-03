@@ -16,6 +16,8 @@ type Page = { lines: string[]; next?: object; posts?: MmPost[]; notes?: string[]
 type ReadMm = Mm & Pick<MmClient, 'callBytes'>;
 
 const MM_SEARCH_CAP = 100;
+const SAVED_PAGE = 200;
+const SAVED_PAGES = 5;
 const JST_OFFSET_SEC = 9 * 3600;
 const DAY_MS = 86_400_000;
 const PREVIEW_MAX_WIDTH = 1920;
@@ -176,6 +178,37 @@ export function registerReadTools(server: McpServer, ctx: ToolContext): void {
       const lines = [`検索: ${terms}`, ...(shown.length ? await withChannels(mm, shown) : ['一致する投稿はありません。'])];
       const more = all.length > (page + 1) * per;
       return render({ lines, posts: shown, next: more ? { page: page + 1, per_page: per } : undefined, notes: capNote(all.length, 'これより古い一致') });
+    });
+
+  tool('list_saved_posts', '自分が保存した（フラグを付けた）投稿を新しい順に一覧する。参加しているチャンネルの投稿だけが対象',
+    { limit: limitArg(20, 50), cursor: cursorArg },
+    async ({ limit, cursor }, mm) => {
+      const c = cursorOf(z.object({ create_at: z.number().int(), id: z.string(), per_page: perPage(50) }).strict(), cursor);
+      const per = c?.per_page ?? limit ?? 20;
+      const older = (p: MmPost) => !c || p.create_at < c.create_at || (p.create_at === c.create_at && p.id > c.id);
+      const found = new Map<string, MmPost>();
+      let rest: MmPost[] = [];
+      let capped = false;
+      // Not putting Mattermost's offset in the cursor: saving or unsaving between pages would shift it.
+      for (let k = 0; ; k++) {
+        if (k === SAVED_PAGES) {
+          capped = true;
+          break;
+        }
+        // Not sending k as page: Mattermost uses page as the row offset, not as a page number.
+        const r = await mm.call<PostList>(uid, 'GET', `/users/${uid}/posts/flagged?page=${k * SAVED_PAGE}&per_page=${SAVED_PAGE}`);
+        const got = r.order.map((id) => r.posts[id]).filter(Boolean);
+        // Not stopping at a short page: Mattermost drops posts the user may not read after counting the page.
+        if (!got.length) break;
+        for (const p of got) found.set(p.id, p);
+        rest = [...found.values()].filter(older).sort(newestFirst);
+        if (rest.length > per && Math.min(...got.map((p) => p.create_at)) < rest[per - 1].create_at) break;
+      }
+      const shown = rest.slice(0, per);
+      const last = shown.at(-1);
+      const lines = ['保存した投稿（新しい順）', ...(shown.length ? await withChannels(mm, shown) : c ? [] : ['保存した投稿はありません。'])];
+      const notes = capped ? [`（保存した投稿のうち新しい ${SAVED_PAGE * SAVED_PAGES} 件だけを見ています）`] : [];
+      return render({ lines, posts: shown, notes, next: rest.length > per && last ? { create_at: last.create_at, id: last.id, per_page: per } : undefined });
     });
 
   tool('read_channel', 'チャンネルの投稿を新しい順に読む。channel はチャンネル ID、「チーム名/チャンネル名」、チャンネル名、@ユーザー名（DM）のどれか',

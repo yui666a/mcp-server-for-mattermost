@@ -420,6 +420,37 @@ describe('read tools against the local Mattermost', () => {
     });
   });
 
+  test('list_saved_posts lists alice\'s saved posts newest first, and drops one she unsaves', async () => {
+    const mine: string[] = [];
+    for (let i = 1; i <= 3; i++) {
+      mine.push((await mmApi<{ id: string }>(aliceMm, 'POST', '/posts', { channel_id: channel.id, message: `${TAG} saved ${i}` })).id);
+      // Not posting back to back: posts in the same millisecond would be ordered by id, not by the order written.
+      await new Promise((r) => setTimeout(r, 5));
+    }
+    const flag = (ids: string[]) => ids.map((name) => ({ user_id: e.users.alice.id, category: 'flagged_post', name, value: 'true' }));
+    await mmApi(aliceMm, 'PUT', `/users/${e.users.alice.id}/preferences`, flag(mine));
+    const listed = async (want: string[]) => {
+      const seen: string[] = [];
+      let cursor: string | undefined;
+      do {
+        const r = await call('alice', 'list_saved_posts', { limit: 2, ...(cursor ? { cursor } : {}) });
+        expect(r.isError).toBeFalsy();
+        seen.push(...postIds(r));
+        cursor = nextCursor(r);
+      } while (cursor && !want.every((id) => seen.includes(id)));
+      return seen;
+    };
+    try {
+      const seen = await listed(mine);
+      expect(seen.filter((id) => mine.includes(id))).toEqual([...mine].reverse());
+      expect(new Set(seen).size).toBe(seen.length);
+      await mmApi(aliceMm, 'POST', `/users/${e.users.alice.id}/preferences/delete`, flag([mine[1]]));
+      expect((await listed([mine[2], mine[0]])).filter((id) => mine.includes(id))).toEqual([mine[2], mine[0]]);
+    } finally {
+      await mmApi(aliceMm, 'POST', `/users/${e.users.alice.id}/preferences/delete`, flag(mine));
+    }
+  });
+
   test('Mattermost API calls per tool are counted by the limiter', async () => {
     const acquire = vi.spyOn(limiter, 'acquire');
     const charge = vi.spyOn(limiter, 'charge');
