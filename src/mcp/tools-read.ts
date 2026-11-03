@@ -123,7 +123,7 @@ const CRT_PREF = '/users/me/preferences/display_settings/name/collapsed_reply_th
 
 const byUnreadKey = (a: UnreadKey, b: UnreadKey) => a.s - b.s || a.m - b.m || b.t - a.t || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
 
-async function collapsedThreads(mm: Mm, uid: string): Promise<{ on: boolean; label: string }> {
+export async function collapsedThreads(mm: Mm, uid: string): Promise<{ on: boolean; label: string }> {
   const server = (await mm.call<{ CollapsedThreads?: string }>(uid, 'GET', '/config/client?format=old')).CollapsedThreads ?? '';
   if (server !== 'default_on' && server !== 'default_off') return { on: server === 'always_on', label: `サーバー設定: ${server}` };
   const pref = await mm.call<{ value: string }>(uid, 'GET', CRT_PREF).catch((e) => {
@@ -178,21 +178,60 @@ export function registerReadTools(server: McpServer, ctx: ToolContext): void {
       return render({ lines, posts: shown, next: more ? { page: page + 1, per_page: per } : undefined, notes: capNote(all.length, 'これより古い一致') });
     });
 
-  tool('read_channel', 'チャンネルの投稿を新しい順に読む。channel はチャンネル ID、「チーム名/チャンネル名」、チャンネル名、@ユーザー名（DM）のどれか',
-    { channel: z.string().min(1), limit: limitArg(30, 100), cursor: cursorArg },
-    async ({ channel, limit, cursor }, mm) => {
-      const c = cursorOf(z.object({ before: z.string().regex(/^[A-Za-z0-9]{26}$/), per_page: perPage(100) }), cursor);
+  tool('read_channel', 'チャンネルの投稿を読む。既定は新しい順。from: "unread" なら未読の先頭から古い順に読み、スレッドの折りたたみ（CRT）が有効ならルート投稿だけを返す。読むだけで、既読にはしない。channel はチャンネル ID、「チーム名/チャンネル名」、チャンネル名、@ユーザー名（DM）のどれか',
+    {
+      channel: z.string().min(1),
+      from: z.enum(['latest', 'unread']).optional().describe('latest（既定）は最新から新しい順、unread は未読の先頭から古い順。cursor を渡したときは無視する'),
+      limit: limitArg(30, 100),
+      cursor: cursorArg,
+    },
+    async ({ channel, from, limit, cursor }, mm) => {
+      const postId = z.string().regex(/^[A-Za-z0-9]{26}$/);
+      const c = cursorOf(z.union([
+        z.object({ before: postId, per_page: perPage(100) }),
+        z.object({ channel_id: z.string(), after: postId, per_page: perPage(100), crt: z.boolean() }),
+      ]), cursor);
       const per = c?.per_page ?? limit ?? 30;
       const ch = await resolveChannel(mm, uid, channel);
+      const renderPage = async (head: string[], all: MmPost[], next: (last: MmPost) => object, none: string) => {
+        const shown = all.slice(0, per);
+        const users = await usernames(mm, uid, shown);
+        const lines = [...channelLines(ch), ...head, ...shown.map((p) => formatPost(p, { baseUrl: base, teamName: ch.teamName, usernames: users }))];
+        if (!shown.length) lines.push(none);
+        return render({ lines, posts: shown, next: all.length > per ? next(shown[shown.length - 1]) : undefined });
+      };
+      const unreadPage = (crt: boolean, r: PostList) => renderPage(
+        [crt
+          ? '未読の先頭から古い順（スレッドの折りたたみ（CRT）が有効なため、ルート投稿だけです。返信は get_unreads の未読のスレッドと read_thread で読めます）'
+          : '未読の先頭から古い順（返信も含みます）'],
+        r.order.map((id) => r.posts[id]).filter(Boolean).sort((a, b) => a.create_at - b.create_at || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0)),
+        (last) => ({ channel_id: ch.id, after: last.id, per_page: per, crt }),
+        c ? '投稿はありません。' : '未読はありません。',
+      );
+      let head: string[] = [];
+      if (c && 'after' in c) {
+        if (c.channel_id !== ch.id) throw new InputError(BAD_CURSOR);
+        const q = new URLSearchParams({ after: c.after, per_page: String(per + 1), collapsedThreads: String(c.crt), skipFetchThreads: 'true' });
+        return unreadPage(c.crt, await mm.call<PostList>(uid, 'GET', `/channels/${ch.id}/posts?${q}`));
+      }
+      if (!c && from === 'unread') {
+        const me = await mm.call<{ last_viewed_at: number }>(uid, 'GET', `/channels/${ch.id}/members/me`).catch((e) => {
+          // Not reading only 404 as not joined: a public channel the user has not joined is refused with 403 before the membership lookup.
+          if (e instanceof MmError && (e.status === 403 || e.status === 404)) throw new InputError('このチャンネルに参加していないため、未読の位置がありません。from: "latest" で読んでください。');
+          throw e;
+        });
+        // Falling back to newest first rather than walking back to the first post: a channel never opened counts its whole history as unread, with no bound on the walk.
+        if (!me.last_viewed_at) head = ['既読の位置が記録されていない（参加してから一度も開いていない）ため、すべてが未読の扱いです。未読の先頭からは読めないので、新しい順に読んでいます。'];
+        else {
+          const crt = (await collapsedThreads(mm, uid)).on;
+          const q = new URLSearchParams({ limit_before: '0', limit_after: String(per + 1), collapsedThreads: String(crt), skipFetchThreads: 'true' });
+          return unreadPage(crt, await mm.call<PostList>(uid, 'GET', `/users/${uid}/channels/${ch.id}/posts/unread?${q}`));
+        }
+      }
       // Paging with before=<post_id> rather than page numbers: new posts arriving between calls would shift pages.
       const q = new URLSearchParams({ per_page: String(per + 1), ...(c ? { before: c.before } : {}) });
       const r = await mm.call<PostList>(uid, 'GET', `/channels/${ch.id}/posts?${q}`);
-      const all = r.order.map((id) => r.posts[id]).filter(Boolean);
-      const shown = all.slice(0, per);
-      const users = await usernames(mm, uid, shown);
-      const lines = [...channelLines(ch), ...shown.map((p) => formatPost(p, { baseUrl: base, teamName: ch.teamName, usernames: users }))];
-      if (!shown.length) lines.push('投稿はありません。');
-      return render({ lines, posts: shown, next: all.length > per ? { before: shown[shown.length - 1].id, per_page: per } : undefined });
+      return renderPage(head, r.order.map((id) => r.posts[id]).filter(Boolean), (last) => ({ before: last.id, per_page: per }), '投稿はありません。');
     });
 
   tool('read_thread', 'スレッドの親投稿と返信を古い順に読む。post_id はスレッド内のどの投稿でもよい。親投稿は最初のページにだけ含める',
