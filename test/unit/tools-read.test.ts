@@ -1315,3 +1315,83 @@ describe('search_files', () => {
     });
   });
 });
+
+describe('list_channel_members', () => {
+  const C = 'c'.repeat(26);
+  const T = 't'.repeat(26);
+  const OTHER = 'o'.repeat(26);
+  const mmError = (status: number, id = 'x') => () => Response.json({ id, message: 'm', status_code: status }, { status });
+  const user = (n: number, extra: Record<string, unknown> = {}) => ({ id: `u${String(n).padStart(25, '0')}`, username: `user${n}`, ...extra });
+  const base = () => ({
+    [`GET /channels/${C}`]: () => ({ id: C, name: 'town', display_name: 'Town', team_id: T, type: 'O', purpose: '', header: '' }),
+    [`GET /teams/${T}`]: () => ({ id: T, name: 'team-a' }),
+    [`GET /channels/${C}/stats`]: () => ({ channel_id: C, member_count: 3 }),
+    'GET /users': (req: Request) => {
+      const q = new URL(req.url).searchParams;
+      const all = [user(1, { first_name: 'Ann', last_name: 'Lee', nickname: 'annie', position: 'PM' }), user(2, { is_bot: true }), user(3)];
+      const at = Number(q.get('page')) * Number(q.get('per_page'));
+      return all.slice(at, at + Number(q.get('per_page')));
+    },
+  });
+  const names = (out: string) => [...out.matchAll(/^- @(\S+?)（/gm)].map((m) => m[1]);
+  const cursorIn = (out: string) => /next_cursor: (\S+)/.exec(out)?.[1];
+
+  test('lists the active members by username with name, nickname, position, bot and user_id, after the channel and the member count', async () => {
+    routes = base();
+    const out = await setup()('list_channel_members', { channel: C });
+    expect(urls).toContain(`GET /users?in_channel=${C}&active=true&page=0&per_page=50`);
+    expect(out).toContain(`チャンネル: Town（name: town、channel_id: ${C}）`);
+    expect(out).toContain('メンバー数: 3');
+    expect(out).toContain(`- @user1（名前: Ann Lee、ニックネーム: annie、役職: PM、user_id: ${user(1).id}）`);
+    expect(out).toContain(`- @user2（Bot アカウント、user_id: ${user(2).id}）`);
+    expect(names(out)).toEqual(['user1', 'user2', 'user3']);
+  });
+
+  test('pages with limit, a cursor keeping the page size; a full last page leads to an empty one that only says there is no more', async () => {
+    routes = base();
+    const call = setup();
+    const first = await call('list_channel_members', { channel: C, limit: 1 });
+    expect(names(first)).toEqual(['user1']);
+    const second = await call('list_channel_members', { channel: C, limit: 50, cursor: cursorIn(first) });
+    expect(names(second)).toEqual(['user2']);
+    expect(urls.at(-1)).toBe(`GET /users?in_channel=${C}&active=true&page=1&per_page=1`);
+    expect(second).not.toContain('メンバー数');
+    const third = await call('list_channel_members', { channel: C, cursor: cursorIn(second) });
+    const fourth = await call('list_channel_members', { channel: C, cursor: cursorIn(third) });
+    expect(names(fourth)).toEqual([]);
+    expect(fourth).not.toContain('メンバーはいません');
+    expect(fourth).toContain('（続きはありません）');
+    expect(hits.filter((h) => h === `GET /channels/${C}/stats`)).toHaveLength(1);
+  });
+
+  test('says when the channel has no members to show', async () => {
+    routes = { ...base(), 'GET /users': () => [] };
+    const out = await setup()('list_channel_members', { channel: C });
+    expect(out).toContain('メンバーはいません。');
+    expect(cursorIn(out)).toBeUndefined();
+  });
+
+  test('says members of a channel the user has not joined cannot be seen, without asking for the count', async () => {
+    routes = { ...base(), 'GET /users': mmError(403, 'api.context.permissions.app_error') };
+    const out = await setup()('list_channel_members', { channel: C }, true);
+    expect(out).toBe('参加していないチャンネルのメンバーは見られません（公開チャンネルでも同じです）。');
+    expect(hits).not.toContain(`GET /channels/${C}/stats`);
+  });
+
+  test('words 403 and 404 from fetching the channel as get_channel does', async () => {
+    routes = { ...base(), [`GET /channels/${C}`]: mmError(403) };
+    const call = setup();
+    expect(await call('list_channel_members', { channel: C }, true)).toBe('このチャンネルを見る権限がありません（参加していない非公開チャンネルなど）');
+    routes[`GET /channels/${C}`] = mmError(404);
+    expect(await call('list_channel_members', { channel: C }, true)).toContain('チャンネルが見つかりません');
+  });
+
+  test('rejects a cursor issued for another channel, and one of another shape', async () => {
+    routes = base();
+    const call = setup();
+    const bad = 'cursor が不正です。前回の出力の next_cursor をそのまま渡してください。';
+    const enc = (o: object) => Buffer.from(JSON.stringify(o)).toString('base64url');
+    expect(await call('list_channel_members', { channel: C, cursor: enc({ channel_id: OTHER, page: 1, per_page: 1 }) }, true)).toBe(bad);
+    expect(await call('list_channel_members', { channel: C, cursor: enc({ page: 1, per_page: 1 }) }, true)).toBe(bad);
+  });
+});

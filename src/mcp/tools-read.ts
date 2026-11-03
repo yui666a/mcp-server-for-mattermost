@@ -158,6 +158,15 @@ function channelLines(c: ChannelRef): string[] {
   ];
 }
 
+function channelError(e: unknown): never {
+  // Not converting a missing team: /teams/name/{team}/channels/name/{channel} answers it with 404 too.
+  if (e instanceof ChannelFetchError && e.id !== 'app.team.get_by_name.missing.app_error') {
+    if (e.status === 403) throw new InputError('このチャンネルを見る権限がありません（参加していない非公開チャンネルなど）');
+    if (e.status === 404) throw new InputError('チャンネルが見つかりません（参加していない非公開チャンネルを名前で指定した場合も、Mattermost はこの結果を返します）');
+  }
+  throw e;
+}
+
 async function usernames(mm: Mm, uid: string, posts: MmPost[]): Promise<Map<string, string>> {
   const ids = [...new Set(posts.map((p) => p.user_id))];
   if (!ids.length) return new Map();
@@ -514,14 +523,7 @@ export function registerReadTools(server: McpServer, ctx: ToolContext): void {
     async ({ channel, pinned_limit, cursor }, mm) => {
       const c = cursorOf(z.object({ channel_id: z.string(), create_at: z.number().int(), id: z.string(), per_page: perPage(50) }), cursor);
       const per = c?.per_page ?? pinned_limit ?? 10;
-      const ch = await resolveChannel(mm, uid, channel).catch((e) => {
-        // Not converting a missing team: /teams/name/{team}/channels/name/{channel} answers it with 404 too.
-        if (e instanceof ChannelFetchError && e.id !== 'app.team.get_by_name.missing.app_error') {
-          if (e.status === 403) throw new InputError('このチャンネルを見る権限がありません（参加していない非公開チャンネルなど）');
-          if (e.status === 404) throw new InputError('チャンネルが見つかりません（参加していない非公開チャンネルを名前で指定した場合も、Mattermost はこの結果を返します）');
-        }
-        throw e;
-      });
+      const ch = await resolveChannel(mm, uid, channel).catch(channelError);
       if (c && c.channel_id !== ch.id) throw new InputError(BAD_CURSOR);
       const kind: Record<string, string> = { O: '公開', P: '非公開', D: 'DM', G: 'グループ DM' };
       const lines = channelLines(ch);
@@ -548,6 +550,31 @@ export function registerReadTools(server: McpServer, ctx: ToolContext): void {
       if (!all.length) lines.push('ピン留めされた投稿はありません。');
       const last = shown.at(-1);
       return render({ lines, posts: shown, next: rest.length > per && last ? { channel_id: ch.id, create_at: last.create_at, id: last.id, per_page: per } : undefined });
+    });
+
+  tool('list_channel_members', 'チャンネルのメンバーをユーザー名の順に一覧する。channel はチャンネル ID、「チーム名/チャンネル名」、チャンネル名、@ユーザー名（DM）のどれか。無効化されたユーザーは含まない。参加していないチャンネルのメンバーは、公開チャンネルでも見られない（システム管理者を除く）。在席状況は get_user で読める',
+    { channel: z.string().min(1), limit: limitArg(50, 200), cursor: cursorArg },
+    async ({ channel, limit, cursor }, mm) => {
+      const c = cursorOf(z.object({ channel_id: z.string(), page: z.number().int().min(0), per_page: perPage(200) }).strict(), cursor);
+      const per = c?.per_page ?? limit ?? 50;
+      const page = c?.page ?? 0;
+      const ch = await resolveChannel(mm, uid, channel).catch(channelError);
+      if (c && c.channel_id !== ch.id) throw new InputError(BAD_CURSOR);
+      // Not joining /channels/{id}/members with the users: /users?in_channel gives the profiles in one call.
+      const q = new URLSearchParams({ in_channel: ch.id, active: 'true', page: String(page), per_page: String(per) });
+      const users = await mm.call<UserRef[]>(uid, 'GET', `/users?${q}`).catch((e) => {
+        if (e instanceof MmError && e.status === 403) throw new InputError('参加していないチャンネルのメンバーは見られません（公開チャンネルでも同じです）。');
+        throw e;
+      });
+      const lines = channelLines(ch);
+      if (!c) lines.push(`メンバー数: ${(await mm.call<{ member_count: number }>(uid, 'GET', `/channels/${ch.id}/stats?exclude_files_count=true`)).member_count}`);
+      lines.push(...users.map((u) => {
+        const name = [u.first_name, u.last_name].filter(Boolean).join(' ');
+        return `- @${u.username}（${[name && `名前: ${name}`, u.nickname && `ニックネーム: ${u.nickname}`, u.position && `役職: ${u.position}`, u.is_bot && 'Bot アカウント', `user_id: ${u.id}`].filter(Boolean).join('、')}）`;
+      }));
+      if (!users.length && !c) lines.push('メンバーはいません。');
+      // Not asking for one more row to tell the last page: Mattermost pages by page * per_page, so a full last page is followed by an empty one.
+      return render({ lines, next: users.length === per ? { channel_id: ch.id, page: page + 1, per_page: per } : undefined });
     });
 
   tool('get_unreads', '自分の未読を一覧する。未読のあるチャンネル（未読数とメンション数）と、スレッドの折りたたみ（CRT）が有効なら未読の返信があるスレッド。メンションのあるチャンネルが先。読むだけで、既読にはしない',

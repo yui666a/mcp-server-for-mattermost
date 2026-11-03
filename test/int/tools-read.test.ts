@@ -511,6 +511,32 @@ describe('read tools against the local Mattermost', () => {
     });
   });
 
+  test('list_channel_members refuses bob before he joins, then lists alice and bob by username, one per page', async () => {
+    const ch = await mmApi<{ id: string; name: string }>(aliceMm, 'POST', '/channels', { team_id: e.teams.a.id, name: `m-${TAG}`, display_name: `m ${TAG}`, type: 'O' });
+    try {
+      const refused = await call('bob', 'list_channel_members', { channel: ch.id });
+      expect(refused.isError).toBe(true);
+      expect(refused.content[0].text).toBe('参加していないチャンネルのメンバーは見られません（公開チャンネルでも同じです）。');
+      await mmApi(aliceMm, 'POST', `/channels/${ch.id}/members`, { user_id: e.users.bob.id });
+      const members = (r: Result) => [...r.content[0].text.matchAll(/^- @(\S+?)（/gm)].map((m) => m[1]);
+      const pages: string[][] = [];
+      let cursor: string | undefined;
+      let last: Result;
+      do {
+        last = await call('alice', 'list_channel_members', { channel: `team-a/${ch.name}`, limit: 1, ...(cursor ? { cursor } : {}) });
+        expect(last.isError).toBeFalsy();
+        if (!cursor) expect(last.content[0].text).toContain('メンバー数: 2');
+        pages.push(members(last));
+        cursor = nextCursor(last);
+      } while (cursor);
+      expect(pages).toEqual([[e.users.alice.username], [e.users.bob.username], []]);
+      expect(last.content[0].text).not.toContain('メンバーはいません');
+      expect(last.content[0].text).toContain('（続きはありません）');
+    } finally {
+      await mmApi(e.adminToken, 'DELETE', `/channels/${ch.id}`);
+    }
+  });
+
   test('Mattermost API calls per tool are counted by the limiter', async () => {
     const acquire = vi.spyOn(limiter, 'acquire');
     const charge = vi.spyOn(limiter, 'charge');
