@@ -26,14 +26,17 @@ This project targets the other case:
 
 | Tool | Purpose |
 |---|---|
-| `search_posts` | Search messages in the user's teams with Mattermost search syntax (`from:`, `in:`, `before:`, ...) |
+| `search_posts` | Search messages in the user's teams with Mattermost search syntax (`from:`, `in:`, `before:`, ...). `in:` accepts channel names and `@username` too, without creating a DM |
 | `read_channel` | Read a channel's posts, newest first, or oldest first from the first unread post |
 | `read_thread` | Read a thread's root and replies, oldest first |
 | `get_post` | Read one post by post ID or permalink URL |
 | `get_file` | Read an attached file; images are returned as a preview image, and text (UTF-8, or Shift_JIS for csv/tsv/txt/log) as up to its first 10,000 characters |
+| `search_files` | Find attached files by name with Mattermost search syntax (`from:`, `in:`, `ext:`, ...) |
+| `list_saved_posts` | List the user's saved (flagged) posts, newest first |
 | `search_channels` | Find channels (public, joined private, DMs, group DMs) by name |
 | `list_my_channels` | List joined channels by most recent post |
 | `get_channel` | Channel type, purpose, header, member count, and pinned posts |
+| `list_channel_members` | List the members of a joined channel, ordered by username |
 | `get_unreads` | Unread channels and, with collapsed reply threads, unread threads |
 | `get_mentions` | Posts that mention the user |
 | `mark_as_read` | Mark channels and threads read, skipping channels with posts by anyone else after the newest post read |
@@ -44,7 +47,7 @@ This project targets the other case:
 | `add_reaction` / `remove_reaction` | Add or remove the user's own reaction |
 | `edit_message` / `delete_message` | Edit or delete the user's own post |
 | `save_draft` | Save a Mattermost draft for the user to send from the UI; sending the same text with `send_message` clears it |
-| `schedule_message` | Schedule a post for a later time (1 minute to 30 days ahead) |
+| `schedule_message` | Schedule a post for a later time (1 minute to 30 days ahead), optionally with files uploaded through `prepare_upload` |
 | `list_scheduled_messages` | List the user's scheduled posts with status and permalink |
 | `update_scheduled_message` / `cancel_scheduled_message` | Change or cancel a pending scheduled post |
 

@@ -8,8 +8,9 @@
 
 作業者のアカウントで、使う予定の MCP クライアント（claude.ai、Claude Code、Codex CLI など）から `<PUBLIC_URL>/mcp` に接続する。
 
-- 読み取り系の 13 ツール（`search_posts`、`read_channel`、`read_thread`、`search_channels`、`search_users`、`get_user`、`get_post`、`get_file`、`list_my_channels`、`get_channel`、`get_unreads`、`get_mentions`、`list_scheduled_messages`）を 1 回ずつ呼び、エラーにならない
+- 読み取り系の 16 ツール（`search_posts`、`search_files`、`read_channel`、`read_thread`、`search_channels`、`search_users`、`get_user`、`get_post`、`get_file`、`list_saved_posts`、`list_my_channels`、`get_channel`、`list_channel_members`、`get_unreads`、`get_mentions`、`list_scheduled_messages`）を 1 回ずつ呼び、エラーにならない
   - `get_unreads` は、出力の先頭に CRT の判定の行（`スレッドの折りたたみ（CRT）: 有効（サーバー設定: …）` など）が出る
+  - `search_files` が「ファイルの検索が無効になっています」を返したら、Mattermost のシステムコンソールでファイル検索が無効にされている。使うなら有効にするよう、Mattermost の管理者に頼む
 - `get_file` の画像がクライアントに届くかを、クライアントごとに確かめる。結合テストはクライアントを使わないので、ここでしか確かめられない
   1. Web で、作業者自身の DM（`@<作業者のユーザー名>`）に、文字の入った画像を添付して投稿する
   2. `read_channel` で `@<作業者のユーザー名>` を読み、その投稿に `添付:` の行（`file_id`、名前、種類、大きさ、幅と高さ）が出ることを見る
@@ -109,9 +110,9 @@ pnpm test:int
 更新の前に、下の「バックアップと復元」のとおりに `/data` を写しておく。
 新しい版をビルドしてコンテナを作り直す（`docker compose up -d --build mcp`）。
 
-DB のスキーマは、起動のたびに `CREATE TABLE IF NOT EXISTS` で作るだけで、移行の仕組みは無い。
-新しい版で表が増えれば足されるが、既存の表の列の追加や変更は、既存の DB には反映されない。
-更新の前に `src/db.ts` の差分を見て、既存の表が変わっていれば、移行の手順が示されていない限りその版へは更新しない。
+DB のスキーマは、起動のたびに `CREATE TABLE IF NOT EXISTS` で作り、そのあと `src/db.ts` の `migrate` に書いた列を、既存の表に無ければ足す。
+`migrate` が扱うのは、列の追加だけである。新しい版で表が増えれば `CREATE TABLE` で足されるが、既存の列の変更や削除は既存の DB に反映されない。
+更新の前に `src/db.ts` の差分を見て、`migrate` で足す列のほかに既存の表が変わっていれば、移行の手順が示されていない限りその版へは更新しない。
 戻すときは、前の版のイメージと、更新前に写した `/data` を一緒に戻す。
 
 ## バックアップと復元
