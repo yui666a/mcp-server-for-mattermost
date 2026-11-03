@@ -30,7 +30,7 @@ This project targets the other case:
 | `read_channel` | Read a channel's posts, newest first |
 | `read_thread` | Read a thread's root and replies, oldest first |
 | `get_post` | Read one post by post ID or permalink URL |
-| `get_file` | Read an attached file; images are returned as a preview image |
+| `get_file` | Read an attached file; images are returned as a preview image, and text (UTF-8, or Shift_JIS for csv/tsv/txt/log) as up to its first 10,000 characters |
 | `search_channels` | Find channels (public, joined private, DMs, group DMs) by name |
 | `list_my_channels` | List joined channels by most recent post |
 | `get_channel` | Channel type, purpose, header, member count, and pinned posts |
