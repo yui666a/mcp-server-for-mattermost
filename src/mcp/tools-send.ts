@@ -159,7 +159,7 @@ export async function sendMessage(mm: Mm, store: Store, uid: string, baseUrl: st
     if (r.kind !== 'posted') throw r.error;
     ({ postId, fileIds: kept } = r);
   } catch (e) {
-    // Not leaving out InputError: here it can only be an upload that Mattermost refused, so nothing was posted.
+    // Not leaving out InputError: here it can only be a file refused before the post or an upload that Mattermost refused, so nothing was posted.
     if (e instanceof MmError || e instanceof InputError || e instanceof RateLimited || (e as { sent?: boolean })?.sent === false) store.dropPost(claim.id, claimedAt);
     throw e;
   }
