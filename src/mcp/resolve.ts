@@ -53,12 +53,24 @@ export async function teamNameOf(mm: Mm, userId: string, teamId: string): Promis
 
 export async function resolveUser(mm: Mm, userId: string, spec: string): Promise<UserRef> {
   const s = spec.trim();
-  if (s.startsWith('@')) return mm.call<UserRef>(userId, 'GET', `/users/username/${plain(s.slice(1), 'ユーザー名')}`);
+  // Lowered rather than passed as typed: Mattermost user names are lower case only, and it answers 400 to any upper case letter.
+  if (s.startsWith('@')) return mm.call<UserRef>(userId, 'GET', `/users/username/${plain(s.slice(1), 'ユーザー名').toLowerCase()}`);
   if (ID.test(s)) return mm.call<UserRef>(userId, 'GET', `/users/${s}`);
   throw new InputError('ユーザーはユーザー ID か @ユーザー名 で指定してください。');
 }
 
-export async function resolveChannel(mm: Mm, userId: string, spec: string): Promise<ResolvedChannel> {
+// Same reason for both the permission to create and the visibility of the other user: Mattermost answers both with one id.
+const CREATE_REFUSED: readonly [number, string, (who: string) => string][] = [
+  [403, 'api.context.permissions.app_error', (who) => `${who} との DM を作る権限が無いか、相手を見る権限がありません。`],
+  [403, 'api.channel.create_channel.direct_channel.team_restricted_error', () => 'このサーバーでは、同じチームにいない相手との DM は作れません。'],
+];
+const refusalWorded = (who: string) => (e: unknown): never => {
+  const w = e instanceof MmError && CREATE_REFUSED.find(([status, id]) => status === e.status && id === e.id);
+  throw w ? new InputError(w[2](who)) : e;
+};
+
+// Not creating unless asked: a read must not leave behind a DM the user never opened.
+export async function resolveChannel(mm: Mm, userId: string, spec: string, opts: { create?: boolean } = {}): Promise<ResolvedChannel> {
   const s = spec.trim();
   if (ID.test(s)) {
     const c = await fetchChannel(mm, userId, `/channels/${s}`);
@@ -75,11 +87,14 @@ export async function resolveChannel(mm: Mm, userId: string, spec: string): Prom
   if (s.startsWith('@')) {
     const other = await resolveUser(mm, userId, s);
     if (!teams.length) throw new InputError('所属しているチームがないため DM を探せません。');
-    // POST /channels/direct is not used: it creates the DM, and this is a read.
+    // Looked up before POST /channels/direct even when creating: a user without the permission to create can still write to an existing DM.
     const name = [userId, other.id].sort().join('__');
     const c = await mm.call<MmChannelFull>(userId, 'GET', `/teams/${teams[0].id}/channels/name/${name}`).catch((e) => {
-      if (missing(e)) throw new NoDirectChannel(`@${other.username} との DM はまだありません。`);
-      throw e;
+      if (!missing(e)) throw e;
+      if (!opts.create) throw new NoDirectChannel(`@${other.username} との DM はまだありません。`);
+      // Refused although Mattermost would create it: the other user cannot read it, and an empty DM would be all that is left.
+      if (other.delete_at) throw new InputError(`@${other.username} は無効化されているため、DM を作りません。`);
+      return mm.call<MmChannelFull>(userId, 'POST', '/channels/direct', [userId, other.id]).catch(refusalWorded(`@${other.username}`));
     });
     return { ...ref(c, teams[0].name), displayName: `@${other.username}` };
   }
