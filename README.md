@@ -43,7 +43,7 @@ This project targets the other case:
 | `add_reaction` / `remove_reaction` | Add or remove the user's own reaction |
 | `edit_message` / `delete_message` | Edit or delete the user's own post |
 | `save_draft` | Save a Mattermost draft for the user to send from the UI; sending the same text with `send_message` clears it |
-| `schedule_message` | Schedule a post for a later time (1 minute to 30 days ahead) |
+| `schedule_message` | Schedule a post for a later time (1 minute to 30 days ahead), optionally with files uploaded through `prepare_upload` |
 | `list_scheduled_messages` | List the user's scheduled posts with status and permalink |
 | `update_scheduled_message` / `cancel_scheduled_message` | Change or cancel a pending scheduled post |
 
