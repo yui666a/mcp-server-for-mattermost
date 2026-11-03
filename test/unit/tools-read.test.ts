@@ -67,6 +67,23 @@ test('search_posts sends the JST offset, shows the channel and team names, and n
   expect(await call('search_posts', { terms: 'x' })).not.toContain('100 件まで');
 });
 
+test('search_posts looks up the names of the users who reacted, and notes a post whose message attachments were cut', async () => {
+  const P = id(0);
+  routes = {
+    'POST /posts/search': () => ({ order: [P], posts: { [P]: {
+      id: P, user_id: 'u1', channel_id: 'c'.repeat(26), root_id: '', message: '', create_at: 0,
+      props: { attachments: [{ text: 'x'.repeat(4001) }] }, metadata: { reactions: [{ user_id: 'u2', emoji_name: '+1' }] },
+    } } }),
+    'GET /users/me/channels': () => [{ id: 'c'.repeat(26), name: 'alerts', display_name: 'Alerts', team_id: 't'.repeat(26), type: 'O' }],
+    'GET /users/me/teams': () => [{ id: 't'.repeat(26), name: 'team-a' }],
+    'POST /users/ids': () => [{ id: 'u1', username: 'alice' }, { id: 'u2', username: 'bob' }],
+  };
+  const out = await setup()('search_posts', { terms: 'x' });
+  expect(bodies['/users/ids']).toEqual(['u1', 'u2']);
+  expect(out).toContain('リアクション: :+1: 1（@bob）');
+  expect(out).toContain('（本文かメッセージ添付を 4000 文字で切った投稿があります）');
+});
+
 test('search_users notes the 100-result cap', async () => {
   routes = { 'POST /users/search': () => Array.from({ length: 100 }, (_, i) => ({ id: `u${i}`, username: `user${i}` })) };
   const call = setup();
@@ -97,6 +114,11 @@ describe('get_post', () => {
     expect(out).toContain(`https://mm.example/team-b/pl/${ROOT}`);
     expect(out).toContain('返信数: 0');
     expect(out).not.toContain('read_thread');
+  });
+
+  test('notes that the message attachments were cut', async () => {
+    routes = { ...base, [`GET /posts/${ROOT}`]: () => post({ id: ROOT, message: '', props: { attachments: [{ text: 'x'.repeat(4001) }] } }) };
+    expect(await setup()('get_post', { post: ROOT })).toContain('（本文かメッセージ添付を 4000 文字で切りました）');
   });
 
   test('accepts a bare post_id', async () => {
@@ -635,6 +657,36 @@ describe('get_unreads', () => {
     };
     const out = await setup()('get_unreads', {});
     expect(out).toContain(`チャンネル: @bob（name: u1__u2、channel_id: ${DM}）`);
+  });
+
+  test('names the users who reacted to a thread root when the threads API gives the reactions', async () => {
+    routes = {
+      ...base(),
+      'GET /users/me/channel_members': () => members().filter((m) => m.channel_id !== DM),
+      [`GET /users/u1/teams/${T1}/threads`]: () => threadPage([thread(TH_DM, DM, 4000, { post: {
+        id: TH_DM, user_id: 'u1', channel_id: DM, root_id: '', message: 'mine', create_at: 100, metadata: { reactions: [{ user_id: 'u3', emoji_name: 'eyes' }] },
+      } })]),
+      [`GET /users/u1/teams/${T2}/threads`]: () => threadPage([]),
+      'POST /users/ids': () => [{ id: 'u1', username: 'alice' }, { id: 'u2', username: 'bob' }, { id: 'u3', username: 'carol' }],
+    };
+    const out = await setup()('get_unreads', {});
+    expect(bodies['/users/ids']).toContain('u3');
+    expect(out).toContain('リアクション: :eyes: 1（@carol）');
+  });
+
+  test('says that a thread root has reactions when the threads API gives only has_reactions', async () => {
+    routes = {
+      ...base(),
+      'GET /users/me/channel_members': () => members().filter((m) => m.channel_id !== DM),
+      [`GET /users/u1/teams/${T1}/threads`]: () => threadPage([thread(TH_DM, DM, 4000, { post: {
+        id: TH_DM, user_id: 'u1', channel_id: DM, root_id: '', message: 'mine', create_at: 100, has_reactions: true,
+      } })]),
+      [`GET /users/u1/teams/${T2}/threads`]: () => threadPage([]),
+      'POST /users/ids': () => [{ id: 'u1', username: 'alice' }, { id: 'u2', username: 'bob' }],
+    };
+    const out = await setup()('get_unreads', {});
+    expect([...(bodies['/users/ids'] as string[])].sort()).toEqual(['u1', 'u2']);
+    expect(out).toContain('リアクションあり（get_post で確認できます）');
   });
 
   test('says when there is nothing unread', async () => {
