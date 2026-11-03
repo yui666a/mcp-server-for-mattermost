@@ -163,6 +163,47 @@ describe('read tools against the local Mattermost', () => {
     expect(ids).toEqual(all.order);
   });
 
+  test('search_posts finds posts by in:<channel name>, in every team that has the name', async () => {
+    const own = await call('alice', 'search_posts', { terms: `${TAG} in:${channel.name}` });
+    expect(own.isError).toBeFalsy();
+    expect(postIds(own)).toContain(root);
+
+    const term = `${TAG}dup`;
+    const posted: string[] = [];
+    for (const t of [e.teams.a, e.teams.b]) posted.push((await mmApi<{ id: string }>(aliceMm, 'POST', '/posts', { channel_id: t.dupChannelId, message: term })).id);
+    const r = await call('alice', 'search_posts', { terms: `${term} in:general-dup` });
+    expect(r.isError).toBeFalsy();
+    expect(postIds(r)).toEqual(expect.arrayContaining(posted));
+    const note = r.content[0].text.split('\n').find((l) => l.includes('複数のチームにあるため'));
+    expect(note).toContain('team-a');
+    expect(note).toContain('team-b');
+  });
+
+  test('search_posts does not create a DM for in:@user or -in:@user', async () => {
+    const dmMissing = async (other: string) => {
+      const name = [e.users.alice.id, other].sort().join('__');
+      const res = await fetch(`${e.mmUrl}/api/v4/teams/${e.teams.a.id}/channels/name/${name}`, { headers: { authorization: `Bearer ${aliceMm}` } });
+      return res.status === 404;
+    };
+    const stranger = async (suffix: string) => {
+      const name = `g${suffix}${TAG}`;
+      const u = await mmApi<{ id: string }>(e.adminToken, 'POST', '/users', { username: name, email: `${name}@example.com`, password: 'Passw0rd!dev123' });
+      await mmApi(e.adminToken, 'POST', `/teams/${e.teams.a.id}/members`, { team_id: e.teams.a.id, user_id: u.id });
+      return { id: u.id, name };
+    };
+
+    const one = await stranger('in');
+    const r = await call('alice', 'search_posts', { terms: `${TAG} in:@${one.name}` });
+    expect(await dmMissing(one.id)).toBe(true);
+    expect(r.isError).toBe(true);
+    expect(r.content[0].text).toContain(`@${one.name} との DM はまだありません`);
+
+    const two = await stranger('ex');
+    const x = await call('alice', 'search_posts', { terms: `${TAG} -in:@${two.name}` });
+    expect(await dmMissing(two.id)).toBe(true);
+    expect(x.isError).toBeFalsy();
+  });
+
   test('search_posts interprets on: dates in JST', async () => {
     const term = `${TAG}tz`;
     await mmApi(e.adminToken, 'POST', '/posts', { channel_id: e.teams.a.dupChannelId, message: term, create_at: Date.UTC(2026, 9, 14, 20, 0, 0) });
