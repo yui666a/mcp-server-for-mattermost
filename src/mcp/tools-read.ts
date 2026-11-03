@@ -2,7 +2,7 @@ import type { McpServer, ToolCallback } from '@modelcontextprotocol/sdk/server/m
 import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
 import { z } from 'zod';
 import { MmError, type MmClient } from '../mattermost/client.ts';
-import { BAD_CURSOR, decodeCursor, encodeCursor, fileLine, formatPost, formatTime, InputError, localTime, truncate, type MmFileInfo, type MmPost } from './format.ts';
+import { BAD_CURSOR, decodeCursor, encodeCursor, fileLine, formatPost, formatTime, InputError, localTime, postTruncated, postUserIds, type MmFileInfo, type MmPost } from './format.ts';
 import { pageCursor, paginate } from './paging.ts';
 import { mentionsMe, mentionTerms, type MentionUser } from './mentions.ts';
 import { parsePostRef } from './permalink.ts';
@@ -58,7 +58,7 @@ function render({ lines, next, posts = [], notes = [] }: Page): string {
   return [
     ...lines,
     ...notes,
-    ...(posts.some((p) => truncate(p.message).truncated) ? ['（本文を 4000 文字で切った投稿があります）'] : []),
+    ...(posts.some(postTruncated) ? ['（本文かメッセージ添付を 4000 文字で切った投稿があります）'] : []),
     next ? `next_cursor: ${encodeCursor(next)}` : '（続きはありません）',
   ].join('\n');
 }
@@ -71,7 +71,7 @@ function channelLines(c: ChannelRef): string[] {
 }
 
 async function usernames(mm: Mm, uid: string, posts: MmPost[]): Promise<Map<string, string>> {
-  const ids = [...new Set(posts.map((p) => p.user_id))];
+  const ids = [...new Set(posts.flatMap(postUserIds))];
   if (!ids.length) return new Map();
   const users = await mm.call<UserRef[]>(uid, 'POST', '/users/ids', ids);
   return new Map(users.map((u) => [u.id, u.username]));
@@ -163,7 +163,7 @@ export function registerReadTools(server: McpServer, ctx: ToolContext): void {
     });
   }
 
-  tool('search_posts', '参加しているチームのメッセージを検索する。Mattermost の検索構文（from:、in:、before:、after:、on: など）をそのまま使える。日付は日本時間（JST）で解釈する。新しい順',
+  tool('search_posts', '参加しているチームのメッセージを検索する。Mattermost の検索構文（from:、in:、before:、after:、on: など）をそのまま使える。日付は日本時間（JST）で解釈する。新しい順。メッセージ添付（Bot や webhook などが付ける整形表示）の中身は検索の対象外（Mattermost が添付を検索しないため。その中身を探すなら read_channel で読む）',
     { terms: z.string().min(1), limit: limitArg(20, 50), cursor: cursorArg },
     async ({ terms, limit, cursor }, mm) => {
       const c = cursorOf(z.object({ page: z.number().int().min(0), per_page: perPage(50) }), cursor);
@@ -240,7 +240,7 @@ export function registerReadTools(server: McpServer, ctx: ToolContext): void {
         `返信数: ${replies}`,
         ...(p.root_id ? [`スレッド内の返信です。親 post_id: ${p.root_id}。read_thread でスレッド全体を読めます。`]
           : replies ? [`返信があります。read_thread に post_id: ${p.id} を渡すと、スレッド全体を読めます。`] : []),
-        ...(truncate(p.message).truncated ? ['（本文を 4000 文字で切りました）'] : []),
+        ...(postTruncated(p) ? ['（本文かメッセージ添付を 4000 文字で切りました）'] : []),
       ].join('\n');
     });
 
@@ -455,7 +455,7 @@ export function registerReadTools(server: McpServer, ctx: ToolContext): void {
         const ch = channels.get(id);
         return ch?.type === 'D' ? [other(ch)] : [];
       };
-      const userIds = [...new Set(shown.flatMap((r) => (r.kind === 'thread' ? [r.th.post.user_id, ...dmOf(r.th.post.channel_id)] : dmOf(r.ch.id))))];
+      const userIds = [...new Set(shown.flatMap((r) => (r.kind === 'thread' ? [...postUserIds(r.th.post), ...dmOf(r.th.post.channel_id)] : dmOf(r.ch.id))))];
       const users = userIds.length
         ? new Map((await mm.call<UserRef[]>(uid, 'POST', '/users/ids', userIds)).map((u) => [u.id, u.username]))
         : new Map<string, string>();
