@@ -32,9 +32,12 @@ Mattermost は公式の MCP サーバーを [Mattermost Agents プラグイン](
 | `read_thread` | スレッドの親投稿と返信を古い順に読む |
 | `get_post` | post_id かパーマリンクの URL で 1 件の投稿を読む |
 | `get_file` | 添付ファイルを読む。画像は縮小版を画像として返す |
+| `search_files` | 添付ファイルを、名前と Mattermost の検索構文（`from:`、`in:`、`ext:` など）で探す |
+| `list_saved_posts` | 自分が保存した（フラグを付けた）投稿を新しい順に一覧する |
 | `search_channels` | 名前でチャンネル（公開、参加している非公開、DM、グループ DM）を探す |
 | `list_my_channels` | 参加しているチャンネルを最終投稿の新しい順に一覧する |
 | `get_channel` | チャンネルの種類、目的、ヘッダー、メンバー数、ピン留めされた投稿を読む |
+| `list_channel_members` | 参加しているチャンネルのメンバーを、ユーザー名の順に一覧する |
 | `get_unreads` | 未読のあるチャンネルと、スレッドの折りたたみが有効なら未読のスレッドを一覧する |
 | `get_mentions` | 自分へのメンションを一覧する |
 | `search_users` | 名前やユーザー名でユーザーを探す |
