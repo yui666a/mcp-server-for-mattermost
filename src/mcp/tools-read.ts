@@ -104,7 +104,7 @@ export function cursorOf<S extends z.ZodType>(schema: S, cursor: string | undefi
   return r.data;
 }
 
-function render({ lines, next, posts = [], notes = [] }: Page): string {
+export function render({ lines, next, posts = [], notes = [] }: Page): string {
   return [
     ...lines,
     ...notes,
@@ -113,7 +113,7 @@ function render({ lines, next, posts = [], notes = [] }: Page): string {
   ].join('\n');
 }
 
-function channelLines(c: ChannelRef): string[] {
+export function channelLines(c: ChannelRef): string[] {
   return [
     `チャンネル: ${c.displayName || c.name}（name: ${c.name}、channel_id: ${c.id}）`,
     c.teamId ? `チーム: ${c.teamName}（team_id: ${c.teamId}）` : 'チーム: なし（DM またはグループ DM）',
