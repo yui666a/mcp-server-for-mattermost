@@ -27,7 +27,7 @@ Mattermost は公式の MCP サーバーを [Mattermost Agents プラグイン](
 
 | ツール | 内容 |
 |---|---|
-| `search_posts` | 参加しているチームのメッセージを、Mattermost の検索構文（`from:`、`in:`、`before:` など）で検索する |
+| `search_posts` | 参加しているチームのメッセージを、Mattermost の検索構文（`from:`、`in:`、`before:` など）で検索する。`in:` にはチャンネル名や `@ユーザー名` も渡せる（DM は作らない） |
 | `read_channel` | チャンネルの投稿を新しい順に読む |
 | `read_thread` | スレッドの親投稿と返信を古い順に読む |
 | `get_post` | post_id かパーマリンクの URL で 1 件の投稿を読む |
