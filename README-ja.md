@@ -21,7 +21,7 @@ Mattermost は公式の MCP サーバーを [Mattermost Agents プラグイン](
 - **Team Edition で動く**: Mattermost Team Edition 11.7.8 で開発し、テストしている
 - **利用者ごとの OAuth と、自前の認可サーバー**: MCP クライアントは自分を登録し（Dynamic Client Registration）、このサーバーでだけ使えるトークンを受け取る。利用者の Mattermost のトークンはサーバー側に暗号化して保存し、MCP クライアントには渡さない（token passthrough をしない）。認可のたびに、クライアントのリダイレクト URI を示す同意画面を出す
 - **Team Edition でも予約投稿ができる**: Team Edition では Mattermost の予約投稿の API を使えないので、サーバーが予約を保存し、時刻が来たら本人のトークンで投稿する
-- **LLM が呼ぶ前提の安全策**: クライアントがやり直したときの二重投稿を防ぐ。編集と削除は本人の投稿に限り、返信のあるスレッドの親投稿は消さない。下書きは、本文の違う既存の下書きを指示なしに上書きせず、同じ本文を投稿したら消す
+- **LLM が呼ぶ前提の安全策**: クライアントがやり直したときの二重投稿を防ぐ。編集と削除は本人の投稿に限り、返信のあるスレッドの親投稿は消さない。下書きは、本文の違う既存の下書きを指示なしに上書きせず、同じ投稿先へ同じ本文をこのサーバーから投稿したら消す
 
 ## ツール
 
@@ -43,7 +43,7 @@ Mattermost は公式の MCP サーバーを [Mattermost Agents プラグイン](
 | `prepare_upload` | PC のファイル（スクリーンショット、PDF、写真など）を `curl` で送るための使い捨ての URL を発行する。Claude Code や Codex CLI のように PC でコマンドを実行できるクライアント向け |
 | `add_reaction` / `remove_reaction` | 自分のリアクションを付ける、外す |
 | `edit_message` / `delete_message` | 自分の投稿を編集する、削除する |
-| `save_draft` | 本人が画面から送る Mattermost の下書きとして保存する |
+| `save_draft` | 本人が画面から送る Mattermost の下書きとして保存する。同じ本文を `send_message` で送ると消える |
 | `schedule_message` | 投稿を予約する（1 分後から 30 日後まで） |
 | `list_scheduled_messages` | 自分の予約を、状態とパーマリンクとともに一覧する |
 | `update_scheduled_message` / `cancel_scheduled_message` | 待機中の予約を変える、取り消す |
