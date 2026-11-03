@@ -232,7 +232,7 @@ const listed = <T>(all: T[], c: { offset: number; per_page: number } | undefined
   return { shown: all.slice(offset, end), next: all.length > end ? { offset: end, per_page: per } : undefined };
 };
 
-const PRESENCE: Record<string, string> = { online: 'オンライン', away: '離席', dnd: '取り込み中', offline: 'オフライン', ooo: '不在' };
+export const PRESENCE: Record<string, string> = { online: 'オンライン', away: '離席', dnd: '取り込み中', offline: 'オフライン', ooo: '不在' };
 
 function timeZoneLines(tz: Record<string, string> | undefined): string[] {
   const auto = tz?.useAutomaticTimezone === 'true';
