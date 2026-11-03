@@ -758,12 +758,19 @@ describe('send_message with files', () => {
   test('the tool describes files, their two forms and the limits, and that a draft with the same message is cleared', async () => {
     const t = (await setup().tools()).find((x) => x.name === 'send_message')!;
     expect(t.description).toContain('files');
-    expect(t.description).toContain('コマンドを実行できるクライアント（Claude Code、Codex CLI など）なら prepare_upload でアップロードし');
-    expect(t.description).toContain('content_base64 は、claude.ai のようにコマンドを実行できないクライアントが手元で作った小さなバイナリのためのもの');
-    expect(t.description).toContain('save_draft で本文を下書きにし、ファイルは Mattermost の画面から添付するよう案内する');
     expect(t.description).toContain('同じ投稿先に本文の同じ下書きがあれば、投稿の後に消す');
-    const schema = t as unknown as { inputSchema: { properties: { files: { items: { anyOf: { properties: { content_base64?: { description?: string } } }[] } } } } };
-    expect(schema.inputSchema.properties.files.items.anyOf[1].properties.content_base64?.description).toContain('prepare_upload を使う');
+  });
+
+  test('the tool sends clients that can run commands on the user\'s PC to prepare_upload, keeping content_base64 for those that cannot', async () => {
+    const t = (await setup().tools()).find((x) => x.name === 'send_message')! as unknown as {
+      description: string; inputSchema: { properties: { files: { items: { anyOf: { properties: { content_base64?: { description?: string } } }[] } } } };
+    };
+    expect(t.description).toContain('利用者の PC にあるバイナリ（スクリーンショット、PDF など）は、利用者の PC でコマンドを実行できるクライアント（Claude Code、Codex CLI など）なら prepare_upload でアップロードし');
+    expect(t.description).toContain('128KiB を超えると送れない');
+    expect(t.description).toContain('content_base64 は、claude.ai のように利用者の PC でコマンドを実行できないクライアントのためのもの');
+    expect(t.description).toContain('save_draft で本文を下書きにし、ファイルは Mattermost の画面から添付するよう案内する');
+    const b64 = t.inputSchema.properties.files.items.anyOf.find((x) => x.properties.content_base64)!.properties.content_base64!;
+    expect(b64.description).toContain('利用者の PC でコマンドを実行できるクライアントなら prepare_upload を使う');
   });
 
   test('the draft cleanup\'s 5-second deadline reaches the Mattermost requests, and running past it leaves the post a success', async () => {
