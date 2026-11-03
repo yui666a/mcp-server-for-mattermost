@@ -2,11 +2,12 @@ import type { McpServer, ToolCallback } from '@modelcontextprotocol/sdk/server/m
 import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
 import { z } from 'zod';
 import { randomToken, sha256 } from '../crypto.ts';
+import { log } from '../log.ts';
 import { MmError, RateLimited } from '../mattermost/client.ts';
 import { MAX_OPEN_UPLOAD_URLS, type HeldFile, type Store } from '../store.ts';
 import { InputError, type MmPost } from './format.ts';
 import { findPosted, postOnce } from './post.ts';
-import { myTeams, resolveChannel, teamNameOf, type Mm, type MmChannel } from './resolve.ts';
+import { myTeams, resolveChannel, teamNameOf, type ChannelRef, type Mm, type MmChannel } from './resolve.ts';
 import { guarded, text, type ToolContext } from './server.ts';
 
 type FileArg = { name: string; content_text?: string; content_base64?: string };
@@ -25,7 +26,7 @@ const inputSchema = {
   allow_duplicate: z.boolean().optional().describe('同じ本文を意図して繰り返し投稿するときに true'),
   files: z.array(z.union([
     z.strictObject({ name: FILE_NAME, content_text: z.string().min(1).describe('UTF-8 のテキストとしてそのまま添付する中身') }),
-    z.strictObject({ name: FILE_NAME, content_base64: z.string().min(1).describe('バイナリの中身の base64（data URL の接頭辞や改行は付けない）') }),
+    z.strictObject({ name: FILE_NAME, content_base64: z.string().min(1).describe('バイナリの中身の base64（data URL の接頭辞や改行は付けない）。利用者の PC にあるバイナリは、利用者の PC でコマンドを実行できるクライアントなら prepare_upload を使う') }),
   ])).min(1).max(5).optional()
     .describe('添付ファイル（1〜5 件、中身の合計 128KiB まで）。各要素は name と、content_text か content_base64 のどちらか一方'),
   file_ids: z.array(z.string().regex(/^[A-Za-z0-9]{26}$/)).min(1).max(5).optional()
@@ -110,7 +111,11 @@ export async function sendMessage(mm: Mm, store: Store, uid: string, baseUrl: st
     if (root.channel_id !== ch.id) throw new InputError(`root_id ${rootId} の投稿はチャンネル「${ch.name}」にありません。`);
   }
   const where = `チャンネル: ${ch.displayName || ch.name}（channel_id: ${ch.id}）${rootId ? `、返信先 post_id: ${rootId}` : ''}`;
-  const done = (postId: string, note: string) => text([note, `post_id: ${postId}`, where, `${baseUrl}/${ch.teamName}/pl/${postId}`].join('\n'));
+  // Not only after a fresh post: an earlier attempt's cleanup may have failed, and a resend that did not post can retry it.
+  const done = async (postId: string, note: string) => {
+    const cleared = await clearSentDraft(mm, uid, ch, rootId ?? '', args.message);
+    return text([note, ...(cleared ? [cleared] : []), `post_id: ${postId}`, where, `${baseUrl}/${ch.teamName}/pl/${postId}`].join('\n'));
+  };
   const spec = { channelId: ch.id, message: args.message, rootId };
   const attached = files.length + fileIds.length;
   // Only the files the post kept: a dropped one may sit on another post, and one left unmarked would pass checkUnposted and be dropped again in silence.
@@ -302,8 +307,11 @@ const draftSchema = {
   overwrite: z.boolean().optional().describe('同じ投稿先に本文の違う下書きがあるときに、上書きするなら true。元の本文に加えて添付ファイルと優先度も失われ、取り消せない'),
 };
 type DraftArgs = { channel: string; message: string; root_id?: string; overwrite?: boolean };
-type Draft = { channel_id: string; root_id: string; message: string };
-const LEFT_BEHIND = 'この下書きを send_message で送っても下書きは消えず、残った下書きをそのまま送ると同じ投稿が 2 回になります。';
+type Draft = {
+  channel_id: string; root_id: string; message: string; file_ids?: string[];
+  priority?: { priority?: string; requested_ack?: boolean; persistent_notifications?: boolean };
+};
+const LEFT_BEHIND = 'この下書きと同じ本文を send_message で送ると、投稿の後にこの下書きを消します（画面で添付を付けた場合は消しません）。';
 const DISABLED: [number, string, string] = [501, 'api.drafts.disabled.app_error', 'このサーバーでは下書きの同期が無効です。'];
 
 // Refused rather than saved: with sync off the webapp neither loads the draft nor shows its own unsent text to the check below.
@@ -324,6 +332,40 @@ export async function checkRoot(mm: Mm, uid: string, rootId: string, ch: { id: s
   if (root.root_id) throw new InputError(`root_id ${rootId} は返信です。スレッドの親投稿の post_id を指定してください。`);
 }
 
+// Not throwing when the caller has no team: send_message's cleanup has nothing to do then, since drafts are listed per team and a DM draft shows nowhere.
+async function draftsOf(mm: Mm, uid: string, ch: ChannelRef): Promise<Draft[] | undefined> {
+  const teamId = ch.teamId || (await myTeams(mm, uid))[0]?.id;
+  if (!teamId) return undefined;
+  return (await mm.call<Draft[] | null>(uid, 'GET', `/users/${uid}/teams/${teamId}/drafts`)) ?? [];
+}
+
+const CLEANUP_MS = 5000;
+
+// Not deleting only when the text still matches: Mattermost has no conditional delete, so an edit saved between the list and the DELETE is lost.
+// Not left running past the deadline: a late DELETE could remove a draft the user rewrote after reading that it was not cleared. A DELETE already sent still completes on Mattermost.
+async function clearSentDraft(mm: Mm, uid: string, ch: ChannelRef, rootId: string, message: string): Promise<string> {
+  const deadline = AbortSignal.timeout(CLEANUP_MS);
+  const quick: Mm = { call: (u, m, p, b) => mm.call(u, m, p, b, deadline) };
+  try {
+    const d = (await draftsOf(quick, uid, ch))?.find((x) => x.channel_id === ch.id && (x.root_id || '') === rootId && x.message === message);
+    if (!d) return '';
+    if (d.file_ids?.length) return '同じ本文の下書きがありますが、添付ファイルが付いているため消していません。そのまま送ると、同じ本文がもう一度投稿されます。';
+    // Not deleting with sync off: the webapp clears its stored draft on draft_deleted whatever the setting, wiping unsynced text kept only in the browser.
+    if (await syncDraftsOff(quick, uid)) return '同じ本文の下書きがありますが、下書きの同期を切っているため消していません。同期を入れ直すと画面に出るので、送らずに消してください。';
+    await quick.call(uid, 'DELETE', `/users/${uid}/channels/${ch.id}/drafts${rootId ? `/${rootId}` : ''}`);
+    const p = d.priority;
+    return [
+      // Not claiming the input box is empty: an open editor keeps its own copy until the user switches channel or thread.
+      `同じ本文の下書きを消しました。${rootId ? 'そのスレッド' : 'そのチャンネル'}を画面で開いている場合は、入力欄に本文が残っているので、送らずに消してください。`,
+      ...(p?.priority || p?.requested_ack || p?.persistent_notifications ? ['下書きに付いていた優先度は、この投稿には付いていません。'] : []),
+    ].join('\n');
+  } catch (e) {
+    if (e instanceof MmError && e.status === 501 && e.id === DISABLED[1]) return '';
+    log('draft_cleanup_failed', { mm_user_id: uid, name: (e as Error)?.name, ...(e instanceof MmError ? { status: e.status, id: e.id } : {}) });
+    return '同じ本文の下書きを確かめられなかったか、消せませんでした。下書きが残っていれば、そのまま送ると同じ投稿が 2 回になります。';
+  }
+}
+
 export async function saveDraft(mm: Mm, uid: string, args: DraftArgs): Promise<CallToolResult> {
   const ch = await resolveChannel(mm, uid, args.channel);
   const rootId = args.root_id ?? '';
@@ -332,11 +374,10 @@ export async function saveDraft(mm: Mm, uid: string, args: DraftArgs): Promise<C
   if (await syncDraftsOff(mm, uid)) {
     throw new InputError('下書きの同期を切っているため保存していません。保存しても画面に届かないか、書きかけの下書きを上書きするおそれがあります。「設定 > 詳細設定」で下書きの同期を入れてください。');
   }
-  const teamId = ch.teamId || (await myTeams(mm, uid))[0]?.id;
-  if (!teamId) throw new InputError('所属しているチームがないため、既存の下書きを確かめられません。');
-  const list = await worded(mm.call<Draft[] | null>(uid, 'GET', `/users/${uid}/teams/${teamId}/drafts`), { id: [DISABLED] });
+  const list = await worded(draftsOf(mm, uid, ch), { id: [DISABLED] });
+  if (!list) throw new InputError('所属しているチームがないため、既存の下書きを確かめられません。');
   const where = `チャンネル: ${ch.displayName || ch.name}（channel_id: ${ch.id}）${rootId ? `、返信先 post_id: ${rootId}` : ''}`;
-  const existing = (list ?? []).find((d) => d.channel_id === ch.id && (d.root_id || '') === rootId);
+  const existing = list.find((d) => d.channel_id === ch.id && (d.root_id || '') === rootId);
   if (existing?.message === args.message) return text(`同じ下書きがあります。保存し直していません。\n${where}\n${LEFT_BEHIND}`);
   if (existing && !args.overwrite) {
     const head = [...existing.message].slice(0, 200).join('');
@@ -413,7 +454,7 @@ export function registerSendTools(server: McpServer, ctx: ToolContext): void {
   ) as unknown as ToolCallback<typeof deleteSchema>);
 
   server.registerTool('save_draft', {
-    description: '投稿せずに、本人の Mattermost の下書きとして保存する。送信は本人が画面で行う。root_id を渡すとスレッドへの返信の下書きになる。同じ投稿先に本文の違う下書きがあれば、overwrite: true が無い限り上書きしない。下書きの同期を切っている利用者には保存しない。この下書きを send_message で送っても下書きは残り、本人がそれをそのまま送ると同じ投稿が 2 回になる',
+    description: '投稿せずに、本人の Mattermost の下書きとして保存する。送信は本人が画面で行う。root_id を渡すとスレッドへの返信の下書きになる。同じ投稿先に本文の違う下書きがあれば、overwrite: true が無い限り上書きしない。下書きの同期を切っている利用者には保存しない。この下書きと同じ本文を send_message で送ると、投稿の後に下書きを消す（画面で添付を付けた下書きは消さない）',
     inputSchema: draftSchema,
     annotations: destructive,
   }, guarded(ctx, 'save_draft', async (args: DraftArgs, extra: { signal: AbortSignal }) => saveDraft(mmOf(extra.signal), ctx.mmUserId, args),
@@ -428,11 +469,11 @@ export function registerSendTools(server: McpServer, ctx: ToolContext): void {
   ) as unknown as ToolCallback<typeof prepareSchema>);
 
   server.registerTool('send_message', {
-    description: 'チャンネルへ投稿する。root_id を渡すとスレッドへの返信になる。channel はチャンネル ID、「チーム名/チャンネル名」、チャンネル名、@ユーザー名（DM）のどれか。files でファイルを添付できる（1〜5 件、合計 128KiB まで。SVG、CSV、Markdown、コードなどのテキストは content_text、小さなバイナリは content_base64）。利用者の PC にあるファイルは、prepare_upload でアップロードして受け取った file_id を file_ids に渡す。同じ投稿先へ同じ本文と添付を 10 分以内に送ると、やり直しとみなして投稿しない',
+    description: 'チャンネルへ投稿する。root_id を渡すとスレッドへの返信になる。channel はチャンネル ID、「チーム名/チャンネル名」、チャンネル名、@ユーザー名（DM）のどれか。files でファイルを添付できる（1〜5 件、合計 128KiB まで。SVG、CSV、Markdown、コードなどのテキストは content_text、小さなバイナリは content_base64）。利用者の PC にあるバイナリ（スクリーンショット、PDF など）は、利用者の PC でコマンドを実行できるクライアント（Claude Code、Codex CLI など）なら prepare_upload でアップロードし、受け取った file_id を file_ids に渡す（content_base64 だと引数が大きくなって会話の文脈を圧迫し、128KiB を超えると送れない）。content_base64 は、claude.ai のように利用者の PC でコマンドを実行できないクライアントのためのもの。claude.ai からは PC のファイルを送れないので、save_draft で本文を下書きにし、ファイルは Mattermost の画面から添付するよう案内する。同じ投稿先へ同じ本文と添付を 10 分以内に送ると、やり直しとみなして投稿しない。同じ投稿先に本文の同じ下書きがあれば、投稿の後に消す（添付の付いた下書きと、下書きの同期を切っている利用者の下書きは消さない）',
     inputSchema,
     annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false },
   }, guarded(ctx, 'send_message', async (args: Args, extra: { signal: AbortSignal }) => {
-    const mm: Mm = { call: (u, m, p, b) => ctx.mm.call(u, m, p, b, extra.signal) };
+    const mm: Mm = { call: (u, m, p, b, s) => ctx.mm.call(u, m, p, b, s ? AbortSignal.any([extra.signal, s]) : extra.signal) };
     return sendMessage(mm, ctx.store, ctx.mmUserId, ctx.cfg.mmBrowserUrl, args);
   // Cast for the same reason as in tools-read.ts: the SDK's callback type does not resolve for this shape.
   }) as unknown as ToolCallback<typeof inputSchema>);

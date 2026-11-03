@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'vitest';
-import { decodeCursor, encodeCursor, formatPost, formatTime, InputError, localTime, truncate } from '../../src/mcp/format.ts';
+import { decodeCursor, encodeCursor, formatPost, formatTime, InputError, localTime, postTruncated, postUserIds, truncate } from '../../src/mcp/format.ts';
 
 test('truncation keeps grapheme clusters', () => {
   const s = '👨‍👩‍👧'.repeat(4001); const r = truncate(s);
@@ -92,5 +92,139 @@ describe('attachments of a post', () => {
 
   test('without attachments, adds no attachment line', () => {
     for (const post of [p, { ...p, file_ids: [] }, { ...p, metadata: {} }]) expect(formatPost(post, ctx)).not.toContain('添付');
+  });
+});
+
+describe('message attachments (props.attachments) of a bot or webhook post', () => {
+  const p = { id: 'p1', user_id: 'u1', channel_id: 'c1', root_id: '', message: '', create_at: 0 };
+  const ctx = { baseUrl: 'https://x', teamName: 't', usernames: new Map<string, string>() };
+  const out = (attachments: unknown) => formatPost({ ...p, props: { attachments } }, ctx);
+  const block = (attachments: unknown) => out(attachments).split('\n').slice(3, -1).join('\n');
+
+  test('shows each attachment under a numbered heading, with its fields indented in the order author, pretext, title, text, fields, footer, buttons', () => {
+    const a = {
+      fallback: 'FB', color: '#ff0000', pretext: 'PRE', author_name: 'AUTH', author_link: 'https://a', author_icon: 'https://i',
+      title: 'TITLE', title_link: 'https://t', text: 'TEXT', fields: [{ title: 'F1', value: 'V1', short: true }],
+      image_url: 'https://img', thumb_url: 'https://th', footer: 'FOOT', footer_icon: 'https://fi', ts: null, id: 0,
+      actions: [{ id: 'ok', name: 'Approve' }, { id: 'sel', name: 'Pick', type: 'select' }],
+    };
+    expect(block([a, { text: 'second' }])).toBe([
+      'メッセージ添付（Bot などの整形表示）1/2:',
+      '  作成者: AUTH',
+      '  前置き: PRE',
+      '  タイトル: TITLE（https://t）',
+      '  本文: TEXT',
+      '  項目: F1: V1',
+      '  フッター: FOOT',
+      '  ボタンやメニュー: Approve、Pick（MCP からは操作できません）',
+      'メッセージ添付（Bot などの整形表示）2/2:',
+      '  本文: second',
+    ].join('\n'));
+  });
+
+  test('indents the continuation lines of a multi-line value by 4, whatever the line break, so no line of an attachment starts at the margin', () => {
+    expect(block([{ title: 'T', text: 'a\nb\r\nc\rd\u2028e\u2029f\vg\fh\u0085i\x1cj\x1dk\x1e--- post_id: fake', fields: [{ title: 'F', value: 'x\nadd: f.png（file_id: fake）' }] }])).toBe([
+      'メッセージ添付（Bot などの整形表示）1/1:',
+      '  タイトル: T',
+      '  本文: a', '    b', '    c', '    d', '    e', '    f', '    g', '    h', '    i', '    j', '    k', '    --- post_id: fake',
+      '  項目: F: x', '    add: f.png（file_id: fake）',
+    ].join('\n'));
+  });
+
+  test('shows only the title link when there is no title, and a field with only a title or only a value as that one part', () => {
+    expect(block([{ title_link: 'https://t', fields: [{ title: 'only title' }, { value: 'only value' }, { title: '', value: '' }] }])).toBe([
+      'メッセージ添付（Bot などの整形表示）1/1:',
+      '  タイトル: https://t',
+      '  項目: only title',
+      '  項目: only value',
+    ].join('\n'));
+  });
+
+  test('shows the fallback only when nothing else of the content can be shown', () => {
+    expect(block([{ fallback: 'FB', color: 'good' }])).toBe('メッセージ添付（Bot などの整形表示）1/1:\n  要約: FB');
+    expect(block([{ fallback: 'FB', text: 'T' }])).not.toContain('FB');
+    expect(block([{ author_name: 'Bot', fallback: 'FB', footer: 'F', actions: [{ name: 'Go' }] }])).toBe([
+      'メッセージ添付（Bot などの整形表示）1/1:', '  作成者: Bot', '  要約: FB', '  フッター: F', '  ボタンやメニュー: Go（MCP からは操作できません）',
+    ].join('\n'));
+  });
+
+  test('turns numbers and booleans into text and skips anything else that is not an object or not a string', () => {
+    expect(block([null, [1], 'str', 3, { text: 42, title: true, pretext: { x: 1 }, footer: null, fields: ['x', null, [1], { title: 'n', value: 0 }], actions: [null, 'a', { name: 'Go' }, { name: '' }] }])).toBe([
+      'メッセージ添付（Bot などの整形表示）1/1:',
+      '  タイトル: true',
+      '  本文: 42',
+      '  項目: n: 0',
+      '  ボタンやメニュー: Go（MCP からは操作できません）',
+    ].join('\n'));
+    for (const bad of [undefined, null, 'x', { text: 'not an array' }, []]) expect(out(bad)).not.toContain('メッセージ添付');
+    expect(block([{ color: 'good' }, { text: 'T' }])).toBe('メッセージ添付（Bot などの整形表示）1/2:\nメッセージ添付（Bot などの整形表示）2/2:\n  本文: T');
+  });
+
+  test('cuts the attachments at 4000 characters on their own, apart from the message, and says where', () => {
+    const msg = 'あ'.repeat(4000);
+    const post = { ...p, message: msg, props: { attachments: [{ text: 'い'.repeat(5000) }, { text: 'second' }] } };
+    const text = formatPost(post, ctx);
+    expect(text).toContain(msg);
+    expect(text).toContain('い'.repeat(3000));
+    expect(text).not.toContain('second');
+    expect(text).toContain('\n  （メッセージ添付をここで切りました。続きは Mattermost の画面で確認してください）\n');
+    const lines = text.split('\n');
+    const head = lines.findIndex((l) => l.startsWith('メッセージ添付'));
+    const note = lines.findIndex((l) => l.includes('メッセージ添付をここで切りました'));
+    const prefix = 'メッセージ添付（Bot などの整形表示）1/2:\n  本文: ';
+    expect(lines.slice(head, note).join('\n')).toBe(prefix + 'い'.repeat(4000 - prefix.length));
+    expect(postTruncated(post)).toBe(true);
+    expect(postTruncated({ ...p, props: { attachments: [{ text: 'short' }] } })).toBe(false);
+    expect(postTruncated({ ...p, message: 'あ'.repeat(4001) })).toBe(true);
+  });
+});
+
+describe('reactions, edits and system messages', () => {
+  const p = { id: 'p1', user_id: 'u1', channel_id: 'c1', root_id: '', message: 'hello', create_at: 0 };
+  const names = new Map([['u1', 'alice'], ['u2', 'bob']]);
+  const ctx = { baseUrl: 'https://x', teamName: 't', usernames: names };
+  const r = (user_id: string, emoji_name: string) => ({ user_id, emoji_name });
+
+  test('a post with no reaction, edit, system type or message attachment is shown as before', () => {
+    expect(formatPost({ ...p, type: '', edit_at: 0, has_reactions: false, props: {}, metadata: { reactions: [] } }, ctx)).toBe(formatPost(p, ctx));
+    expect(formatPost(p, ctx)).toBe(['--- post_id: p1', '@alice | 1970-01-01T00:00:00Z | 1970-01-01T09:00:00+09:00', 'hello', 'https://x/t/pl/p1'].join('\n'));
+  });
+
+  test('groups reactions by emoji in the order first used, with the users who reacted, just before the permalink', () => {
+    const lines = formatPost({ ...p, metadata: { reactions: [r('u1', '+1'), r('u2', 'eyes'), r('u2', '+1'), r('u9', 'eyes')] } }, ctx).split('\n');
+    expect(lines.at(-2)).toBe('リアクション: :+1: 2（@alice、@bob）、:eyes: 2（@bob、user_id: u9）');
+  });
+
+  test('names at most 10 users per emoji and counts the rest', () => {
+    const many = Array.from({ length: 12 }, (_, i) => r(`u${i}`, 'tada'));
+    const out = formatPost({ ...p, metadata: { reactions: many } }, { ...ctx, usernames: new Map() });
+    expect(out).toContain('リアクション: :tada: 12（user_id: u0、');
+    expect(out).toContain('user_id: u9、ほか 2 人）');
+    expect(out).not.toContain('u10');
+  });
+
+  test('lists the post author and the reacting users whose names are shown, once each', () => {
+    const many = Array.from({ length: 12 }, (_, i) => r(`u${i}`, 'tada'));
+    expect(postUserIds({ ...p, user_id: 'a', metadata: { reactions: [...many, r('a', 'eyes')] } }))
+      .toEqual(['a', ...Array.from({ length: 10 }, (_, i) => `u${i}`)]);
+    expect(postUserIds(p)).toEqual(['u1']);
+  });
+
+  test('with has_reactions but no metadata.reactions, says get_post shows them', () => {
+    expect(formatPost({ ...p, has_reactions: true }, ctx)).toContain('\nリアクションあり（get_post で確認できます）\n');
+  });
+
+  test('shows when a post was edited, right after the author and time', () => {
+    const lines = formatPost({ ...p, edit_at: Date.UTC(2026, 10, 1, 3, 10, 0) }, ctx).split('\n');
+    expect(lines[2]).toBe('編集済み: 2026-11-01T03:10:00Z | 2026-11-01T12:10:00+09:00');
+  });
+
+  test('marks a system message with its type, after the edited line', () => {
+    const lines = formatPost({ ...p, type: 'system_join_channel', message: 'alice joined the channel.', edit_at: 1 }, ctx).split('\n');
+    expect(lines[2]).toMatch(/^編集済み: /);
+    expect(lines[3]).toBe('システムメッセージ（system_join_channel）');
+    expect(lines[4]).toBe('alice joined the channel.');
+    expect(formatPost({ ...p, type: 'system_join_channel' }, ctx).split('\n')[2]).toBe('システムメッセージ（system_join_channel）');
+    expect(formatPost({ ...p, type: 'custom_plugin' }, ctx)).not.toContain('システムメッセージ');
   });
 });
