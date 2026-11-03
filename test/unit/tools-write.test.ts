@@ -758,7 +758,12 @@ describe('send_message with files', () => {
   test('the tool describes files, their two forms and the limits, and that a draft with the same message is cleared', async () => {
     const t = (await setup().tools()).find((x) => x.name === 'send_message')!;
     expect(t.description).toContain('files');
+    expect(t.description).toContain('コマンドを実行できるクライアント（Claude Code、Codex CLI など）なら prepare_upload でアップロードし');
+    expect(t.description).toContain('content_base64 は、claude.ai のようにコマンドを実行できないクライアントが手元で作った小さなバイナリのためのもの');
+    expect(t.description).toContain('save_draft で本文を下書きにし、ファイルは Mattermost の画面から添付するよう案内する');
     expect(t.description).toContain('同じ投稿先に本文の同じ下書きがあれば、投稿の後に消す');
+    const schema = t as unknown as { inputSchema: { properties: { files: { items: { anyOf: { properties: { content_base64?: { description?: string } } }[] } } } } };
+    expect(schema.inputSchema.properties.files.items.anyOf[1].properties.content_base64?.description).toContain('prepare_upload を使う');
   });
 
   test('the draft cleanup\'s 5-second deadline reaches the Mattermost requests, and running past it leaves the post a success', async () => {
