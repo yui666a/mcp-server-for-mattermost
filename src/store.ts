@@ -50,14 +50,23 @@ export type UploadedFile = { fileId: string; channelId: string; postId: string |
 export type ScheduledStatus = 'pending' | 'sending' | 'posted' | 'failed';
 export type Scheduled = {
   id: string; channelId: string; rootId: string; message: string | undefined; scheduledAt: number;
-  status: ScheduledStatus; postId: string | null; error: string | null;
+  status: ScheduledStatus; postId: string | null; error: string | null; fileIds: string[];
 };
+export type HeldFile = { fileId: string; scheduledId: string };
+
+export class FileHeld extends Error {
+  held: HeldFile;
+  constructor(held: HeldFile) {
+    super('file held by a schedule');
+    this.held = held;
+  }
+}
 
 export type ClaimedScheduled = Scheduled & {
   mmUserId: string; message: string | undefined; pendingPostId: string | null; firstAttemptAt: number | null; retry: boolean;
 };
 export type ScheduledOutcome =
-  | { status: 'posted'; postId: string }
+  | { status: 'posted'; postId: string; fileIds?: string[]; note?: string }
   | { status: 'failed'; error: string }
   | { status: 'pending'; forgetAttempt: boolean };
 
@@ -403,18 +412,34 @@ export class Store {
   }
 
   // Not a COUNT outside the transaction: two requests at the cap would both get in.
-  createScheduled(s: { mmUserId: string; channelId: string; rootId?: string; message: string; scheduledAt: number }, now: number): string | undefined {
+  // Not checking the held files outside the transaction either: two schedules taking one file would both get in, and Mattermost gives it to the first only.
+  createScheduled(s: { mmUserId: string; channelId: string; rootId?: string; message: string; scheduledAt: number; fileIds?: string[] }, now: number): string | undefined {
+    const fileIds = s.fileIds ?? [];
     return this.tx(() => {
       const n = Number(this.get("SELECT COUNT(*) AS n FROM scheduled_posts WHERE mm_user_id = ? AND status = 'pending'", s.mmUserId)?.n ?? 0);
       if (n >= MAX_PENDING_SCHEDULED) return undefined;
+      const [held] = this.heldScheduledFiles(s.mmUserId, fileIds);
+      if (held) throw new FileHeld(held);
       const id = randomToken();
       this.run(
-        `INSERT INTO scheduled_posts (id, mm_user_id, channel_id, root_id, message_sealed, scheduled_at, status, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, 'pending', ?, ?)`,
-        id, s.mmUserId, s.channelId, s.rootId ?? '', seal(this.encKey, s.message), s.scheduledAt, now, now,
+        `INSERT INTO scheduled_posts (id, mm_user_id, channel_id, root_id, message_sealed, scheduled_at, status, created_at, updated_at, file_ids)
+         VALUES (?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?)`,
+        id, s.mmUserId, s.channelId, s.rootId ?? '', seal(this.encKey, s.message), s.scheduledAt, now, now, JSON.stringify(fileIds),
       );
       return id;
     });
+  }
+
+  // Not releasing the files of an attempted failed row: it may have been posted, and Mattermost would drop the files from any other post.
+  heldScheduledFiles(mmUserId: string, fileIds: string[]): HeldFile[] {
+    if (!fileIds.length) return [];
+    const rows = this.db.prepare(
+      `SELECT f.value AS file_id, s.id FROM scheduled_posts s, json_each(s.file_ids) f
+       WHERE s.mm_user_id = ? AND f.value IN (SELECT value FROM json_each(?))
+         AND (s.status IN ('pending', 'sending', 'posted') OR (s.status = 'failed' AND s.first_attempt_at IS NOT NULL))
+       ORDER BY s.created_at, s.id`,
+    ).all(mmUserId, JSON.stringify(fileIds)) as Row[];
+    return rows.map((r) => ({ fileId: r.file_id, scheduledId: r.id }));
   }
 
   private scheduled(r: Row): Scheduled {
@@ -427,7 +452,7 @@ export class Store {
     }
     return {
       id: r.id, channelId: r.channel_id, rootId: r.root_id, message, scheduledAt: r.scheduled_at,
-      status: r.status, postId: r.post_id, error: r.error,
+      status: r.status, postId: r.post_id, error: r.error, fileIds: JSON.parse(r.file_ids),
     };
   }
 
@@ -493,14 +518,19 @@ export class Store {
     });
   }
 
+  // Not a second statement after the UPDATE: a crash between them would leave a posted schedule's files unmarked, and send_message would refuse them with the wrong reason.
   settleScheduled(id: string, now: number, o: ScheduledOutcome): void {
     const forget = o.status === 'pending' && o.forgetAttempt ? 1 : 0;
-    this.run(
-      `UPDATE scheduled_posts SET status = ?, post_id = ?, error = ?, updated_at = ?,
-         first_attempt_at = CASE WHEN ? THEN NULL ELSE first_attempt_at END, pending_post_id = CASE WHEN ? THEN NULL ELSE pending_post_id END
-       WHERE id = ? AND status = 'sending'`,
-      o.status, o.status === 'posted' ? o.postId : null, o.status === 'failed' ? o.error : null, now, forget, forget, id,
-    );
+    const error = o.status === 'failed' ? o.error : o.status === 'posted' ? o.note ?? null : null;
+    this.tx(() => {
+      const r = this.get(
+        `UPDATE scheduled_posts SET status = ?, post_id = ?, error = ?, updated_at = ?,
+           first_attempt_at = CASE WHEN ? THEN NULL ELSE first_attempt_at END, pending_post_id = CASE WHEN ? THEN NULL ELSE pending_post_id END
+         WHERE id = ? AND status = 'sending' RETURNING mm_user_id`,
+        o.status, o.status === 'posted' ? o.postId : null, error, now, forget, forget, id,
+      );
+      if (r && o.status === 'posted' && o.fileIds?.length) this.markFilesPosted(r.mm_user_id, o.fileIds, o.postId);
+    });
   }
 
   otherScheduledPostIds(mmUserId: string, id: string): Set<string> {
