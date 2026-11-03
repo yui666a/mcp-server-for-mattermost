@@ -1598,8 +1598,10 @@ describe('search_files', () => {
       expect(hits).not.toContain('POST /files/search');
     });
 
-    test('passes a group DM as given', async () => {
+    test('passes a group DM as given, keeping its words as written', async () => {
       expect(await terms('x in:@bob,carol')).toBe('x in:@bob,carol');
+      expect(await terms('x channel:@bob,carol in:town')).toBe(`x channel:@bob,carol in:${A}`);
+      expect(await terms('x in: @bob,carol in:town')).toBe(`x in: @bob,carol in:${A}`);
     });
 
     test('says a channel is not found, for a name, a channel_id or team/channel answered with 403 or 404, without searching', async () => {
