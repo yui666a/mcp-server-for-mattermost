@@ -204,6 +204,16 @@ describe('read tools against the local Mattermost', () => {
     expect(x.isError).toBeFalsy();
   });
 
+  test('search_posts narrows to, or excludes, an existing DM given as in:@user', async () => {
+    const dm = await mmApi<{ id: string }>(aliceMm, 'POST', '/channels/direct', [e.users.alice.id, e.users.bob.id]);
+    const term = `${TAG}dm`;
+    const id = (await mmApi<{ id: string }>(aliceMm, 'POST', '/posts', { channel_id: dm.id, message: term })).id;
+    expect(postIds(await call('alice', 'search_posts', { terms: `${term} in:@${e.users.bob.username}` }))).toContain(id);
+    const r = await call('alice', 'search_posts', { terms: `${term} -in:@${e.users.bob.username}` });
+    expect(r.isError).toBeFalsy();
+    expect(postIds(r)).not.toContain(id);
+  });
+
   test('search_posts interprets on: dates in JST', async () => {
     const term = `${TAG}tz`;
     await mmApi(e.adminToken, 'POST', '/posts', { channel_id: e.teams.a.dupChannelId, message: term, create_at: Date.UTC(2026, 9, 14, 20, 0, 0) });
