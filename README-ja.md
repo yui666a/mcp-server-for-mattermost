@@ -50,6 +50,8 @@ Mattermost は公式の MCP サーバーを [Mattermost Agents プラグイン](
 
 時刻は JST で扱う。`schedule_message` の時刻（`YYYY-MM-DDTHH:mm[:ss[.sss]]`）はオフセットが無ければ `+09:00` として読むので、ほかのタイムゾーンなら `Z` か `+hh:mm`（`-hh:mm`）を付ける。検索の日付（`on:`、`before:`、`after:`）は JST の日として扱い、出力の時刻は UTC と JST を併記する。
 
+読み取り系のツールが出す投稿には、メッセージ添付（Bot や webhook が投稿する整形表示。Mattermost の検索は対象にしない）、リアクションと付けた人、編集の時刻、システムメッセージかどうかも含める。
+
 読み取り系のツールには MCP の `readOnlyHint` を付けており、クライアントは書き込みの前に利用者へ確認を求められる。
 
 ## 構成
