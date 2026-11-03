@@ -6,7 +6,7 @@ import { BAD_CURSOR, decodeCursor, encodeCursor, fileLine, formatPost, formatTim
 import { pageCursor, paginate } from './paging.ts';
 import { mentionsMe, mentionTerms, type MentionUser } from './mentions.ts';
 import { parsePostRef } from './permalink.ts';
-import { ChannelFetchError, myTeams, resolveChannel, resolveUser, teamNameOf, type ChannelRef, type Mm, type MmChannel, type MmTeam, type UserRef } from './resolve.ts';
+import { Ambiguous, ChannelFetchError, myTeams, NoDirectChannel, resolveChannel, resolveUser, teamNameOf, type ChannelRef, type Mm, type MmChannel, type MmTeam, type UserRef } from './resolve.ts';
 import { guarded, text, type ToolContext } from './server.ts';
 import { worded, type Wording } from './tools-send.ts';
 
@@ -127,6 +127,91 @@ const capNote = (n: number, what: string) => (n >= MM_SEARCH_CAP
   ? [`（Mattermost の検索は ${MM_SEARCH_CAP} 件までしか返さないため、${what}は出ていない可能性があります。条件を絞ってください）`]
   : []);
 
+// Go's unicode.IsSpace, which Mattermost's strings.Fields splits on. Not JS's \s: it adds U+FEFF and lacks U+0085.
+const SEARCH_SPACE = /[\t\n\v\f\r \u0085\u00a0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000]+/;
+const SEARCH_FLAGS = ['from', 'channel', 'in', 'before', 'after', 'on', 'ext'];
+const fields = (s: string) => s.split(SEARCH_SPACE).filter(Boolean);
+
+// Ported from Mattermost's model.splitWords, so that a quoted "in:x" stays a search word as the server reads it.
+function splitWords(text: string): string[] {
+  const words: string[] = [];
+  let quoted = false;
+  let start = 0;
+  for (let i = 0; i < text.length; i++) {
+    if (text[i] !== '"') continue;
+    if (quoted) {
+      words.push(text.slice(start, i + 1));
+      quoted = false;
+      start = i + 1;
+    } else {
+      const from = i > 0 && text[i - 1] === '-' ? i - 1 : i;
+      words.push(...fields(text.slice(start, from)));
+      quoted = true;
+      start = from;
+    }
+  }
+  return [...words, ...fields(text.slice(start))];
+}
+
+// Every flag is walked, not just in:, because any flag with an empty value takes the next word: in "from: in:x" the in:x is the from value.
+function channelFilters(words: string[]): { at: number; span: number; value: string; exclude: boolean }[] {
+  const found = [];
+  for (let i = 0; i < words.length; i++) {
+    const w = words[i];
+    const colon = w.indexOf(':');
+    const exclude = w.startsWith('-');
+    if (colon < 0 || !SEARCH_FLAGS.includes(w.slice(exclude ? 1 : 0, colon).toLowerCase())) continue;
+    let value = w.slice(colon + 1);
+    let span = 1;
+    if (!value) {
+      if (i === words.length - 1) continue;
+      value = words[i + 1];
+      span = 2;
+    }
+    if (/^-?(in|channel):/i.test(w)) found.push({ at: i, span, value, exclude });
+    i += span - 1;
+  }
+  return found;
+}
+
+async function filterChannelIds(mm: Mm, userId: string, spec: string, exclude: boolean, notes: string[]): Promise<string[]> {
+  try {
+    return [(await resolveChannel(mm, userId, spec)).id];
+  } catch (e) {
+    if (e instanceof Ambiguous) {
+      const ids = [...new Set(e.candidates.map((c) => c.id))];
+      if (ids.length > 1 && !exclude) notes.push(`in:${spec} は複数のチームにあるため、すべてで探しました（${e.candidates.map((c) => c.team).join('、')}）。`);
+      return ids;
+    }
+    // No DM means no posts to exclude, so the condition is dropped rather than failing the search.
+    if (e instanceof NoDirectChannel && exclude) return [];
+    if (e instanceof ChannelFetchError && (e.status === 403 || e.status === 404)) throw new InputError(`チャンネル「${spec}」が見つかりません。`);
+    if (spec.startsWith('@') && e instanceof MmError && e.status === 404) throw new InputError(`ユーザー「${spec}」が見つかりません。`);
+    throw e;
+  }
+}
+
+// Rewritten here rather than left to Mattermost: a search across all teams looks channel names up without a team and matches nothing,
+// and in:@user creates the DM (GetOrCreateDirectChannel) from a read-only tool.
+export async function resolveInFilters(mm: Mm, userId: string, terms: string): Promise<{ terms: string; notes: string[] }> {
+  const words = splitWords(terms);
+  const filters = channelFilters(words);
+  if (!filters.length) return { terms, notes: [] };
+  const notes: string[] = [];
+  const out = words.map((w) => [w]);
+  // Sequential rather than Promise.all: parallel lookups would exceed the per-user concurrency limit.
+  for (const f of filters) {
+    const spec = f.value.replace(/^~+/, '');
+    // Group DMs are left to Mattermost: it only looks them up (GetGroupChannel) and never creates one.
+    if (spec.startsWith('@') && spec.includes(',')) continue;
+    const ids = await filterChannelIds(mm, userId, spec, f.exclude, notes);
+    out.splice(f.at, f.span, ids.map((id) => `${f.exclude ? '-' : ''}in:${id}`), ...(f.span === 2 ? [[]] : []));
+  }
+  const rewritten = out.flat().join(' ');
+  if (!rewritten) throw new InputError('検索語か条件を 1 つ以上指定してください。');
+  return { terms: rewritten, notes };
+}
+
 const listed = <T>(all: T[], c: { offset: number; per_page: number } | undefined, limit: number) => {
   const per = c?.per_page ?? limit;
   const offset = c?.offset ?? 0;
@@ -209,19 +294,20 @@ export function registerReadTools(server: McpServer, ctx: ToolContext): void {
     });
   }
 
-  tool('search_posts', '参加しているチームのメッセージを検索する。Mattermost の検索構文（from:、in:、before:、after:、on: など）をそのまま使える。日付は日本時間（JST）で解釈する。新しい順。メッセージ添付（Bot や webhook などが付ける整形表示）の中身は検索の対象外（Mattermost の標準のデータベース検索は添付を検索しないため。その中身を探すなら read_channel で読む）',
+  tool('search_posts', '参加しているチームのメッセージを検索する。Mattermost の検索構文（from:、in:、before:、after:、on: など）をそのまま使える。in: にはチャンネル ID、「チーム名/チャンネル名」、チャンネル名、@ユーザー名（DM）を渡せる。同じ名前が複数のチームにあれば、すべてで探す。見つからなければエラー。参加していないチャンネルは 0 件になる。DM は作らない。日付は日本時間（JST）で解釈する。新しい順。メッセージ添付（Bot や webhook などが付ける整形表示）の中身は検索の対象外（Mattermost の標準のデータベース検索は添付を検索しないため。その中身を探すなら read_channel で読む）',
     { terms: z.string().min(1), limit: limitArg(20, 50), cursor: cursorArg },
     async ({ terms, limit, cursor }, mm) => {
       const c = cursorOf(z.object({ page: z.number().int().min(0), per_page: perPage(50) }), cursor);
       const per = c?.per_page ?? limit ?? 20;
       const page = c?.page ?? 0;
+      const filtered = await resolveInFilters(mm, uid, terms);
       // Not passing the cursor's page to Mattermost: its database search ignores per_page and returns nothing for page > 0.
-      const r = await mm.call<PostList>(uid, 'POST', '/posts/search', { terms, is_or_search: false, include_deleted_channels: false, time_zone_offset: JST_OFFSET_SEC, page: 0, per_page: MM_SEARCH_CAP });
+      const r = await mm.call<PostList>(uid, 'POST', '/posts/search', { terms: filtered.terms, is_or_search: false, include_deleted_channels: false, time_zone_offset: JST_OFFSET_SEC, page: 0, per_page: MM_SEARCH_CAP });
       const all = r.order.map((id) => r.posts[id]).filter(Boolean);
       const shown = all.slice(page * per, (page + 1) * per);
       const lines = [`検索: ${terms}`, ...(shown.length ? await withChannels(mm, shown) : ['一致する投稿はありません。'])];
       const more = all.length > (page + 1) * per;
-      return render({ lines, posts: shown, next: more ? { page: page + 1, per_page: per } : undefined, notes: capNote(all.length, 'これより古い一致') });
+      return render({ lines, posts: shown, next: more ? { page: page + 1, per_page: per } : undefined, notes: [...filtered.notes, ...capNote(all.length, 'これより古い一致')] });
     });
 
   tool('read_channel', 'チャンネルの投稿を新しい順に読む。channel はチャンネル ID、「チーム名/チャンネル名」、チャンネル名、@ユーザー名（DM）のどれか',

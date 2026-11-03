@@ -13,6 +13,7 @@ export type ResolvedChannel = ChannelRef & { raw: MmChannelFull };
 
 // A subclass rather than converting to a message here: the other tools keep the generic Mattermost error, and only get_channel words it.
 export class ChannelFetchError extends MmError {}
+export class NoDirectChannel extends InputError {}
 export type MmTeam = { id: string; name: string; display_name?: string };
 type Candidate = { team: string; name: string; id: string };
 
@@ -77,7 +78,7 @@ export async function resolveChannel(mm: Mm, userId: string, spec: string): Prom
     // POST /channels/direct is not used: it creates the DM, and this is a read.
     const name = [userId, other.id].sort().join('__');
     const c = await mm.call<MmChannelFull>(userId, 'GET', `/teams/${teams[0].id}/channels/name/${name}`).catch((e) => {
-      if (missing(e)) throw new InputError(`@${other.username} との DM はまだありません。`);
+      if (missing(e)) throw new NoDirectChannel(`@${other.username} との DM はまだありません。`);
       throw e;
     });
     return { ...ref(c, teams[0].name), displayName: `@${other.username}` };
