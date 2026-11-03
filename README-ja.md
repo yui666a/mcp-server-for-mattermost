@@ -21,7 +21,7 @@ Mattermost は公式の MCP サーバーを [Mattermost Agents プラグイン](
 - **Team Edition で動く**: Mattermost Team Edition 11.7.8 で開発し、テストしている
 - **利用者ごとの OAuth と、自前の認可サーバー**: MCP クライアントは自分を登録し（Dynamic Client Registration）、このサーバーでだけ使えるトークンを受け取る。利用者の Mattermost のトークンはサーバー側に暗号化して保存し、MCP クライアントには渡さない（token passthrough をしない）。認可のたびに、クライアントのリダイレクト URI を示す同意画面を出す
 - **Team Edition でも予約投稿ができる**: Team Edition では Mattermost の予約投稿の API を使えないので、サーバーが予約を保存し、時刻が来たら本人のトークンで投稿する
-- **LLM が呼ぶ前提の安全策**: クライアントがやり直したときの二重投稿を防ぐ。編集と削除は本人の投稿に限り、返信のあるスレッドの親投稿は消さない。下書きは、本文の違う既存の下書きを指示なしに上書きしない
+- **LLM が呼ぶ前提の安全策**: クライアントがやり直したときの二重投稿を防ぐ。編集と削除は本人の投稿に限り、返信のあるスレッドの親投稿は消さない。下書きは、本文の違う既存の下書きを指示なしに上書きせず、同じ投稿先へ同じ本文を `send_message` で投稿したら消す（予約投稿では消さない）
 
 ## ツール
 
@@ -31,7 +31,7 @@ Mattermost は公式の MCP サーバーを [Mattermost Agents プラグイン](
 | `read_channel` | チャンネルの投稿を新しい順に読む |
 | `read_thread` | スレッドの親投稿と返信を古い順に読む |
 | `get_post` | post_id かパーマリンクの URL で 1 件の投稿を読む |
-| `get_file` | 添付ファイルを読む。画像は縮小版を画像として返す |
+| `get_file` | 添付ファイルを読む。画像は縮小版を画像として、テキスト（UTF-8、または csv・tsv・txt・log の Shift_JIS）は先頭から 10,000 文字までを返す |
 | `search_channels` | 名前でチャンネル（公開、参加している非公開、DM、グループ DM）を探す |
 | `list_my_channels` | 参加しているチャンネルを最終投稿の新しい順に一覧する |
 | `get_channel` | チャンネルの種類、目的、ヘッダー、メンバー数、ピン留めされた投稿を読む |
@@ -39,16 +39,18 @@ Mattermost は公式の MCP サーバーを [Mattermost Agents プラグイン](
 | `get_mentions` | 自分へのメンションを一覧する |
 | `search_users` | 名前やユーザー名でユーザーを探す |
 | `get_user` | ユーザーのプロフィールを、タイムゾーン、現地時刻、在席状況とともに読む |
-| `send_message` | チャンネルやスレッドへ投稿する。小さなファイルと、`prepare_upload` でアップロードしたファイルを添付できる |
+| `send_message` | チャンネルやスレッドへ投稿する。小さなファイルと、`prepare_upload` でアップロードしたファイルを添付できる。投稿の後に、同じ本文の下書きを消す |
 | `prepare_upload` | PC のファイル（スクリーンショット、PDF、写真など）を `curl` で送るための使い捨ての URL を発行する。Claude Code や Codex CLI のように PC でコマンドを実行できるクライアント向け |
 | `add_reaction` / `remove_reaction` | 自分のリアクションを付ける、外す |
 | `edit_message` / `delete_message` | 自分の投稿を編集する、削除する |
-| `save_draft` | 本人が画面から送る Mattermost の下書きとして保存する |
+| `save_draft` | 本人が画面から送る Mattermost の下書きとして保存する。同じ本文を `send_message` で送ると消える |
 | `schedule_message` | 投稿を予約する（1 分後から 30 日後まで） |
 | `list_scheduled_messages` | 自分の予約を、状態とパーマリンクとともに一覧する |
 | `update_scheduled_message` / `cancel_scheduled_message` | 待機中の予約を変える、取り消す |
 
 時刻は JST で扱う。`schedule_message` の時刻（`YYYY-MM-DDTHH:mm[:ss[.sss]]`）はオフセットが無ければ `+09:00` として読むので、ほかのタイムゾーンなら `Z` か `+hh:mm`（`-hh:mm`）を付ける。検索の日付（`on:`、`before:`、`after:`）は JST の日として扱い、出力の時刻は UTC と JST を併記する。
+
+読み取り系のツールが出す投稿には、メッセージ添付（Bot や webhook が投稿する整形表示。Mattermost の標準のデータベース検索は対象にしない）、リアクションと付けた人、編集の時刻、システムメッセージかどうかも含める。
 
 読み取り系のツールには MCP の `readOnlyHint` を付けており、クライアントは書き込みの前に利用者へ確認を求められる。
 

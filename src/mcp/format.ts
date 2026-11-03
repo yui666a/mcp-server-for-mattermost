@@ -3,9 +3,11 @@ export class InputError extends Error {
 }
 
 export type MmFileInfo = { id: string; name: string; mime_type: string; size: number; width?: number; height?: number };
+export type MmReaction = { user_id: string; emoji_name: string };
 export type MmPost = {
   id: string; user_id: string; channel_id: string; root_id: string; message: string; create_at: number;
-  file_ids?: string[]; metadata?: { files?: MmFileInfo[] };
+  type?: string; edit_at?: number; has_reactions?: boolean; props?: Record<string, unknown>;
+  file_ids?: string[]; metadata?: { files?: MmFileInfo[]; reactions?: MmReaction[] };
 };
 export type PostCtx = { baseUrl: string; teamName: string; usernames: Map<string, string>; channel?: string };
 
@@ -50,14 +52,71 @@ function attachmentLines(p: MmPost): string[] {
   return p.file_ids?.length ? [`添付 ${p.file_ids.length} 件（get_post で確認できます）`] : [];
 }
 
+const REACTION_NAMES = 10;
+const isRecord = (x: unknown): x is Record<string, unknown> => typeof x === 'object' && x !== null && !Array.isArray(x);
+const str = (x: unknown): string => (typeof x === 'string' ? x : typeof x === 'number' || typeof x === 'boolean' ? String(x) : '');
+const records = (x: unknown): Record<string, unknown>[] => (Array.isArray(x) ? x.filter(isRecord) : []);
+
+// Indenting every line rather than quoting: attachments are written by whoever posts, and a line at the margin could pass for a post, file or heading line.
+function item(label: string, value: string): string[] {
+  return `${label}: ${value}`.split(/\r\n|[\r\n\v\f\x1c-\x1e\u0085\u2028\u2029]/).map((l, i) => `${i ? '    ' : '  '}${l}`);
+}
+
+function messageAttachment(a: Record<string, unknown>, n: number, total: number): string[] {
+  const title = str(a.title), link = str(a.title_link);
+  const fields = records(a.fields).map((f) => [str(f.title), str(f.value)].filter(Boolean).join(': ')).filter(Boolean);
+  const actions = records(a.actions).map((x) => str(x.name)).filter(Boolean);
+  const body: [string, string][] = [
+    ['作成者', str(a.author_name)],
+    ['前置き', str(a.pretext)],
+    ['タイトル', title && link ? `${title}（${link}）` : title || link],
+    ['本文', str(a.text)],
+    ...fields.map((f): [string, string] => ['項目', f]),
+  ];
+  // Not showing the fallback beside the rest: it is a plain-text summary of the same content.
+  if (![str(a.pretext), title || link, str(a.text), ...fields].some(Boolean)) body.push(['要約', str(a.fallback)]);
+  body.push(['フッター', str(a.footer)], ['ボタンやメニュー', actions.length ? `${actions.join('、')}（MCP からは操作できません）` : '']);
+  return [`メッセージ添付（Bot などの整形表示）${n}/${total}:`, ...body.filter(([, v]) => v).flatMap(([k, v]) => item(k, v))];
+}
+
+function messageAttachments(p: MmPost): { text: string; truncated: boolean } {
+  const list = records(p.props?.attachments);
+  return truncate(list.flatMap((a, i) => messageAttachment(a, i + 1, list.length)).join('\n'));
+}
+
+export const postTruncated = (p: MmPost): boolean => truncate(p.message).truncated || messageAttachments(p).truncated;
+
+function reactionsByEmoji(p: MmPost): { emoji: string; shown: string[]; total: number }[] {
+  const by = new Map<string, string[]>();
+  for (const r of p.metadata?.reactions ?? []) by.set(r.emoji_name, [...(by.get(r.emoji_name) ?? []), r.user_id]);
+  return [...by].map(([emoji, ids]) => ({ emoji, shown: ids.slice(0, REACTION_NAMES), total: ids.length }));
+}
+
+export const postUserIds = (p: MmPost): string[] => [...new Set([p.user_id, ...reactionsByEmoji(p).flatMap((r) => r.shown)])];
+
+function reactionLines(p: MmPost, usernames: Map<string, string>): string[] {
+  const by = reactionsByEmoji(p);
+  if (!by.length) return p.has_reactions && !p.metadata?.reactions ? ['リアクションあり（get_post で確認できます）'] : [];
+  const name = (id: string) => (usernames.has(id) ? `@${usernames.get(id)}` : `user_id: ${id}`);
+  const each = by.map(({ emoji, shown, total }) =>
+    `:${emoji}: ${total}（${shown.map(name).join('、')}${total > shown.length ? `、ほか ${total - shown.length} 人` : ''}）`);
+  return [`リアクション: ${each.join('、')}`];
+}
+
 export function formatPost(p: MmPost, ctx: PostCtx): string {
   const who = ctx.usernames.get(p.user_id);
+  const ma = messageAttachments(p);
   return [
     `--- post_id: ${p.id}${p.root_id ? `（返信先 post_id: ${p.root_id}）` : ''}`,
     `${who ? `@${who}` : `user_id: ${p.user_id}`} | ${formatTime(p.create_at)}`,
+    ...(p.edit_at ? [`編集済み: ${formatTime(p.edit_at)}`] : []),
+    ...(p.type?.startsWith('system_') ? [`システムメッセージ（${p.type}）`] : []),
     ...(ctx.channel ? [ctx.channel] : []),
     truncate(p.message).text,
+    ...(ma.text ? [ma.text] : []),
+    ...(ma.truncated ? ['  （メッセージ添付をここで切りました。続きは Mattermost の画面で確認してください）'] : []),
     ...attachmentLines(p),
+    ...reactionLines(p, ctx.usernames),
     `${ctx.baseUrl}/${ctx.teamName}/pl/${p.id}`,
   ].join('\n');
 }
