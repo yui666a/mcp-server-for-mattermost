@@ -27,7 +27,7 @@ function setup() {
     hits.push(`${req.method} ${path}`);
     const r = routes[`${req.method} ${path}`];
     if (!r) return Response.json({ id: 'not_found' }, { status: 404 });
-    const out = r(req);
+    const out = await r(req);
     return out instanceof Response ? out : Response.json(out);
   });
   const code = ctx.store.createCode({
@@ -213,6 +213,7 @@ describe('edit_message and delete_message', () => {
       'GET /teams/t1': () => ({ id: 't1', name: 'team-a' }),
       [PATCH]: () => mine({ message: 'new' }),
       [DELETE]: () => ({ status: 'OK' }),
+      'GET /users/u1/teams/t1/drafts': () => null,
       ...extra,
     };
   };
@@ -431,7 +432,7 @@ describe('save_draft', () => {
   const LIST = 'GET /users/u1/teams/t1/drafts';
   const SAVE = 'POST /drafts';
   const SYNC_OFF = '設定 > 詳細設定';
-  const LEFT_BEHIND = 'send_message で送っても下書きは消えず、残った下書きをそのまま送ると同じ投稿が 2 回になります';
+  const LEFT_BEHIND = 'この下書きと同じ本文を send_message で送ると、投稿の後にこの下書きを消します（画面で添付を付けた場合は消しません）';
   const writes = () => hits.filter((h) => !h.startsWith('GET '));
   const draft = (over: Record<string, unknown> = {}) => ({ user_id: 'u1', channel_id: CH, root_id: '', message: 'mine', create_at: 1, update_at: 1, ...over });
   const serve = (extra: Record<string, Route> = {}) => {
@@ -634,12 +635,12 @@ describe('save_draft', () => {
     });
   });
 
-  test('is marked destructive and idempotent, warns that sending it with send_message leaves the draft behind, and overwrite warns that attachments and priority are lost too', async () => {
+  test('is marked destructive and idempotent, says that sending the same text with send_message clears the draft, and overwrite warns that attachments and priority are lost too', async () => {
     const list = await setup().tools() as unknown as { name: string; description: string; annotations: object; inputSchema: { properties: Record<string, { description?: string }> } }[];
     const t = list.find((x) => x.name === 'save_draft')!;
     expect(t.annotations).toMatchObject({ readOnlyHint: false, destructiveHint: true, idempotentHint: true });
-    expect(t.description).toContain('send_message で送っても下書きは残り');
-    expect(t.description).toContain('同じ投稿が 2 回になる');
+    expect(t.description).toContain('この下書きと同じ本文を send_message で送ると、投稿の後に下書きを消す');
+    expect(t.description).toContain('画面で添付を付けた下書きは消さない');
     const d = t.inputSchema.properties.overwrite.description!;
     expect(d).toContain('添付');
     expect(d).toContain('優先度');
@@ -656,6 +657,7 @@ describe('send_message with files', () => {
       'GET /teams/t1': () => ({ id: 't1', name: 'team-a' }),
       [UPLOAD]: () => Response.json({ file_infos: [{ id: `f${String(n++).padStart(25, '0')}` }] }, { status: 201 }),
       'POST /posts': () => ({ id: POST, user_id: 'u1', channel_id: CH, root_id: '', message: 'm', create_at: 1, file_ids: (bodies['/posts'] as { file_ids?: string[] }).file_ids }),
+      'GET /users/u1/teams/t1/drafts': () => null,
       ...extra,
     };
   };
@@ -666,7 +668,8 @@ describe('send_message with files', () => {
     serve();
     const r = await send([{ name: '図 1.svg', content_text: '<svg>日本</svg>' }, { name: 'b.bin', content_base64: 'AAH/' }]);
     expect(r.isError).toBe(false);
-    expect(hits).toEqual([`GET /channels/${CH}`, 'GET /teams/t1', UPLOAD, UPLOAD, 'POST /posts']);
+    expect(hits).toEqual([`GET /channels/${CH}`, 'GET /teams/t1', UPLOAD, UPLOAD, 'POST /posts', 'GET /users/u1/teams/t1/drafts']);
+    expect(r.text).not.toContain('下書き');
     expect(uploads.map((u) => [u.query.get('channel_id'), u.query.get('filename'), u.type, [...u.bytes]])).toEqual([
       [CH, '図 1.svg', 'application/octet-stream', [...Buffer.from('<svg>日本</svg>', 'utf8')]],
       [CH, 'b.bin', 'application/octet-stream', [0, 1, 255]],
@@ -753,8 +756,37 @@ describe('send_message with files', () => {
     for (const s of ['secret-name', 'secret-text', 'secret-bytes', Buffer.from('secret-bytes').toString('base64')]) expect(logged).not.toContain(s);
   });
 
-  test('the tool describes files, their two forms and the limits', async () => {
+  test('the tool describes files, their two forms and the limits, and that a draft with the same message is cleared', async () => {
     const t = (await setup().tools()).find((x) => x.name === 'send_message')!;
     expect(t.description).toContain('files');
+    expect(t.description).toContain('同じ投稿先に本文の同じ下書きがあれば、投稿の後に消す');
+  });
+
+  test('the tool sends clients that can run commands on the user\'s PC to prepare_upload, keeping content_base64 for those that cannot', async () => {
+    const t = (await setup().tools()).find((x) => x.name === 'send_message')! as unknown as {
+      description: string; inputSchema: { properties: { files: { items: { anyOf: { properties: { content_base64?: { description?: string } } }[] } } } };
+    };
+    expect(t.description).toContain('利用者の PC にあるバイナリ（スクリーンショット、PDF など）は、利用者の PC でコマンドを実行できるクライアント（Claude Code、Codex CLI など）なら prepare_upload でアップロードし');
+    expect(t.description).toContain('128KiB を超えると送れない');
+    expect(t.description).toContain('content_base64 は、claude.ai のように利用者の PC でコマンドを実行できないクライアントのためのもの');
+    expect(t.description).toContain('save_draft で本文を下書きにし、ファイルは Mattermost の画面から添付するよう案内する');
+    const b64 = t.inputSchema.properties.files.items.anyOf.find((x) => x.properties.content_base64)!.properties.content_base64!;
+    expect(b64.description).toContain('利用者の PC でコマンドを実行できるクライアントなら prepare_upload を使う');
+  });
+
+  test('the draft cleanup\'s 5-second deadline reaches the Mattermost requests, and running past it leaves the post a success', async () => {
+    const ac = new AbortController();
+    const real = AbortSignal.timeout.bind(AbortSignal);
+    vi.spyOn(AbortSignal, 'timeout').mockImplementation((ms) => (ms === 5000 ? ac.signal : real(ms)));
+    serve({
+      'GET /users/u1/teams/t1/drafts': (req) => new Promise((_, reject) => req.signal.addEventListener('abort', () => reject(req.signal.reason))),
+    });
+    const sending = setup().call('send_message', { channel: CH, message: 'm' });
+    await vi.waitFor(() => expect(hits).toContain('GET /users/u1/teams/t1/drafts'));
+    ac.abort(new DOMException('timed out', 'TimeoutError'));
+    const r = await sending;
+    expect(r.isError).toBe(false);
+    expect(r.text).toContain('投稿しました。');
+    expect(r.text).toContain('同じ本文の下書きを確かめられなかったか、消せませんでした');
   });
 });
