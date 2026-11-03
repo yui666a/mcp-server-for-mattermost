@@ -103,7 +103,8 @@ const INFLIGHT = '同じ投稿を処理中です。少し待ってから read_ch
 export async function sendMessage(mm: Mm, store: Store, uid: string, baseUrl: string, args: Args): Promise<CallToolResult> {
   const files = decodeFiles(args.files ?? []);
   const fileIds = args.file_ids ?? [];
-  const ch = await resolveChannel(mm, uid, args.channel);
+  // Not creating the DM with root_id or file_ids: a DM not opened yet holds neither, and the call would fail right after leaving an empty DM.
+  const ch = await resolveChannel(mm, uid, args.channel, { create: !args.root_id && !fileIds.length });
   checkUploaded(store, uid, ch.id, fileIds);
   const rootId = args.root_id;
   if (rootId) {
@@ -367,13 +368,15 @@ async function clearSentDraft(mm: Mm, uid: string, ch: ChannelRef, rootId: strin
 }
 
 export async function saveDraft(mm: Mm, uid: string, args: DraftArgs): Promise<CallToolResult> {
-  const ch = await resolveChannel(mm, uid, args.channel);
-  const rootId = args.root_id ?? '';
-  // Checked here rather than left to Mattermost: it saves a draft on any root_id, and one on a reply never shows in any thread.
-  if (rootId) await checkRoot(mm, uid, rootId, ch);
+  // Checked before resolving rather than after: resolving may create the DM, and with sync off the call fails anyway.
   if (await syncDraftsOff(mm, uid)) {
     throw new InputError('下書きの同期を切っているため保存していません。保存しても画面に届かないか、書きかけの下書きを上書きするおそれがあります。「設定 > 詳細設定」で下書きの同期を入れてください。');
   }
+  const rootId = args.root_id ?? '';
+  // Not creating the DM with root_id: a DM not opened yet holds no root post, and the call would fail right after leaving an empty DM.
+  const ch = await resolveChannel(mm, uid, args.channel, { create: !rootId });
+  // Checked here rather than left to Mattermost: it saves a draft on any root_id, and one on a reply never shows in any thread.
+  if (rootId) await checkRoot(mm, uid, rootId, ch);
   const list = await worded(draftsOf(mm, uid, ch), { id: [DISABLED] });
   if (!list) throw new InputError('所属しているチームがないため、既存の下書きを確かめられません。');
   const where = `チャンネル: ${ch.displayName || ch.name}（channel_id: ${ch.id}）${rootId ? `、返信先 post_id: ${rootId}` : ''}`;
@@ -407,7 +410,7 @@ type PrepareArgs = { channel: string };
 const MiB = 1024 * 1024;
 
 export async function prepareUpload(mm: Mm, store: Store, uid: string, publicUrl: string, maxBytes: number, args: PrepareArgs): Promise<CallToolResult> {
-  const ch = await resolveChannel(mm, uid, args.channel);
+  const ch = await resolveChannel(mm, uid, args.channel, { create: true });
   const token = store.createUploadUrl({ mmUserId: uid, channelId: ch.id });
   if (!token) throw new InputError(`使われていないアップロード URL が ${MAX_OPEN_UPLOAD_URLS} 件あります。それを使うか、10 分の期限が切れるのを待ってください。`);
   const limit = maxBytes % MiB ? `${maxBytes} バイト` : `${maxBytes / MiB}MiB`;
