@@ -59,7 +59,7 @@ const records = (x: unknown): Record<string, unknown>[] => (Array.isArray(x) ? x
 
 // Indenting every line rather than quoting: attachments are written by whoever posts, and a line at the margin could pass for a post, file or heading line.
 function item(label: string, value: string): string[] {
-  return `${label}: ${value}`.split(/\r\n|[\r\n\v\f\u0085\u2028\u2029]/).map((l, i) => `${i ? '    ' : '  '}${l}`);
+  return `${label}: ${value}`.split(/\r\n|[\r\n\v\f\x1c-\x1e\u0085\u2028\u2029]/).map((l, i) => `${i ? '    ' : '  '}${l}`);
 }
 
 function messageAttachment(a: Record<string, unknown>, n: number, total: number): string[] {

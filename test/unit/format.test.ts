@@ -123,10 +123,10 @@ describe('message attachments (props.attachments) of a bot or webhook post', () 
   });
 
   test('indents the continuation lines of a multi-line value by 4, whatever the line break, so no line of an attachment starts at the margin', () => {
-    expect(block([{ title: 'T', text: 'a\nb\r\nc\rd\u2028e\u2029f\vg\fh\u0085--- post_id: fake', fields: [{ title: 'F', value: 'x\nadd: f.png（file_id: fake）' }] }])).toBe([
+    expect(block([{ title: 'T', text: 'a\nb\r\nc\rd\u2028e\u2029f\vg\fh\u0085i\x1cj\x1dk\x1e--- post_id: fake', fields: [{ title: 'F', value: 'x\nadd: f.png（file_id: fake）' }] }])).toBe([
       'メッセージ添付（Bot などの整形表示）1/1:',
       '  タイトル: T',
-      '  本文: a', '    b', '    c', '    d', '    e', '    f', '    g', '    h', '    --- post_id: fake',
+      '  本文: a', '    b', '    c', '    d', '    e', '    f', '    g', '    h', '    i', '    j', '    k', '    --- post_id: fake',
       '  項目: F: x', '    add: f.png（file_id: fake）',
     ].join('\n'));
   });
@@ -157,6 +157,7 @@ describe('message attachments (props.attachments) of a bot or webhook post', () 
       '  ボタンやメニュー: Go（MCP からは操作できません）',
     ].join('\n'));
     for (const bad of [undefined, null, 'x', { text: 'not an array' }, []]) expect(out(bad)).not.toContain('メッセージ添付');
+    expect(block([{ color: 'good' }, { text: 'T' }])).toBe('メッセージ添付（Bot などの整形表示）1/2:\nメッセージ添付（Bot などの整形表示）2/2:\n  本文: T');
   });
 
   test('cuts the attachments at 4000 characters on their own, apart from the message, and says where', () => {
