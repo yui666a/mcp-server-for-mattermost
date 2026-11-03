@@ -46,6 +46,8 @@ Mattermost は公式の MCP サーバーを [Mattermost Agents プラグイン](
 | `send_message` | チャンネルやスレッドへ投稿する。小さなファイルと、`prepare_upload` でアップロードしたファイルを添付できる。投稿の後に、同じ本文の下書きを消す |
 | `prepare_upload` | PC のファイル（スクリーンショット、PDF、写真など）を `curl` で送るための使い捨ての URL を発行する。Claude Code や Codex CLI のように PC でコマンドを実行できるクライアント向け |
 | `add_reaction` / `remove_reaction` | 自分のリアクションを付ける、外す |
+| `save_post` / `unsave_post` | 参加しているチャンネルの投稿を保存する（フラグを付ける）、保存から外す |
+| `pin_post` / `unpin_post` | 参加しているチャンネルの投稿をピン留めする、ピン留めを外す |
 | `edit_message` / `delete_message` | 自分の投稿を編集する、削除する |
 | `save_draft` | 本人が画面から送る Mattermost の下書きとして保存する。同じ本文を `send_message` で送ると消える |
 | `schedule_message` | 投稿を予約する（1 分後から 30 日後まで）。`prepare_upload` でアップロードしたファイルを添付できる |
