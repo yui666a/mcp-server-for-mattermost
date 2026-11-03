@@ -20,7 +20,7 @@ This project targets the other case:
 - **Works with Team Edition.** It is developed and tested against Mattermost Team Edition 11.7.8.
 - **Per-user OAuth with its own authorization server.** MCP clients register themselves (Dynamic Client Registration) and receive tokens that are valid only for this server. The user's Mattermost tokens are kept server-side, encrypted, and are never handed to the MCP client (no token passthrough). Every authorization shows a consent page that displays the client's redirect URI.
 - **Scheduled posts on Team Edition.** Mattermost's scheduled-post API is not available on Team Edition, so the server stores scheduled posts itself and posts them with the user's token when they are due.
-- **Guard rails for an LLM caller.** It suppresses duplicate posts when a client retries, edits and deletes only the user's own posts, refuses to delete a thread root that has replies, and does not overwrite a different draft unless asked.
+- **Guard rails for an LLM caller.** It suppresses duplicate posts when a client retries, edits and deletes only the user's own posts, refuses to delete a thread root that has replies, does not overwrite a different draft unless asked, and clears a draft with the same text in the same place once that text is posted with `send_message` (scheduled posts leave it).
 
 ## Tools
 
@@ -30,7 +30,7 @@ This project targets the other case:
 | `read_channel` | Read a channel's posts, newest first |
 | `read_thread` | Read a thread's root and replies, oldest first |
 | `get_post` | Read one post by post ID or permalink URL |
-| `get_file` | Read an attached file; images are returned as a preview image |
+| `get_file` | Read an attached file; images are returned as a preview image, and text (UTF-8, or Shift_JIS for csv/tsv/txt/log) as up to its first 10,000 characters |
 | `search_files` | Find attached files by name with Mattermost search syntax (`from:`, `in:`, `ext:`, ...) |
 | `list_saved_posts` | List the user's saved (flagged) posts, newest first |
 | `search_channels` | Find channels (public, joined private, DMs, group DMs) by name |
@@ -41,16 +41,18 @@ This project targets the other case:
 | `get_mentions` | Posts that mention the user |
 | `search_users` | Find users by name or username |
 | `get_user` | A user's profile with time zone, local time, and status |
-| `send_message` | Post to a channel or thread, optionally with small inline files or files uploaded through `prepare_upload` |
+| `send_message` | Post to a channel or thread, optionally with small inline files or files uploaded through `prepare_upload`; clears a draft with the same text afterwards |
 | `prepare_upload` | Issue a one-time URL for uploading local files (screenshots, PDFs, photos) with `curl`; for clients that can run commands on the user's machine, such as Claude Code and Codex CLI |
 | `add_reaction` / `remove_reaction` | Add or remove the user's own reaction |
 | `edit_message` / `delete_message` | Edit or delete the user's own post |
-| `save_draft` | Save a Mattermost draft for the user to send from the UI |
+| `save_draft` | Save a Mattermost draft for the user to send from the UI; sending the same text with `send_message` clears it |
 | `schedule_message` | Schedule a post for a later time (1 minute to 30 days ahead) |
 | `list_scheduled_messages` | List the user's scheduled posts with status and permalink |
 | `update_scheduled_message` / `cancel_scheduled_message` | Change or cancel a pending scheduled post |
 
 Times are in JST: a `schedule_message` time without an offset (`YYYY-MM-DDTHH:mm[:ss[.sss]]`) is read as `+09:00`, so append `Z` or `+hh:mm` (`-hh:mm`) for another zone. Search dates (`on:`, `before:`, `after:`) are JST days, and output shows each time in both UTC and JST.
+
+Each post in the output of the read tools also shows its message attachments (the formatted content bots and webhooks post, which Mattermost's default database search does not cover), its reactions with who reacted, when it was edited, and whether it is a system message.
 
 Read-only tools carry the MCP `readOnlyHint` annotation so clients can ask before writes.
 
