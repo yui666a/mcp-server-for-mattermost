@@ -14,8 +14,12 @@ type PostList = { order: string[]; posts: Record<string, MmPost>; has_next?: boo
 type Page = { lines: string[]; next?: object; posts?: MmPost[]; notes?: string[] };
 
 type ReadMm = Mm & Pick<MmClient, 'callBytes'>;
+type FoundFile = MmFileInfo & { user_id: string; post_id: string; channel_id: string; create_at: number };
+type FileList = { order: string[]; file_infos: Record<string, FoundFile> };
 
 const MM_SEARCH_CAP = 100;
+const SAVED_PAGE = 200;
+const SAVED_PAGES = 5;
 const JST_OFFSET_SEC = 9 * 3600;
 const DAY_MS = 86_400_000;
 const PREVIEW_MAX_WIDTH = 1920;
@@ -114,6 +118,15 @@ function channelLines(c: ChannelRef): string[] {
     `チャンネル: ${c.displayName || c.name}（name: ${c.name}、channel_id: ${c.id}）`,
     c.teamId ? `チーム: ${c.teamName}（team_id: ${c.teamId}）` : 'チーム: なし（DM またはグループ DM）',
   ];
+}
+
+function channelError(e: unknown): never {
+  // Not converting a missing team: /teams/name/{team}/channels/name/{channel} answers it with 404 too.
+  if (e instanceof ChannelFetchError && e.id !== 'app.team.get_by_name.missing.app_error') {
+    if (e.status === 403) throw new InputError('このチャンネルを見る権限がありません（参加していない非公開チャンネルなど）');
+    if (e.status === 404) throw new InputError('チャンネルが見つかりません（参加していない非公開チャンネルを名前で指定した場合も、Mattermost はこの結果を返します）');
+  }
+  throw e;
 }
 
 async function usernames(mm: Mm, uid: string, posts: MmPost[]): Promise<Map<string, string>> {
@@ -310,6 +323,79 @@ export function registerReadTools(server: McpServer, ctx: ToolContext): void {
       return render({ lines, posts: shown, next: more ? { page: page + 1, per_page: per } : undefined, notes: [...filtered.notes, ...capNote(all.length, 'これより古い一致')] });
     });
 
+  tool('list_saved_posts', '自分が保存した（フラグを付けた）投稿を新しい順に一覧する。参加しているチャンネルの投稿だけが対象で、アーカイブ済みのチャンネルの投稿も含む（そのチャンネルは channel_id だけを出す）',
+    { limit: limitArg(20, 50), cursor: cursorArg },
+    async ({ limit, cursor }, mm) => {
+      const c = cursorOf(z.object({ create_at: z.number().int(), id: z.string(), per_page: perPage(50) }).strict(), cursor);
+      const per = c?.per_page ?? limit ?? 20;
+      const older = (p: MmPost) => !c || p.create_at < c.create_at || (p.create_at === c.create_at && p.id > c.id);
+      const found = new Map<string, MmPost>();
+      let rest: MmPost[] = [];
+      let capped = false;
+      // Not putting Mattermost's offset in the cursor: saving or unsaving between pages would shift it.
+      for (let k = 0; ; k++) {
+        if (k === SAVED_PAGES) {
+          capped = true;
+          break;
+        }
+        // Not sending k as page: Mattermost uses page as the row offset, not as a page number.
+        const r = await mm.call<PostList>(uid, 'GET', `/users/${uid}/posts/flagged?page=${k * SAVED_PAGE}&per_page=${SAVED_PAGE}`);
+        const got = r.order.map((id) => r.posts[id]).filter(Boolean);
+        // Not stopping at a short page: Mattermost drops posts the user may not read after counting the page.
+        if (!got.length) break;
+        for (const p of got) found.set(p.id, p);
+        rest = [...found.values()].filter(older).sort(newestFirst);
+        if (rest.length > per && Math.min(...got.map((p) => p.create_at)) < rest[per - 1].create_at) break;
+      }
+      const shown = rest.slice(0, per);
+      const last = shown.at(-1);
+      const lines = ['保存した投稿（新しい順）', ...(shown.length ? await withChannels(mm, shown) : c ? [] : ['保存した投稿はありません。'])];
+      const notes = capped ? [`（保存した投稿のうち新しい ${SAVED_PAGE * SAVED_PAGES} 件だけを見ています）`] : [];
+      return render({ lines, posts: shown, notes, next: rest.length > per && last ? { create_at: last.create_at, id: last.id, per_page: per } : undefined });
+    });
+
+  tool('search_files', 'ファイルを名前で探す（サーバーが中身を抽出していれば中身にも当たる）。参加しているチャンネル、DM、グループ DM のファイルが対象で、参加していない公開チャンネルとアーカイブ済みのチャンネルのファイルは出ない。Mattermost の検索構文（from:、in:、ext:、before:、after:、on: など）を使え、日付は日本時間（JST）で解釈する。in: にはチャンネル ID、「チーム名/チャンネル名」、チャンネル名、@ユーザー名（DM）を渡せる。同じ名前が複数のチームにあれば、すべてで探す。見つからなければエラー。DM は作らない。名前は語の単位で当たり、日本語の名前は名前全体か先頭からの前方一致（例: 2026年10月*）でしか当たらない。新しい順。file_id は get_file に、post_id は get_post に渡せる',
+    { terms: z.string().min(1), limit: limitArg(20, 50), cursor: cursorArg },
+    async ({ terms, limit, cursor }, mm) => {
+      const c = cursorOf(z.object({ page: z.number().int().min(0), per_page: perPage(50) }).strict(), cursor);
+      const per = c?.per_page ?? limit ?? 20;
+      const page = c?.page ?? 0;
+      const q = await resolveInFilters(mm, uid, terms);
+      // Not passing the cursor's page to Mattermost: its database search returns nothing for page > 0.
+      const r = await mm.call<FileList>(uid, 'POST', '/files/search', {
+        terms: q.terms, is_or_search: false, include_deleted_channels: false, time_zone_offset: JST_OFFSET_SEC, page: 0, per_page: MM_SEARCH_CAP,
+      }).catch((e) => {
+        if (e instanceof MmError && e.status === 501 && e.id === 'store.sql_file_info.search.disabled') {
+          throw new InputError('この Mattermost ではファイルの検索が無効になっています（システムコンソールの設定）。ファイル名を含む投稿は search_posts で探せます。');
+        }
+        throw e;
+      });
+      const all = r.order.map((id) => r.file_infos[id]).filter(Boolean);
+      const shown = all.slice(page * per, (page + 1) * per);
+      const lines = [`ファイルの検索: ${terms}`];
+      if (shown.length) {
+        const channels = new Map((await mm.call<MmChannel[]>(uid, 'GET', '/users/me/channels')).map((x) => [x.id, x]));
+        const teams = await myTeams(mm, uid);
+        const teamName = new Map(teams.map((t) => [t.id, t.name]));
+        // Not looking up the uploader of a channel bookmark file: its user_id is the fixed string "bookmark".
+        const ids = [...new Set(shown.filter((f) => f.post_id).map((f) => f.user_id))];
+        const users = ids.length ? new Map((await mm.call<UserRef[]>(uid, 'POST', '/users/ids', ids)).map((u) => [u.id, u.username])) : new Map<string, string>();
+        for (const f of shown) {
+          const ch = channels.get(f.channel_id);
+          const team = ch?.team_id ? teamName.get(ch.team_id) : undefined;
+          const who = users.get(f.user_id);
+          lines.push(
+            `--- ${fileLine(f)}`,
+            `${f.post_id ? (who ? `@${who}` : `user_id: ${f.user_id}`) : 'チャンネルのブックマークのファイル（投稿なし）'} | ${formatTime(f.create_at)}`,
+            ch ? channelLines({ id: ch.id, name: ch.name, displayName: ch.display_name, teamId: ch.team_id, teamName: team ?? '' }).join(' | ') : `channel_id: ${f.channel_id}`,
+            ...(f.post_id ? [`post_id: ${f.post_id}`, `${base}/${team ?? teams[0]?.name ?? ''}/pl/${f.post_id}`] : []),
+          );
+        }
+      } else lines.push('一致するファイルはありません。');
+      const more = all.length > (page + 1) * per;
+      return render({ lines, notes: [...q.notes, ...capNote(all.length, 'これより古い一致')], next: more ? { page: page + 1, per_page: per } : undefined });
+    });
+
   tool('read_channel', 'チャンネルの投稿を新しい順に読む。channel はチャンネル ID、「チーム名/チャンネル名」、チャンネル名、@ユーザー名（DM）のどれか',
     { channel: z.string().min(1), limit: limitArg(30, 100), cursor: cursorArg },
     async ({ channel, limit, cursor }, mm) => {
@@ -485,14 +571,7 @@ export function registerReadTools(server: McpServer, ctx: ToolContext): void {
     async ({ channel, pinned_limit, cursor }, mm) => {
       const c = cursorOf(z.object({ channel_id: z.string(), create_at: z.number().int(), id: z.string(), per_page: perPage(50) }), cursor);
       const per = c?.per_page ?? pinned_limit ?? 10;
-      const ch = await resolveChannel(mm, uid, channel).catch((e) => {
-        // Not converting a missing team: /teams/name/{team}/channels/name/{channel} answers it with 404 too.
-        if (e instanceof ChannelFetchError && e.id !== 'app.team.get_by_name.missing.app_error') {
-          if (e.status === 403) throw new InputError('このチャンネルを見る権限がありません（参加していない非公開チャンネルなど）');
-          if (e.status === 404) throw new InputError('チャンネルが見つかりません（参加していない非公開チャンネルを名前で指定した場合も、Mattermost はこの結果を返します）');
-        }
-        throw e;
-      });
+      const ch = await resolveChannel(mm, uid, channel).catch(channelError);
       if (c && c.channel_id !== ch.id) throw new InputError(BAD_CURSOR);
       const kind: Record<string, string> = { O: '公開', P: '非公開', D: 'DM', G: 'グループ DM' };
       const lines = channelLines(ch);
@@ -519,6 +598,31 @@ export function registerReadTools(server: McpServer, ctx: ToolContext): void {
       if (!all.length) lines.push('ピン留めされた投稿はありません。');
       const last = shown.at(-1);
       return render({ lines, posts: shown, next: rest.length > per && last ? { channel_id: ch.id, create_at: last.create_at, id: last.id, per_page: per } : undefined });
+    });
+
+  tool('list_channel_members', 'チャンネルのメンバーをユーザー名の順に一覧する。channel はチャンネル ID、「チーム名/チャンネル名」、チャンネル名、@ユーザー名（DM）のどれか。無効化されたユーザーは含まない。参加していないチャンネルのメンバーは、公開チャンネルでも見られない（システム管理者を除く）。在席状況は get_user で読める',
+    { channel: z.string().min(1), limit: limitArg(50, 200), cursor: cursorArg },
+    async ({ channel, limit, cursor }, mm) => {
+      const c = cursorOf(z.object({ channel_id: z.string(), page: z.number().int().min(0), per_page: perPage(200) }).strict(), cursor);
+      const per = c?.per_page ?? limit ?? 50;
+      const page = c?.page ?? 0;
+      const ch = await resolveChannel(mm, uid, channel).catch(channelError);
+      if (c && c.channel_id !== ch.id) throw new InputError(BAD_CURSOR);
+      // Not joining /channels/{id}/members with the users: /users?in_channel gives the profiles in one call.
+      const q = new URLSearchParams({ in_channel: ch.id, active: 'true', page: String(page), per_page: String(per) });
+      const users = await mm.call<UserRef[]>(uid, 'GET', `/users?${q}`).catch((e) => {
+        if (e instanceof MmError && e.status === 403) throw new InputError('参加していないチャンネルのメンバーは見られません（公開チャンネルでも同じです）。');
+        throw e;
+      });
+      const lines = channelLines(ch);
+      if (!c) lines.push(`メンバー数: ${(await mm.call<{ member_count: number }>(uid, 'GET', `/channels/${ch.id}/stats?exclude_files_count=true`)).member_count}`);
+      lines.push(...users.map((u) => {
+        const name = [u.first_name, u.last_name].filter(Boolean).join(' ');
+        return `- @${u.username}（${[name && `名前: ${name}`, u.nickname && `ニックネーム: ${u.nickname}`, u.position && `役職: ${u.position}`, u.is_bot && 'Bot アカウント', `user_id: ${u.id}`].filter(Boolean).join('、')}）`;
+      }));
+      if (!users.length && !c) lines.push('メンバーはいません。');
+      // Not asking for one more row to tell the last page: Mattermost pages by page * per_page, so a full last page is followed by an empty one.
+      return render({ lines, next: users.length === per ? { channel_id: ch.id, page: page + 1, per_page: per } : undefined });
     });
 
   tool('get_unreads', '自分の未読を一覧する。未読のあるチャンネル（未読数とメンション数）と、スレッドの折りたたみ（CRT）が有効なら未読の返信があるスレッド。メンションのあるチャンネルが先。読むだけで、既読にはしない',

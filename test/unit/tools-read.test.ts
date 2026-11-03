@@ -1292,3 +1292,428 @@ describe('get_file', () => {
     expect(logged).not.toContain('SECRETPIXELS');
   });
 });
+
+describe('list_saved_posts', () => {
+  const C = 'c'.repeat(26);
+  const T = 't'.repeat(26);
+  const FLAGGED = 'GET /users/u1/posts/flagged';
+  const post = (id: string, create_at: number) => ({ id, user_id: 'u1', channel_id: C, root_id: '', message: `m ${id}`, create_at });
+  const pid = (n: number) => `s${String(n).padStart(25, '0')}`;
+  const list = (ps: { id: string }[]) => ({ order: ps.map((p) => p.id), posts: Object.fromEntries(ps.map((p) => [p.id, p])) });
+  const byOffset = (all: ReturnType<typeof post>[]) => (req: Request) => {
+    const q = new URL(req.url).searchParams;
+    const at = Number(q.get('page'));
+    return list(all.slice(at, at + Number(q.get('per_page'))));
+  };
+  const byPage = (pages: ReturnType<typeof post>[][]) => (req: Request) => list(pages[Number(new URL(req.url).searchParams.get('page')) / 200] ?? []);
+  const base = () => ({
+    'GET /users/me/channels': () => [{ id: C, name: 'town', display_name: 'Town', team_id: T, type: 'O' }],
+    'GET /users/me/teams': () => [{ id: T, name: 'team-a' }],
+    'POST /users/ids': () => [{ id: 'u1', username: 'alice' }],
+  });
+  const shownIds = (out: string) => [...out.matchAll(/^--- post_id: ([a-z0-9]{26})/gm)].map((m) => m[1]);
+  const cursorIn = (out: string) => /next_cursor: (\S+)/.exec(out)?.[1];
+  const offsets = () => urls.filter((u) => u.startsWith(FLAGGED)).map((u) => Number(new URL(`http://x${u.slice(4)}`).searchParams.get('page')));
+  const NOTE = '新しい 1000 件だけ';
+
+  test('lists the saved posts newest first (ties by post_id) with their channel and team', async () => {
+    const [a, b, c] = [post('b'.repeat(26), 2000), post('a'.repeat(26), 2000), post('c'.repeat(26), 3000)];
+    routes = { ...base(), [FLAGGED]: byOffset([a, b, c]) };
+    const out = await setup()('list_saved_posts', {});
+    expect(shownIds(out)).toEqual([c.id, b.id, a.id]);
+    expect(out).toContain(`name: town、channel_id: ${C}`);
+    expect(out).toContain(`チーム: team-a（team_id: ${T}）`);
+    expect(out).toContain('（続きはありません）');
+  });
+
+  test('a cursor pages on without gaps or duplicates and keeps the page size', async () => {
+    const all = Array.from({ length: 5 }, (_, i) => post(pid(i), 10_000 - i));
+    routes = { ...base(), [FLAGGED]: byOffset(all) };
+    const call = setup();
+    const seen: string[] = [];
+    let cursor: string | undefined;
+    do {
+      const out = await call('list_saved_posts', cursor ? { limit: 50, cursor } : { limit: 2 });
+      seen.push(...shownIds(out));
+      cursor = cursorIn(out);
+      if (cursor) expect(shownIds(out)).toHaveLength(2);
+    } while (cursor);
+    expect(seen).toEqual(all.map((p) => p.id));
+  });
+
+  test('sends row offsets 0, 200, 400, ... as page, 200 rows at a time, until an empty page', async () => {
+    const all = Array.from({ length: 401 }, (_, i) => post(pid(i), 5000));
+    routes = { ...base(), [FLAGGED]: byOffset(all) };
+    await setup()('list_saved_posts', {});
+    expect(offsets()).toEqual([0, 200, 400, 600]);
+    expect(urls.filter((u) => u.startsWith(FLAGGED)).every((u) => u.includes('per_page=200'))).toBe(true);
+  });
+
+  test('stops reading once the page is filled and the last page reached older posts', async () => {
+    routes = { ...base(), [FLAGGED]: byOffset(Array.from({ length: 450 }, (_, i) => post(pid(i), 10_000 - i))) };
+    const out = await setup()('list_saved_posts', { limit: 20 });
+    expect(offsets()).toEqual([0]);
+    expect(shownIds(out)).toHaveLength(20);
+    expect(cursorIn(out)).toBeDefined();
+  });
+
+  test('reads on when the oldest post of the last page has the same time as the last one shown', async () => {
+    routes = { ...base(), [FLAGGED]: byOffset(Array.from({ length: 201 }, (_, i) => post(pid(i), 5000))) };
+    await setup()('list_saved_posts', { limit: 2 });
+    expect(offsets()).toEqual([0, 200, 400]);
+  });
+
+  test('does not stop with exactly limit posts, as it cannot tell yet whether more follow', async () => {
+    routes = { ...base(), [FLAGGED]: byOffset(Array.from({ length: 20 }, (_, i) => post(pid(i), 10_000 - i))) };
+    const out = await setup()('list_saved_posts', { limit: 20 });
+    expect(offsets()).toEqual([0, 200]);
+    expect(cursorIn(out)).toBeUndefined();
+  });
+
+  test('does not stop at a short page, which permission filtering can cause, but at an empty one', async () => {
+    const p0 = Array.from({ length: 10 }, (_, i) => post(pid(i), 10_000 - i));
+    const p1 = Array.from({ length: 5 }, (_, i) => post(pid(100 + i), 5000 - i));
+    routes = { ...base(), [FLAGGED]: byPage([p0, p1]) };
+    const out = await setup()('list_saved_posts', { limit: 20 });
+    expect(offsets()).toEqual([0, 200, 400]);
+    expect(shownIds(out)).toEqual([...p0, ...p1].map((p) => p.id));
+  });
+
+  test('shows a post that comes on two pages once', async () => {
+    const [a, b, c] = [post(pid(1), 3000), post(pid(2), 2000), post(pid(3), 1000)];
+    routes = { ...base(), [FLAGGED]: byPage([[a, b], [b, c]]) };
+    expect(shownIds(await setup()('list_saved_posts', {}))).toEqual([a.id, b.id, c.id]);
+  });
+
+  test('reads at most 5 pages and then says only the newest 1000 were looked at, on pages with and without a cursor', async () => {
+    const pages = Array.from({ length: 6 }, (_, k) => Array.from({ length: 200 }, (_, i) => post(pid(k * 200 + i), 5000)));
+    routes = { ...base(), [FLAGGED]: byPage(pages) };
+    const call = setup();
+    const first = await call('list_saved_posts', { limit: 50 });
+    expect(offsets()).toEqual([0, 200, 400, 600, 800]);
+    expect(first).toContain(NOTE);
+    const cursor = cursorIn(first);
+    expect(cursor).toBeDefined();
+    const lastId = pid(999);
+    const end = await call('list_saved_posts', { cursor: Buffer.from(JSON.stringify({ create_at: 5000, id: lastId, per_page: 50 })).toString('base64url') });
+    expect(end).toContain(NOTE);
+    expect(end).not.toContain('保存した投稿はありません。');
+    expect(cursorIn(end)).toBeUndefined();
+  });
+
+  test('does not add the note when the fifth page is not empty but the stop condition holds', async () => {
+    const pages = [...Array.from({ length: 4 }, (_, k) => Array.from({ length: 200 }, (_, i) => post(pid(k * 200 + i), 5000))),
+      Array.from({ length: 200 }, (_, i) => post(pid(800 + i), 1000))];
+    routes = { ...base(), [FLAGGED]: byPage(pages) };
+    const out = await setup()('list_saved_posts', { limit: 50 });
+    expect(offsets()).toEqual([0, 200, 400, 600, 800]);
+    expect(out).not.toContain(NOTE);
+  });
+
+  test('looks up the names of the users who reacted, and notes a post whose message attachments were cut, as search_posts does', async () => {
+    const p = { ...post('r'.repeat(26), 1000), props: { attachments: [{ text: 'x'.repeat(4001) }] }, metadata: { reactions: [{ user_id: 'u2', emoji_name: '+1' }] } };
+    routes = { ...base(), [FLAGGED]: byOffset([p]), 'POST /users/ids': () => [{ id: 'u1', username: 'alice' }, { id: 'u2', username: 'bob' }] };
+    const out = await setup()('list_saved_posts', {});
+    expect(bodies['/users/ids']).toEqual(['u1', 'u2']);
+    expect(out).toContain('リアクション: :+1: 1（@bob）');
+    expect(out).toContain('（本文かメッセージ添付を 4000 文字で切った投稿があります）');
+  });
+
+  test('says when nothing is saved', async () => {
+    routes = { ...base(), [FLAGGED]: byOffset([]) };
+    const out = await setup()('list_saved_posts', {});
+    expect(out).toContain('保存した投稿はありません。');
+    expect(hits).not.toContain('GET /users/me/channels');
+  });
+
+  test('rejects a cursor from another tool', async () => {
+    routes = base();
+    const out = await setup()('list_saved_posts', { cursor: Buffer.from(JSON.stringify({ offset: 0, per_page: 20 })).toString('base64url') }, true);
+    expect(out).toBe('cursor が不正です。前回の出力の next_cursor をそのまま渡してください。');
+  });
+});
+
+describe('search_files', () => {
+  const A = 'a'.repeat(26);
+  const B = 'b'.repeat(26);
+  const DM = 'd'.repeat(26);
+  const TA = 't'.repeat(26);
+  const TB = 's'.repeat(26);
+  const F1 = 'f'.repeat(26);
+  const F2 = 'g'.repeat(26);
+  const P1 = 'p'.repeat(26);
+  const file = (id: string, extra: Record<string, unknown> = {}) => ({
+    id, name: `${id.slice(0, 3)}.pdf`, extension: 'pdf', mime_type: 'application/pdf', size: 1234, user_id: 'u2', post_id: P1, channel_id: A, create_at: Date.UTC(2026, 9, 1, 0, 0, 0), ...extra,
+  });
+  const found = (fs: ReturnType<typeof file>[]) => ({ order: fs.map((f) => f.id), file_infos: Object.fromEntries(fs.map((f) => [f.id, f])) });
+  const mmError = (status: number, id = 'x') => () => Response.json({ id, message: 'm', status_code: status }, { status });
+  const base = () => ({
+    'POST /files/search': () => found([file(F1)]),
+    'GET /users/me/channels': () => [{ id: A, name: 'town', display_name: 'Town', team_id: TA, type: 'O' }],
+    'GET /users/me/teams': () => [{ id: TA, name: 'team-a' }, { id: TB, name: 'team-b' }],
+    'POST /users/ids': () => [{ id: 'u2', username: 'bob' }],
+    [`GET /teams/${TA}/channels/name/town`]: () => ({ id: A, name: 'town', display_name: 'Town', team_id: TA, type: 'O' }),
+    [`GET /teams/${TA}/channels/name/dup`]: () => ({ id: A, name: 'dup', display_name: 'Dup', team_id: TA, type: 'O' }),
+    [`GET /teams/${TB}/channels/name/dup`]: () => ({ id: B, name: 'dup', display_name: 'Dup', team_id: TB, type: 'O' }),
+    'GET /teams/name/team-b/channels/name/dup': () => ({ id: B, name: 'dup', display_name: 'Dup', team_id: TB, type: 'O' }),
+    [`GET /channels/${B}`]: () => ({ id: B, name: 'dup', display_name: 'Dup', team_id: TB, type: 'O' }),
+    [`GET /teams/${TB}`]: () => ({ id: TB, name: 'team-b' }),
+    'GET /users/username/bob': () => ({ id: 'u2', username: 'bob' }),
+    'GET /users/username/carol': () => ({ id: 'u3', username: 'carol' }),
+    [`GET /teams/${TA}/channels/name/u1__u2`]: () => ({ id: DM, name: 'u1__u2', display_name: '', team_id: '', type: 'D' }),
+    [`GET /teams/${TB}/channels/name/u1__u2`]: () => ({ id: DM, name: 'u1__u2', display_name: '', team_id: '', type: 'D' }),
+  });
+  const sent = () => (bodies['/files/search'] as { terms: string }).terms;
+  const terms = async (t: string) => {
+    routes = base();
+    await setup()('search_files', { terms: t });
+    return sent();
+  };
+
+  test('searches all teams once in JST, asking for 100, without paging Mattermost', async () => {
+    routes = base();
+    await setup()('search_files', { terms: 'report ext:pdf', limit: 50 });
+    expect(bodies['/files/search']).toEqual({ terms: 'report ext:pdf', is_or_search: false, include_deleted_channels: false, time_zone_offset: 32400, page: 0, per_page: 100 });
+    expect(hits.filter((h) => h.includes('files/search'))).toEqual(['POST /files/search']);
+  });
+
+  test('shows each file with its file_id, uploader, time, channel and team, post_id and permalink', async () => {
+    routes = base();
+    const out = await setup()('search_files', { terms: 'fff' });
+    expect(out).toContain('ファイルの検索: fff');
+    expect(out).toContain(`fff.pdf（file_id: ${F1}、種類: application/pdf、1234 バイト）`);
+    expect(out).toContain('@bob | 2026-10-01T00:00:00Z | 2026-10-01T09:00:00+09:00');
+    expect(out).toContain(`チャンネル: Town（name: town、channel_id: ${A}） | チーム: team-a（team_id: ${TA}）`);
+    expect(out).toContain(`post_id: ${P1}`);
+    expect(out).toContain(`https://mm.example/team-a/pl/${P1}`);
+  });
+
+  test('marks a channel bookmark file, which has no post, without looking up its uploader', async () => {
+    routes = { ...base(), 'POST /files/search': () => found([file(F1, { post_id: '', user_id: 'bookmark' })]) };
+    const out = await setup()('search_files', { terms: 'fff' });
+    expect(out).toContain('チャンネルのブックマークのファイル（投稿なし）');
+    expect(out).not.toContain('post_id:');
+    expect(hits).not.toContain('POST /users/ids');
+  });
+
+  test('shows only the channel_id of a channel not in the user\'s channel list', async () => {
+    routes = { ...base(), 'POST /files/search': () => found([file(F1, { channel_id: B })]) };
+    const out = await setup()('search_files', { terms: 'fff' });
+    expect(out).toContain(`channel_id: ${B}`);
+    expect(out).toContain(`https://mm.example/team-a/pl/${P1}`);
+  });
+
+  test('pages through the 100 results with limit, a cursor keeping the page size, and notes the 100-result cap', async () => {
+    const all = Array.from({ length: 100 }, (_, i) => file(`f${String(i).padStart(25, '0')}`, { create_at: 10_000 - i }));
+    routes = { ...base(), 'POST /files/search': () => found(all) };
+    const call = setup();
+    const first = await call('search_files', { terms: 'x', limit: 30 });
+    expect(first).toContain('これより古い一致');
+    const ids = (out: string) => [...out.matchAll(/file_id: (f\d{25})/g)].map((m) => m[1]);
+    expect(ids(first)).toEqual(all.slice(0, 30).map((f) => f.id));
+    const cursor = /next_cursor: (\S+)/.exec(first)![1];
+    expect(ids(await call('search_files', { terms: 'x', limit: 5, cursor }))).toEqual(all.slice(30, 60).map((f) => f.id));
+    routes['POST /files/search'] = () => found(all.slice(0, 99));
+    expect(await call('search_files', { terms: 'x' })).not.toContain('これより古い一致');
+  });
+
+  test('says when nothing matches', async () => {
+    routes = { ...base(), 'POST /files/search': () => found([]) };
+    expect(await setup()('search_files', { terms: 'x' })).toContain('一致するファイルはありません。');
+  });
+
+  test('says file search is turned off when Mattermost answers 501 store.sql_file_info.search.disabled', async () => {
+    routes = { ...base(), 'POST /files/search': mmError(501, 'store.sql_file_info.search.disabled') };
+    const out = await setup()('search_files', { terms: 'x' }, true);
+    expect(out).toBe('この Mattermost ではファイルの検索が無効になっています（システムコンソールの設定）。ファイル名を含む投稿は search_posts で探せます。');
+  });
+
+  test('rejects a cursor of another shape', async () => {
+    routes = base();
+    const out = await setup()('search_files', { terms: 'x', cursor: Buffer.from(JSON.stringify({ offset: 0, per_page: 20 })).toString('base64url') }, true);
+    expect(out).toBe('cursor が不正です。前回の出力の next_cursor をそのまま渡してください。');
+  });
+
+  describe('in: filters (resolveInFilters)', () => {
+    test('passes terms without in: or channel: untouched, without looking anything up', async () => {
+      expect(await terms('  a  "b c"  from:bob ')).toBe('  a  "b c"  from:bob ');
+      expect(hits.filter((h) => h.includes('/channels/name/') || h.startsWith('GET /channels/'))).toEqual([]);
+    });
+
+    test('replaces a channel name with its channel_id, in place', async () => {
+      expect(await terms('report in:town ext:pdf')).toBe(`report in:${A} ext:pdf`);
+    });
+
+    test('reads -in:, channel:, IN:, a value after "in: ", and a leading ~ the way Mattermost does', async () => {
+      expect(await terms('x -in:town')).toBe(`x -in:${A}`);
+      expect(await terms('x channel:town')).toBe(`x in:${A}`);
+      expect(await terms('x -channel:town')).toBe(`x -in:${A}`);
+      expect(await terms('x IN:town')).toBe(`x in:${A}`);
+      expect(await terms('x in: town')).toBe(`x in:${A}`);
+      expect(await terms('x in:~town')).toBe(`x in:${A}`);
+    });
+
+    test('resolves team/channel and a visible channel_id', async () => {
+      expect(await terms('x in:team-b/dup')).toBe(`x in:${B}`);
+      expect(await terms(`x in:${B}`)).toBe(`x in:${B}`);
+      expect(hits).toContain(`GET /channels/${B}`);
+    });
+
+    test('a name in several teams searches all of them and says so; -in: excludes all of them', async () => {
+      routes = base();
+      const out = await setup()('search_files', { terms: 'x in:dup' });
+      expect(sent()).toBe(`x in:${A} in:${B}`);
+      expect(out).toContain('in:dup は複数のチームにあるため、すべてで探しました（team-a、team-b）。');
+      expect(out).toContain('ファイルの検索: x in:dup');
+      expect(await terms('x -in:dup')).toBe(`x -in:${A} -in:${B}`);
+    });
+
+    test('a DM found by name in every team counts once, without the note', async () => {
+      routes = base();
+      const out = await setup()('search_files', { terms: 'x in:u1__u2' });
+      expect(sent()).toBe(`x in:${DM}`);
+      expect(out).not.toContain('複数のチーム');
+    });
+
+    test('resolves @user to the existing DM without creating one', async () => {
+      expect(await terms('x in:@bob')).toBe(`x in:${DM}`);
+      expect(hits).not.toContain('POST /channels/direct');
+    });
+
+    test('without a DM, in:@user fails and -in:@user (also as two words) drops the condition', async () => {
+      routes = base();
+      const call = setup();
+      expect(await call('search_files', { terms: 'x in:@carol' }, true)).toBe('@carol との DM はまだありません。');
+      expect(hits).not.toContain('POST /files/search');
+      await call('search_files', { terms: 'x -in:@carol y' });
+      expect(sent()).toBe('x y');
+      await call('search_files', { terms: 'x -in: @carol y' });
+      expect(sent()).toBe('x y');
+      expect(hits).not.toContain('POST /channels/direct');
+    });
+
+    test('asks for a term when dropping -in:@user leaves nothing to search', async () => {
+      routes = base();
+      expect(await setup()('search_files', { terms: '-in:@carol' }, true)).toBe('検索語か条件を 1 つ以上指定してください。');
+      expect(hits).not.toContain('POST /files/search');
+    });
+
+    test('passes a group DM as given, keeping its words as written', async () => {
+      expect(await terms('x in:@bob,carol')).toBe('x in:@bob,carol');
+      expect(await terms('x channel:@bob,carol in:town')).toBe(`x channel:@bob,carol in:${A}`);
+      expect(await terms('x in: @bob,carol in:town')).toBe(`x in: @bob,carol in:${A}`);
+    });
+
+    test('says a channel is not found, for a name, a channel_id or team/channel answered with 403 or 404, without searching', async () => {
+      routes = { ...base(), [`GET /channels/${B}`]: mmError(403), 'GET /teams/name/team-b/channels/name/dup': mmError(404) };
+      const call = setup();
+      expect(await call('search_files', { terms: 'x in:nowhere' }, true)).toBe('チャンネル「nowhere」が見つかりません。');
+      expect(await call('search_files', { terms: `x -in:${B}` }, true)).toBe(`チャンネル「${B}」が見つかりません。`);
+      expect(await call('search_files', { terms: 'x in:team-b/dup' }, true)).toBe('チャンネル「team-b/dup」が見つかりません。');
+      routes[`GET /channels/${B}`] = mmError(404);
+      expect(await call('search_files', { terms: `x in:${B}` }, true)).toBe(`チャンネル「${B}」が見つかりません。`);
+      expect(hits).not.toContain('POST /files/search');
+    });
+
+    test('says a user is not found for in:@user of nobody', async () => {
+      routes = { ...base(), 'GET /users/username/nobody': mmError(404, 'app.user.missing_account.const') };
+      expect(await setup()('search_files', { terms: 'x in:@nobody' }, true)).toBe('ユーザー「@nobody」が見つかりません。');
+    });
+
+    test('leaves quoted words alone, but not after an unclosed quote', async () => {
+      expect(await terms('"in:town" x')).toBe('"in:town" x');
+      expect(await terms('-"in:town" x')).toBe('-"in:town" x');
+      expect(await terms('abc"in:town" in:town')).toBe(`abc "in:town" in:${A}`);
+      expect(await terms('"a in:town')).toBe(`"a in:${A}`);
+    });
+
+    test('does not treat a word taken as another flag\'s value as a flag, and keeps a trailing in: as it is', async () => {
+      expect(await terms('from: in:town x')).toBe('from: in:town x');
+      expect(await terms('x in:')).toBe('x in:');
+    });
+
+    test('splits words on the spaces Go splits on, full-width space included', async () => {
+      expect(await terms('x　in:town')).toBe(`x in:${A}`);
+    });
+  });
+});
+
+describe('list_channel_members', () => {
+  const C = 'c'.repeat(26);
+  const T = 't'.repeat(26);
+  const OTHER = 'o'.repeat(26);
+  const mmError = (status: number, id = 'x') => () => Response.json({ id, message: 'm', status_code: status }, { status });
+  const user = (n: number, extra: Record<string, unknown> = {}) => ({ id: `u${String(n).padStart(25, '0')}`, username: `user${n}`, ...extra });
+  const base = () => ({
+    [`GET /channels/${C}`]: () => ({ id: C, name: 'town', display_name: 'Town', team_id: T, type: 'O', purpose: '', header: '' }),
+    [`GET /teams/${T}`]: () => ({ id: T, name: 'team-a' }),
+    [`GET /channels/${C}/stats`]: () => ({ channel_id: C, member_count: 3 }),
+    'GET /users': (req: Request) => {
+      const q = new URL(req.url).searchParams;
+      const all = [user(1, { first_name: 'Ann', last_name: 'Lee', nickname: 'annie', position: 'PM' }), user(2, { is_bot: true }), user(3)];
+      const at = Number(q.get('page')) * Number(q.get('per_page'));
+      return all.slice(at, at + Number(q.get('per_page')));
+    },
+  });
+  const names = (out: string) => [...out.matchAll(/^- @(\S+?)（/gm)].map((m) => m[1]);
+  const cursorIn = (out: string) => /next_cursor: (\S+)/.exec(out)?.[1];
+
+  test('lists the active members by username with name, nickname, position, bot and user_id, after the channel and the member count', async () => {
+    routes = base();
+    const out = await setup()('list_channel_members', { channel: C });
+    expect(urls).toContain(`GET /users?in_channel=${C}&active=true&page=0&per_page=50`);
+    expect(out).toContain(`チャンネル: Town（name: town、channel_id: ${C}）`);
+    expect(out).toContain('メンバー数: 3');
+    expect(out).toContain(`- @user1（名前: Ann Lee、ニックネーム: annie、役職: PM、user_id: ${user(1).id}）`);
+    expect(out).toContain(`- @user2（Bot アカウント、user_id: ${user(2).id}）`);
+    expect(names(out)).toEqual(['user1', 'user2', 'user3']);
+  });
+
+  test('pages with limit, a cursor keeping the page size; a full last page leads to an empty one that only says there is no more', async () => {
+    routes = base();
+    const call = setup();
+    const first = await call('list_channel_members', { channel: C, limit: 1 });
+    expect(names(first)).toEqual(['user1']);
+    const second = await call('list_channel_members', { channel: C, limit: 50, cursor: cursorIn(first) });
+    expect(names(second)).toEqual(['user2']);
+    expect(urls.at(-1)).toBe(`GET /users?in_channel=${C}&active=true&page=1&per_page=1`);
+    expect(second).not.toContain('メンバー数');
+    const third = await call('list_channel_members', { channel: C, cursor: cursorIn(second) });
+    const fourth = await call('list_channel_members', { channel: C, cursor: cursorIn(third) });
+    expect(names(fourth)).toEqual([]);
+    expect(fourth).not.toContain('メンバーはいません');
+    expect(fourth).toContain('（続きはありません）');
+    expect(hits.filter((h) => h === `GET /channels/${C}/stats`)).toHaveLength(1);
+  });
+
+  test('says when the channel has no members to show', async () => {
+    routes = { ...base(), 'GET /users': () => [] };
+    const out = await setup()('list_channel_members', { channel: C });
+    expect(out).toContain('メンバーはいません。');
+    expect(cursorIn(out)).toBeUndefined();
+  });
+
+  test('says members of a channel the user has not joined cannot be seen, without asking for the count', async () => {
+    routes = { ...base(), 'GET /users': mmError(403, 'api.context.permissions.app_error') };
+    const out = await setup()('list_channel_members', { channel: C }, true);
+    expect(out).toBe('参加していないチャンネルのメンバーは見られません（公開チャンネルでも同じです）。');
+    expect(hits).not.toContain(`GET /channels/${C}/stats`);
+  });
+
+  test('words 403 and 404 from fetching the channel as get_channel does', async () => {
+    routes = { ...base(), [`GET /channels/${C}`]: mmError(403) };
+    const call = setup();
+    expect(await call('list_channel_members', { channel: C }, true)).toBe('このチャンネルを見る権限がありません（参加していない非公開チャンネルなど）');
+    routes[`GET /channels/${C}`] = mmError(404);
+    expect(await call('list_channel_members', { channel: C }, true)).toContain('チャンネルが見つかりません');
+  });
+
+  test('rejects a cursor issued for another channel, and one of another shape', async () => {
+    routes = base();
+    const call = setup();
+    const bad = 'cursor が不正です。前回の出力の next_cursor をそのまま渡してください。';
+    const enc = (o: object) => Buffer.from(JSON.stringify(o)).toString('base64url');
+    expect(await call('list_channel_members', { channel: C, cursor: enc({ channel_id: OTHER, page: 1, per_page: 1 }) }, true)).toBe(bad);
+    expect(await call('list_channel_members', { channel: C, cursor: enc({ page: 1, per_page: 1 }) }, true)).toBe(bad);
+  });
+});
