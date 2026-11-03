@@ -67,6 +67,148 @@ test('search_posts sends the JST offset, shows the channel and team names, and n
   expect(await call('search_posts', { terms: 'x' })).not.toContain('100 件まで');
 });
 
+describe('search_posts in: filters', () => {
+  const pad = (s: string) => s.padEnd(26, '0');
+  const T1 = pad('ta'), T2 = pad('tb');
+  const CA = pad('ca'), CB = pad('cb'), CX = pad('cx'), PV = pad('pv');
+  const BOB = pad('bob');
+  const DM_NAME = [BOB, 'u1'].sort().join('__');
+  const DM = pad('dm');
+  const ch = (id: string, name: string, team_id: string, type = 'O') => ({ id, name, display_name: name, team_id, type, purpose: '', header: '' });
+  const base = (): Record<string, Route> => ({
+    'POST /posts/search': () => posts(0),
+    'GET /users/me/teams': () => [{ id: T1, name: 'team-a' }, { id: T2, name: 'team-b' }],
+    [`GET /teams/${T1}`]: () => ({ id: T1, name: 'team-a' }),
+    [`GET /teams/${T2}`]: () => ({ id: T2, name: 'team-b' }),
+    [`GET /teams/${T1}/channels/name/town`]: () => ch(CA, 'town', T1),
+    [`GET /teams/${T2}/channels/name/town`]: () => ch(CB, 'town', T2),
+    [`GET /teams/${T1}/channels/name/only-a`]: () => ch(CX, 'only-a', T1),
+    'GET /teams/name/team-a/channels/name/only-a': () => ch(CX, 'only-a', T1),
+    [`GET /channels/${CX}`]: () => ch(CX, 'only-a', T1),
+    [`GET /channels/${CB}`]: () => ch(CB, 'town', T2),
+    'GET /users/username/bob': () => ({ id: BOB, username: 'bob' }),
+    [`GET /channels/${PV}`]: () => Response.json({ id: 'api.context.permissions.app_error' }, { status: 403 }),
+    'GET /teams/name/team-a/channels/name/private': () => Response.json({ id: 'api.context.permissions.app_error' }, { status: 403 }),
+  });
+  const withDm = () => ({
+    ...base(),
+    [`GET /teams/${T1}/channels/name/${DM_NAME}`]: () => ch(DM, DM_NAME, '', 'D'),
+    [`GET /teams/${T2}/channels/name/${DM_NAME}`]: () => ch(DM, DM_NAME, '', 'D'),
+  });
+  const sent = () => (bodies['/posts/search'] as { terms: string } | undefined)?.terms;
+
+  test.each([
+    ['x in:only-a', `x in:${CX}`],
+    ['x -in:only-a', `x -in:${CX}`],
+    ['x channel:only-a', `x in:${CX}`],
+    ['x IN:only-a', `x in:${CX}`],
+    ['x in: only-a', `x in:${CX}`],
+    ['x in:~only-a', `x in:${CX}`],
+    ['x in:team-a/only-a', `x in:${CX}`],
+    [`x in:${CX}`, `x in:${CX}`],
+    ['x　in:only-a', `x in:${CX}`],
+    ['foo "bar in:only-a', `foo "bar in:${CX}`],
+    [`x in:only-a in:${CB}`, `x in:${CX} in:${CB}`],
+    ['x -channel:only-a', `x -in:${CX}`],
+    ['"a  b" in:only-a', `"a  b" in:${CX}`],
+    ['x -"in:town" in:only-a', `x -"in:town" in:${CX}`],
+  ])('sends %j to Mattermost as %j', async (terms, expected) => {
+    routes = base();
+    await setup()('search_posts', { terms });
+    expect(sent()).toBe(expected);
+  });
+
+  test('a channel ID is looked up to check it is visible before it is sent', async () => {
+    routes = base();
+    await setup()('search_posts', { terms: `x in:${CX}` });
+    expect(hits).toContain(`GET /channels/${CX}`);
+  });
+
+  test.each([
+    ['a  "b in:only-a" c'],
+    ['from: in:only-a x'],
+    ['x in:'],
+    ['x in:@bob,carol'],
+  ])('passes %j through unchanged', async (terms) => {
+    routes = base();
+    await setup()('search_posts', { terms });
+    expect(sent()).toBe(terms);
+    expect(hits).toEqual(['POST /posts/search']);
+  });
+
+  test('searches every team for a name that several teams have, notes it, and keeps the original terms in the header', async () => {
+    routes = base();
+    const out = await setup()('search_posts', { terms: 'x in:town' });
+    expect(sent()).toBe(`x in:${CA} in:${CB}`);
+    expect(out.split('\n')[0]).toBe('検索: x in:town');
+    expect(out).toContain('in:town は複数のチームにあるため、すべてで探しました（team-a、team-b）。');
+  });
+
+  test('excludes every channel of a name that several teams have', async () => {
+    routes = base();
+    await setup()('search_posts', { terms: 'x -in:town' });
+    expect(sent()).toBe(`x -in:${CA} -in:${CB}`);
+  });
+
+  test('a DM name found through every team counts as one channel, without the note', async () => {
+    routes = withDm();
+    const out = await setup()('search_posts', { terms: `x in:${DM_NAME}` });
+    expect(sent()).toBe(`x in:${DM}`);
+    expect(out).not.toContain('複数のチーム');
+  });
+
+  test('in:@user uses the existing DM without creating one', async () => {
+    routes = withDm();
+    await setup()('search_posts', { terms: 'x in:@bob' });
+    expect(sent()).toBe(`x in:${DM}`);
+    expect(hits).not.toContain('POST /channels/direct');
+  });
+
+  test('in:@user without a DM is an error, and neither creates the DM nor searches', async () => {
+    routes = base();
+    const out = await setup()('search_posts', { terms: 'x in:@bob' }, true);
+    expect(out).toContain('@bob との DM はまだありません。');
+    expect(hits).not.toContain('POST /channels/direct');
+    expect(hits).not.toContain('POST /posts/search');
+  });
+
+  test('-in:@user with a DM excludes that DM', async () => {
+    routes = withDm();
+    await setup()('search_posts', { terms: 'x -in:@bob' });
+    expect(sent()).toBe(`x -in:${DM}`);
+  });
+
+  test('-in:@user without a DM drops the condition', async () => {
+    routes = base();
+    await setup()('search_posts', { terms: 'x -in:@bob' });
+    expect(sent()).toBe('x');
+    expect(hits).not.toContain('POST /channels/direct');
+  });
+
+  test('dropping the only condition leaves nothing to search, which is an error', async () => {
+    routes = base();
+    const out = await setup()('search_posts', { terms: '-in:@bob' }, true);
+    expect(out).toContain('検索語か条件を 1 つ以上指定してください。');
+    expect(hits).not.toContain('POST /posts/search');
+  });
+
+  test.each([
+    ['x in:nowhere', 'チャンネル「nowhere」が見つかりません。'],
+    ['x -in:nowhere', 'チャンネル「nowhere」が見つかりません。'],
+    [`x in:${pad('zz')}`, `チャンネル「${pad('zz')}」が見つかりません。`],
+    ['x in:team-a/nowhere', 'チャンネル「team-a/nowhere」が見つかりません。'],
+    [`x in:${PV}`, `チャンネル「${PV}」が見つかりません。`],
+    ['x in:team-a/private', 'チャンネル「team-a/private」が見つかりません。'],
+    ['x in:@ghost', 'ユーザー「@ghost」が見つかりません。'],
+    ['x -in:@ghost', 'ユーザー「@ghost」が見つかりません。'],
+  ])('%j is an input error without searching', async (terms, message) => {
+    routes = base();
+    const out = await setup()('search_posts', { terms }, true);
+    expect(out).toContain(message);
+    expect(hits).not.toContain('POST /posts/search');
+  });
+});
+
 test('search_posts looks up the names of the users who reacted, and notes a post whose message attachments were cut', async () => {
   const P = id(0);
   routes = {
