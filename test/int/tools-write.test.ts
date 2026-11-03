@@ -199,6 +199,35 @@ describe('save_draft against the local Mattermost', () => {
     expect(await find(reply.id)).toBeUndefined();
   });
 
+  test('sending a saved channel draft\'s message with send_message removes the draft', async () => {
+    drafts.push([open.id, '']);
+    expect((await call('save_draft', { channel: open.id, message: `${TAG} to send`, overwrite: true })).isError).toBeFalsy();
+    const sent = await call('send_message', { channel: open.id, message: `${TAG} to send` });
+    expect(sent.isError).toBeFalsy();
+    expect(sent.content[0].text).toContain('同じ本文の下書きを消しました');
+    expect(await find()).toBeUndefined();
+  });
+
+  test('sending a saved reply draft\'s message with send_message removes the reply draft', async () => {
+    const root = await bobPost(open.id);
+    drafts.push([open.id, root.id]);
+    expect((await call('save_draft', { channel: open.id, message: `${TAG} reply to send`, root_id: root.id })).isError).toBeFalsy();
+    const sent = await call('send_message', { channel: open.id, message: `${TAG} reply to send`, root_id: root.id });
+    expect(sent.isError).toBeFalsy();
+    expect(sent.content[0].text).toContain('同じ本文の下書きを消しました');
+    expect(await find(root.id)).toBeUndefined();
+  });
+
+  test('a draft with a different message stays after send_message', async () => {
+    const root = await bobPost(open.id);
+    drafts.push([open.id, root.id]);
+    expect((await call('save_draft', { channel: open.id, message: `${TAG} still writing`, root_id: root.id })).isError).toBeFalsy();
+    const sent = await call('send_message', { channel: open.id, message: `${TAG} something else`, root_id: root.id });
+    expect(sent.isError).toBeFalsy();
+    expect(sent.content[0].text).not.toContain('下書き');
+    expect((await find(root.id))?.message).toBe(`${TAG} still writing`);
+  });
+
   test('alice with draft sync turned off is refused and nothing is saved', async () => {
     const root = await bobPost(open.id);
     drafts.push([open.id, root.id]);
