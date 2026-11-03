@@ -37,3 +37,8 @@ test.each([
 ])('refuses %j as a date and time it cannot read exactly', (given) => {
   expect(() => parseWhen(given)).toThrow(InputError);
 });
+
+test('names the argument in the error, at unless told otherwise', () => {
+  expect(() => parseWhen('x', 'since')).toThrow(/^since「x」を日時として読めません/);
+  expect(() => parseWhen('x')).toThrow(/^at「x」を日時として読めません/);
+});
