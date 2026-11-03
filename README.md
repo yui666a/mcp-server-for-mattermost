@@ -36,7 +36,7 @@ This project targets the other case:
 | `get_channel` | Channel type, purpose, header, member count, and pinned posts |
 | `get_unreads` | Unread channels and, with collapsed reply threads, unread threads |
 | `get_mentions` | Posts that mention the user |
-| `mark_as_read` | Mark channels and threads read, skipping channels with posts from others after the last post read |
+| `mark_as_read` | Mark channels and threads read, skipping channels with posts by anyone else after the newest post read |
 | `search_users` | Find users by name or username |
 | `get_user` | A user's profile with time zone, local time, and status |
 | `send_message` | Post to a channel or thread, optionally with small inline files or files uploaded through `prepare_upload` |
