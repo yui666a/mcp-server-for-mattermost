@@ -2,7 +2,7 @@ import type { McpServer, ToolCallback } from '@modelcontextprotocol/sdk/server/m
 import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
 import { z } from 'zod';
 import { MmError, type MmClient } from '../mattermost/client.ts';
-import { BAD_CURSOR, decodeCursor, encodeCursor, fileLine, formatPost, formatTime, InputError, localTime, postTruncated, postUserIds, type MmFileInfo, type MmPost } from './format.ts';
+import { BAD_CURSOR, decodeCursor, encodeCursor, fileLine, formatPost, formatTime, InputError, localTime, postTruncated, postUserIds, truncate, type MmFileInfo, type MmPost } from './format.ts';
 import { pageCursor, paginate } from './paging.ts';
 import { mentionsMe, mentionTerms, type MentionUser } from './mentions.ts';
 import { parsePostRef } from './permalink.ts';
