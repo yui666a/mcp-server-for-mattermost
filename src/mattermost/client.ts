@@ -72,22 +72,23 @@ export class MmClient {
     return this.request(mmUserId, method, path, body, signal, (res) => this.json<T>(res));
   }
 
-  callBytes(mmUserId: string, path: string, signal?: AbortSignal): Promise<Uint8Array> {
-    return this.request(mmUserId, 'GET', path, undefined, signal, (res) => this.bytes(res));
+  callBytes(mmUserId: string, path: string, signal?: AbortSignal, opts?: { maxBytes: number }): Promise<Uint8Array> {
+    const range = opts ? { range: `bytes=0-${opts.maxBytes - 1}` } : undefined;
+    return this.request(mmUserId, 'GET', path, undefined, signal, (res) => this.bytes(res, opts?.maxBytes), range);
   }
 
-  private async request<T>(mmUserId: string, method: string, path: string, body: unknown, signal: AbortSignal | undefined, read: Read<T>): Promise<T> {
+  private async request<T>(mmUserId: string, method: string, path: string, body: unknown, signal: AbortSignal | undefined, read: Read<T>, headers?: Record<string, string>): Promise<T> {
     const release = this.limiter.acquire(mmUserId);
     try {
-      return await this.run(mmUserId, method, path, body, signal, read);
+      return await this.run(mmUserId, method, path, body, signal, read, headers);
     } finally {
       release();
     }
   }
 
-  private async run<T>(mmUserId: string, method: string, path: string, body: unknown, signal: AbortSignal | undefined, read: Read<T>): Promise<T> {
+  private async run<T>(mmUserId: string, method: string, path: string, body: unknown, signal: AbortSignal | undefined, read: Read<T>, headers?: Record<string, string>): Promise<T> {
     const at: Attempt = { sent: false, requests: 0, deadline: this.deps.now() + CALL_DEADLINE_MS, signal };
-    const send: Send = (access) => this.send(at, mmUserId, access, method, path, body);
+    const send: Send = (access) => this.send(at, mmUserId, access, method, path, body, headers);
     const cred = this.store.getMmCred(mmUserId);
     if (!cred) this.reauthorize(mmUserId, at);
     let res: Response | undefined = await send(cred.access);
@@ -192,7 +193,7 @@ export class MmClient {
     throw new Reauthorize(at.sent);
   }
 
-  private async send(at: Attempt, mmUserId: string, access: string, method: string, path: string, body: unknown): Promise<Response> {
+  private async send(at: Attempt, mmUserId: string, access: string, method: string, path: string, body: unknown, extra?: Record<string, string>): Promise<Response> {
     const ms = this.remaining(at);
     if (at.requests++ > 0) this.limiter.charge(mmUserId);
     const started = this.deps.now();
@@ -203,8 +204,8 @@ export class MmClient {
         method,
         // Not a stream body: the resend after a 401 needs the same bytes again, which a Blob gives and a read stream does not.
         headers: body === undefined || body instanceof Blob
-          ? { authorization: `Bearer ${access}` }
-          : { authorization: `Bearer ${access}`, 'content-type': 'application/json' },
+          ? { ...extra, authorization: `Bearer ${access}` }
+          : { ...extra, authorization: `Bearer ${access}`, 'content-type': 'application/json' },
         body: body === undefined || body instanceof Blob ? body : JSON.stringify(body),
         // Not following redirects keeps the bearer token from being sent anywhere but MM_URL.
         redirect: 'manual',
@@ -235,10 +236,23 @@ export class MmClient {
     }
   }
 
-  private async bytes(res: Response): Promise<Uint8Array> {
+  private async bytes(res: Response, max?: number): Promise<Uint8Array> {
     await this.check(res);
     try {
-      return new Uint8Array(await res.arrayBuffer());
+      if (max === undefined || !res.body) return new Uint8Array(await res.arrayBuffer());
+      // Not trusting the Range alone: a server or proxy that ignores it would otherwise have the whole file read into memory.
+      const out = new Uint8Array(max);
+      let n = 0;
+      const reader = res.body.getReader();
+      while (n < max) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        const take = Math.min(value.length, max - n);
+        out.set(value.subarray(0, take), n);
+        n += take;
+      }
+      await reader.cancel().catch(() => {});
+      return out.subarray(0, n);
     } catch {
       throw new UpstreamUnavailable('unreadable Mattermost response', true);
     }
