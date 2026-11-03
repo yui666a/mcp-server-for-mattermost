@@ -444,7 +444,7 @@ describe('send_message with file_ids from prepare_upload', () => {
     expect(f.created).toHaveLength(0);
   });
 
-  test('a file that a posted schedule holds is refused as already posted', async () => {
+  test('a file already recorded as posted that a schedule also holds is refused as already posted', async () => {
     const f = fakeMm();
     uploaded(f, [F1]);
     holdBySchedule(f, [F1]);
