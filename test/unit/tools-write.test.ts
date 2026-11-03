@@ -27,7 +27,7 @@ function setup() {
     hits.push(`${req.method} ${path}`);
     const r = routes[`${req.method} ${path}`];
     if (!r) return Response.json({ id: 'not_found' }, { status: 404 });
-    const out = r(req);
+    const out = await r(req);
     return out instanceof Response ? out : Response.json(out);
   });
   const code = ctx.store.createCode({
@@ -755,8 +755,25 @@ describe('send_message with files', () => {
     for (const s of ['secret-name', 'secret-text', 'secret-bytes', Buffer.from('secret-bytes').toString('base64')]) expect(logged).not.toContain(s);
   });
 
-  test('the tool describes files, their two forms and the limits', async () => {
+  test('the tool describes files, their two forms and the limits, and that a draft with the same message is cleared', async () => {
     const t = (await setup().tools()).find((x) => x.name === 'send_message')!;
     expect(t.description).toContain('files');
+    expect(t.description).toContain('同じ投稿先に本文の同じ下書きがあれば、投稿の後に消す');
+  });
+
+  test('the draft cleanup\'s 5-second deadline reaches the Mattermost requests, and running past it leaves the post a success', async () => {
+    const ac = new AbortController();
+    const real = AbortSignal.timeout.bind(AbortSignal);
+    vi.spyOn(AbortSignal, 'timeout').mockImplementation((ms) => (ms === 5000 ? ac.signal : real(ms)));
+    serve({
+      'GET /users/u1/teams/t1/drafts': (req) => new Promise((_, reject) => req.signal.addEventListener('abort', () => reject(req.signal.reason))),
+    });
+    const sending = setup().call('send_message', { channel: CH, message: 'm' });
+    await vi.waitFor(() => expect(hits).toContain('GET /users/u1/teams/t1/drafts'));
+    ac.abort(new DOMException('timed out', 'TimeoutError'));
+    const r = await sending;
+    expect(r.isError).toBe(false);
+    expect(r.text).toContain('投稿しました。');
+    expect(r.text).toContain('同じ本文の下書きを確かめられなかったか、消せませんでした');
   });
 });

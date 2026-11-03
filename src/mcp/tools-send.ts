@@ -326,7 +326,7 @@ export async function checkRoot(mm: Mm, uid: string, rootId: string, ch: { id: s
   if (root.root_id) throw new InputError(`root_id ${rootId} は返信です。スレッドの親投稿の post_id を指定してください。`);
 }
 
-// undefined when the caller has no team: drafts are listed per team, so a DM draft would not show anywhere either.
+// Not throwing when the caller has no team: send_message's cleanup has nothing to do then, since drafts are listed per team and a DM draft shows nowhere.
 async function draftsOf(mm: Mm, uid: string, ch: ChannelRef): Promise<Draft[] | undefined> {
   const teamId = ch.teamId || (await myTeams(mm, uid))[0]?.id;
   if (!teamId) return undefined;
@@ -355,7 +355,7 @@ async function clearSentDraft(mm: Mm, uid: string, ch: ChannelRef, rootId: strin
     ].join('\n');
   } catch (e) {
     if (e instanceof MmError && e.status === 501 && e.id === DISABLED[1]) return '';
-    log('draft_cleanup_failed', { name: (e as Error)?.name });
+    log('draft_cleanup_failed', { mm_user_id: uid, name: (e as Error)?.name, ...(e instanceof MmError ? { status: e.status, id: e.id } : {}) });
     return '同じ本文の下書きを確かめられなかったか、消せませんでした。下書きが残っていれば、そのまま送ると同じ投稿が 2 回になります。';
   }
 }
