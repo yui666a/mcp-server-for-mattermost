@@ -451,6 +451,66 @@ describe('read tools against the local Mattermost', () => {
     }
   });
 
+  describe('search_files', () => {
+    const files: Record<string, string> = {};
+    const fileIds = (r: Result) => [...r.content[0].text.matchAll(/file_id: ([a-z0-9]{26})/g)].map((m) => m[1]);
+    const attach = async (channelId: string, names: string[]) => {
+      const ids = [];
+      for (const n of names) ids.push(files[n] = await upload(aliceMm, channelId, n, Buffer.from(`${TAG} ${n}`)));
+      return (await mmApi<{ id: string }>(aliceMm, 'POST', '/posts', { channel_id: channelId, message: `${TAG} files`, file_ids: ids })).id;
+    };
+    let post: string;
+
+    beforeAll(async () => {
+      post = await attach(channel.id, [`${TAG}f-report.pdf`, `${TAG}f-note.txt`]);
+      await attach(e.teams.a.dupChannelId, [`${TAG}g-a.txt`]);
+      await attach(e.teams.b.dupChannelId, [`${TAG}g-b.txt`]);
+      await attach(e.teams.a.privateChannelId!, [`${TAG}f-private.txt`]);
+    });
+
+    test('finds files by name with a prefix, with file_id, post_id and permalink, and narrows with ext:', async () => {
+      const r = await call('alice', 'search_files', { terms: `${TAG}f*` });
+      expect(r.isError).toBeFalsy();
+      expect(fileIds(r)).toEqual(expect.arrayContaining([files[`${TAG}f-report.pdf`], files[`${TAG}f-note.txt`]]));
+      expect(r.content[0].text).toContain(`post_id: ${post}`);
+      expect(r.content[0].text).toContain(`${browserUrl}/team-a/pl/${post}`);
+      const pdf = await call('alice', 'search_files', { terms: `${TAG}f* ext:pdf` });
+      expect(fileIds(pdf)).toContain(files[`${TAG}f-report.pdf`]);
+      expect(fileIds(pdf)).not.toContain(files[`${TAG}f-note.txt`]);
+    });
+
+    test('in: takes a team channel name, which the all-teams search alone would not match', async () => {
+      const r = await call('alice', 'search_files', { terms: `${TAG}f* in:${channel.name}` });
+      expect(fileIds(r)).toEqual(expect.arrayContaining([files[`${TAG}f-report.pdf`], files[`${TAG}f-note.txt`]]));
+      expect(fileIds(r)).not.toContain(files[`${TAG}f-private.txt`]);
+    });
+
+    test('in: with a name in both teams searches both and says so', async () => {
+      const r = await call('alice', 'search_files', { terms: `${TAG}g* in:general-dup` });
+      expect(fileIds(r)).toEqual(expect.arrayContaining([files[`${TAG}g-a.txt`], files[`${TAG}g-b.txt`]]));
+      expect(r.content[0].text).toContain('in:general-dup は複数のチームにあるため、すべてで探しました');
+    });
+
+    test('in:@user does not create a DM: it fails without one, and -in:@user drops the condition', async () => {
+      const name = `${TAG}dm`;
+      const u = await mmApi<{ id: string }>(e.adminToken, 'POST', '/users', { username: name, email: `${name}@example.com`, password: 'Passw0rd!dev123' });
+      const fail = await call('alice', 'search_files', { terms: `${TAG}f* in:@${name}` });
+      expect(fail.isError).toBe(true);
+      expect(fail.content[0].text).toBe(`@${name} との DM はまだありません。`);
+      const r = await call('alice', 'search_files', { terms: `${TAG}f* -in:@${name}` });
+      expect(fileIds(r)).toContain(files[`${TAG}f-report.pdf`]);
+      const dm = [e.users.alice.id, u.id].sort().join('__');
+      const res = await fetch(`${e.mmUrl}/api/v4/teams/${e.teams.a.id}/channels/name/${dm}`, { headers: { authorization: `Bearer ${aliceMm}` } });
+      expect(res.status).toBe(404);
+    });
+
+    test('does not show bob a file in a private channel he has not joined', async () => {
+      const r = await call('bob', 'search_files', { terms: `${TAG}f*` });
+      expect(fileIds(r)).not.toContain(files[`${TAG}f-private.txt`]);
+      expect(fileIds(await call('alice', 'search_files', { terms: `${TAG}f*` }))).toContain(files[`${TAG}f-private.txt`]);
+    });
+  });
+
   test('Mattermost API calls per tool are counted by the limiter', async () => {
     const acquire = vi.spyOn(limiter, 'acquire');
     const charge = vi.spyOn(limiter, 'charge');

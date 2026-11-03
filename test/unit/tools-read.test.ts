@@ -1112,3 +1112,206 @@ describe('list_saved_posts', () => {
     expect(out).toBe('cursor が不正です。前回の出力の next_cursor をそのまま渡してください。');
   });
 });
+
+describe('search_files', () => {
+  const A = 'a'.repeat(26);
+  const B = 'b'.repeat(26);
+  const DM = 'd'.repeat(26);
+  const TA = 't'.repeat(26);
+  const TB = 's'.repeat(26);
+  const F1 = 'f'.repeat(26);
+  const F2 = 'g'.repeat(26);
+  const P1 = 'p'.repeat(26);
+  const file = (id: string, extra: Record<string, unknown> = {}) => ({
+    id, name: `${id.slice(0, 3)}.pdf`, extension: 'pdf', mime_type: 'application/pdf', size: 1234, user_id: 'u2', post_id: P1, channel_id: A, create_at: Date.UTC(2026, 9, 1, 0, 0, 0), ...extra,
+  });
+  const found = (fs: ReturnType<typeof file>[]) => ({ order: fs.map((f) => f.id), file_infos: Object.fromEntries(fs.map((f) => [f.id, f])) });
+  const mmError = (status: number, id = 'x') => () => Response.json({ id, message: 'm', status_code: status }, { status });
+  const base = () => ({
+    'POST /files/search': () => found([file(F1)]),
+    'GET /users/me/channels': () => [{ id: A, name: 'town', display_name: 'Town', team_id: TA, type: 'O' }],
+    'GET /users/me/teams': () => [{ id: TA, name: 'team-a' }, { id: TB, name: 'team-b' }],
+    'POST /users/ids': () => [{ id: 'u2', username: 'bob' }],
+    [`GET /teams/${TA}/channels/name/town`]: () => ({ id: A, name: 'town', display_name: 'Town', team_id: TA, type: 'O' }),
+    [`GET /teams/${TA}/channels/name/dup`]: () => ({ id: A, name: 'dup', display_name: 'Dup', team_id: TA, type: 'O' }),
+    [`GET /teams/${TB}/channels/name/dup`]: () => ({ id: B, name: 'dup', display_name: 'Dup', team_id: TB, type: 'O' }),
+    'GET /teams/name/team-b/channels/name/dup': () => ({ id: B, name: 'dup', display_name: 'Dup', team_id: TB, type: 'O' }),
+    [`GET /channels/${B}`]: () => ({ id: B, name: 'dup', display_name: 'Dup', team_id: TB, type: 'O' }),
+    [`GET /teams/${TB}`]: () => ({ id: TB, name: 'team-b' }),
+    'GET /users/username/bob': () => ({ id: 'u2', username: 'bob' }),
+    'GET /users/username/carol': () => ({ id: 'u3', username: 'carol' }),
+    [`GET /teams/${TA}/channels/name/u1__u2`]: () => ({ id: DM, name: 'u1__u2', display_name: '', team_id: '', type: 'D' }),
+    [`GET /teams/${TB}/channels/name/u1__u2`]: () => ({ id: DM, name: 'u1__u2', display_name: '', team_id: '', type: 'D' }),
+  });
+  const sent = () => (bodies['/files/search'] as { terms: string }).terms;
+  const terms = async (t: string) => {
+    routes = base();
+    await setup()('search_files', { terms: t });
+    return sent();
+  };
+
+  test('searches all teams once in JST, asking for 100, without paging Mattermost', async () => {
+    routes = base();
+    await setup()('search_files', { terms: 'report ext:pdf', limit: 50 });
+    expect(bodies['/files/search']).toEqual({ terms: 'report ext:pdf', is_or_search: false, include_deleted_channels: false, time_zone_offset: 32400, page: 0, per_page: 100 });
+    expect(hits.filter((h) => h.includes('files/search'))).toEqual(['POST /files/search']);
+  });
+
+  test('shows each file with its file_id, uploader, time, channel and team, post_id and permalink', async () => {
+    routes = base();
+    const out = await setup()('search_files', { terms: 'fff' });
+    expect(out).toContain('ファイルの検索: fff');
+    expect(out).toContain(`fff.pdf（file_id: ${F1}、種類: application/pdf、1234 バイト）`);
+    expect(out).toContain('@bob | 2026-10-01T00:00:00Z | 2026-10-01T09:00:00+09:00');
+    expect(out).toContain(`チャンネル: Town（name: town、channel_id: ${A}） | チーム: team-a（team_id: ${TA}）`);
+    expect(out).toContain(`post_id: ${P1}`);
+    expect(out).toContain(`https://mm.example/team-a/pl/${P1}`);
+  });
+
+  test('marks a channel bookmark file, which has no post, without looking up its uploader', async () => {
+    routes = { ...base(), 'POST /files/search': () => found([file(F1, { post_id: '', user_id: 'bookmark' })]) };
+    const out = await setup()('search_files', { terms: 'fff' });
+    expect(out).toContain('チャンネルのブックマークのファイル（投稿なし）');
+    expect(out).not.toContain('post_id:');
+    expect(hits).not.toContain('POST /users/ids');
+  });
+
+  test('shows only the channel_id of a channel not in the user\'s channel list', async () => {
+    routes = { ...base(), 'POST /files/search': () => found([file(F1, { channel_id: B })]) };
+    const out = await setup()('search_files', { terms: 'fff' });
+    expect(out).toContain(`channel_id: ${B}`);
+    expect(out).toContain(`https://mm.example/team-a/pl/${P1}`);
+  });
+
+  test('pages through the 100 results with limit, a cursor keeping the page size, and notes the 100-result cap', async () => {
+    const all = Array.from({ length: 100 }, (_, i) => file(`f${String(i).padStart(25, '0')}`, { create_at: 10_000 - i }));
+    routes = { ...base(), 'POST /files/search': () => found(all) };
+    const call = setup();
+    const first = await call('search_files', { terms: 'x', limit: 30 });
+    expect(first).toContain('これより古い一致');
+    const ids = (out: string) => [...out.matchAll(/file_id: (f\d{25})/g)].map((m) => m[1]);
+    expect(ids(first)).toEqual(all.slice(0, 30).map((f) => f.id));
+    const cursor = /next_cursor: (\S+)/.exec(first)![1];
+    expect(ids(await call('search_files', { terms: 'x', limit: 5, cursor }))).toEqual(all.slice(30, 60).map((f) => f.id));
+    routes['POST /files/search'] = () => found(all.slice(0, 99));
+    expect(await call('search_files', { terms: 'x' })).not.toContain('これより古い一致');
+  });
+
+  test('says when nothing matches', async () => {
+    routes = { ...base(), 'POST /files/search': () => found([]) };
+    expect(await setup()('search_files', { terms: 'x' })).toContain('一致するファイルはありません。');
+  });
+
+  test('says file search is turned off when Mattermost answers 501 store.sql_file_info.search.disabled', async () => {
+    routes = { ...base(), 'POST /files/search': mmError(501, 'store.sql_file_info.search.disabled') };
+    const out = await setup()('search_files', { terms: 'x' }, true);
+    expect(out).toBe('この Mattermost ではファイルの検索が無効になっています（システムコンソールの設定）。ファイル名を含む投稿は search_posts で探せます。');
+  });
+
+  test('rejects a cursor of another shape', async () => {
+    routes = base();
+    const out = await setup()('search_files', { terms: 'x', cursor: Buffer.from(JSON.stringify({ offset: 0, per_page: 20 })).toString('base64url') }, true);
+    expect(out).toBe('cursor が不正です。前回の出力の next_cursor をそのまま渡してください。');
+  });
+
+  describe('in: filters (resolveInFilters)', () => {
+    test('passes terms without in: or channel: untouched, without looking anything up', async () => {
+      expect(await terms('  a  "b c"  from:bob ')).toBe('  a  "b c"  from:bob ');
+      expect(hits.filter((h) => h.includes('/channels/name/') || h.startsWith('GET /channels/'))).toEqual([]);
+    });
+
+    test('replaces a channel name with its channel_id, in place', async () => {
+      expect(await terms('report in:town ext:pdf')).toBe(`report in:${A} ext:pdf`);
+    });
+
+    test('reads -in:, channel:, IN:, a value after "in: ", and a leading ~ the way Mattermost does', async () => {
+      expect(await terms('x -in:town')).toBe(`x -in:${A}`);
+      expect(await terms('x channel:town')).toBe(`x in:${A}`);
+      expect(await terms('x -channel:town')).toBe(`x -in:${A}`);
+      expect(await terms('x IN:town')).toBe(`x in:${A}`);
+      expect(await terms('x in: town')).toBe(`x in:${A}`);
+      expect(await terms('x in:~town')).toBe(`x in:${A}`);
+    });
+
+    test('resolves team/channel and a visible channel_id', async () => {
+      expect(await terms('x in:team-b/dup')).toBe(`x in:${B}`);
+      expect(await terms(`x in:${B}`)).toBe(`x in:${B}`);
+      expect(hits).toContain(`GET /channels/${B}`);
+    });
+
+    test('a name in several teams searches all of them and says so; -in: excludes all of them', async () => {
+      routes = base();
+      const out = await setup()('search_files', { terms: 'x in:dup' });
+      expect(sent()).toBe(`x in:${A} in:${B}`);
+      expect(out).toContain('in:dup は複数のチームにあるため、すべてで探しました（team-a、team-b）。');
+      expect(out).toContain('ファイルの検索: x in:dup');
+      expect(await terms('x -in:dup')).toBe(`x -in:${A} -in:${B}`);
+    });
+
+    test('a DM found by name in every team counts once, without the note', async () => {
+      routes = base();
+      const out = await setup()('search_files', { terms: 'x in:u1__u2' });
+      expect(sent()).toBe(`x in:${DM}`);
+      expect(out).not.toContain('複数のチーム');
+    });
+
+    test('resolves @user to the existing DM without creating one', async () => {
+      expect(await terms('x in:@bob')).toBe(`x in:${DM}`);
+      expect(hits).not.toContain('POST /channels/direct');
+    });
+
+    test('without a DM, in:@user fails and -in:@user (also as two words) drops the condition', async () => {
+      routes = base();
+      const call = setup();
+      expect(await call('search_files', { terms: 'x in:@carol' }, true)).toBe('@carol との DM はまだありません。');
+      expect(hits).not.toContain('POST /files/search');
+      await call('search_files', { terms: 'x -in:@carol y' });
+      expect(sent()).toBe('x y');
+      await call('search_files', { terms: 'x -in: @carol y' });
+      expect(sent()).toBe('x y');
+      expect(hits).not.toContain('POST /channels/direct');
+    });
+
+    test('asks for a term when dropping -in:@user leaves nothing to search', async () => {
+      routes = base();
+      expect(await setup()('search_files', { terms: '-in:@carol' }, true)).toBe('検索語か条件を 1 つ以上指定してください。');
+      expect(hits).not.toContain('POST /files/search');
+    });
+
+    test('passes a group DM as given', async () => {
+      expect(await terms('x in:@bob,carol')).toBe('x in:@bob,carol');
+    });
+
+    test('says a channel is not found, for a name, a channel_id or team/channel answered with 403 or 404, without searching', async () => {
+      routes = { ...base(), [`GET /channels/${B}`]: mmError(403), 'GET /teams/name/team-b/channels/name/dup': mmError(404) };
+      const call = setup();
+      expect(await call('search_files', { terms: 'x in:nowhere' }, true)).toBe('チャンネル「nowhere」が見つかりません。');
+      expect(await call('search_files', { terms: `x -in:${B}` }, true)).toBe(`チャンネル「${B}」が見つかりません。`);
+      expect(await call('search_files', { terms: 'x in:team-b/dup' }, true)).toBe('チャンネル「team-b/dup」が見つかりません。');
+      routes[`GET /channels/${B}`] = mmError(404);
+      expect(await call('search_files', { terms: `x in:${B}` }, true)).toBe(`チャンネル「${B}」が見つかりません。`);
+      expect(hits).not.toContain('POST /files/search');
+    });
+
+    test('says a user is not found for in:@user of nobody', async () => {
+      routes = { ...base(), 'GET /users/username/nobody': mmError(404, 'app.user.missing_account.const') };
+      expect(await setup()('search_files', { terms: 'x in:@nobody' }, true)).toBe('ユーザー「@nobody」が見つかりません。');
+    });
+
+    test('leaves quoted words alone, but not after an unclosed quote', async () => {
+      expect(await terms('"in:town" x')).toBe('"in:town" x');
+      expect(await terms('-"in:town" x')).toBe('-"in:town" x');
+      expect(await terms('abc"in:town" in:town')).toBe(`abc "in:town" in:${A}`);
+      expect(await terms('"a in:town')).toBe(`"a in:${A}`);
+    });
+
+    test('does not treat a word taken as another flag\'s value as a flag, and keeps a trailing in: as it is', async () => {
+      expect(await terms('from: in:town x')).toBe('from: in:town x');
+      expect(await terms('x in:')).toBe('x in:');
+    });
+
+    test('splits words on the spaces Go splits on, full-width space included', async () => {
+      expect(await terms('x　in:town')).toBe(`x in:${A}`);
+    });
+  });
+});

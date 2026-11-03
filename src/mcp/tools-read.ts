@@ -6,7 +6,7 @@ import { BAD_CURSOR, decodeCursor, encodeCursor, fileLine, formatPost, formatTim
 import { pageCursor, paginate } from './paging.ts';
 import { mentionsMe, mentionTerms, type MentionUser } from './mentions.ts';
 import { parsePostRef } from './permalink.ts';
-import { ChannelFetchError, myTeams, resolveChannel, resolveUser, teamNameOf, type ChannelRef, type Mm, type MmChannel, type MmTeam, type UserRef } from './resolve.ts';
+import { Ambiguous, ChannelFetchError, myTeams, NoDirectChannel, resolveChannel, resolveUser, teamNameOf, type ChannelRef, type Mm, type MmChannel, type MmTeam, type UserRef } from './resolve.ts';
 import { guarded, text, type ToolContext } from './server.ts';
 import { worded, type Wording } from './tools-send.ts';
 
@@ -14,6 +14,8 @@ type PostList = { order: string[]; posts: Record<string, MmPost>; has_next?: boo
 type Page = { lines: string[]; next?: object; posts?: MmPost[]; notes?: string[] };
 
 type ReadMm = Mm & Pick<MmClient, 'callBytes'>;
+type FoundFile = MmFileInfo & { user_id: string; post_id: string; channel_id: string; create_at: number };
+type FileList = { order: string[]; file_infos: Record<string, FoundFile> };
 
 const MM_SEARCH_CAP = 100;
 const SAVED_PAGE = 200;
@@ -54,6 +56,90 @@ export function cursorOf<S extends z.ZodType>(schema: S, cursor: string | undefi
   const r = schema.safeParse(decodeCursor(cursor));
   if (!r.success) throw new InputError(BAD_CURSOR);
   return r.data;
+}
+
+const GO_SPACE = /[\t\n\v\f\r \u0085\u00a0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000]+/;
+const fields = (s: string) => s.split(GO_SPACE).filter(Boolean);
+const SEARCH_FLAGS = ['from', 'channel', 'in', 'before', 'after', 'on', 'ext'];
+
+// Ported from Mattermost's splitWords (model/search_params.go) rather than splitting on spaces: the words have to be the ones the server reads as flags.
+function splitWords(text: string): string[] {
+  const words: string[] = [];
+  let quoted = false;
+  let at = 0;
+  for (let i = 0; i < text.length; i++) {
+    if (text[i] !== '"') continue;
+    if (quoted) {
+      words.push(text.slice(at, i + 1));
+      quoted = false;
+      at = i + 1;
+    } else {
+      const start = i > 0 && text[i - 1] === '-' ? i - 1 : i;
+      words.push(...fields(text.slice(at, start)));
+      quoted = true;
+      at = start;
+    }
+  }
+  words.push(...fields(text.slice(at)));
+  return words;
+}
+
+type InFilter = { exclude: boolean; value: string };
+
+// Not walking in: and channel: alone: in "from: in:x" Mattermost's parseSearchFlags takes in:x as the value of from:.
+function searchFlags(words: string[]): (string | InFilter)[] {
+  const out: (string | InFilter)[] = [];
+  for (let i = 0; i < words.length; i++) {
+    const w = words[i];
+    const colon = w.indexOf(':');
+    const exclude = w.startsWith('-');
+    const name = colon === -1 ? '' : w.slice(exclude ? 1 : 0, colon).toLowerCase();
+    if (!SEARCH_FLAGS.includes(name) || (colon === w.length - 1 && i === words.length - 1)) {
+      out.push(w);
+      continue;
+    }
+    const empty = colon === w.length - 1;
+    const value = empty ? words[i + 1] : w.slice(colon + 1);
+    if (name === 'in' || name === 'channel') out.push({ exclude, value });
+    else out.push(...(empty ? [w, value] : [w]));
+    if (empty) i++;
+  }
+  return out;
+}
+
+// Not leaving channel names to Mattermost: its all-teams search looks them up without a team and silently matches nothing, and it creates the DM for in:@user.
+export async function resolveInFilters(mm: Mm, userId: string, terms: string): Promise<{ terms: string; notes: string[] }> {
+  const parts = searchFlags(splitWords(terms));
+  if (parts.every((p) => typeof p === 'string')) return { terms, notes: [] };
+  const words: string[] = [];
+  const notes: string[] = [];
+  // Sequential rather than Promise.all: parallel lookups would exceed the per-user concurrency limit.
+  for (const p of parts) {
+    if (typeof p === 'string') {
+      words.push(p);
+      continue;
+    }
+    const flag = `${p.exclude ? '-' : ''}in:`;
+    const v = p.value.replace(/^~+/, '');
+    if (v.startsWith('@') && v.includes(',')) {
+      words.push(`${flag}${p.value}`);
+      continue;
+    }
+    const ids = await resolveChannel(mm, userId, v).then((c) => [c.id], (e) => {
+      if (e instanceof Ambiguous) {
+        const byId = new Map(e.candidates.map((c) => [c.id, c.team]));
+        if (byId.size > 1 && !p.exclude) notes.push(`in:${v} は複数のチームにあるため、すべてで探しました（${[...byId.values()].join('、')}）。`);
+        return [...byId.keys()];
+      }
+      if (e instanceof NoDirectChannel && p.exclude) return [];
+      if (e instanceof ChannelFetchError && (e.status === 403 || e.status === 404)) throw new InputError(`チャンネル「${v}」が見つかりません。`);
+      if (e instanceof MmError && e.status === 404 && v.startsWith('@')) throw new InputError(`ユーザー「${v}」が見つかりません。`);
+      throw e;
+    });
+    words.push(...ids.map((id) => `${flag}${id}`));
+  }
+  if (!words.length) throw new InputError('検索語か条件を 1 つ以上指定してください。');
+  return { terms: words.join(' '), notes };
 }
 
 function render({ lines, next, posts = [], notes = [] }: Page): string {
@@ -209,6 +295,48 @@ export function registerReadTools(server: McpServer, ctx: ToolContext): void {
       const lines = ['保存した投稿（新しい順）', ...(shown.length ? await withChannels(mm, shown) : c ? [] : ['保存した投稿はありません。'])];
       const notes = capped ? [`（保存した投稿のうち新しい ${SAVED_PAGE * SAVED_PAGES} 件だけを見ています）`] : [];
       return render({ lines, posts: shown, notes, next: rest.length > per && last ? { create_at: last.create_at, id: last.id, per_page: per } : undefined });
+    });
+
+  tool('search_files', 'ファイルを名前で探す。参加しているチームのチャンネル、DM、グループ DM のファイルが対象。Mattermost の検索構文（from:、in:、ext:、before:、after:、on: など）を使え、日付は日本時間（JST）で解釈する。in: にはチャンネル ID、「チーム名/チャンネル名」、チャンネル名、@ユーザー名（DM）を渡せる。名前は語の単位で当たり、日本語の名前は名前全体か先頭からの前方一致（例: 2026年10月*）でしか当たらない。新しい順。file_id は get_file に、post_id は get_post に渡せる',
+    { terms: z.string().min(1), limit: limitArg(20, 50), cursor: cursorArg },
+    async ({ terms, limit, cursor }, mm) => {
+      const c = cursorOf(z.object({ page: z.number().int().min(0), per_page: perPage(50) }).strict(), cursor);
+      const per = c?.per_page ?? limit ?? 20;
+      const page = c?.page ?? 0;
+      const q = await resolveInFilters(mm, uid, terms);
+      // Not passing the cursor's page to Mattermost: its database search returns nothing for page > 0.
+      const r = await mm.call<FileList>(uid, 'POST', '/files/search', {
+        terms: q.terms, is_or_search: false, include_deleted_channels: false, time_zone_offset: JST_OFFSET_SEC, page: 0, per_page: MM_SEARCH_CAP,
+      }).catch((e) => {
+        if (e instanceof MmError && e.status === 501 && e.id === 'store.sql_file_info.search.disabled') {
+          throw new InputError('この Mattermost ではファイルの検索が無効になっています（システムコンソールの設定）。ファイル名を含む投稿は search_posts で探せます。');
+        }
+        throw e;
+      });
+      const all = r.order.map((id) => r.file_infos[id]).filter(Boolean);
+      const shown = all.slice(page * per, (page + 1) * per);
+      const lines = [`ファイルの検索: ${terms}`];
+      if (shown.length) {
+        const channels = new Map((await mm.call<MmChannel[]>(uid, 'GET', '/users/me/channels')).map((x) => [x.id, x]));
+        const teams = await myTeams(mm, uid);
+        const teamName = new Map(teams.map((t) => [t.id, t.name]));
+        // Not looking up the uploader of a channel bookmark file: its user_id is the fixed string "bookmark".
+        const ids = [...new Set(shown.filter((f) => f.post_id).map((f) => f.user_id))];
+        const users = ids.length ? new Map((await mm.call<UserRef[]>(uid, 'POST', '/users/ids', ids)).map((u) => [u.id, u.username])) : new Map<string, string>();
+        for (const f of shown) {
+          const ch = channels.get(f.channel_id);
+          const team = ch?.team_id ? teamName.get(ch.team_id) : undefined;
+          const who = users.get(f.user_id);
+          lines.push(
+            `--- ${fileLine(f)}`,
+            `${f.post_id ? (who ? `@${who}` : `user_id: ${f.user_id}`) : 'チャンネルのブックマークのファイル（投稿なし）'} | ${formatTime(f.create_at)}`,
+            ch ? channelLines({ id: ch.id, name: ch.name, displayName: ch.display_name, teamId: ch.team_id, teamName: team ?? '' }).join(' | ') : `channel_id: ${f.channel_id}`,
+            ...(f.post_id ? [`post_id: ${f.post_id}`, `${base}/${team ?? teams[0]?.name ?? ''}/pl/${f.post_id}`] : []),
+          );
+        }
+      } else lines.push('一致するファイルはありません。');
+      const more = all.length > (page + 1) * per;
+      return render({ lines, notes: [...q.notes, ...capNote(all.length, 'これより古い一致')], next: more ? { page: page + 1, per_page: per } : undefined });
     });
 
   tool('read_channel', 'チャンネルの投稿を新しい順に読む。channel はチャンネル ID、「チーム名/チャンネル名」、チャンネル名、@ユーザー名（DM）のどれか',
