@@ -453,7 +453,7 @@ describe('save_draft', () => {
       serve();
       const r = await save();
       expect(r.isError).toBe(false);
-      expect(hits).toEqual([`GET /channels/${CH}`, 'GET /teams/t1', PREF, LIST, SAVE]);
+      expect(hits).toEqual([PREF, `GET /channels/${CH}`, 'GET /teams/t1', LIST, SAVE]);
       expect(bodies['/drafts']).toEqual({ channel_id: CH, root_id: '', message: 'hello' });
       expect(r.text).toContain('入力欄');
       expect(r.text).toContain('送信は本人');
@@ -468,7 +468,7 @@ describe('save_draft', () => {
       serve();
       const r = await save({ root_id: ROOT });
       expect(r.isError).toBe(false);
-      expect(hits).toEqual([`GET /channels/${CH}`, 'GET /teams/t1', `GET /posts/${ROOT}`, PREF, LIST, SAVE]);
+      expect(hits).toEqual([PREF, `GET /channels/${CH}`, 'GET /teams/t1', `GET /posts/${ROOT}`, LIST, SAVE]);
       expect(bodies['/drafts']).toEqual({ channel_id: CH, root_id: ROOT, message: 'hello' });
       expect(r.text).toContain('下書きとして保存しました');
       expect(r.text).toContain(`返信先 post_id: ${ROOT}`);
@@ -788,5 +788,66 @@ describe('send_message with files', () => {
     expect(r.isError).toBe(false);
     expect(r.text).toContain('投稿しました。');
     expect(r.text).toContain('同じ本文の下書きを確かめられなかったか、消せませんでした');
+  });
+});
+
+describe('a DM not opened yet', () => {
+  const CAROL = 'k'.repeat(26);
+  const NEW_DM = 'n'.repeat(26);
+  const ROOT = 'r'.repeat(26);
+  const FILE = 'f'.repeat(26);
+  const CREATE = 'POST /channels/direct';
+  const PREF = 'GET /users/me/preferences/advanced_settings/name/sync_drafts';
+  const serve = () => {
+    routes = {
+      'GET /users/me/teams': () => [{ id: 't1', name: 'team-a' }],
+      'GET /users/username/carol': () => ({ id: CAROL, username: 'carol', delete_at: 0 }),
+      [CREATE]: () => ({ id: NEW_DM, name: `${CAROL}__u1`, display_name: '', team_id: '', type: 'D' }),
+      [PREF]: mmError(400, 'app.preference.get.app_error'),
+      'GET /users/u1/teams/t1/drafts': () => [],
+      'POST /drafts': () => ({}),
+      [`GET /channels/${NEW_DM}/posts`]: () => ({ order: [], posts: {} }),
+      'POST /posts': () => ({ id: POST, channel_id: NEW_DM, root_id: '', user_id: 'u1', message: 'hi', create_at: 1 }),
+    };
+  };
+
+  test.each([
+    ['send_message', { message: 'hi' }, '投稿しました'],
+    ['save_draft', { message: 'hi' }, '下書きとして保存しました'],
+    ['prepare_upload', {}, 'アップロード用の URL を発行しました'],
+  ])('%s creates the DM and writes to it', async (tool, args, done) => {
+    serve();
+    const r = await setup().call(tool, { channel: '@carol', ...args });
+    expect(r.text).toContain(done);
+    expect(r.text).toContain(`channel_id: ${NEW_DM}`);
+    expect(bodies['/channels/direct']).toEqual(['u1', CAROL]);
+  });
+
+  test.each([
+    ['send_message', { message: 'hi', root_id: ROOT }],
+    ['send_message', { message: 'hi', file_ids: [FILE] }],
+    ['save_draft', { message: 'hi', root_id: ROOT }],
+  ])('%s with %j does not create the DM, since the DM cannot hold that post or file yet', async (tool, args) => {
+    serve();
+    const r = await setup().call(tool, { channel: '@carol', ...args });
+    expect(r.isError).toBe(true);
+    expect(r.text).toContain('@carol との DM はまだありません');
+    expect(hits).not.toContain(CREATE);
+  });
+
+  test('send_message with files it cannot read does not create the DM', async () => {
+    serve();
+    const r = await setup().call('send_message', { channel: '@carol', message: 'hi', files: [{ name: 'a.bin', content_base64: 'not base64' }] });
+    expect(r.text).toContain('base64 として読めません');
+    expect(hits).not.toContain(CREATE);
+  });
+
+  test('save_draft with draft sync off neither resolves the channel nor creates the DM', async () => {
+    serve();
+    routes[PREF] = () => ({ value: 'false' });
+    const r = await setup().call('save_draft', { channel: '@carol', message: 'hi', root_id: ROOT });
+    expect(r.isError).toBe(true);
+    expect(r.text).toContain('下書きの同期を切っている');
+    expect(hits).toEqual([PREF]);
   });
 });
