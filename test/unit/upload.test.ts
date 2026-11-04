@@ -53,6 +53,7 @@ describe('POST /mcp/upload/:token', () => {
     expect(r.headers['content-type']).toMatch(/^text\/plain/);
     expect(r.text).toContain(`file_id: ${fileId(0)}（report.pdf、8 バイト）`);
     expect(r.text).toContain(`file_id: ${fileId(1)}（スクリーンショット.png、2 バイト）`);
+    expect(r.text).toContain('予約するときは schedule_message の file_ids に渡します');
     expect(uploads.map((u) => [u.query.get('channel_id'), u.query.get('filename'), [...u.bytes]])).toEqual([
       [CH, 'report.pdf', [...Buffer.from('%PDF-1.7')]],
       [CH, 'スクリーンショット.png', [0x89, 0x50]],

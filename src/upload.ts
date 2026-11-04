@@ -153,6 +153,7 @@ export function uploadHandler(ctx: AppContext, idleMs = BODY_IDLE_MS): express.R
       await reply(200, [
         `アップロードしました。send_message の file_ids に次の file_id を渡して、チャンネル（channel_id: ${target.channelId}）へ投稿してください。`,
         ...done.map((f) => `file_id: ${f.id}（${f.name}、${f.size} バイト）`),
+        '予約するときは schedule_message の file_ids に渡します。',
       ]);
     } catch (e) {
       outcome = e instanceof TooLarge ? 'too_large' : e instanceof ClientGone ? 'client_gone' : e instanceof Stalled ? 'stalled' : (e as Error)?.name ?? 'error';
