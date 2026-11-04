@@ -9,6 +9,7 @@ import { parsePostRef } from './permalink.ts';
 import { Ambiguous, ChannelFetchError, myTeams, NoDirectChannel, resolveChannel, resolveUser, teamNameOf, type ChannelRef, type Mm, type MmChannel, type MmTeam, type UserRef } from './resolve.ts';
 import { guarded, text, type ToolContext } from './server.ts';
 import { worded, type Wording } from './tools-send.ts';
+import { parseWhen } from './when.ts';
 
 type PostList = { order: string[]; posts: Record<string, MmPost>; has_next?: boolean | null };
 type Page = { lines: string[]; next?: object; posts?: MmPost[]; notes?: string[] };
@@ -20,6 +21,7 @@ type FileList = { order: string[]; file_infos: Record<string, FoundFile> };
 const MM_SEARCH_CAP = 100;
 const SAVED_PAGE = 200;
 const SAVED_PAGES = 5;
+const POST_PAGE = 200;
 const JST_OFFSET_SEC = 9 * 3600;
 const DAY_MS = 86_400_000;
 const PREVIEW_MAX_WIDTH = 1920;
@@ -90,6 +92,7 @@ async function fileText(mm: ReadMm, uid: string, fileId: string, f: MmFileInfo, 
 const jstDay = (ms: number) => new Date(ms + JST_OFFSET_SEC * 1000).toISOString().slice(0, 10);
 const nextDay = (day: string) => new Date(Date.parse(day) + DAY_MS).toISOString().slice(0, 10);
 const newestFirst = (a: MmPost, b: MmPost) => b.create_at - a.create_at || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
+const oldestFirst = (a: MmPost, b: MmPost) => a.create_at - b.create_at || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
 
 export const limitArg = (def: number, max: number) => z.number().int().min(1).max(max).optional()
   .describe(`件数（既定 ${def}、最大 ${max}）。cursor を渡したときは無視する`);
@@ -278,6 +281,14 @@ export async function collapsedThreads(mm: Mm, uid: string): Promise<{ on: boole
   return { on: pref ? pref.value === 'on' : server === 'default_on', label: `サーバー設定: ${server}、利用者の設定: ${pref?.value ?? 'なし'}` };
 }
 
+function rangeOf(since: string | undefined, until: string | undefined, from: string | undefined): { since: number; until?: number } {
+  if (since === undefined) throw new InputError('until は since と一緒に指定してください。');
+  if (from !== undefined) throw new InputError('since と from は同時に指定できません。since を渡すと、その時刻から古い順に読みます。');
+  const r = { since: parseWhen(since, 'since'), until: until === undefined ? undefined : parseWhen(until, 'until') };
+  if (r.until !== undefined && r.until <= r.since) throw new InputError('until は since より後の時刻にしてください。');
+  return r;
+}
+
 export function registerReadTools(server: McpServer, ctx: ToolContext): void {
   const uid = ctx.mmUserId;
   const base = ctx.cfg.mmBrowserUrl;
@@ -396,20 +407,25 @@ export function registerReadTools(server: McpServer, ctx: ToolContext): void {
       return render({ lines, notes: [...q.notes, ...capNote(all.length, 'これより古い一致')], next: more ? { page: page + 1, per_page: per } : undefined });
     });
 
-  tool('read_channel', 'チャンネルの投稿を読む。既定は新しい順。from: "unread" なら未読の先頭から古い順に読み、スレッドの折りたたみ（CRT）が有効ならルート投稿だけを返す。読むだけで、既読にはしない。channel はチャンネル ID、「チーム名/チャンネル名」、チャンネル名、@ユーザー名（DM）のどれか',
+  tool('read_channel', 'チャンネルの投稿を読む。既定は新しい順。from: "unread" なら未読の先頭から古い順に読み、スレッドの折りたたみ（CRT）が有効ならルート投稿だけを返す。読むだけで、既読にはしない。channel はチャンネル ID、「チーム名/チャンネル名」、チャンネル名、@ユーザー名（DM）のどれか。since を渡すと、その時刻から until（省くと最新）の前までを古い順に読み、返信も含む',
     {
       channel: z.string().min(1),
       from: z.enum(['latest', 'unread']).optional().describe('latest（既定）は最新から新しい順、unread は未読の先頭から古い順。cursor を渡したときは無視する'),
+      since: z.string().optional().describe('範囲の始まり（この時刻を含む）。YYYY-MM-DDTHH:mm の形（秒、タイムゾーンは任意。タイムゾーンが無ければ JST）。from とは同時に指定できない。cursor を渡したときは無視する'),
+      until: z.string().optional().describe('範囲の終わり（この時刻を含まない）。形は since と同じ。省くと最新まで。since と一緒に指定する。cursor を渡したときは無視する'),
       limit: limitArg(30, 100),
       cursor: cursorArg,
     },
-    async ({ channel, from, limit, cursor }, mm) => {
+    async ({ channel, from, since, until, limit, cursor }, mm) => {
       const postId = z.string().regex(/^[A-Za-z0-9]{26}$/);
       const c = cursorOf(z.union([
+        z.object({ channel_id: z.string(), after: postId, since: z.number().int(), until: z.number().int().optional(), per_page: perPage(100) }).strict(),
         z.object({ before: postId, per_page: perPage(100) }),
         z.object({ channel_id: z.string(), after: postId, per_page: perPage(100), crt: z.boolean() }),
       ]), cursor);
       const per = c?.per_page ?? limit ?? 30;
+      const rc = c && 'since' in c ? c : undefined;
+      const range = rc ?? (!c && (since !== undefined || until !== undefined) ? rangeOf(since, until, from) : undefined);
       const ch = await resolveChannel(mm, uid, channel);
       const renderPage = async (head: string[], all: MmPost[], next: (last: MmPost) => object, none: string) => {
         const shown = all.slice(0, per);
@@ -426,8 +442,61 @@ export function registerReadTools(server: McpServer, ctx: ToolContext): void {
         (last) => ({ channel_id: ch.id, after: last.id, per_page: per, crt }),
         c ? '投稿はありません。' : '未読はありません。',
       );
+      if (range) {
+        if (rc && rc.channel_id !== ch.id) throw new InputError(BAD_CURSOR);
+        const inRange = (p: MmPost) => p.create_at >= range.since && (range.until === undefined || p.create_at < range.until);
+        const posts = async (q: Record<string, string>) => {
+          const r = await mm.call<PostList>(uid, 'GET', `/channels/${ch.id}/posts?${new URLSearchParams({ ...q, skipFetchThreads: 'true' })}`);
+          return r.order.map((id) => r.posts[id]).filter(Boolean);
+        };
+        const forward = async (after: string | undefined, got: MmPost[]) => {
+          for (let at = after; at && got.length <= per;) {
+            const page = (await posts({ after: at, per_page: String(per + 1) })).sort(oldestFirst);
+            got.push(...page.filter(inRange));
+            if (page.length <= per || page.some((p) => range.until !== undefined && p.create_at >= range.until)) break;
+            at = page.at(-1)!.id;
+          }
+          return got;
+        };
+        let all: MmPost[];
+        if (rc) all = await forward(rc.after, []);
+        else {
+          // Searching pages of 200 by offset for the newest post before since: there is no REST lookup by time, and since= returns an unordered 1000.
+          const pageAt = (k: number) => posts({ page: String(k), per_page: String(POST_PAGE) });
+          const hit = (page: MmPost[]) => !page.length || page.some((p) => p.create_at < range.since);
+          let lo = -1;
+          let loPage: MmPost[] = [];
+          let hi = 0;
+          let hiPage = await pageAt(0);
+          for (let k = 1; !hit(hiPage); k *= 2) {
+            [lo, loPage] = [hi, hiPage];
+            [hi, hiPage] = [k, await pageAt(k)];
+          }
+          while (hi - lo > 1) {
+            const mid = (lo + hi) >> 1;
+            const page = await pageAt(mid);
+            if (hit(page)) [hi, hiPage] = [mid, page];
+            else [lo, loPage] = [mid, page];
+          }
+          const start = hiPage.filter((p) => p.create_at < range.since).sort(newestFirst)[0];
+          if (start) all = await forward(start.id, []);
+          else {
+            // Not reading on from the oldest post with after= alone: it would skip that post and those of the same millisecond.
+            const seed = [...loPage].sort(oldestFirst);
+            const passed = seed.some((p) => range.until !== undefined && p.create_at >= range.until);
+            all = await forward(passed ? undefined : seed.at(-1)?.id, seed.filter(inRange));
+          }
+        }
+        const to = range.until === undefined ? '最新まで' : `${formatTime(range.until)} の前まで`;
+        return renderPage(
+          [`範囲: ${formatTime(range.since)} から ${to}、古い順（返信も含みます）`],
+          all,
+          (last) => ({ channel_id: ch.id, after: last.id, since: range.since, until: range.until, per_page: per }),
+          'この範囲に投稿はありません。',
+        );
+      }
       let head: string[] = [];
-      if (c && 'after' in c) {
+      if (c && 'crt' in c) {
         if (c.channel_id !== ch.id) throw new InputError(BAD_CURSOR);
         const q = new URLSearchParams({ after: c.after, per_page: String(per + 1), collapsedThreads: String(c.crt), skipFetchThreads: 'true' });
         return unreadPage(c.crt, await mm.call<PostList>(uid, 'GET', `/channels/${ch.id}/posts?${q}`));
@@ -447,7 +516,7 @@ export function registerReadTools(server: McpServer, ctx: ToolContext): void {
         }
       }
       // Paging with before=<post_id> rather than page numbers: new posts arriving between calls would shift pages.
-      const q = new URLSearchParams({ per_page: String(per + 1), ...(c ? { before: c.before } : {}) });
+      const q = new URLSearchParams({ per_page: String(per + 1), ...(c && 'before' in c ? { before: c.before } : {}) });
       const r = await mm.call<PostList>(uid, 'GET', `/channels/${ch.id}/posts?${q}`);
       return renderPage(head, r.order.map((id) => r.posts[id]).filter(Boolean), (last) => ({ before: last.id, per_page: per }), '投稿はありません。');
     });
