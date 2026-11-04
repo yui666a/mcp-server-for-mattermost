@@ -43,7 +43,7 @@ export function registerThreadTools(server: McpServer, ctx: ToolContext): void {
       const c = cursorOf(pageCursor(z.object({ t: z.number().int(), id: z.string() }).strict()).extend({ per_page: perPage(50) }).strict(), cursor);
       const per = c?.per_page ?? limit ?? 20;
       const crt = await collapsedThreads(mm, uid);
-      if (!crt.on) return text(CRT_OFF, true);
+      if (!crt.on) throw new InputError(CRT_OFF);
       const teams = await myTeams(mm, uid);
       if (!teams.length) throw new InputError('所属しているチームがないため、フォロー中のスレッドを一覧できません（DM のスレッドもチームを指定して引く API のため）。');
       const channels = new Map((await mm.call<MmChannel[]>(uid, 'GET', '/users/me/channels')).map((x) => [x.id, x]));
@@ -97,8 +97,8 @@ export function registerThreadTools(server: McpServer, ctx: ToolContext): void {
       return render({ lines, posts, notes, next: p.next && { ...p.next, per_page: per } });
     });
 
-  async function rootOf(mm: Mm, postId: string): Promise<{ root: string; channelId: string; replies: number } | CallToolResult> {
-    if (!(await collapsedThreads(mm, uid)).on) return text(CRT_OFF, true);
+  async function rootOf(mm: Mm, postId: string): Promise<{ root: string; channelId: string; replies: number }> {
+    if (!(await collapsedThreads(mm, uid)).on) throw new InputError(CRT_OFF);
     const p = await mm.call<MmPost & { reply_count?: number }>(uid, 'GET', `/posts/${postId}`).catch((e) => {
       if (missing(e)) throw new InputError('投稿が見つかりません（削除されたか、見る権限がありません）。');
       throw e;
@@ -118,7 +118,6 @@ export function registerThreadTools(server: McpServer, ctx: ToolContext): void {
     { post_id: POST_ID }, followAnnotations,
     async ({ post_id }, mm) => {
       const r = await rootOf(mm, post_id);
-      if ('content' in r) return r;
       await mm.call(uid, 'GET', `/channels/${r.channelId}/members/me`).catch((e) => {
         if (missing(e)) throw new InputError('このチャンネルに参加していません。参加していないチャンネルのスレッドは、フォローしても一覧にも通知にも出ません。');
         throw e;
@@ -142,7 +141,6 @@ export function registerThreadTools(server: McpServer, ctx: ToolContext): void {
     { post_id: POST_ID }, followAnnotations,
     async ({ post_id }, mm) => {
       const r = await rootOf(mm, post_id);
-      if ('content' in r) return r;
       const team = await teamOf(mm, r.channelId);
       await mm.call(uid, 'DELETE', `/users/${uid}/teams/${team}/threads/${r.root}/following`);
       return `スレッド（親 post_id: ${r.root}）のフォローを外しました。このスレッドの返信の通知は届かなくなります。ただし、メンションの通知は届き、メンションされるか自分が返信すると、Mattermost は再びフォローします。`;
