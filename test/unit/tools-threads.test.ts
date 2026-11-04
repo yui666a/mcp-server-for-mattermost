@@ -1,0 +1,319 @@
+import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
+import { makeApp } from './helpers.ts';
+
+type Route = (req: Request) => unknown;
+let routes: Record<string, Route>;
+let hits: string[];
+let urls: string[];
+
+beforeEach(() => {
+  vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
+  hits = [];
+  urls = [];
+});
+afterEach(() => vi.restoreAllMocks());
+
+function setup() {
+  const ctx = makeApp({}, async (input, init) => {
+    const req = new Request(input, init);
+    const url = new URL(req.url);
+    const path = url.pathname.replace('/api/v4', '');
+    hits.push(`${req.method} ${path}`);
+    urls.push(`${req.method} ${path}${url.search}`);
+    const r = routes[`${req.method} ${path}`];
+    if (!r) return Response.json({ id: 'not_found' }, { status: 404 });
+    const out = r(req);
+    return out instanceof Response ? out : Response.json(out);
+  });
+  const code = ctx.store.createCode({
+    mmUserId: 'u1', clientId: 'c1', redirectUri: 'http://localhost:1/cb', codeChallenge: 'ch', resource: ctx.config.resource, scope: 'mattermost',
+  });
+  const rec = ctx.store.consumeCode(code);
+  if (typeof rec !== 'object') throw new Error('code not consumed');
+  const { accessToken } = ctx.store.createGrant({ mmUserId: 'u1', clientId: 'c1', scope: 'mattermost', resource: ctx.config.resource, fromCodeHash: rec.codeHash });
+  ctx.store.putMmCred('u1', 'mm-access', 'mm-refresh');
+  const rpc = async (method: string, params: object) => {
+    const r = await ctx.req.post('/mcp').set({ authorization: `Bearer ${accessToken}`, accept: 'application/json, text/event-stream', 'content-type': 'application/json' })
+      .send(JSON.stringify({ jsonrpc: '2.0', id: 1, method, params }));
+    return r.body;
+  };
+  // Argument validation failures come back either as an error result or as a JSON-RPC error, depending on the SDK version.
+  const call = async (name: string, args: Record<string, unknown>): Promise<{ isError: boolean; text: string }> => {
+    const body = await rpc('tools/call', { name, arguments: args });
+    if (body.error) return { isError: true, text: body.error.message };
+    return { isError: body.result.isError ?? false, text: body.result.content[0].text };
+  };
+  const tools = async (): Promise<{ name: string; description: string; annotations: Record<string, boolean> }[]> => (await rpc('tools/list', {})).result.tools;
+  return { call, tools };
+}
+
+const T1 = '1'.repeat(26);
+const T2 = '2'.repeat(26);
+const CH1 = 'a'.repeat(26);
+const CH2 = 'b'.repeat(26);
+const DM = 'c'.repeat(26);
+const ARCHIVED = 'd'.repeat(26);
+const TH1 = 'k'.repeat(26);
+const TH2 = 'm'.repeat(26);
+const TH_DM = 'n'.repeat(26);
+const TH_ARCH = 'p'.repeat(26);
+
+const thread = (id: string, channel_id: string, last_reply_at: number, o: Record<string, unknown> = {}) => ({
+  id, last_reply_at, reply_count: 3, unread_replies: 1, unread_mentions: 0,
+  post: { id, user_id: 'u2', channel_id, root_id: '', message: `root ${id[0]}`, create_at: 100 }, ...o,
+});
+const page = (threads: unknown[], total = threads.length) => ({ total, total_unread_threads: 0, total_unread_mentions: 0, threads });
+const order = (out: string) => [...out.matchAll(/^--- post_id: ([a-z0-9]{26})/gm)].map((m) => m[1]);
+const cursorIn = (out: string) => /next_cursor: (\S+)/.exec(out)?.[1];
+
+describe('list_followed_threads', () => {
+  const base = (crt = 'always_on'): Record<string, Route> => ({
+    'GET /config/client': () => ({ CollapsedThreads: crt }),
+    'GET /users/me/preferences/display_settings/name/collapsed_reply_threads': () => Response.json({ id: 'app.preference.get.app_error', message: 'm', status_code: 400 }, { status: 400 }),
+    'GET /users/me/teams': () => [{ id: T1, name: 'team-a' }, { id: T2, name: 'team-b' }],
+    'GET /users/me/channels': () => [
+      { id: CH1, name: 'one', display_name: 'One', team_id: T1, type: 'O' },
+      { id: CH2, name: 'two', display_name: 'Two', team_id: T2, type: 'O' },
+      { id: DM, name: 'u1__u3', display_name: '', team_id: '', type: 'D' },
+    ],
+    [`GET /users/u1/teams/${T1}/threads`]: () => page([thread(TH1, CH1, 5000, { unread_mentions: 2 }), thread(TH_DM, DM, 4000)]),
+    [`GET /users/u1/teams/${T2}/threads`]: () => page([thread(TH2, CH2, 6000), thread(TH_ARCH, ARCHIVED, 3000)]),
+    'POST /users/ids': () => [{ id: 'u2', username: 'bob' }, { id: 'u3', username: 'carol' }],
+  });
+
+  test('refuses without asking for threads when collapsed reply threads are off for the user', async () => {
+    for (const crt of ['disabled', 'default_off']) {
+      routes = base(crt);
+      hits = [];
+      const r = await setup().call('list_followed_threads', {});
+      expect(r.isError).toBe(true);
+      expect(r.text).toContain('スレッドの折りたたみ（CRT）が無効なため、スレッドのフォローは画面にも通知にも効きません');
+      expect(r.text).toContain('スレッドごとには止められず');
+      expect(hits).toEqual(['GET /config/client', 'GET /users/me/preferences/display_settings/name/collapsed_reply_threads'].slice(0, crt === 'disabled' ? 1 : 2));
+    }
+  });
+
+  test('lists followed threads of every team newest reply first, taking DM threads from the first team only', async () => {
+    routes = base();
+    const { text: out } = await setup().call('list_followed_threads', {});
+    expect(urls).toContain(`GET /users/u1/teams/${T1}/threads?per_page=200`);
+    expect(urls).toContain(`GET /users/u1/teams/${T2}/threads?per_page=200&excludeDirect=true`);
+    expect(order(out)).toEqual([TH2, TH1, TH_DM, TH_ARCH]);
+    expect(out.split('\n').slice(0, 3)).toEqual([
+      'スレッドの折りたたみ（CRT）: 有効（サーバー設定: always_on）',
+      'フォロー中のスレッド: 4 件',
+      'フォロー中のスレッド（最終返信の新しい順）:',
+    ]);
+    expect(out).toContain(`--- post_id: ${TH1}\n@bob | `);
+    expect(out).toContain(`チャンネル: One（name: one、channel_id: ${CH1}） | チーム: team-a（team_id: ${T1}）`);
+    expect(out).toContain('返信: 3、未読の返信: 1、未読のメンション: 2、最終返信: 1970-01-01T00:00:05Z | 1970-01-01T09:00:05+09:00');
+    expect(out).toContain(`https://mm.example/team-b/pl/${TH2}`);
+    expect(out).toContain('（続きはありません）');
+  });
+
+  test('shows a DM thread under the other user\'s name and an archived channel\'s thread by channel_id with the team it came from', async () => {
+    routes = base();
+    const { text: out } = await setup().call('list_followed_threads', {});
+    expect(out).toContain(`チャンネル: @carol（name: u1__u3、channel_id: ${DM}） | チーム: なし（DM またはグループ DM）`);
+    expect(out).toContain(`--- post_id: ${TH_ARCH}\n@bob | 1970-01-01T00:00:00Z | 1970-01-01T09:00:00+09:00\nchannel_id: ${ARCHIVED}\n`);
+    expect(out).toContain(`https://mm.example/team-b/pl/${TH_ARCH}`);
+  });
+
+  test('says where it stopped when a team follows more threads than one page returns', async () => {
+    routes = { ...base(), [`GET /users/u1/teams/${T2}/threads`]: () => page([thread(TH2, CH2, 6000), thread(TH_ARCH, ARCHIVED, 3000)], 450) };
+    const { text: out } = await setup().call('list_followed_threads', {});
+    expect(out).toContain('フォロー中のスレッド: 452 件');
+    expect(out).toContain('（team-b のフォロー中のスレッドは、最終返信の新しい 2 件だけを取得しています（total: 450）。最終返信が 1970-01-01T00:00:03Z | 1970-01-01T09:00:03+09:00 以前のスレッドは出ていないことがあります）');
+    expect(out).not.toContain('team-a と DM、グループ DM のフォロー中');
+    routes[`GET /users/u1/teams/${T1}/threads`] = () => page([thread(TH1, CH1, 5000)], 9);
+    expect((await setup().call('list_followed_threads', {})).text).toContain('（team-a と DM、グループ DM のフォロー中のスレッドは、最終返信の新しい 1 件だけを取得しています（total: 9）。');
+  });
+
+  test('takes limit up to 50 and pages with next_cursor', async () => {
+    routes = base();
+    const { call } = setup();
+    expect((await call('list_followed_threads', { limit: 51 })).isError).toBe(true);
+    const first = await call('list_followed_threads', { limit: 3 });
+    expect(order(first.text)).toEqual([TH2, TH1, TH_DM]);
+    const second = await call('list_followed_threads', { cursor: cursorIn(first.text) });
+    expect(order(second.text)).toEqual([TH_ARCH]);
+    expect(second.text).not.toContain('前のページの後に');
+  });
+
+  test('orders threads with the same last reply by id, so a page boundary between them neither skips nor repeats', async () => {
+    routes = { ...base(), [`GET /users/u1/teams/${T2}/threads`]: () => page([thread(TH2, CH2, 5000), thread(TH_ARCH, ARCHIVED, 3000)]) };
+    const { call } = setup();
+    const first = await call('list_followed_threads', { limit: 1 });
+    expect(order(first.text)).toEqual([TH1]);
+    expect(order((await call('list_followed_threads', { cursor: cursorIn(first.text) })).text)).toEqual([TH2]);
+  });
+
+  test('rejects another tool\'s cursor', async () => {
+    routes = base();
+    const unreads = Buffer.from(JSON.stringify({ as_of: 1, checked_at: 1, last: { s: 1, m: 0, t: 5000, id: TH1 }, per_page: 30, crt: true })).toString('base64url');
+    const r = await setup().call('list_followed_threads', { cursor: unreads });
+    expect(r.isError).toBe(true);
+    expect(r.text).toContain('cursor が不正です');
+  });
+
+  test('puts threads with a reply after the previous page in a section before the rest', async () => {
+    routes = base();
+    const { call } = setup();
+    const first = await call('list_followed_threads', { limit: 2 });
+    const now = Date.now() + 60_000;
+    routes[`GET /users/u1/teams/${T2}/threads`] = () => page([thread(TH_ARCH, ARCHIVED, now), thread(TH2, CH2, 6000)]);
+    const second = await call('list_followed_threads', { cursor: cursorIn(first.text) });
+    expect(second.text).toContain('前のページの後に返信があったスレッド（前のページまでに出したものを含むことがあります）:');
+    expect(order(second.text)).toEqual([TH_ARCH, TH_DM]);
+  });
+
+  test('asks to start over without next_cursor when the threads replied to since the previous page do not fit', async () => {
+    routes = base();
+    const { call } = setup();
+    const first = await call('list_followed_threads', { limit: 1 });
+    const now = Date.now() + 60_000;
+    routes[`GET /users/u1/teams/${T1}/threads`] = () => page([thread(TH1, CH1, now), thread(TH_DM, DM, now + 1)]);
+    const second = await call('list_followed_threads', { cursor: cursorIn(first.text) });
+    expect(order(second.text)).toEqual([TH_DM]);
+    expect(second.text).toContain('（前のページの後に返信があったスレッドがほかに 1 件あり、このページに収まりませんでした。cursor を付けずに最初のページから取り直してください）');
+    expect(cursorIn(second.text)).toBeUndefined();
+  });
+
+  test('says so when nothing is followed, and refuses when the user belongs to no team', async () => {
+    routes = { ...base(), [`GET /users/u1/teams/${T1}/threads`]: () => page([]), [`GET /users/u1/teams/${T2}/threads`]: () => ({ total: 0, threads: null }) };
+    expect((await setup().call('list_followed_threads', {})).text).toContain('フォロー中のスレッド: 0 件\nフォロー中のスレッドはありません。\n（続きはありません）');
+    routes['GET /users/me/teams'] = () => [];
+    const r = await setup().call('list_followed_threads', {});
+    expect(r.isError).toBe(true);
+    expect(r.text).toContain('所属しているチームがないため');
+  });
+
+  test('is a read-only tool', async () => {
+    routes = base();
+    const t = (await setup().tools()).find((x) => x.name === 'list_followed_threads')!;
+    expect(t.annotations.readOnlyHint).toBe(true);
+    expect(t.description).toContain('返信がまだないルート投稿は');
+  });
+});
+
+describe('follow_thread and unfollow_thread', () => {
+  const ROOT = 'r'.repeat(26);
+  const REPLY = 's'.repeat(26);
+  const base = (crt = 'always_on'): Record<string, Route> => ({
+    'GET /config/client': () => ({ CollapsedThreads: crt }),
+    [`GET /posts/${ROOT}`]: () => ({ id: ROOT, user_id: 'u2', channel_id: CH1, root_id: '', message: 'root', create_at: 1, reply_count: 2 }),
+    [`GET /posts/${REPLY}`]: () => ({ id: REPLY, user_id: 'u2', channel_id: CH1, root_id: ROOT, message: 'reply', create_at: 2, reply_count: 2 }),
+    [`GET /channels/${CH1}`]: () => ({ id: CH1, team_id: T1, type: 'O' }),
+    [`GET /channels/${CH1}/members/me`]: () => ({ channel_id: CH1, user_id: 'u1' }),
+    'GET /users/me/teams': () => [{ id: T2, name: 'team-b' }],
+    [`PUT /users/u1/teams/${T1}/threads/${ROOT}/following`]: () => ({ status: 'OK' }),
+    [`DELETE /users/u1/teams/${T1}/threads/${ROOT}/following`]: () => ({ status: 'OK' }),
+  });
+  const writes = () => hits.filter((h) => h.startsWith('PUT') || h.startsWith('DELETE'));
+
+  test('both refuse without touching the thread when collapsed reply threads are off', async () => {
+    for (const name of ['follow_thread', 'unfollow_thread']) {
+      routes = base('disabled');
+      hits = [];
+      const r = await setup().call(name, { post_id: ROOT });
+      expect(r.isError, name).toBe(true);
+      expect(r.text).toContain('スレッドの折りたたみ（CRT）が無効なため');
+      expect(hits, name).toEqual(['GET /config/client']);
+    }
+  });
+
+  test('follow_thread follows the root of the thread a reply belongs to, in the channel\'s team', async () => {
+    routes = base();
+    const r = await setup().call('follow_thread', { post_id: REPLY });
+    expect(r.isError).toBe(false);
+    expect(writes()).toEqual([`PUT /users/u1/teams/${T1}/threads/${ROOT}/following`]);
+    expect(r.text).toBe(`スレッド（親 post_id: ${ROOT}）をフォローしました。フォローした時点までの返信は既読になります（Mattermost の動作）。`);
+  });
+
+  test('follow_thread leaves an already followed thread alone so its unread replies stay unread', async () => {
+    routes = { ...base(), [`GET /users/u1/teams/${T1}/threads/${ROOT}`]: () => ({ id: ROOT, unread_replies: 1 }) };
+    const r = await setup().call('follow_thread', { post_id: ROOT });
+    expect(r.text).toBe(`スレッド（親 post_id: ${ROOT}）はすでにフォローしています。`);
+    expect(writes()).toEqual([]);
+  });
+
+  test('follow_thread refuses a thread in a channel the user has not joined, whether Mattermost answers 403 or 404', async () => {
+    for (const status of [403, 404]) {
+      routes = { ...base(), [`GET /channels/${CH1}/members/me`]: () => Response.json({ id: 'app.channel.get_member.missing.app_error' }, { status }) };
+      hits = [];
+      const r = await setup().call('follow_thread', { post_id: ROOT });
+      expect(r.isError, String(status)).toBe(true);
+      expect(r.text).toContain('このチャンネルに参加していません');
+      expect(writes()).toEqual([]);
+    }
+  });
+
+  test('follow_thread says a thread without replies shows up in the list only after its first reply', async () => {
+    routes = { ...base(), [`GET /posts/${ROOT}`]: () => ({ id: ROOT, user_id: 'u2', channel_id: CH1, root_id: '', message: 'root', create_at: 1, reply_count: 0 }) };
+    const r = await setup().call('follow_thread', { post_id: ROOT });
+    expect(r.text).toContain('返信がまだないため、最初の返信があるまで list_followed_threads には出ません。');
+  });
+
+  test('a DM thread uses the user\'s first team, and is refused when the user has no team', async () => {
+    const dm = (): Record<string, Route> => ({
+      ...base(),
+      [`GET /posts/${ROOT}`]: () => ({ id: ROOT, user_id: 'u2', channel_id: DM, root_id: '', message: 'root', create_at: 1, reply_count: 1 }),
+      [`GET /channels/${DM}`]: () => ({ id: DM, team_id: '', type: 'D' }),
+      [`GET /channels/${DM}/members/me`]: () => ({ channel_id: DM, user_id: 'u1' }),
+      [`PUT /users/u1/teams/${T2}/threads/${ROOT}/following`]: () => ({ status: 'OK' }),
+      [`DELETE /users/u1/teams/${T2}/threads/${ROOT}/following`]: () => ({ status: 'OK' }),
+    });
+    routes = dm();
+    expect((await setup().call('follow_thread', { post_id: ROOT })).isError).toBe(false);
+    expect((await setup().call('unfollow_thread', { post_id: ROOT })).isError).toBe(false);
+    expect(writes()).toEqual([`PUT /users/u1/teams/${T2}/threads/${ROOT}/following`, `DELETE /users/u1/teams/${T2}/threads/${ROOT}/following`]);
+    for (const name of ['follow_thread', 'unfollow_thread']) {
+      routes = { ...dm(), 'GET /users/me/teams': () => [] };
+      hits = [];
+      const r = await setup().call(name, { post_id: ROOT });
+      expect(r.text, name).toContain('所属しているチームがないため');
+      expect(writes(), name).toEqual([]);
+    }
+  });
+
+  test('unfollow_thread on a DM or group DM thread says the other members\' replies will follow it again and notify', async () => {
+    for (const type of ['D', 'G']) {
+      routes = {
+        ...base(),
+        [`GET /posts/${ROOT}`]: () => ({ id: ROOT, user_id: 'u2', channel_id: DM, root_id: '', message: 'root', create_at: 1, reply_count: 1 }),
+        [`GET /channels/${DM}`]: () => ({ id: DM, team_id: '', type }),
+        [`DELETE /users/u1/teams/${T2}/threads/${ROOT}/following`]: () => ({ status: 'OK' }),
+      };
+      hits = [];
+      const r = await setup().call('unfollow_thread', { post_id: ROOT });
+      expect(r.isError, type).toBe(false);
+      expect(r.text, type).toBe(`スレッド（親 post_id: ${ROOT}）のフォローを外しました。ただし、DM とグループ DM のスレッドでは、Mattermost は相手の返信をすべて自分へのメンションとして扱い、相手が返信するたびに再びフォローして通知します。このスレッドの通知は、外しても止まりません。`);
+      expect(writes(), type).toEqual([`DELETE /users/u1/teams/${T2}/threads/${ROOT}/following`]);
+    }
+  });
+
+  test('unfollow_thread deletes the follow without checking membership or the current follow first', async () => {
+    routes = base();
+    const r = await setup().call('unfollow_thread', { post_id: REPLY });
+    expect(r.text).toBe(`スレッド（親 post_id: ${ROOT}）のフォローを外しました。このスレッドの返信の通知は届かなくなります。ただし、メンションの通知は届き、メンションされるか自分が返信すると、Mattermost は再びフォローします。`);
+    expect(hits).toEqual(['GET /config/client', `GET /posts/${REPLY}`, `GET /channels/${CH1}`, `DELETE /users/u1/teams/${T1}/threads/${ROOT}/following`]);
+  });
+
+  test('both report a missing post and reject a malformed post_id', async () => {
+    routes = base();
+    for (const name of ['follow_thread', 'unfollow_thread']) {
+      const gone = await setup().call(name, { post_id: 'z'.repeat(26) });
+      expect(gone.text, name).toContain('投稿が見つかりません（削除されたか、見る権限がありません）。');
+      expect((await setup().call(name, { post_id: 'bad' })).isError, name).toBe(true);
+    }
+    expect(writes()).toEqual([]);
+  });
+
+  test('both are non-destructive idempotent writes', async () => {
+    routes = base();
+    const all = await setup().tools();
+    for (const name of ['follow_thread', 'unfollow_thread']) {
+      expect(all.find((x) => x.name === name)!.annotations, name).toEqual({ readOnlyHint: false, destructiveHint: false, idempotentHint: true });
+    }
+  });
+});
