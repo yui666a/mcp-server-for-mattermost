@@ -63,6 +63,7 @@ export async function resolveUser(mm: Mm, userId: string, spec: string): Promise
 const CREATE_REFUSED: readonly [number, string, (who: string) => string][] = [
   [403, 'api.context.permissions.app_error', (who) => `${who} との DM を作る権限が無いか、相手を見る権限がありません。`],
   [403, 'api.channel.create_channel.direct_channel.team_restricted_error', () => 'このサーバーでは、同じチームにいない相手との DM は作れません。'],
+  [403, 'api.channel.create_channel.direct_channel.remote_restricted.app_error', (who) => `${who} は別のサーバーのユーザーのため、このサーバーでは DM を作れません。`],
 ];
 const refusalWorded = (who: string) => (e: unknown): never => {
   const w = e instanceof MmError && CREATE_REFUSED.find(([status, id]) => status === e.status && id === e.id);

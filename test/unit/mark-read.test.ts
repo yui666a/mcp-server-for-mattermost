@@ -89,6 +89,17 @@ function base(crt = 'always_on'): Record<string, Route> {
 const query = (prefix: string) => Object.fromEntries(new URLSearchParams(urls.find((u) => u.startsWith(prefix))!.split('?')[1]));
 
 describe('mark_as_read for channels', () => {
+  test('does not create a DM with a user never messaged before', async () => {
+    routes = {
+      ...base(),
+      'GET /users/me/teams': () => [{ id: TEAM, name: 'team-a' }],
+      'GET /users/username/carol': () => ({ id: 'k'.repeat(26), username: 'carol', delete_at: 0 }),
+    };
+    const r = await setup().call({ channels: [{ channel: '@carol', last_post_id: LAST }] });
+    expect(r.text).toContain('@carol との DM はまだありません');
+    expect(hits).not.toContain('POST /channels/direct');
+  });
+
   test('marks each channel read right after checking it when nothing but the user\'s own posts (sent through this app) follow last_post_id', async () => {
     routes = { ...base(), [`GET /channels/${CH}/posts`]: () => after([post(1, { user_id: 'u1', props: { from_oauth_app: 'true' } })]) };
     const r = await setup().call({ channels: [{ channel: CH, last_post_id: LAST }, { channel: CH2 }] });

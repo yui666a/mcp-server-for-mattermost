@@ -845,7 +845,7 @@ describe('a DM not opened yet', () => {
   test('save_draft with draft sync off neither resolves the channel nor creates the DM', async () => {
     serve();
     routes[PREF] = () => ({ value: 'false' });
-    const r = await setup().call('save_draft', { channel: '@carol', message: 'hi', root_id: ROOT });
+    const r = await setup().call('save_draft', { channel: '@carol', message: 'hi' });
     expect(r.isError).toBe(true);
     expect(r.text).toContain('下書きの同期を切っている');
     expect(hits).toEqual([PREF]);
