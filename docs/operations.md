@@ -8,7 +8,7 @@
 
 作業者のアカウントで、使う予定の MCP クライアント（claude.ai、Claude Code、Codex CLI など）から `<PUBLIC_URL>/mcp` に接続する。
 
-- 読み取り系の 16 ツール（`search_posts`、`search_files`、`read_channel`、`read_thread`、`search_channels`、`search_users`、`get_user`、`get_post`、`get_file`、`list_saved_posts`、`list_my_channels`、`get_channel`、`list_channel_members`、`get_unreads`、`get_mentions`、`list_scheduled_messages`）を 1 回ずつ呼び、エラーにならない
+- 読み取り系の 17 ツール（`search_posts`、`search_files`、`read_channel`、`read_thread`、`search_channels`、`search_users`、`get_user`、`get_post`、`get_file`、`list_saved_posts`、`list_my_channels`、`get_channel`、`list_channel_members`、`get_unreads`、`get_mentions`、`list_scheduled_messages`、`search_emoji`）を 1 回ずつ呼び、エラーにならない
   - `get_unreads` は、出力の先頭に CRT の判定の行（`スレッドの折りたたみ（CRT）: 有効（サーバー設定: …）` など）が出る
   - `search_files` が「ファイルの検索が無効になっています」を返したら、Mattermost のシステムコンソールでファイル検索が無効にされている。使うなら有効にするよう、Mattermost の管理者に頼む
 - `get_file` の画像がクライアントに届くかを、クライアントごとに確かめる。結合テストはクライアントを使わないので、ここでしか確かめられない
@@ -32,6 +32,11 @@
   1. `send_message` で `@<作業者のユーザー名>` に 2 件投稿し、Web で 1 件目を「未読にする」で未読に戻す
   2. `read_channel` に `from: "unread"` を付けて `@<作業者のユーザー名>` を読み、未読に戻した投稿から古い順に出ることを見る
   3. 出た投稿のうち最も新しいものの `post_id` を `last_post_id` にして `mark_as_read` を呼び、画面の未読が消えることを見る。確かめたら `delete_message` で 2 件を消す
+- 在席状況とカスタムステータスを、作業者自身のステータスで確かめる。不在（ooo）か取り込み中にしている間は確かめない（不在から変えると Mattermost が自動返信を止め、MCP からは戻せない。取り込み中から取り込み中を設定し直すと、元の終了時刻の後も取り込み中が続く）
+  1. 始める前に、`get_user` で自分を読み、`在席:` の行（`（手動で設定）` が付いているか）を控える。カスタムステータスは Web で控える
+  2. `set_status` で `dnd` に 10 分ほど後の `dnd_until` を付けて呼び、画面の在席状況が取り込み中になることを見る。`get_user` で自分を読み、`取り込み中（終了: …）` が出ることも見る
+  3. `set_custom_status` で絵文字（例 `calendar`）、文言、1 時間後の `until` を指定し、画面のカスタムステータスに出ることを見る。`clear_custom_status` で消し、画面から消えたことを見る
+  4. `set_status` で控えた在席状況に戻す（`（手動で設定）` が付いていなかったなら `online`）。カスタムステータスがあったなら、Web で設定し直す。Web のカスタムステータスの「最近使った」一覧から、確かめに使ったものを消す
 - 取り消しと再ログイン
   1. Mattermost の「設定 > セキュリティ > OAuth 2.0 アプリ」で、作った OAuth アプリの許可を取り消す
   2. 次のツール呼び出しが「Mattermost への再ログインが必要です。コネクタを再接続してください。」を返す
