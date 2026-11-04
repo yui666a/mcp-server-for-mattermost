@@ -107,11 +107,11 @@ export function registerThreadTools(server: McpServer, ctx: ToolContext): void {
   }
 
   // Not looking for the team the user has open: the follow API checks no team, which only names where Mattermost sends the change event.
-  async function teamOf(mm: Mm, channelId: string): Promise<string> {
-    const ch = await mm.call<{ team_id: string }>(uid, 'GET', `/channels/${channelId}`);
+  async function channelOf(mm: Mm, channelId: string): Promise<{ team: string; direct: boolean }> {
+    const ch = await mm.call<{ team_id: string; type: string }>(uid, 'GET', `/channels/${channelId}`);
     const team = ch.team_id || (await myTeams(mm, uid))[0]?.id;
     if (!team) throw new InputError('所属しているチームがないため、スレッドのフォローを変えられません。');
-    return team;
+    return { team, direct: ch.type === 'D' || ch.type === 'G' };
   }
 
   tool('follow_thread', 'スレッドをフォローする。フォロー中のスレッドの返信は、スレッドの通知の設定に従って通知され、list_followed_threads に出る。post_id はスレッド内のどの投稿でもよい。フォローすると、その時点までの返信が既読になる（Mattermost の動作）。すでにフォロー中なら何もしない。返信がまだないルート投稿は、最初の返信まで list_followed_threads に出ない。参加していないチャンネルのスレッドはフォローできない',
@@ -122,7 +122,7 @@ export function registerThreadTools(server: McpServer, ctx: ToolContext): void {
         if (missing(e)) throw new InputError('このチャンネルに参加していません。参加していないチャンネルのスレッドは、フォローしても一覧にも通知にも出ません。');
         throw e;
       });
-      const team = await teamOf(mm, r.channelId);
+      const { team } = await channelOf(mm, r.channelId);
       const label = `スレッド（親 post_id: ${r.root}）`;
       const following = await mm.call(uid, 'GET', `/users/${uid}/teams/${team}/threads/${r.root}`).then(() => true, (e) => {
         if (e instanceof MmError && e.status === 404) return false;
@@ -137,12 +137,16 @@ export function registerThreadTools(server: McpServer, ctx: ToolContext): void {
       ].join('\n');
     });
 
-  tool('unfollow_thread', 'スレッドのフォローを外し、返信の通知を止める。post_id はスレッド内のどの投稿でもよい。メンションの通知は届き、メンションされるか自分が返信すると、Mattermost は再びフォローする。フォローしていなくても成功する',
+  tool('unfollow_thread', 'スレッドのフォローを外し、返信の通知を止める。post_id はスレッド内のどの投稿でもよい。メンションの通知は届き、メンションされるか自分が返信すると、Mattermost は再びフォローする。DM とグループ DM のスレッドは、相手が返信するたびに Mattermost が再びフォローするので、通知を止められない（出力でそう伝える）。フォローしていなくても成功する',
     { post_id: POST_ID }, followAnnotations,
     async ({ post_id }, mm) => {
       const r = await rootOf(mm, post_id);
-      const team = await teamOf(mm, r.channelId);
+      const { team, direct } = await channelOf(mm, r.channelId);
       await mm.call(uid, 'DELETE', `/users/${uid}/teams/${team}/threads/${r.root}/following`);
-      return `スレッド（親 post_id: ${r.root}）のフォローを外しました。このスレッドの返信の通知は届かなくなります。ただし、メンションの通知は届き、メンションされるか自分が返信すると、Mattermost は再びフォローします。`;
+      const label = `スレッド（親 post_id: ${r.root}）のフォローを外しました。`;
+      // Not refusing a DM or group DM thread: the unfollow still takes it off list_followed_threads until the next reply.
+      return direct
+        ? `${label}ただし、DM とグループ DM のスレッドでは、Mattermost は相手の返信をすべて自分へのメンションとして扱い、相手が返信するたびに再びフォローして通知します。このスレッドの通知は、外しても止まりません。`
+        : `${label}このスレッドの返信の通知は届かなくなります。ただし、メンションの通知は届き、メンションされるか自分が返信すると、Mattermost は再びフォローします。`;
     });
 }

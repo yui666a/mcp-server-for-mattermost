@@ -203,7 +203,7 @@ describe('follow_thread and unfollow_thread', () => {
     'GET /config/client': () => ({ CollapsedThreads: crt }),
     [`GET /posts/${ROOT}`]: () => ({ id: ROOT, user_id: 'u2', channel_id: CH1, root_id: '', message: 'root', create_at: 1, reply_count: 2 }),
     [`GET /posts/${REPLY}`]: () => ({ id: REPLY, user_id: 'u2', channel_id: CH1, root_id: ROOT, message: 'reply', create_at: 2, reply_count: 2 }),
-    [`GET /channels/${CH1}`]: () => ({ id: CH1, team_id: T1 }),
+    [`GET /channels/${CH1}`]: () => ({ id: CH1, team_id: T1, type: 'O' }),
     [`GET /channels/${CH1}/members/me`]: () => ({ channel_id: CH1, user_id: 'u1' }),
     'GET /users/me/teams': () => [{ id: T2, name: 'team-b' }],
     [`PUT /users/u1/teams/${T1}/threads/${ROOT}/following`]: () => ({ status: 'OK' }),
@@ -258,7 +258,7 @@ describe('follow_thread and unfollow_thread', () => {
     const dm = (): Record<string, Route> => ({
       ...base(),
       [`GET /posts/${ROOT}`]: () => ({ id: ROOT, user_id: 'u2', channel_id: DM, root_id: '', message: 'root', create_at: 1, reply_count: 1 }),
-      [`GET /channels/${DM}`]: () => ({ id: DM, team_id: '' }),
+      [`GET /channels/${DM}`]: () => ({ id: DM, team_id: '', type: 'D' }),
       [`GET /channels/${DM}/members/me`]: () => ({ channel_id: DM, user_id: 'u1' }),
       [`PUT /users/u1/teams/${T2}/threads/${ROOT}/following`]: () => ({ status: 'OK' }),
       [`DELETE /users/u1/teams/${T2}/threads/${ROOT}/following`]: () => ({ status: 'OK' }),
@@ -273,6 +273,22 @@ describe('follow_thread and unfollow_thread', () => {
       const r = await setup().call(name, { post_id: ROOT });
       expect(r.text, name).toContain('所属しているチームがないため');
       expect(writes(), name).toEqual([]);
+    }
+  });
+
+  test('unfollow_thread on a DM or group DM thread says the other members\' replies will follow it again and notify', async () => {
+    for (const type of ['D', 'G']) {
+      routes = {
+        ...base(),
+        [`GET /posts/${ROOT}`]: () => ({ id: ROOT, user_id: 'u2', channel_id: DM, root_id: '', message: 'root', create_at: 1, reply_count: 1 }),
+        [`GET /channels/${DM}`]: () => ({ id: DM, team_id: '', type }),
+        [`DELETE /users/u1/teams/${T2}/threads/${ROOT}/following`]: () => ({ status: 'OK' }),
+      };
+      hits = [];
+      const r = await setup().call('unfollow_thread', { post_id: ROOT });
+      expect(r.isError, type).toBe(false);
+      expect(r.text, type).toBe(`スレッド（親 post_id: ${ROOT}）のフォローを外しました。ただし、DM とグループ DM のスレッドでは、Mattermost は相手の返信をすべて自分へのメンションとして扱い、相手が返信するたびに再びフォローして通知します。このスレッドの通知は、外しても止まりません。`);
+      expect(writes(), type).toEqual([`DELETE /users/u1/teams/${T2}/threads/${ROOT}/following`]);
     }
   });
 

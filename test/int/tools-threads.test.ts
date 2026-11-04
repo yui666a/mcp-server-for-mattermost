@@ -148,6 +148,27 @@ describe('followed threads against the local Mattermost', () => {
     expect(await followed()).not.toContain(root);
   });
 
+  test('in a DM, the other user\'s reply without a mention follows the thread again after unfollow_thread, and the output says so', async () => {
+    const name = `t79dm${TAG}`;
+    const carol = await mmApi<{ id: string }>(e.adminToken, 'POST', '/users', { username: name, email: `${name}@example.com`, password: e.users.alice.password });
+    await mmApi(e.adminToken, 'POST', `/teams/${team}/members`, { team_id: team, user_id: carol.id });
+    const carolMm = await mmToken({ id: carol.id, username: name, password: e.users.alice.password });
+    const dm = await mmApi<{ id: string }>(carolMm, 'POST', '/channels/direct', [carol.id, e.users.alice.id]);
+    const root = await say(carolMm, dm.id, 'root');
+    await say(aliceMm, dm.id, 'alice reply', root);
+    try {
+      const r = await call('unfollow_thread', { post_id: root });
+      expect(r.content[0].text).toContain('このスレッドの通知は、外しても止まりません。');
+      expect(await followed()).not.toContain(root);
+      await say(carolMm, dm.id, 'carol reply', root);
+      expect(await followed()).toContain(root);
+    } finally {
+      // Leaving no unread DM behind: other files' get_unreads checks share alice.
+      await mmApi(aliceMm, 'POST', `/channels/members/${e.users.alice.id}/mark_read`, [dm.id]);
+      await mmApi(e.adminToken, 'DELETE', `/users/${carol.id}`);
+    }
+  });
+
   test('after unfollowing every thread this run touched, none is left in alice\'s list', async () => {
     await unfollowAll();
     const left = await followed();
