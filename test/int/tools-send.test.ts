@@ -1,4 +1,4 @@
-import { randomBytes } from 'node:crypto';
+import { createHash, randomBytes } from 'node:crypto';
 import { sha256 } from '../../src/crypto.ts';
 import type { Store } from '../../src/store.ts';
 import type request from 'supertest';
@@ -138,6 +138,27 @@ describe('send_message against the local Mattermost', () => {
     const apiPaths = vi.mocked(process.stdout.write).mock.calls.slice(before).map((c) => JSON.parse(String(c[0]))).filter((l) => l.event === 'mm_api').map((l) => l.path);
     expect(apiPaths).toEqual([]);
     expect(await messages(message)).toHaveLength(0);
+  });
+
+  test('creates a group DM given as @a,b, which read_channel then reads but does not create', async () => {
+    const names = ['ga', 'gb'].map((p) => `${p}${TAG}`);
+    const ids: string[] = [];
+    for (const name of names) ids.push((await mmApi<{ id: string }>(e.adminToken, 'POST', '/users', { username: name, email: `${name}@example.com`, password: 'Passw0rd!dev123' })).id);
+    const spec = `@${names[1]},${names[0]}`;
+    const gmName = createHash('sha1').update([e.users.alice.id, ...ids].sort().join('')).digest('hex');
+    const gm = () => fetch(`${e.mmUrl}/api/v4/teams/${e.teams.a.id}/channels/name/${gmName}`, { headers: { authorization: `Bearer ${aliceMm}` } });
+    const read = () => req.post('/mcp')
+      .set({ authorization: `Bearer ${access}`, accept: 'application/json, text/event-stream', 'content-type': 'application/json' })
+      .send(JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'read_channel', arguments: { channel: spec } } }));
+    expect((await read()).body.result.content[0].text).toContain(`@${names[0]}, @${names[1]} とのグループ DM はまだありません`);
+    expect((await gm()).status).toBe(404);
+
+    const r = await call({ channel: spec, message: `${TAG} first group dm` });
+    expect(r.isError).toBeFalsy();
+    const created = await (await gm()).json() as { id: string; type: string };
+    expect(created.type).toBe('G');
+    expect(r.content[0].text).toContain(`@${names[0]}, @${names[1]}（channel_id: ${created.id}）`);
+    expect((await read()).body.result.content[0].text).toContain(`${TAG} first group dm`);
   });
 
   test('ambiguous channel name is rejected without posting', async () => {

@@ -13,7 +13,7 @@ const AFTER_PAGE = 200;
 
 const schema = {
   channels: z.array(z.object({
-    channel: z.string().min(1).describe('チャンネル ID、「チーム名/チャンネル名」、チャンネル名、@ユーザー名（DM）のどれか'),
+    channel: z.string().min(1).describe('チャンネル ID、「チーム名/チャンネル名」、チャンネル名、@ユーザー名（DM）、@a,b（グループ DM）のどれか'),
     last_post_id: POST_ID.optional().describe('このチャンネルで読んだ投稿のうち最も新しいものの post_id'),
   })).max(MAX_ITEMS).optional(),
   threads: z.array(z.object({
