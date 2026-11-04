@@ -32,6 +32,11 @@
   1. `send_message` で `@<作業者のユーザー名>` に 2 件投稿し、Web で 1 件目を「未読にする」で未読に戻す
   2. `read_channel` に `from: "unread"` を付けて `@<作業者のユーザー名>` を読み、未読に戻した投稿から古い順に出ることを見る
   3. 出た投稿のうち最も新しいものの `post_id` を `last_post_id` にして `mark_as_read` を呼び、画面の未読が消えることを見る。確かめたら `delete_message` で 2 件を消す
+- スレッドのフォローを、作業者自身の DM の中だけで確かめる。`get_unreads` の CRT の判定の行が「無効」なら、`list_followed_threads` が「スレッドの折りたたみ（CRT）が無効なため」を返すことだけを見て、残りは飛ばす
+  1. `send_message` で `@<作業者のユーザー名>` に投稿し、その `post_id` を `root_id` にして返信を 1 件投稿する
+  2. `list_followed_threads` を呼び、そのスレッドが出ることを見る（自分が返信したスレッドは、Mattermost が自動でフォローする）
+  3. `unfollow_thread` を呼び、`list_followed_threads` から消えることを見る。`follow_thread` を呼び、戻ることを見る
+  4. 確かめたら `delete_message` で返信、親投稿の順に消す（返信のある親投稿は消せないため）
 - 取り消しと再ログイン
   1. Mattermost の「設定 > セキュリティ > OAuth 2.0 アプリ」で、作った OAuth アプリの許可を取り消す
   2. 次のツール呼び出しが「Mattermost への再ログインが必要です。コネクタを再接続してください。」を返す
