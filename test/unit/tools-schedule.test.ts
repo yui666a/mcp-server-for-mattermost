@@ -76,6 +76,39 @@ function setup() {
 }
 
 describe('schedule_message', () => {
+  describe('to a DM not opened yet', () => {
+    const CAROL = 'k'.repeat(26);
+    const NEW_DM = 'n'.repeat(26);
+    beforeEach(() => {
+      routes['GET /users/me/teams'] = () => [{ id: TEAM, name: 'team-a' }];
+      routes['GET /users/username/carol'] = () => ({ id: CAROL, username: 'carol', delete_at: 0 });
+      routes['POST /channels/direct'] = () => ({ id: NEW_DM, name: `${CAROL}__u1`, display_name: '', team_id: '', type: 'D' });
+    });
+
+    test('creates the DM when scheduling, so the destination is fixed to its channel_id', async () => {
+      const r = await setup().call('schedule_message', { channel: '@carol', message: 'hello', at: '2026-11-03T10:00' });
+      expect(r.isError).toBe(false);
+      expect(r.text).toContain(`チャンネル: @carol（channel_id: ${NEW_DM}）`);
+      expect(hits).toContain('POST /channels/direct');
+    });
+
+    test.each([
+      ['root_id', { root_id: ROOT }],
+      ['file_ids', { file_ids: ['f'.repeat(26)] }],
+    ])('does not create the DM when %s is given, since the DM cannot hold it yet', async (_, args) => {
+      const r = await setup().call('schedule_message', { channel: '@carol', message: 'hello', at: '2026-11-03T10:00', ...args });
+      expect(r.isError).toBe(true);
+      expect(r.text).toContain('@carol との DM はまだありません');
+      expect(hits).not.toContain('POST /channels/direct');
+    });
+
+    test('does not create the DM when the time is out of range', async () => {
+      const r = await setup().call('schedule_message', { channel: '@carol', message: 'hello', at: '2026-11-02T09:00' });
+      expect(r.text).toContain('今から 1 分後から 30 日後まで');
+      expect(hits).not.toContain('POST /channels/direct');
+    });
+  });
+
   test('saves the schedule without posting and reports its id, the destination, the time in UTC and JST, and where to check the result', async () => {
     const s = setup();
     const r = await s.call('schedule_message', { channel: CH, message: 'hello', root_id: ROOT, at: '2026-11-03T10:00' });
