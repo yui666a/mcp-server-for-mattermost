@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { MmError, type MmClient } from '../mattermost/client.ts';
 import { InputError } from './format.ts';
 
@@ -65,8 +66,13 @@ const CREATE_REFUSED: readonly [number, string, (who: string) => string][] = [
   [403, 'api.channel.create_channel.direct_channel.team_restricted_error', () => 'このサーバーでは、同じチームにいない相手との DM は作れません。'],
   [403, 'api.channel.create_channel.direct_channel.remote_restricted.app_error', (who) => `${who} は別のサーバーのユーザーのため、このサーバーでは DM を作れません。`],
 ];
-const refusalWorded = (who: string) => (e: unknown): never => {
-  const w = e instanceof MmError && CREATE_REFUSED.find(([status, id]) => status === e.status && id === e.id);
+const GROUP_REFUSED: typeof CREATE_REFUSED = [
+  [403, 'api.context.permissions.app_error', (who) => `${who} とのグループ DM を作る権限が無いか、相手を見る権限がありません。`],
+  [403, 'api.channel.create_group.remote_restricted.app_error', () => '別のサーバーのユーザーを含むため、このサーバーではグループ DM を作れません。'],
+  [400, 'api.channel.create_group.bad_user.app_error', () => 'グループ DM に加えられないユーザーが含まれています。'],
+];
+const refusalWorded = (who: string, table = CREATE_REFUSED) => (e: unknown): never => {
+  const w = e instanceof MmError && table.find(([status, id]) => status === e.status && id === e.id);
   throw w ? new InputError(w[2](who)) : e;
 };
 
@@ -85,6 +91,7 @@ export async function resolveChannel(mm: Mm, userId: string, spec: string, opts:
   }
   if (!s.startsWith('@')) plain(s, 'チャンネル名');
   const teams = await myTeams(mm, userId);
+  if (s.startsWith('@') && s.includes(',')) return resolveGroup(mm, userId, s, teams, opts.create);
   if (s.startsWith('@')) {
     const other = await resolveUser(mm, userId, s);
     if (!teams.length) throw new InputError('所属しているチームがないため DM を探せません。');
@@ -111,4 +118,34 @@ export async function resolveChannel(mm: Mm, userId: string, spec: string, opts:
   if (found.length > 1) throw new Ambiguous(s, found.map((c) => ({ team: c.teamName, name: c.name, id: c.id })));
   if (!found.length) throw new InputError(`チャンネル「${s}」が見つかりません。`);
   return found[0];
+}
+
+const ONE_OTHER = 'グループ DM には、自分以外に 2 人以上を指定してください。1 人との DM は @ユーザー名 で指定します。';
+const TOO_MANY = 'グループ DM に指定できるのは、自分以外に 7 人までです。';
+
+async function resolveGroup(mm: Mm, userId: string, spec: string, teams: MmTeam[], create?: boolean): Promise<ResolvedChannel> {
+  const parts = spec.slice(1).split(',').map((p) => p.trim().replace(/^@/, ''));
+  if (parts.some((p) => !p)) throw new InputError('グループ DM の指定に空の名前があります。@a,b の形で、カンマの間にユーザー名を書いてください。');
+  const names = [...new Set(parts.map((p) => plain(p, 'ユーザー名').toLowerCase()))];
+  // Bounded before the lookup only by the names given: whether one of them is the caller is known after it, and the caller's own name may make 8.
+  if (names.length < 2) throw new InputError(ONE_OTHER);
+  if (names.length > 8) throw new InputError(TOO_MANY);
+  const found = await mm.call<UserRef[]>(userId, 'POST', '/users/usernames', names);
+  const missingNames = names.filter((n) => !found.some((u) => u.username === n));
+  if (missingNames.length) throw new InputError(`ユーザーが見つかりません: ${missingNames.map((n) => `@${n}`).join(', ')}。`);
+  const others = found.filter((u) => u.id !== userId);
+  if (others.length < 2) throw new InputError(ONE_OTHER);
+  if (others.length > 7) throw new InputError(TOO_MANY);
+  if (!teams.length) throw new InputError('所属しているチームがないため、グループ DM を探せません。');
+  const label = others.map((u) => `@${u.username}`).sort().join(', ');
+  // Same hash as Mattermost's GetGroupNameFromUserIds, so that a read finds the group DM without POST /channels/group, which creates it.
+  const name = createHash('sha1').update([userId, ...others.map((u) => u.id)].sort().join('')).digest('hex');
+  const c = await mm.call<MmChannelFull>(userId, 'GET', `/teams/${teams[0].id}/channels/name/${name}`).catch((e) => {
+    if (!missing(e)) throw e;
+    if (!create) throw new NoDirectChannel(`${label} とのグループ DM はまだありません。`);
+    const gone = others.find((u) => u.delete_at);
+    if (gone) throw new InputError(`@${gone.username} は無効化されているため、グループ DM を作りません。`);
+    return mm.call<MmChannelFull>(userId, 'POST', '/channels/group', others.map((u) => u.id)).catch(refusalWorded(label, GROUP_REFUSED));
+  });
+  return { ...ref(c, teams[0].name), displayName: label };
 }

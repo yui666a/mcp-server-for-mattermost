@@ -1,4 +1,5 @@
-import { describe, expect, test } from 'vitest';
+import { createHash } from 'node:crypto';
+import { describe, expect, onTestFinished, test } from 'vitest';
 import { MmError } from '../../src/mattermost/client.ts';
 import { InputError } from '../../src/mcp/format.ts';
 import { Ambiguous, NoDirectChannel, resolveChannel, resolveUser, type Mm } from '../../src/mcp/resolve.ts';
@@ -168,5 +169,138 @@ describe('@user with create', () => {
     const { mm } = fake(routes);
     expect(await resolveUser(mm, ME, '@Bob')).toMatchObject({ id: BOB });
     expect(await resolveChannel(mm, ME, '@BOB')).toMatchObject({ id: DM, displayName: '@bob' });
+  });
+});
+
+describe('@a,b group DM', () => {
+  const CAROL = 'f'.repeat(26);
+  const DAVE = 'h'.repeat(26);
+  const GM = 'm'.repeat(26);
+  const NEW_GM = 'n'.repeat(26);
+  const users: Record<string, { id: string; username: string; delete_at: number }> = {
+    me: { id: ME, username: 'me', delete_at: 0 },
+    bob: { id: BOB, username: 'bob', delete_at: 0 },
+    carol: { id: CAROL, username: 'carol', delete_at: 0 },
+    dave: { id: DAVE, username: 'dave', delete_at: 0 },
+  };
+  const groupName = (ids: string[]) => createHash('sha1').update([...ids].sort().join('')).digest('hex');
+  const existing = groupName([ME, BOB, CAROL]);
+  function group(opts: { teams?: unknown[]; deactivated?: string; post?: () => unknown } = {}) {
+    const calls: { method: string; path: string; body?: unknown }[] = [];
+    const mm: Mm = {
+      call: async <T>(_u: string, method: string, path: string, body?: unknown) => {
+        calls.push({ method, path, body });
+        if (path === '/users/me/teams') return (opts.teams ?? teams) as T;
+        if (method === 'POST' && path === '/users/usernames') {
+          return (body as string[]).filter((n) => n in users).map((n) => ({ ...users[n], delete_at: n === opts.deactivated ? 1 : 0 })) as T;
+        }
+        if (method === 'POST' && path === '/channels/group') return (opts.post ? opts.post() : ch(NEW_GM, 'x', '', 'G')) as T;
+        if (path === `/teams/${teams[0].id}/channels/name/${existing}`) return ch(GM, existing, '', 'G') as T;
+        throw new MmError(404, 'app.channel.get_by_name.missing.app_error', 'not found');
+      },
+    };
+    return { mm, calls, posts: () => calls.filter((c) => c.method === 'POST' && c.path !== '/users/usernames') };
+  }
+
+  test('an existing group DM is looked up by the hash of its members, whatever the order or the form of the names', async () => {
+    for (const spec of ['@bob,carol', '@carol,bob', '@bob, @carol', '@Bob,CAROL', '@bob,carol,bob', '@me,bob,carol']) {
+      const { mm, posts } = group();
+      expect(await resolveChannel(mm, ME, spec, { create: true }), spec).toMatchObject({ id: GM, displayName: '@bob, @carol', teamName: 'team-a' });
+      expect(posts(), spec).toEqual([]);
+    }
+  });
+
+  test('looks the users up in one call with lower-case names', async () => {
+    const { mm, calls } = group();
+    await resolveChannel(mm, ME, '@Carol,bob');
+    expect(calls.find((c) => c.path === '/users/usernames')?.body).toEqual(['carol', 'bob']);
+  });
+
+  test('a missing group DM is created only when asked to, with the other members', async () => {
+    const r = group();
+    await expect(resolveChannel(r.mm, ME, '@bob,dave')).rejects.toThrow(new NoDirectChannel('@bob, @dave とのグループ DM はまだありません。'));
+    expect(r.posts()).toEqual([]);
+    expect(await resolveChannel(r.mm, ME, '@dave,bob', { create: true })).toMatchObject({ id: NEW_GM, displayName: '@bob, @dave' });
+    expect(r.posts()).toEqual([{ method: 'POST', path: '/channels/group', body: [DAVE, BOB] }]);
+  });
+
+  test.each([
+    ['@bob,', '空の名前'],
+    ['@,bob', '空の名前'],
+    ['@bob,,carol', '空の名前'],
+    ['@bob,bo/b', '使えない文字'],
+  ])('%s is refused before any user lookup', async (spec, msg) => {
+    const { mm, calls } = group();
+    await expect(resolveChannel(mm, ME, spec)).rejects.toThrow(msg);
+    expect(calls.filter((c) => c.path !== '/users/me/teams')).toEqual([]);
+  });
+
+  test.each([
+    ['@bob,Bob', true],
+    ['@me,bob', false],
+    ['@me,me', true],
+  ])('%s names one other user or none and points to @user', async (spec, beforeLookup) => {
+    const { mm, calls } = group();
+    await expect(resolveChannel(mm, ME, spec)).rejects.toThrow('1 人との DM は @ユーザー名 で指定します');
+    expect(calls.some((c) => c.path === '/users/usernames')).toBe(!beforeLookup);
+  });
+
+  test('takes up to 7 others, also when the own name makes it 8, and refuses 8 others', async () => {
+    const many = Array.from({ length: 8 }, (_, i) => `u${i}`);
+    for (const [i, n] of many.entries()) users[n] = { id: `${i}`.padEnd(26, 'z'), username: n, delete_at: 0 };
+    onTestFinished(() => many.forEach((n) => delete users[n]));
+    const seven = many.slice(0, 7);
+    expect(await resolveChannel(group().mm, ME, `@${seven.join(',')}`, { create: true })).toMatchObject({ id: NEW_GM });
+    expect(await resolveChannel(group().mm, ME, `@me,${seven.join(',')}`, { create: true })).toMatchObject({ id: NEW_GM });
+    await expect(resolveChannel(group().mm, ME, `@${many.join(',')}`, { create: true })).rejects.toThrow('自分以外に 7 人まで');
+    const nine = group();
+    await expect(resolveChannel(nine.mm, ME, `@${[...many, 'bob'].join(',')}`, { create: true })).rejects.toThrow('自分以外に 7 人まで');
+    expect(nine.calls.some((c) => c.path === '/users/usernames')).toBe(false);
+  });
+
+  test('names that are not found are listed', async () => {
+    await expect(resolveChannel(group().mm, ME, '@bob,ghost,nobody')).rejects.toThrow(new InputError('ユーザーが見つかりません: @ghost, @nobody。'));
+  });
+
+  test('without a team nothing is looked up or created', async () => {
+    const { mm, calls } = group({ teams: [] });
+    await expect(resolveChannel(mm, ME, '@bob,dave', { create: true })).rejects.toThrow('所属しているチームがない');
+    expect(calls.filter((c) => c.path.startsWith('/teams/') || c.path === '/channels/group')).toEqual([]);
+  });
+
+  test('no group DM is created with a deactivated user, while an existing one is still looked up', async () => {
+    const r = group({ deactivated: 'dave' });
+    await expect(resolveChannel(r.mm, ME, '@bob,dave', { create: true })).rejects.toThrow('@dave は無効化されているため、グループ DM を作りません。');
+    expect(r.posts()).toEqual([]);
+    expect(await resolveChannel(group({ deactivated: 'carol' }).mm, ME, '@bob,carol', { create: true })).toMatchObject({ id: GM });
+  });
+
+  test('a read of a missing group DM with a deactivated user says it does not exist yet', async () => {
+    await expect(resolveChannel(group({ deactivated: 'dave' }).mm, ME, '@bob,dave')).rejects.toBeInstanceOf(NoDirectChannel);
+  });
+
+  test('errors other than not-found while looking the group DM up are not swallowed', async () => {
+    const paths: string[] = [];
+    const mm: Mm = {
+      call: async <T>(_u: string, method: string, path: string, body?: unknown) => {
+        paths.push(`${method} ${path}`);
+        if (path === '/users/me/teams') return teams as T;
+        if (path === '/users/usernames') return (body as string[]).map((n) => users[n]) as T;
+        throw new MmError(500, 'x', 'boom');
+      },
+    };
+    await expect(resolveChannel(mm, ME, '@bob,dave', { create: true })).rejects.toMatchObject({ status: 500 });
+    expect(paths).not.toContain('POST /channels/group');
+  });
+
+  test('a refused creation is worded by its reason', async () => {
+    const refuse = (status: number, id: string) => group({ post: () => { throw new MmError(status, id, 'x'); } }).mm;
+    await expect(resolveChannel(refuse(403, 'api.context.permissions.app_error'), ME, '@bob,dave', { create: true }))
+      .rejects.toThrow('@bob, @dave とのグループ DM を作る権限が無いか、相手を見る権限がありません。');
+    await expect(resolveChannel(refuse(403, 'api.channel.create_group.remote_restricted.app_error'), ME, '@bob,dave', { create: true }))
+      .rejects.toThrow('別のサーバーのユーザーを含むため、このサーバーではグループ DM を作れません。');
+    await expect(resolveChannel(refuse(400, 'api.channel.create_group.bad_user.app_error'), ME, '@bob,dave', { create: true }))
+      .rejects.toThrow('グループ DM に加えられないユーザーが含まれています。');
+    await expect(resolveChannel(refuse(500, 'x'), ME, '@bob,dave', { create: true })).rejects.toMatchObject({ status: 500 });
   });
 });
