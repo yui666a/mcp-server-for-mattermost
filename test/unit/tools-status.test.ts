@@ -225,9 +225,9 @@ describe('clear_custom_status', () => {
   });
 });
 
-test('tool annotations: set_status is neither destructive nor idempotent, the custom status tools replace what was there', async () => {
+test('tool annotations: set_status is destructive and not idempotent, the custom status tools replace what was there', async () => {
   const by = Object.fromEntries((await setup().tools()).map((t) => [t.name, t.annotations]));
-  expect(by.set_status).toEqual({ readOnlyHint: false, destructiveHint: false, idempotentHint: false });
+  expect(by.set_status).toEqual({ readOnlyHint: false, destructiveHint: true, idempotentHint: false });
   expect(by.set_custom_status).toEqual({ readOnlyHint: false, destructiveHint: true, idempotentHint: true });
   expect(by.clear_custom_status).toEqual({ readOnlyHint: false, destructiveHint: true, idempotentHint: true });
 });

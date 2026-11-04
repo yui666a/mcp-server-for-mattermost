@@ -83,8 +83,9 @@ export function registerStatusTools(server: McpServer, ctx: ToolContext): void {
   server.registerTool('set_status', {
     description: '自分の在席状況を変える。dnd は終了時刻を指定でき、過ぎると dnd にする前の在席状況に戻る（既に dnd のときに設定すると dnd のまま）。Mattermost は終了時刻を分に切り捨てる。online にすると手動の設定を外し、自動の判定に戻る。他人の在席状況は変えられない。不在（ooo）は設定できず、不在のときに変えると自動返信が止まる',
     inputSchema: statusSchema,
+    // Destructive: leaving ooo turns off the auto-responder, which no tool here turns back on.
     // Not idempotent: setting dnd again makes dnd the status it returns to when it ends.
-    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false },
+    annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false },
   }, guarded(ctx, 'set_status', async (args: StatusArgs, extra: { signal: AbortSignal }) => setStatus(mmOf(extra.signal), uid, args),
   ) as unknown as ToolCallback<typeof statusSchema>);
 
