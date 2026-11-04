@@ -237,12 +237,15 @@ describe('follow_thread and unfollow_thread', () => {
     expect(writes()).toEqual([]);
   });
 
-  test('follow_thread refuses a thread in a channel the user has not joined', async () => {
-    routes = { ...base(), [`GET /channels/${CH1}/members/me`]: () => Response.json({ id: 'app.channel.get_member.missing.app_error' }, { status: 404 }) };
-    const r = await setup().call('follow_thread', { post_id: ROOT });
-    expect(r.isError).toBe(true);
-    expect(r.text).toContain('このチャンネルに参加していません');
-    expect(writes()).toEqual([]);
+  test('follow_thread refuses a thread in a channel the user has not joined, whether Mattermost answers 403 or 404', async () => {
+    for (const status of [403, 404]) {
+      routes = { ...base(), [`GET /channels/${CH1}/members/me`]: () => Response.json({ id: 'app.channel.get_member.missing.app_error' }, { status }) };
+      hits = [];
+      const r = await setup().call('follow_thread', { post_id: ROOT });
+      expect(r.isError, String(status)).toBe(true);
+      expect(r.text).toContain('このチャンネルに参加していません');
+      expect(writes()).toEqual([]);
+    }
   });
 
   test('follow_thread says a thread without replies shows up in the list only after its first reply', async () => {
