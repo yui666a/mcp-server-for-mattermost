@@ -7,6 +7,7 @@ import type { Store } from '../store.ts';
 import { InputError } from './format.ts';
 import { registerMarkReadTool } from './mark-read.ts';
 import { registerReadTools } from './tools-read.ts';
+import { registerSavePinTools } from './tools-save-pin.ts';
 import { registerScheduleTools } from './tools-schedule.ts';
 import { registerSendTools } from './tools-send.ts';
 
@@ -59,5 +60,6 @@ export function buildServer(ctx: ToolContext): McpServer {
   registerSendTools(server, ctx);
   registerScheduleTools(server, ctx);
   registerMarkReadTool(server, ctx);
+  registerSavePinTools(server, ctx);
   return server;
 }

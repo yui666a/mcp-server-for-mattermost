@@ -27,6 +27,7 @@ Mattermost の公式 MCP サーバーは Agents プラグインに含まれ、�
   - 自分のチャンネルとスレッドの既読化（AI が読んだ投稿まで）
   - チャンネルやスレッドへの投稿（小さなファイルの添付を含む）
   - 投稿への自分のリアクションの追加と削除
+  - 参加しているチャンネルの投稿の保存（フラグ）とピン留めの付け外し
   - 自分の投稿の編集と削除
   - 本人の Mattermost の下書きとしての保存（送信は本人が画面で行う）
   - 指定した時刻にチャンネルやスレッドへ投稿する予約と、その一覧・変更・取り消し
@@ -241,7 +242,7 @@ MCP サーバー自身は管理者トークンや Bot アカウントを持た�
 | `get_post` | パーマリンクの URL か post_id で指定した 1 件の投稿を、チャンネルとチーム、返信数とともに読む。返信なら親の post_id を、返信のある親投稿なら `read_thread` で続きを読めることを示す |
 | `get_file` | 投稿に添付されたファイルを `file_id` で読む。画像なら Mattermost のプレビュー（幅 1920px 以内の縮小版）を MCP の image コンテンツで返す。原寸は返さない。テキストなら中身を先頭から 10,000 文字まで返す。PDF などそれ以外は、名前、種類、大きさだけを返す |
 | `search_files` | 利用者が参加しているチャンネル（アーカイブ済みを除く）、DM、グループ DM の添付ファイルを、名前と Mattermost の検索構文（`from:`、`in:`、`ext:`、`before:` など）で探す。ファイルごとに `file_id` と、投稿があれば `post_id` とパーマリンクを返し、`get_file` と `get_post` に続けられるようにする |
-| `list_saved_posts` | 利用者が保存した（フラグを付けた）投稿のうち、参加しているチャンネルの投稿を新しい順に一覧する。アーカイブ済みのチャンネルの投稿も含む。保存の追加と解除はしない |
+| `list_saved_posts` | 利用者が保存した（フラグを付けた）投稿のうち、参加しているチャンネルの投稿を新しい順に一覧する。アーカイブ済みのチャンネルの投稿も含む。保存の追加と解除は `save_post` / `unsave_post` で行う |
 | `search_channels` | 名前でチャンネルを探す（公開チャンネルと、利用者が参加している非公開チャンネル、DM、グループ DM） |
 | `list_my_channels` | 参加しているチャンネル（公開、非公開、DM、グループ DM）を、最終投稿の新しい順に一覧する。種類で絞れる。アーカイブ済みは含まない |
 | `get_channel` | チャンネルの種類、目的、ヘッダー、メンバー数、ピン留めされた投稿を読む。メンバーの一覧は `list_channel_members` で読む |
@@ -255,6 +256,10 @@ MCP サーバー自身は管理者トークンや Bot アカウントを持た�
 | `prepare_upload` | 利用者の PC にあるファイルを、MCP クライアントが `curl` で送るための使い捨てのアップロード URL を発行する |
 | `add_reaction` | 投稿に自分のリアクションを付ける。絵文字は Mattermost の絵文字名で指定し、前後のコロンは外して受け付ける。別名（`thumbsup` と `+1` など）はまとめない。Mattermost 自体が別のリアクションとして扱うため |
 | `remove_reaction` | 投稿から自分のリアクションを外す。他人のリアクションは外さない。Mattermost は付いていないリアクションでも成功を返すため、外したかどうかは区別しない |
+| `save_post` | 投稿を自分の保存した投稿に加える。参加しているチャンネルの投稿だけを扱う。Mattermost は参加していない公開チャンネルの投稿も保存できるが、その保存は `list_saved_posts` にも Mattermost の画面の保存した投稿にも出ないため、保存したと報告して見つからない食い違いを作らないよう断る |
+| `unsave_post` | 投稿を自分の保存した投稿から外す。投稿もチャンネルへの参加も確かめない。チャンネルを抜けた後や投稿が消えた後に残った保存も外せるようにするため。外したかどうかは区別しない |
+| `pin_post` | 投稿をチャンネルにピン留めする。投稿の本文は変えずにチャンネルの印を付けるだけなので、非ゴールの「他人の投稿の編集」には当たらない。参加しているチャンネルの投稿だけを扱う。Mattermost は参加していない公開チャンネルでも許すが、チャンネルの全員に見える印なので、参加していないチャンネルでは変えない。サーバーの編集の期限（`ServiceSettings.PostEditTimeLimit`）を過ぎた投稿は、Mattermost がピン留めの付け外しも断る |
+| `unpin_post` | 投稿のピン留めを外す。Mattermost はピン留めした人を記録しないため、他人のピン留めも外れる。参加しているチャンネルの投稿だけを扱う |
 | `edit_message` | 自分の投稿の本文を書き換える。編集で足したメンションは通知されない（Mattermost が編集では通知しないため） |
 | `delete_message` | 自分の投稿を削除する。削除は取り消せないので、ツールの説明で、実行の前に利用者へ確認するよう MCP クライアントに求める |
 | `save_draft` | 投稿せずに、本人の下書きとして保存する。`root_id` を渡すとスレッドへの返信の下書きになる。同じ投稿先に本文の違う下書きがあれば、`overwrite` を指定しない限り上書きしない。同じ本文を `send_message` で送ると、この下書きは消える（添付の付いた下書きは除く） |
@@ -263,7 +268,7 @@ MCP サーバー自身は管理者トークンや Bot アカウントを持た�
 | `update_scheduled_message` | 待機中の本人の予約の本文か予定時刻を変える |
 | `cancel_scheduled_message` | 待機中の本人の予約を取り消す |
 
-- 読み取り系のツールには MCP のツール注釈 `readOnlyHint: true` を付け、書き込み系のツール（`send_message`、`prepare_upload`、`add_reaction`、`remove_reaction`、`edit_message`、`delete_message`、`save_draft`、`schedule_message`、`update_scheduled_message`、`cancel_scheduled_message`、`mark_as_read`）には付けない。MCP クライアントが書き込みの前に利用者へ確認を求められるようにするため
+- 読み取り系のツールには MCP のツール注釈 `readOnlyHint: true` を付け、書き込み系のツール（`send_message`、`prepare_upload`、`add_reaction`、`remove_reaction`、`save_post`、`unsave_post`、`pin_post`、`unpin_post`、`edit_message`、`delete_message`、`save_draft`、`schedule_message`、`update_scheduled_message`、`cancel_scheduled_message`、`mark_as_read`）には付けない。MCP クライアントが書き込みの前に利用者へ確認を求められるようにするため
 - 出力は LLM が読みやすいテキストとし、投稿ごとに投稿者のユーザー名、日時、本文、パーマリンク（`https://mattermost.example.com/<team>/pl/<post_id>`）を含める。読み取り系の出力には、チャンネルとチームの ID と名前も含め、LLM が続く呼び出しで ID を使えるようにする
 - チャンネルの指定は次のどれかとする。名前から候補が 2 つ以上見つかった場合は、どれかを選ばずにエラーとし、候補のチーム名、チャンネル名、チャンネル ID を返す
   - チャンネル ID
