@@ -140,6 +140,8 @@ describe('@user with create', () => {
       .rejects.toThrow('@carol との DM を作る権限が無いか、相手を見る権限がありません。');
     await expect(resolveChannel(refuse(403, 'api.channel.create_channel.direct_channel.team_restricted_error'), ME, '@carol', { create: true }))
       .rejects.toThrow('このサーバーでは、同じチームにいない相手との DM は作れません。');
+    await expect(resolveChannel(refuse(403, 'api.channel.create_channel.direct_channel.remote_restricted.app_error'), ME, '@carol', { create: true }))
+      .rejects.toThrow('@carol は別のサーバーのユーザーのため、このサーバーでは DM を作れません。');
     await expect(resolveChannel(refuse(403, 'other.id'), ME, '@carol', { create: true })).rejects.toMatchObject({ status: 403, id: 'other.id' });
     await expect(resolveChannel(refuse(500, 'x'), ME, '@carol', { create: true })).rejects.toMatchObject({ status: 500 });
   });
