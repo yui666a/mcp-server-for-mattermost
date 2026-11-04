@@ -18,7 +18,7 @@
   4. 確かめ終えたら、Web でその投稿を消す
 - 書き込み系のツールは、作業者自身の DM の中だけで確かめる。他のチャンネルや利用者の投稿には触れない
   1. `send_message` で `@<作業者のユーザー名>` に投稿する
-  2. その投稿に `add_reaction`（例 `white_check_mark`）を呼び、画面で付いたことを見る。`remove_reaction` で外し、画面で消えたことを見る
+  2. その投稿に `add_reaction`（例 `white_check_mark`）を呼び、画面で付いたことを見る。`remove_reaction` で外し、画面で消えたことを見る。同じ投稿に `save_post` を呼んで画面の保存した投稿に出ること、`pin_post` を呼んで画面のピン留めに出ることを見る。`unsave_post` と `unpin_post` で外し、画面から消えたことを見る
   3. `edit_message` で本文を変え、画面で変わったことを見る。`delete_message` で消し、画面から消えたことを見る
   4. `save_draft` で下書きを保存し、DM を開いて入力欄に出ることを見る。送信せず、画面で入力欄を空にして下書きを消す
   5. `send_message` に `files`（例 `{"name":"check.txt","content_text":"attachment check"}`）を付けて投稿し、画面に添付が出ることを見る。確かめたら `delete_message` で消す

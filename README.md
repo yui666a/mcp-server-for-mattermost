@@ -42,9 +42,11 @@ This project targets the other case:
 | `mark_as_read` | Mark channels and threads read, skipping channels with posts by anyone else after the newest post read |
 | `search_users` | Find users by name or username |
 | `get_user` | A user's profile with time zone, local time, and status |
-| `send_message` | Post to a channel or thread, optionally with small inline files or files uploaded through `prepare_upload`; clears a draft with the same text afterwards |
+| `send_message` | Post to a channel or thread (`@username` works even before a DM exists), optionally with small inline files or files uploaded through `prepare_upload`; clears a draft with the same text afterwards |
 | `prepare_upload` | Issue a one-time URL for uploading local files (screenshots, PDFs, photos) with `curl`; for clients that can run commands on the user's machine, such as Claude Code and Codex CLI |
 | `add_reaction` / `remove_reaction` | Add or remove the user's own reaction |
+| `save_post` / `unsave_post` | Save (flag) a post in a joined channel, or remove it from the saved posts |
+| `pin_post` / `unpin_post` | Pin or unpin a post in a joined channel |
 | `edit_message` / `delete_message` | Edit or delete the user's own post |
 | `save_draft` | Save a Mattermost draft for the user to send from the UI; sending the same text with `send_message` clears it |
 | `schedule_message` | Schedule a post for a later time (1 minute to 30 days ahead), optionally with files uploaded through `prepare_upload` |
