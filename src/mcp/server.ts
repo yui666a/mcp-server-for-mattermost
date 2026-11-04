@@ -6,10 +6,12 @@ import { MmError, RateLimited, Reauthorize, UpstreamUnavailable, type MmClient }
 import type { Store } from '../store.ts';
 import { InputError } from './format.ts';
 import { registerMarkReadTool } from './mark-read.ts';
+import { registerEmojiTools } from './tools-emoji.ts';
 import { registerReadTools } from './tools-read.ts';
 import { registerSavePinTools } from './tools-save-pin.ts';
 import { registerScheduleTools } from './tools-schedule.ts';
 import { registerSendTools } from './tools-send.ts';
+import { registerStatusTools } from './tools-status.ts';
 import { registerThreadTools } from './tools-threads.ts';
 
 export type ToolContext = { mm: MmClient; mmUserId: string; cfg: Config; store: Store };
@@ -62,6 +64,8 @@ export function buildServer(ctx: ToolContext): McpServer {
   registerScheduleTools(server, ctx);
   registerMarkReadTool(server, ctx);
   registerSavePinTools(server, ctx);
+  registerStatusTools(server, ctx);
+  registerEmojiTools(server, ctx);
   registerThreadTools(server, ctx);
   return server;
 }

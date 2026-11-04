@@ -29,6 +29,8 @@ Mattermost の公式 MCP サーバーは Agents プラグインに含まれ、�
   - チャンネルやスレッドへの投稿（小さなファイルの添付を含む）
   - 投稿への自分のリアクションの追加と削除
   - 参加しているチャンネルの投稿の保存（フラグ）とピン留めの付け外し
+  - リアクションやカスタムステータスに使うカスタム絵文字の、名前での検索
+  - 自分の在席状況とカスタムステータスの変更
   - 自分の投稿の編集と削除
   - 本人の Mattermost の下書きとしての保存（送信は本人が画面で行う）
   - 指定した時刻にチャンネルやスレッドへ投稿する予約と、その一覧・変更・取り消し
@@ -271,8 +273,12 @@ MCP サーバー自身は管理者トークンや Bot アカウントを持た�
 | `list_scheduled_messages` | 本人の予約を、予定時刻の順に、状態と失敗の理由、添付するファイル、投稿済みなら `post_id` とパーマリンクとともに返す |
 | `update_scheduled_message` | 待機中の本人の予約の本文か予定時刻を変える |
 | `cancel_scheduled_message` | 待機中の本人の予約を取り消す |
+| `search_emoji` | カスタム絵文字を名前の一部で探す。標準の絵文字は対象にしない。Mattermost に標準の絵文字の一覧を返す API が無く、一覧を持つと版ごとの差を追う必要があるため。Mattermost の検索は 200 件で打ち切られ、続きを取れないので、200 件に達したら続きがありうることを出力に明示する |
+| `set_status` | 自分の在席状況（オンライン、離席、取り込み中、オフライン）を変える。取り込み中には終了時刻（タイムゾーンが無ければ JST、今から 1 分後以降）を付けられる。同じ引数で繰り返すと、取り込み中の終了後に戻る先が取り込み中になるため、冪等とはしない。不在から変えると Mattermost が自動返信を止め、MCP からは戻せないため、注釈は `destructiveHint: true` とする |
+| `set_custom_status` | 自分のカスタムステータス（絵文字、文言、期限）を設定する。期限は `set_status` の終了時刻と同じく読む |
+| `clear_custom_status` | 自分のカスタムステータスを消す |
 
-- 読み取り系のツールには MCP のツール注釈 `readOnlyHint: true` を付け、書き込み系のツール（`send_message`、`prepare_upload`、`add_reaction`、`remove_reaction`、`save_post`、`unsave_post`、`pin_post`、`unpin_post`、`edit_message`、`delete_message`、`save_draft`、`schedule_message`、`update_scheduled_message`、`cancel_scheduled_message`、`mark_as_read`、`follow_thread`、`unfollow_thread`）には付けない。MCP クライアントが書き込みの前に利用者へ確認を求められるようにするため
+- 読み取り系のツールには MCP のツール注釈 `readOnlyHint: true` を付け、書き込み系のツール（`send_message`、`prepare_upload`、`add_reaction`、`remove_reaction`、`save_post`、`unsave_post`、`pin_post`、`unpin_post`、`edit_message`、`delete_message`、`save_draft`、`schedule_message`、`update_scheduled_message`、`cancel_scheduled_message`、`mark_as_read`、`set_status`、`set_custom_status`、`clear_custom_status`、`follow_thread`、`unfollow_thread`）には付けない。MCP クライアントが書き込みの前に利用者へ確認を求められるようにするため
 - 出力は LLM が読みやすいテキストとし、投稿ごとに投稿者のユーザー名、日時、本文、パーマリンク（`https://mattermost.example.com/<team>/pl/<post_id>`）を含める。読み取り系の出力には、チャンネルとチームの ID と名前も含め、LLM が続く呼び出しで ID を使えるようにする
 - チャンネルの指定は次のどれかとする。名前から候補が 2 つ以上見つかった場合は、どれかを選ばずにエラーとし、候補のチーム名、チャンネル名、チャンネル ID を返す
   - チャンネル ID
