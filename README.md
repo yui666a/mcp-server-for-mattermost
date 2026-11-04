@@ -50,6 +50,9 @@ This project targets the other case:
 | `schedule_message` | Schedule a post for a later time (1 minute to 30 days ahead), optionally with files uploaded through `prepare_upload` |
 | `list_scheduled_messages` | List the user's scheduled posts with status and permalink |
 | `update_scheduled_message` / `cancel_scheduled_message` | Change or cancel a pending scheduled post |
+| `search_emoji` | Find custom emoji by part of their name, for `add_reaction` and `set_custom_status` (standard emoji are not included) |
+| `set_status` | Set the user's own status (online, away, do not disturb with an optional end time, offline) |
+| `set_custom_status` / `clear_custom_status` | Set or clear the user's own custom status (emoji, text, expiry) |
 
 Times are in JST: a `schedule_message` time without an offset (`YYYY-MM-DDTHH:mm[:ss[.sss]]`) is read as `+09:00`, so append `Z` or `+hh:mm` (`-hh:mm`) for another zone. Search dates (`on:`, `before:`, `after:`) are JST days, and output shows each time in both UTC and JST.
 
