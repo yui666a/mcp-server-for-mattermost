@@ -38,7 +38,7 @@ This project targets the other case:
 | `get_channel` | Channel type, purpose, header, member count, and pinned posts |
 | `list_channel_members` | List the members of a joined channel, ordered by username |
 | `get_unreads` | Unread channels and, with collapsed reply threads, unread threads |
-| `get_mentions` | Posts that mention the user |
+| `get_mentions` | Posts that mention the user, optionally only the unread ones |
 | `mark_as_read` | Mark channels and threads read, skipping channels with posts by anyone else after the newest post read |
 | `search_users` | Find users by name or username |
 | `get_user` | A user's profile with time zone, local time, and status |
