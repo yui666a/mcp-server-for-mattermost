@@ -267,7 +267,7 @@ type UnreadKey = { s: number; m: number; t: number; id: string };
 const THREAD_PAGE = 50;
 const THREAD_PAGES = 4;
 const MEMBER_PAGE = 200;
-const UNREAD_RULE = '未読の判定: Mattermost が未読のメンションを数えているチャンネルとスレッドの、既読の位置より後の投稿（スレッドの折りたたみ（CRT）が有効なら、返信はスレッドの既読の位置で判定。自分の投稿は除く）';
+const UNREAD_RULE = '未読の判定: Mattermost が未読のメンションを数えているチャンネルとスレッドの、既読の位置より後の投稿（スレッドの折りたたみ（CRT）が有効なら、返信はスレッドの既読の位置で判定。自分の投稿は出さないが、自分の Webhook の投稿は出す）';
 const CRT_PREF = '/users/me/preferences/display_settings/name/collapsed_reply_threads';
 
 const byUnreadKey = (a: UnreadKey, b: UnreadKey) => a.s - b.s || a.m - b.m || b.t - a.t || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
@@ -351,7 +351,7 @@ export function registerReadTools(server: McpServer, ctx: ToolContext): void {
     });
   }
 
-  tool('search_posts', '参加しているチームのメッセージを検索する。Mattermost の検索構文（from:、in:、before:、after:、on: など）をそのまま使える。in: にはチャンネル ID、「チーム名/チャンネル名」、チャンネル名、@ユーザー名（DM）、@a,b（グループ DM。自分を含む全員のユーザー名を小文字でカンマ区切り）を渡せる。同じ名前が複数のチームにあれば、すべてで探す。見つからなければエラー。参加していないチャンネルは 0 件になる。DM は作らない。日付は日本時間（JST）で解釈する。新しい順。メッセージ添付（Bot や webhook などが付ける整形表示）の中身は検索の対象外（Mattermost の標準のデータベース検索は添付を検索しないため。その中身を探すなら read_channel で読む。since と until で期間を指定できる）',
+  tool('search_posts', '参加しているチームのメッセージを検索する。Mattermost の検索構文（from:、in:、before:、after:、on: など）をそのまま使える。in: にはチャンネル ID、「チーム名/チャンネル名」、チャンネル名、@ユーザー名（DM）、@a,b（グループ DM。自分を含む全員のユーザー名を小文字でカンマ区切り）を渡せる。同じ名前が複数のチームにあれば、すべてで探す。見つからなければエラー。参加していないチャンネルは 0 件になる。DM は作らない。日付は日本時間（JST）で解釈する。新しい順。メッセージ添付（Bot や webhook などが付ける整形表示）の中身は検索の対象外（Mattermost の標準のデータベース検索は添付を検索しないため。その中身を探すなら read_channel で読む。read_channel なら since と until で期間を指定して読める）',
     { terms: z.string().min(1), limit: limitArg(20, 50), cursor: cursorArg },
     async ({ terms, limit, cursor }, mm) => {
       const c = cursorOf(z.object({ page: z.number().int().min(0), per_page: perPage(50) }), cursor);
@@ -884,7 +884,8 @@ export function registerReadTools(server: McpServer, ctx: ToolContext): void {
         }
         if (!chans.size && !threads.size) return render({ lines: ['自分への未読のメンション（新しい順）', UNREAD_RULE, '未読のメンションはありません。'], notes });
         isUnread = (p) => {
-          if (p.user_id === uid) return false;
+          // Not leaving out the user's own webhook posts: Mattermost counts a webhook's mention of the user who made it.
+          if (p.user_id === uid && p.props?.from_webhook !== 'true') return false;
           const at = crt && p.root_id ? threads.get(p.root_id)?.last_viewed_at : chans.get(p.channel_id);
           return at !== undefined && p.create_at > at;
         };
