@@ -19,7 +19,6 @@ const CRT_OFF = 'スレッドの折りたたみ（CRT）が無効なため、ス
 
 const POST_ID = z.string().regex(/^[A-Za-z0-9]{26}$/).describe('スレッドの親投稿か、スレッド内の投稿の post_id');
 const missing = (e: unknown) => e instanceof MmError && (e.status === 403 || e.status === 404);
-// Idempotent for follow too: it skips the PUT when the thread is already followed.
 const followAnnotations: ToolAnnotations = { readOnlyHint: false, destructiveHint: false, idempotentHint: true };
 
 const newestReplyFirst = (a: Key, b: Key) => b.t - a.t || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
