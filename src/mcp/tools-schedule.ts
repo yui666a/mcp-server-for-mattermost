@@ -28,7 +28,7 @@ function when(at: string): number {
 }
 
 const scheduleSchema = {
-  channel: z.string().min(1).describe('チャンネル ID、「チーム名/チャンネル名」、チャンネル名、@ユーザー名（DM）のどれか'),
+  channel: z.string().min(1).describe('チャンネル ID、「チーム名/チャンネル名」、チャンネル名、@ユーザー名（DM。無ければ作る）のどれか'),
   message: MESSAGE,
   root_id: POST_ID.optional().describe('返信にするときの、スレッドの親投稿の post_id'),
   at: AT,
@@ -39,9 +39,10 @@ type ScheduleArgs = { channel: string; message: string; root_id?: string; at: st
 
 export async function scheduleMessage(mm: Mm, store: Store, uid: string, args: ScheduleArgs): Promise<CallToolResult> {
   const at = when(args.at);
-  const ch = await resolveChannel(mm, uid, args.channel);
-  if (args.root_id) await checkRoot(mm, uid, args.root_id, ch);
   const fileIds = args.file_ids ?? [];
+  // Not creating the DM with root_id or file_ids: a DM not opened yet holds neither, and the call would fail right after leaving an empty DM.
+  const ch = await resolveChannel(mm, uid, args.channel, { create: !args.root_id && !fileIds.length });
+  if (args.root_id) await checkRoot(mm, uid, args.root_id, ch);
   checkUploaded(store, uid, ch.id, fileIds);
   checkUnposted(store, uid, fileIds);
   let id: string | undefined;
