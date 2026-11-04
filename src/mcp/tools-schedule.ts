@@ -33,7 +33,7 @@ const scheduleSchema = {
   root_id: POST_ID.optional().describe('返信にするときの、スレッドの親投稿の post_id'),
   at: AT,
   file_ids: z.array(z.string().regex(/^[A-Za-z0-9]{26}$/)).min(1).max(MAX_UPLOAD_FILES).optional()
-    .describe('添付するファイルの file_id（1〜5 件）。prepare_upload で、予約の投稿先と同じチャンネルへ 24 時間以内にアップロードしたもの'),
+    .describe('prepare_upload で、投稿先と同じチャンネルへ 24 時間以内にアップロードした file_id（1〜5 件）'),
 };
 type ScheduleArgs = { channel: string; message: string; root_id?: string; at: string; file_ids?: string[] };
 
@@ -147,7 +147,7 @@ export function registerScheduleTools(server: McpServer, ctx: ToolContext): void
   const mmOf = (signal: AbortSignal): Mm => ({ call: (u, m, p, b) => ctx.mm.call(u, m, p, b, signal) });
   // Cast for the same reason as in tools-read.ts: the SDK's callback type does not resolve for these shapes.
   server.registerTool('schedule_message', {
-    description: '指定した時刻にチャンネルへ投稿するよう予約する。root_id を渡すとスレッドへの返信になる。投稿先は予約の時点で固定する。時刻はタイムゾーンが無ければ JST。今から 1 分後から 30 日後まで、待機中の予約は 1 人 20 件まで。ファイルを添付するときは、prepare_upload で投稿先のチャンネルへアップロードした file_id を file_ids に渡す（send_message の files のような中身の直接の添付はできない。claude.ai などのブラウザ版からはファイル付きの予約はできない）。結果は list_scheduled_messages で確かめる',
+    description: '指定した時刻にチャンネルへ投稿するよう予約する。root_id を渡すとスレッドへの返信になる。投稿先は予約の時点で固定する。待機中の予約は 1 人 20 件まで。添付は file_ids（prepare_upload の結果）だけ。結果は list_scheduled_messages で確かめる',
     inputSchema: scheduleSchema,
     annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false },
   }, guarded(ctx, 'schedule_message', async (args: ScheduleArgs, extra: { signal: AbortSignal }) => scheduleMessage(mmOf(extra.signal), ctx.store, uid, args),
