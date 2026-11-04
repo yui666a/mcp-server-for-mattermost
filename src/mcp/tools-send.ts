@@ -26,11 +26,11 @@ const inputSchema = {
   allow_duplicate: z.boolean().optional().describe('同じ本文を意図して繰り返し投稿するときに true'),
   files: z.array(z.union([
     z.strictObject({ name: FILE_NAME, content_text: z.string().min(1).describe('UTF-8 のテキストとしてそのまま添付する中身') }),
-    z.strictObject({ name: FILE_NAME, content_base64: z.string().min(1).describe('バイナリの中身の base64（data URL の接頭辞や改行は付けない）。利用者の PC にあるバイナリは、利用者の PC でコマンドを実行できるクライアントなら prepare_upload を使う') }),
+    z.strictObject({ name: FILE_NAME, content_base64: z.string().min(1).describe('バイナリの中身の base64（data URL の接頭辞や改行は付けない）') }),
   ])).min(1).max(5).optional()
-    .describe('添付ファイル（1〜5 件、中身の合計 128KiB まで）。各要素は name と、content_text か content_base64 のどちらか一方'),
+    .describe('添付ファイル（1〜5 件、中身の合計 128KiB まで）。各要素は name と、content_text（SVG、CSV、Markdown、コードなどのテキスト）か content_base64（小さなバイナリ）のどちらか一方。利用者の PC にあるファイルは、PC でコマンドを実行できるクライアントなら prepare_upload を使う'),
   file_ids: z.array(z.string().regex(/^[A-Za-z0-9]{26}$/)).min(1).max(5).optional()
-    .describe('prepare_upload の URL にアップロードして受け取った file_id（1〜5 件）。アップロードしたときと同じチャンネルにだけ使える'),
+    .describe('prepare_upload で、投稿先と同じチャンネルへ 24 時間以内にアップロードした file_id（1〜5 件）'),
 };
 
 const B64 = /^[A-Za-z0-9+/]*={0,2}$/;
@@ -464,7 +464,7 @@ export function registerSendTools(server: McpServer, ctx: ToolContext): void {
   ) as unknown as ToolCallback<typeof draftSchema>);
 
   server.registerTool('prepare_upload', {
-    description: '利用者の PC にあるファイル（スクリーンショット、PDF、写真など）を投稿に添付するための、使い捨てのアップロード URL を発行する。利用者の PC でコマンドを実行できるクライアント（Claude Code、Codex CLI など）から curl で送り、返った file_id を send_message の file_ids に渡す（予約するときは schedule_message の file_ids に渡す）。ファイルの中身はツールの引数を通らない。curl を実行する前に、送るファイルのパスと投稿先を利用者に示して確認を取ること。claude.ai などのブラウザ版からは PC のファイルを送れないので、save_draft で本文を下書きにし、ファイルは Mattermost の画面から添付するよう案内する',
+    description: '利用者の PC にあるファイル（スクリーンショット、PDF など）を添付するための、使い捨てのアップロード URL と curl のコマンドを返す。PC でコマンドを実行できるクライアント（Claude Code、Codex CLI など）向け。curl を実行する前に、送るファイルのパスと投稿先を利用者に示して確認を取ること。PC でコマンドを実行できないクライアント（claude.ai など）では、save_draft で本文を下書きにし、ファイルは Mattermost の画面から添付するよう案内する',
     inputSchema: prepareSchema,
     annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false },
   }, guarded(ctx, 'prepare_upload', async (args: PrepareArgs, extra: { signal: AbortSignal }) =>
@@ -472,7 +472,7 @@ export function registerSendTools(server: McpServer, ctx: ToolContext): void {
   ) as unknown as ToolCallback<typeof prepareSchema>);
 
   server.registerTool('send_message', {
-    description: 'チャンネルへ投稿する。root_id を渡すとスレッドへの返信になる。channel はチャンネル ID、「チーム名/チャンネル名」、チャンネル名、@ユーザー名（DM）、@a,b（グループ DM）のどれか。DM とグループ DM は無ければ作る。files でファイルを添付できる（1〜5 件、合計 128KiB まで。SVG、CSV、Markdown、コードなどのテキストは content_text、小さなバイナリは content_base64）。利用者の PC にあるバイナリ（スクリーンショット、PDF など）は、利用者の PC でコマンドを実行できるクライアント（Claude Code、Codex CLI など）なら prepare_upload でアップロードし、受け取った file_id を file_ids に渡す（content_base64 だと引数が大きくなって会話の文脈を圧迫し、128KiB を超えると送れない）。content_base64 は、claude.ai のように利用者の PC でコマンドを実行できないクライアントのためのもの。claude.ai からは PC のファイルを送れないので、save_draft で本文を下書きにし、ファイルは Mattermost の画面から添付するよう案内する。同じ投稿先へ同じ本文と添付を 10 分以内に送ると、やり直しとみなして投稿しない。同じ投稿先に本文の同じ下書きがあれば、投稿の後に消す（添付の付いた下書きと、下書きの同期を切っている利用者の下書きは消さない）',
+    description: 'チャンネルへ投稿する。root_id を渡すとスレッドへの返信になる。channel はチャンネル ID、「チーム名/チャンネル名」、チャンネル名、@ユーザー名（DM）、@a,b（グループ DM）のどれか。DM とグループ DM は無ければ作る。添付は files（中身を直接渡す）か file_ids（prepare_upload の結果）。同じ投稿先へ同じ本文と添付を 10 分以内に送ると、やり直しとみなして投稿しない。同じ投稿先に本文の同じ下書きがあれば、投稿の後に消す',
     inputSchema,
     annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false },
   }, guarded(ctx, 'send_message', async (args: Args, extra: { signal: AbortSignal }) => {

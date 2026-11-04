@@ -756,22 +756,27 @@ describe('send_message with files', () => {
     for (const s of ['secret-name', 'secret-text', 'secret-bytes', Buffer.from('secret-bytes').toString('base64')]) expect(logged).not.toContain(s);
   });
 
-  test('the tool describes files, their two forms and the limits, and that a draft with the same message is cleared', async () => {
+  test('the tool names both ways to attach and says that a draft with the same message is cleared', async () => {
     const t = (await setup().tools()).find((x) => x.name === 'send_message')!;
-    expect(t.description).toContain('files');
+    expect(t.description).toContain('添付は files（中身を直接渡す）か file_ids（prepare_upload の結果）');
     expect(t.description).toContain('同じ投稿先に本文の同じ下書きがあれば、投稿の後に消す');
   });
 
-  test('the tool sends clients that can run commands on the user\'s PC to prepare_upload, keeping content_base64 for those that cannot', async () => {
-    const t = (await setup().tools()).find((x) => x.name === 'send_message')! as unknown as {
-      description: string; inputSchema: { properties: { files: { items: { anyOf: { properties: { content_base64?: { description?: string } } }[] } } } };
-    };
-    expect(t.description).toContain('利用者の PC にあるバイナリ（スクリーンショット、PDF など）は、利用者の PC でコマンドを実行できるクライアント（Claude Code、Codex CLI など）なら prepare_upload でアップロードし');
-    expect(t.description).toContain('128KiB を超えると送れない');
-    expect(t.description).toContain('content_base64 は、claude.ai のように利用者の PC でコマンドを実行できないクライアントのためのもの');
+  test('files gives its two forms and limits, and sends files on the user\'s PC to prepare_upload only for clients that can run commands there', async () => {
+    const t = (await setup().tools()).find((x) => x.name === 'send_message')! as unknown as { inputSchema: { properties: { files: { description: string } } } };
+    const d = t.inputSchema.properties.files.description;
+    for (const s of ['1〜5 件', '128KiB', 'content_text', 'content_base64', '利用者の PC にあるファイルは、PC でコマンドを実行できるクライアントなら prepare_upload を使う']) expect(d).toContain(s);
+  });
+
+  test('prepare_upload asks for the user\'s confirmation before curl, and points clients that cannot run commands to save_draft', async () => {
+    const t = (await setup().tools()).find((x) => x.name === 'prepare_upload')!;
+    expect(t.description).toContain('curl を実行する前に、送るファイルのパスと投稿先を利用者に示して確認を取ること');
     expect(t.description).toContain('save_draft で本文を下書きにし、ファイルは Mattermost の画面から添付するよう案内する');
-    const b64 = t.inputSchema.properties.files.items.anyOf.find((x) => x.properties.content_base64)!.properties.content_base64!;
-    expect(b64.description).toContain('利用者の PC でコマンドを実行できるクライアントなら prepare_upload を使う');
+  });
+
+  test('file_ids of send_message takes files uploaded to the same channel within 24 hours', async () => {
+    const t = (await setup().tools()).find((x) => x.name === 'send_message')! as unknown as { inputSchema: { properties: { file_ids: { description: string } } } };
+    for (const s of ['同じチャンネル', '24 時間']) expect(t.inputSchema.properties.file_ids.description).toContain(s);
   });
 
   test('the draft cleanup\'s 5-second deadline reaches the Mattermost requests, and running past it leaves the post a success', async () => {
