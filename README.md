@@ -42,7 +42,7 @@ This project targets the other case:
 | `mark_as_read` | Mark channels and threads read, skipping channels with posts by anyone else after the newest post read |
 | `search_users` | Find users by name or username |
 | `get_user` | A user's profile with time zone, local time, and status |
-| `send_message` | Post to a channel or thread (`@username` works even before a DM exists), optionally with small inline files or files uploaded through `prepare_upload`; clears a draft with the same text afterwards |
+| `send_message` | Post to a channel or thread (`@username`, or `@a,b` for a group DM, works even before the DM exists), optionally with small inline files or files uploaded through `prepare_upload`; clears a draft with the same text afterwards |
 | `prepare_upload` | Issue a one-time URL for uploading local files (screenshots, PDFs, photos) with `curl`; for clients that can run commands on the user's machine, such as Claude Code and Codex CLI |
 | `add_reaction` / `remove_reaction` | Add or remove the user's own reaction |
 | `save_post` / `unsave_post` | Save (flag) a post in a joined channel, or remove it from the saved posts |
@@ -52,8 +52,11 @@ This project targets the other case:
 | `schedule_message` | Schedule a post for a later time (1 minute to 30 days ahead), optionally with files uploaded through `prepare_upload` |
 | `list_scheduled_messages` | List the user's scheduled posts with status and permalink |
 | `update_scheduled_message` / `cancel_scheduled_message` | Change or cancel a pending scheduled post |
+| `search_emoji` | Find custom emoji by part of their name, for `add_reaction` and `set_custom_status` (standard emoji are not included) |
+| `set_status` | Set the user's own status (online, away, do not disturb with an optional end time, offline) |
+| `set_custom_status` / `clear_custom_status` | Set or clear the user's own custom status (emoji, text, expiry) |
 
-Times are in JST: a `schedule_message` time without an offset (`YYYY-MM-DDTHH:mm[:ss[.sss]]`) is read as `+09:00`, so append `Z` or `+hh:mm` (`-hh:mm`) for another zone. Search dates (`on:`, `before:`, `after:`) are JST days, and output shows each time in both UTC and JST.
+Times are in JST: a time for `schedule_message`, `set_status` (`dnd_until`), or `set_custom_status` (`until`) written without an offset (`YYYY-MM-DDTHH:mm[:ss[.sss]]`) is read as `+09:00`, so append `Z` or `+hh:mm` (`-hh:mm`) for another zone. Search dates (`on:`, `before:`, `after:`) are JST days, and output shows each time in both UTC and JST.
 
 Each post in the output of the read tools also shows its message attachments (the formatted content bots and webhooks post, which Mattermost's default database search does not cover), its reactions with who reacted, when it was edited, and whether it is a system message.
 

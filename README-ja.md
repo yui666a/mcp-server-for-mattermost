@@ -43,7 +43,7 @@ Mattermost は公式の MCP サーバーを [Mattermost Agents プラグイン](
 | `mark_as_read` | チャンネルとスレッドを既読にする。読んだ中で最も新しい投稿より後に自分以外の投稿があるチャンネルは既読にしない |
 | `search_users` | 名前やユーザー名でユーザーを探す |
 | `get_user` | ユーザーのプロフィールを、タイムゾーン、現地時刻、在席状況とともに読む |
-| `send_message` | チャンネルやスレッドへ投稿する。`@ユーザー名` なら、まだ DM の無い相手にも送れる。小さなファイルと、`prepare_upload` でアップロードしたファイルを添付できる。投稿の後に、同じ本文の下書きを消す |
+| `send_message` | チャンネルやスレッドへ投稿する。`@ユーザー名` や `@a,b`（グループ DM）なら、まだ DM の無い相手にも送れる。小さなファイルと、`prepare_upload` でアップロードしたファイルを添付できる。投稿の後に、同じ本文の下書きを消す |
 | `prepare_upload` | PC のファイル（スクリーンショット、PDF、写真など）を `curl` で送るための使い捨ての URL を発行する。Claude Code や Codex CLI のように PC でコマンドを実行できるクライアント向け |
 | `add_reaction` / `remove_reaction` | 自分のリアクションを付ける、外す |
 | `save_post` / `unsave_post` | 参加しているチャンネルの投稿を保存する（フラグを付ける）、保存から外す |
@@ -53,8 +53,11 @@ Mattermost は公式の MCP サーバーを [Mattermost Agents プラグイン](
 | `schedule_message` | 投稿を予約する（1 分後から 30 日後まで）。`prepare_upload` でアップロードしたファイルを添付できる |
 | `list_scheduled_messages` | 自分の予約を、状態とパーマリンクとともに一覧する |
 | `update_scheduled_message` / `cancel_scheduled_message` | 待機中の予約を変える、取り消す |
+| `search_emoji` | `add_reaction` や `set_custom_status` に渡すカスタム絵文字を、名前の一部で探す（標準の絵文字は対象外） |
+| `set_status` | 自分の在席状況（オンライン、離席、取り込み中（終了時刻を付けられる）、オフライン）を変える |
+| `set_custom_status` / `clear_custom_status` | 自分のカスタムステータス（絵文字、文言、期限）を設定する、消す |
 
-時刻は JST で扱う。`schedule_message` の時刻（`YYYY-MM-DDTHH:mm[:ss[.sss]]`）はオフセットが無ければ `+09:00` として読むので、ほかのタイムゾーンなら `Z` か `+hh:mm`（`-hh:mm`）を付ける。検索の日付（`on:`、`before:`、`after:`）は JST の日として扱い、出力の時刻は UTC と JST を併記する。
+時刻は JST で扱う。`schedule_message`、`set_status`（`dnd_until`）、`set_custom_status`（`until`）の時刻（`YYYY-MM-DDTHH:mm[:ss[.sss]]`）はオフセットが無ければ `+09:00` として読むので、ほかのタイムゾーンなら `Z` か `+hh:mm`（`-hh:mm`）を付ける。検索の日付（`on:`、`before:`、`after:`）は JST の日として扱い、出力の時刻は UTC と JST を併記する。
 
 読み取り系のツールが出す投稿には、メッセージ添付（Bot や webhook が投稿する整形表示。Mattermost の標準のデータベース検索は対象にしない）、リアクションと付けた人、編集の時刻、システムメッセージかどうかも含める。
 
