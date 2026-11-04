@@ -1096,6 +1096,13 @@ describe('get_mentions', () => {
       expect(hits).not.toContain(`GET /users/u1/teams/${T}/threads`);
     });
 
+    test('keeps the user\'s own webhook posts, whose mentions Mattermost counts', async () => {
+      const hook = put({ create_at: at(22, 2), user_id: 'u1', props: { from_webhook: 'true' } } as Partial<P> & { create_at: number });
+      put({ create_at: at(22, 1), user_id: 'u1' });
+      routes = unreadBase('disabled', [member(C, at(22, 0), 1)]);
+      expect(ids(await setup()('get_mentions', { unread_only: true }))).toEqual([hook]);
+    });
+
     test('with CRT on, judges a root post by the channel and a reply by its thread, and leaves out replies in threads without unread mentions', async () => {
       const root = put({ create_at: at(22, 5) });
       put({ create_at: at(22, 1) });
