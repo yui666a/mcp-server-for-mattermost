@@ -267,7 +267,7 @@ type UnreadKey = { s: number; m: number; t: number; id: string };
 const THREAD_PAGE = 50;
 const THREAD_PAGES = 4;
 const MEMBER_PAGE = 200;
-const UNREAD_RULE = '未読の判定: チャンネルの既読の位置より後（スレッドの折りたたみ（CRT）が有効なら、返信はスレッドの既読の位置より後）';
+const UNREAD_RULE = '未読の判定: Mattermost が未読のメンションを数えているチャンネルとスレッドの、既読の位置より後の投稿（スレッドの折りたたみ（CRT）が有効なら、返信はスレッドの既読の位置で判定。自分の投稿は除く）';
 const CRT_PREF = '/users/me/preferences/display_settings/name/collapsed_reply_threads';
 
 const byUnreadKey = (a: UnreadKey, b: UnreadKey) => a.s - b.s || a.m - b.m || b.t - a.t || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
@@ -351,7 +351,7 @@ export function registerReadTools(server: McpServer, ctx: ToolContext): void {
     });
   }
 
-  tool('search_posts', '参加しているチームのメッセージを検索する。Mattermost の検索構文（from:、in:、before:、after:、on: など）をそのまま使える。in: にはチャンネル ID、「チーム名/チャンネル名」、チャンネル名、@ユーザー名（DM）を渡せる。同じ名前が複数のチームにあれば、すべてで探す。見つからなければエラー。参加していないチャンネルは 0 件になる。DM は作らない。日付は日本時間（JST）で解釈する。新しい順。メッセージ添付（Bot や webhook などが付ける整形表示）の中身は検索の対象外（Mattermost の標準のデータベース検索は添付を検索しないため。その中身を探すなら read_channel で読む）',
+  tool('search_posts', '参加しているチームのメッセージを検索する。Mattermost の検索構文（from:、in:、before:、after:、on: など）をそのまま使える。in: にはチャンネル ID、「チーム名/チャンネル名」、チャンネル名、@ユーザー名（DM）を渡せる。同じ名前が複数のチームにあれば、すべてで探す。見つからなければエラー。参加していないチャンネルは 0 件になる。DM は作らない。日付は日本時間（JST）で解釈する。新しい順。メッセージ添付（Bot や webhook などが付ける整形表示）の中身は検索の対象外（Mattermost の標準のデータベース検索は添付を検索しないため。その中身を探すなら read_channel で読む。since と until で期間を指定できる）',
     { terms: z.string().min(1), limit: limitArg(20, 50), cursor: cursorArg },
     async ({ terms, limit, cursor }, mm) => {
       const c = cursorOf(z.object({ page: z.number().int().min(0), per_page: perPage(50) }), cursor);
@@ -471,7 +471,7 @@ export function registerReadTools(server: McpServer, ctx: ToolContext): void {
         [crt
           ? '未読の先頭から古い順（スレッドの折りたたみ（CRT）が有効なため、ルート投稿だけです。返信は get_unreads の未読のスレッドと read_thread で読めます）'
           : '未読の先頭から古い順（返信も含みます）'],
-        r.order.map((id) => r.posts[id]).filter(Boolean).sort((a, b) => a.create_at - b.create_at || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0)),
+        r.order.map((id) => r.posts[id]).filter(Boolean).sort(oldestFirst),
         (last) => ({ channel_id: ch.id, after: last.id, per_page: per, crt }),
         c ? '投稿はありません。' : '未読はありません。',
       );
@@ -850,7 +850,7 @@ export function registerReadTools(server: McpServer, ctx: ToolContext): void {
       return render({ lines, posts, notes, next: p.next && { ...p.next, per_page: per, crt: crt.on } });
     });
 
-  tool('get_mentions', '自分へのメンション（@ユーザー名、通知の設定にあるキーワード）を新しい順に一覧する。全チームと DM が対象。読むだけで、既読にはしない。unread_only なら未読のメンションだけを出す。メッセージ添付の中と @channel・@all・@here は数えず、DM では Mattermost がすべての投稿をメンションに数えるため、get_unreads のメンション数と合わないことがある',
+  tool('get_mentions', '自分へのメンション（@ユーザー名、通知の設定にあるキーワード）を新しい順に一覧する。全チームと DM が対象。読むだけで、既読にはしない。unread_only なら未読のメンションだけを出す。メッセージ添付の中と @channel・@all・@here は数えず、DM とグループ DM では Mattermost がすべての投稿をメンションに数えるため、get_unreads のメンション数と合わないことがある',
     {
       unread_only: z.boolean().optional().describe('true なら未読のメンションだけ（チャンネルの既読の位置、CRT が有効なら返信はスレッドの既読の位置より後）。cursor を渡したときは無視する'),
       limit: limitArg(20, 50),
@@ -873,10 +873,12 @@ export function registerReadTools(server: McpServer, ctx: ToolContext): void {
       if (unread) {
         const crt = (await collapsedThreads(mm, uid)).on;
         // Only where Mattermost counts an unread mention: by position alone, a post edited to add a mention would show or not depending on other candidates.
-        const chans = new Map((await myMembers(mm, uid)).filter((m) => (crt ? m.mention_count_root : m.mention_count) > 0).map((m) => [m.channel_id, m.last_viewed_at]));
+        // Not counting archived channels: the search leaves their posts out, and their old read positions would only push the search back.
+        const created = new Map((await mm.call<(MmChannel & { create_at: number })[]>(uid, 'GET', '/users/me/channels')).map((x) => [x.id, x.create_at]));
+        const chans = new Map((await myMembers(mm, uid)).filter((m) => created.has(m.channel_id) && (crt ? m.mention_count_root : m.mention_count) > 0).map((m) => [m.channel_id, m.last_viewed_at]));
         const threads = new Map<string, Thread>();
         if (crt) {
-          const r = await unreadThreads(mm, uid, await myTeams(mm, uid), () => true);
+          const r = await unreadThreads(mm, uid, await myTeams(mm, uid), (channelId) => created.has(channelId));
           for (const t of r.threads.values()) if (t.unread_mentions > 0) threads.set(t.id, t);
           notes.push(...r.notes);
         }
@@ -886,9 +888,9 @@ export function registerReadTools(server: McpServer, ctx: ToolContext): void {
           const at = crt && p.root_id ? threads.get(p.root_id)?.last_viewed_at : chans.get(p.channel_id);
           return at !== undefined && p.create_at > at;
         };
-        // A thread first mentioned in a reply is created with last_viewed_at 0, though its unread replies all come after the root.
-        const floors = [...chans.values(), ...[...threads.values()].map((t) => Math.max(t.last_viewed_at, t.post.create_at))];
-        if (!chans.size || Math.min(...chans.values()) > 0) unreadAfter = ` after:${prevDay(jstDay(Math.min(...floors)))}`;
+        // Not taking a read position of 0 as the floor: a channel never viewed or a thread first mentioned in a reply has 0, though nothing in it predates the channel or the root post.
+        const floors = [...[...chans].map(([id, at]) => at || created.get(id)!), ...[...threads.values()].map((t) => Math.max(t.last_viewed_at, t.post.create_at))];
+        unreadAfter = ` after:${prevDay(jstDay(Math.min(...floors)))}`;
       }
       let before = c?.before;
       let last = c?.last;

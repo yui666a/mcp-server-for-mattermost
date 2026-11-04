@@ -1076,6 +1076,10 @@ describe('get_mentions', () => {
       'GET /config/client': () => ({ CollapsedThreads: crt }),
       'GET /users/me/channel_members': () => members,
       [`GET /users/u1/teams/${T}/threads`]: () => ({ total_unread_threads: threads.length, threads }),
+      'GET /users/me/channels': () => [
+        { id: C, name: 'town', display_name: 'Town', team_id: T, type: 'O', create_at: at(15, 0) },
+        { id: C2, name: 'other', display_name: 'Other', team_id: T, type: 'O', create_at: at(15, 0) },
+      ],
     });
 
     test('with CRT off, shows only mentions after the read position of a channel with mentions, leaving out the user\'s own posts', async () => {
@@ -1117,12 +1121,22 @@ describe('get_mentions', () => {
     test.each([
       ['the oldest read position of a channel', [member(C, at(22, 0), 1)], [], ' after:2026-10-21'],
       ['a thread never viewed, by its root post', [member(C, at(22, 0), 1)], [thread(TH, 0, 1, at(20, 0))], ' after:2026-10-19'],
-      ['nothing, when a channel was never viewed', [member(C, 0, 1)], [thread(TH, at(22, 0), 1)], ''],
+      ['the creation of a channel never viewed', [member(C, 0, 1)], [thread(TH, at(22, 0), 1)], ' after:2026-10-14'],
     ])('searches only from the day of %s', async (_, members, threads, after) => {
       put({ create_at: at(22, 1) });
       routes = unreadBase('always_on', members, threads);
       await setup()('get_mentions', { unread_only: true });
       expect(searches[0]).toBe(`"@alice" "aiso"${after}`);
+    });
+
+    test('leaves out archived channels and their threads, which the search does not cover, from the candidates and the floor', async () => {
+      const GONE = 'g'.repeat(26);
+      put({ create_at: at(22, 1) });
+      const gone = thread(TH2, at(10, 0), 1);
+      gone.post.channel_id = GONE;
+      routes = unreadBase('always_on', [member(C, at(22, 0), 1), member(GONE, at(10, 0), 1)], [gone]);
+      await setup()('get_mentions', { unread_only: true });
+      expect(searches[0]).toBe('"@alice" "aiso" after:2026-10-21');
     });
 
     test('ends without a cursor once the search reaches the oldest read position', async () => {
