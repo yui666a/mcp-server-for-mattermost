@@ -56,7 +56,7 @@ This project targets the other case:
 | `set_status` | Set the user's own status (online, away, do not disturb with an optional end time, offline) |
 | `set_custom_status` / `clear_custom_status` | Set or clear the user's own custom status (emoji, text, expiry) |
 
-Times are in JST: a `schedule_message` time without an offset (`YYYY-MM-DDTHH:mm[:ss[.sss]]`) is read as `+09:00`, so append `Z` or `+hh:mm` (`-hh:mm`) for another zone. Search dates (`on:`, `before:`, `after:`) are JST days, and output shows each time in both UTC and JST.
+Times are in JST: a time for `schedule_message`, `set_status` (`dnd_until`), or `set_custom_status` (`until`) written without an offset (`YYYY-MM-DDTHH:mm[:ss[.sss]]`) is read as `+09:00`, so append `Z` or `+hh:mm` (`-hh:mm`) for another zone. Search dates (`on:`, `before:`, `after:`) are JST days, and output shows each time in both UTC and JST.
 
 Each post in the output of the read tools also shows its message attachments (the formatted content bots and webhooks post, which Mattermost's default database search does not cover), its reactions with who reacted, when it was edited, and whether it is a system message.
 
