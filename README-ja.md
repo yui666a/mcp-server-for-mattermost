@@ -55,8 +55,11 @@ Mattermost は公式の MCP サーバーを [Mattermost Agents プラグイン](
 | `schedule_message` | 投稿を予約する（1 分後から 30 日後まで）。`prepare_upload` でアップロードしたファイルを添付できる |
 | `list_scheduled_messages` | 自分の予約を、状態とパーマリンクとともに一覧する |
 | `update_scheduled_message` / `cancel_scheduled_message` | 待機中の予約を変える、取り消す |
+| `search_emoji` | `add_reaction` や `set_custom_status` に渡すカスタム絵文字を、名前の一部で探す（標準の絵文字は対象外） |
+| `set_status` | 自分の在席状況（オンライン、離席、取り込み中（終了時刻を付けられる）、オフライン）を変える |
+| `set_custom_status` / `clear_custom_status` | 自分のカスタムステータス（絵文字、文言、期限）を設定する、消す |
 
-時刻は JST で扱う。`schedule_message` の時刻（`YYYY-MM-DDTHH:mm[:ss[.sss]]`）はオフセットが無ければ `+09:00` として読むので、ほかのタイムゾーンなら `Z` か `+hh:mm`（`-hh:mm`）を付ける。検索の日付（`on:`、`before:`、`after:`）は JST の日として扱い、出力の時刻は UTC と JST を併記する。
+時刻は JST で扱う。`schedule_message`、`set_status`（`dnd_until`）、`set_custom_status`（`until`）の時刻（`YYYY-MM-DDTHH:mm[:ss[.sss]]`）はオフセットが無ければ `+09:00` として読むので、ほかのタイムゾーンなら `Z` か `+hh:mm`（`-hh:mm`）を付ける。検索の日付（`on:`、`before:`、`after:`）は JST の日として扱い、出力の時刻は UTC と JST を併記する。
 
 読み取り系のツールが出す投稿には、メッセージ添付（Bot や webhook が投稿する整形表示。Mattermost の標準のデータベース検索は対象にしない）、リアクションと付けた人、編集の時刻、システムメッセージかどうかも含める。
 
