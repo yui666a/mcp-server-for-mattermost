@@ -103,7 +103,8 @@ const INFLIGHT = '同じ投稿を処理中です。少し待ってから read_ch
 export async function sendMessage(mm: Mm, store: Store, uid: string, baseUrl: string, args: Args): Promise<CallToolResult> {
   const files = decodeFiles(args.files ?? []);
   const fileIds = args.file_ids ?? [];
-  const ch = await resolveChannel(mm, uid, args.channel);
+  // Not creating the DM with root_id or file_ids: a DM not opened yet holds neither, and the call would fail right after leaving an empty DM.
+  const ch = await resolveChannel(mm, uid, args.channel, { create: !args.root_id && !fileIds.length });
   checkUploaded(store, uid, ch.id, fileIds);
   const rootId = args.root_id;
   if (rootId) {
@@ -300,7 +301,7 @@ export async function deleteMessage(mm: Mm, store: Store, uid: string, args: { p
 }
 
 const draftSchema = {
-  channel: z.string().min(1).describe('チャンネル ID、「チーム名/チャンネル名」、チャンネル名、@ユーザー名（DM）のどれか'),
+  channel: z.string().min(1).describe('チャンネル ID、「チーム名/チャンネル名」、チャンネル名、@ユーザー名（DM。無ければ作る）のどれか'),
   // Not counting code points: zod counts UTF-16 units, which can only be stricter than Mattermost's limit.
   message: z.string().min(1).max(MAX_MESSAGE),
   root_id: POST_ID.optional().describe('返信の下書きにするときの、スレッドの親投稿の post_id'),
@@ -367,13 +368,15 @@ async function clearSentDraft(mm: Mm, uid: string, ch: ChannelRef, rootId: strin
 }
 
 export async function saveDraft(mm: Mm, uid: string, args: DraftArgs): Promise<CallToolResult> {
-  const ch = await resolveChannel(mm, uid, args.channel);
-  const rootId = args.root_id ?? '';
-  // Checked here rather than left to Mattermost: it saves a draft on any root_id, and one on a reply never shows in any thread.
-  if (rootId) await checkRoot(mm, uid, rootId, ch);
+  // Checked before resolving rather than after: resolving may create the DM, and with sync off the call fails anyway.
   if (await syncDraftsOff(mm, uid)) {
     throw new InputError('下書きの同期を切っているため保存していません。保存しても画面に届かないか、書きかけの下書きを上書きするおそれがあります。「設定 > 詳細設定」で下書きの同期を入れてください。');
   }
+  const rootId = args.root_id ?? '';
+  // Not creating the DM with root_id: a DM not opened yet holds no root post, and the call would fail right after leaving an empty DM.
+  const ch = await resolveChannel(mm, uid, args.channel, { create: !rootId });
+  // Checked here rather than left to Mattermost: it saves a draft on any root_id, and one on a reply never shows in any thread.
+  if (rootId) await checkRoot(mm, uid, rootId, ch);
   const list = await worded(draftsOf(mm, uid, ch), { id: [DISABLED] });
   if (!list) throw new InputError('所属しているチームがないため、既存の下書きを確かめられません。');
   const where = `チャンネル: ${ch.displayName || ch.name}（channel_id: ${ch.id}）${rootId ? `、返信先 post_id: ${rootId}` : ''}`;
@@ -402,12 +405,12 @@ export async function saveDraft(mm: Mm, uid: string, args: DraftArgs): Promise<C
     ].join('\n'));
 }
 
-const prepareSchema = { channel: z.string().min(1).describe('投稿先。チャンネル ID、「チーム名/チャンネル名」、チャンネル名、@ユーザー名（DM）のどれか') };
+const prepareSchema = { channel: z.string().min(1).describe('投稿先。チャンネル ID、「チーム名/チャンネル名」、チャンネル名、@ユーザー名（DM。無ければ作る）のどれか') };
 type PrepareArgs = { channel: string };
 const MiB = 1024 * 1024;
 
 export async function prepareUpload(mm: Mm, store: Store, uid: string, publicUrl: string, maxBytes: number, args: PrepareArgs): Promise<CallToolResult> {
-  const ch = await resolveChannel(mm, uid, args.channel);
+  const ch = await resolveChannel(mm, uid, args.channel, { create: true });
   const token = store.createUploadUrl({ mmUserId: uid, channelId: ch.id });
   if (!token) throw new InputError(`使われていないアップロード URL が ${MAX_OPEN_UPLOAD_URLS} 件あります。それを使うか、10 分の期限が切れるのを待ってください。`);
   const limit = maxBytes % MiB ? `${maxBytes} バイト` : `${maxBytes / MiB}MiB`;
@@ -469,7 +472,7 @@ export function registerSendTools(server: McpServer, ctx: ToolContext): void {
   ) as unknown as ToolCallback<typeof prepareSchema>);
 
   server.registerTool('send_message', {
-    description: 'チャンネルへ投稿する。root_id を渡すとスレッドへの返信になる。channel はチャンネル ID、「チーム名/チャンネル名」、チャンネル名、@ユーザー名（DM）のどれか。files でファイルを添付できる（1〜5 件、合計 128KiB まで。SVG、CSV、Markdown、コードなどのテキストは content_text、小さなバイナリは content_base64）。利用者の PC にあるバイナリ（スクリーンショット、PDF など）は、利用者の PC でコマンドを実行できるクライアント（Claude Code、Codex CLI など）なら prepare_upload でアップロードし、受け取った file_id を file_ids に渡す（content_base64 だと引数が大きくなって会話の文脈を圧迫し、128KiB を超えると送れない）。content_base64 は、claude.ai のように利用者の PC でコマンドを実行できないクライアントのためのもの。claude.ai からは PC のファイルを送れないので、save_draft で本文を下書きにし、ファイルは Mattermost の画面から添付するよう案内する。同じ投稿先へ同じ本文と添付を 10 分以内に送ると、やり直しとみなして投稿しない。同じ投稿先に本文の同じ下書きがあれば、投稿の後に消す（添付の付いた下書きと、下書きの同期を切っている利用者の下書きは消さない）',
+    description: 'チャンネルへ投稿する。root_id を渡すとスレッドへの返信になる。channel はチャンネル ID、「チーム名/チャンネル名」、チャンネル名、@ユーザー名（DM。無ければ作る）のどれか。files でファイルを添付できる（1〜5 件、合計 128KiB まで。SVG、CSV、Markdown、コードなどのテキストは content_text、小さなバイナリは content_base64）。利用者の PC にあるバイナリ（スクリーンショット、PDF など）は、利用者の PC でコマンドを実行できるクライアント（Claude Code、Codex CLI など）なら prepare_upload でアップロードし、受け取った file_id を file_ids に渡す（content_base64 だと引数が大きくなって会話の文脈を圧迫し、128KiB を超えると送れない）。content_base64 は、claude.ai のように利用者の PC でコマンドを実行できないクライアントのためのもの。claude.ai からは PC のファイルを送れないので、save_draft で本文を下書きにし、ファイルは Mattermost の画面から添付するよう案内する。同じ投稿先へ同じ本文と添付を 10 分以内に送ると、やり直しとみなして投稿しない。同じ投稿先に本文の同じ下書きがあれば、投稿の後に消す（添付の付いた下書きと、下書きの同期を切っている利用者の下書きは消さない）',
     inputSchema,
     annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false },
   }, guarded(ctx, 'send_message', async (args: Args, extra: { signal: AbortSignal }) => {
