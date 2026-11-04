@@ -133,6 +133,27 @@ describe('get_unreads and get_mentions against the local Mattermost', () => {
     expect(postIds(r)).not.toContain(bareName);
   });
 
+  test('get_mentions with unread_only shows unread mentions in a root post and in a thread reply, and not once both are read', async () => {
+    const room = await mmApi<{ id: string }>(aliceMm, 'POST', '/channels', { team_id: e.teams.a.id, name: `t6u-${TAG}`, display_name: `t6u ${TAG}`, type: 'O' });
+    await mmApi(aliceMm, 'POST', `/channels/${room.id}/members`, { user_id: e.users.bob.id });
+    try {
+      const root = (await mmApi<{ id: string }>(aliceMm, 'POST', '/posts', { channel_id: room.id, message: `${TAG} unread root` })).id;
+      await mmApi(aliceMm, 'POST', '/channels/members/me/view', { channel_id: room.id });
+      const inRoot = (await mmApi<{ id: string }>(bobMm, 'POST', '/posts', { channel_id: room.id, message: `${TAG} root @${e.users.alice.username}` })).id;
+      const inReply = (await mmApi<{ id: string; create_at: number }>(bobMm, 'POST', '/posts', { channel_id: room.id, root_id: root, message: `${TAG} reply @${e.users.alice.username}` }));
+      const unread = postIds(await call('alice', 'get_mentions', { unread_only: true, limit: 50 }));
+      expect(unread).toEqual(expect.arrayContaining([inRoot, inReply.id]));
+      await mmApi(aliceMm, 'POST', '/channels/members/me/view', { channel_id: room.id });
+      await mmApi(aliceMm, 'PUT', `/users/${e.users.alice.id}/teams/${e.teams.a.id}/threads/${root}/read/${inReply.create_at + 1}`);
+      const after = postIds(await call('alice', 'get_mentions', { unread_only: true, limit: 50 }));
+      expect(after).not.toContain(inRoot);
+      expect(after).not.toContain(inReply.id);
+      expect(postIds(await call('alice', 'get_mentions', { limit: 50 }))).toEqual(expect.arrayContaining([inRoot, inReply.id]));
+    } finally {
+      await mmApi(e.adminToken, 'DELETE', `/channels/${room.id}`);
+    }
+  });
+
   test('get_mentions pages back across days past the 100-hit search cap, with every mention once and in order', async () => {
     const name = `u6${TAG}`;
     const cred = { id: '', username: name, password: 'Passw0rd!dev123' };

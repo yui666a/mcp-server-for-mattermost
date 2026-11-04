@@ -923,7 +923,8 @@ describe('get_mentions', () => {
     const { terms } = bodies['/posts/search'] as { terms: string };
     searches.push(terms);
     const before = /before:(\S+)/.exec(terms)?.[1];
-    const hits = corpus.filter((p) => /alice/i.test(p.message) && (!before || jstDay(p.create_at) < before))
+    const after = /after:(\S+)/.exec(terms)?.[1];
+    const hits = corpus.filter((p) => /alice/i.test(p.message) && (!before || jstDay(p.create_at) < before) && (!after || jstDay(p.create_at) > after))
       .sort((a, b) => b.create_at - a.create_at).slice(0, 100);
     return { order: hits.map((p) => p.id), posts: Object.fromEntries(hits.map((p) => [p.id, p])) };
   };
@@ -1055,6 +1056,130 @@ describe('get_mentions', () => {
     routes = base();
     const out = await setup()('get_mentions', { cursor: Buffer.from(JSON.stringify({ page: 1, per_page: 5 })).toString('base64url') }, true);
     expect(out).toContain('cursor が不正です');
+  });
+
+  describe('with unread_only', () => {
+    const C2 = 'e'.repeat(26);
+    const TH = 'h'.repeat(26);
+    const TH2 = 'k'.repeat(26);
+    const member = (channel_id: string, last_viewed_at: number, mention_count: number, mention_count_root = mention_count) =>
+      ({ channel_id, last_viewed_at, msg_count: 0, msg_count_root: 0, mention_count, mention_count_root });
+    const thread = (tid: string, last_viewed_at: number, unread_mentions: number, rootAt = at(20, 0)) =>
+      ({ id: tid, last_reply_at: at(23, 0), last_viewed_at, unread_replies: 1, unread_mentions, post: { id: tid, user_id: 'u2', channel_id: C, root_id: '', message: 'root', create_at: rootAt } });
+    const put = (o: Partial<P> & { create_at: number }) => {
+      const p = { id: `p${String(n++).padStart(25, '0')}`, user_id: 'u2', channel_id: C, root_id: '', message: '@alice hi', ...o };
+      corpus.push(p);
+      return p.id;
+    };
+    const unreadBase = (crt: string, members: unknown[], threads: unknown[] = []): Record<string, Route> => ({
+      ...base(),
+      'GET /config/client': () => ({ CollapsedThreads: crt }),
+      'GET /users/me/channel_members': () => members,
+      [`GET /users/u1/teams/${T}/threads`]: () => ({ total_unread_threads: threads.length, threads }),
+      'GET /users/me/channels': () => [
+        { id: C, name: 'town', display_name: 'Town', team_id: T, type: 'O', create_at: at(15, 0) },
+        { id: C2, name: 'other', display_name: 'Other', team_id: T, type: 'O', create_at: at(15, 0) },
+      ],
+    });
+
+    test('with CRT off, shows only mentions after the read position of a channel with mentions, leaving out the user\'s own posts', async () => {
+      put({ create_at: at(21, 0) });
+      put({ create_at: at(22, 0) });
+      const unread = put({ create_at: at(22, 1), root_id: TH });
+      put({ create_at: at(22, 2), user_id: 'u1' });
+      put({ create_at: at(22, 3), channel_id: C2 });
+      routes = unreadBase('disabled', [member(C, at(22, 0), 1, 0), member(C2, 0, 0)]);
+      const out = await setup()('get_mentions', { unread_only: true });
+      expect(ids(out)).toEqual([unread]);
+      expect(out).toContain('自分への未読のメンション（新しい順）');
+      expect(out).toContain('未読の判定:');
+      expect(hits).not.toContain(`GET /users/u1/teams/${T}/threads`);
+    });
+
+    test('keeps the user\'s own webhook posts, whose mentions Mattermost counts', async () => {
+      const hook = put({ create_at: at(22, 2), user_id: 'u1', props: { from_webhook: 'true' } } as Partial<P> & { create_at: number });
+      put({ create_at: at(22, 1), user_id: 'u1' });
+      routes = unreadBase('disabled', [member(C, at(22, 0), 1)]);
+      expect(ids(await setup()('get_mentions', { unread_only: true }))).toEqual([hook]);
+    });
+
+    test('with CRT on, judges a root post by the channel and a reply by its thread, and leaves out replies in threads without unread mentions', async () => {
+      const root = put({ create_at: at(22, 5) });
+      put({ create_at: at(22, 1) });
+      const reply = put({ create_at: at(22, 3), root_id: TH });
+      put({ create_at: at(22, 1), root_id: TH });
+      put({ create_at: at(22, 4), root_id: TH2 });
+      put({ create_at: at(22, 6), channel_id: C2 });
+      routes = unreadBase('always_on', [member(C, at(22, 2), 5, 1), member(C2, 0, 1, 0)], [thread(TH, at(22, 2), 1), thread(TH2, 0, 0)]);
+      const out = await setup()('get_mentions', { unread_only: true });
+      expect(ids(out)).toEqual([root, reply]);
+    });
+
+    test('when no channel or thread has an unread mention, says so without searching', async () => {
+      put({ create_at: at(22, 1) });
+      routes = unreadBase('always_on', [member(C, 0, 3, 0)], [thread(TH, 0, 0)]);
+      const out = await setup()('get_mentions', { unread_only: true });
+      expect(out).toContain('未読の判定:');
+      expect(out).toContain('未読のメンションはありません。');
+      expect(out).toContain('（続きはありません）');
+      expect(searches).toEqual([]);
+    });
+
+    test.each([
+      ['the oldest read position of a channel', [member(C, at(22, 0), 1)], [], ' after:2026-10-21'],
+      ['a thread never viewed, by its root post', [member(C, at(22, 0), 1)], [thread(TH, 0, 1, at(20, 0))], ' after:2026-10-19'],
+      ['the creation of a channel never viewed', [member(C, 0, 1)], [thread(TH, at(22, 0), 1)], ' after:2026-10-14'],
+    ])('searches only from the day of %s', async (_, members, threads, after) => {
+      put({ create_at: at(22, 1) });
+      routes = unreadBase('always_on', members, threads);
+      await setup()('get_mentions', { unread_only: true });
+      expect(searches[0]).toBe(`"@alice" "aiso"${after}`);
+    });
+
+    test('leaves out archived channels and their threads, which the search does not cover, from the candidates and the floor', async () => {
+      const GONE = 'g'.repeat(26);
+      put({ create_at: at(22, 1) });
+      const gone = thread(TH2, at(10, 0), 1);
+      gone.post.channel_id = GONE;
+      routes = unreadBase('always_on', [member(C, at(22, 0), 1), member(GONE, at(10, 0), 1)], [gone]);
+      await setup()('get_mentions', { unread_only: true });
+      expect(searches[0]).toBe('"@alice" "aiso" after:2026-10-21');
+    });
+
+    test('ends without a cursor once the search reaches the oldest read position', async () => {
+      for (const day of [22, 21, 20, 19]) add(day, 60, 'alice no mention');
+      routes = unreadBase('disabled', [member(C, at(21, 0), 1)]);
+      const out = await setup()('get_mentions', { unread_only: true });
+      expect(searches.every((t) => t.includes(' after:2026-10-20'))).toBe(true);
+      expect(cursorIn(out)).toBeUndefined();
+    });
+
+    test('the cursor keeps unread_only, and a cursor without it ignores the argument', async () => {
+      for (let i = 0; i < 5; i++) put({ create_at: at(22, i) });
+      put({ create_at: at(21, 0) });
+      routes = unreadBase('disabled', [member(C, at(21, 30), 1)]);
+      const call = setup();
+      const first = await call('get_mentions', { unread_only: true, limit: 3 });
+      const second = await call('get_mentions', { cursor: cursorIn(first) });
+      expect([...ids(first), ...ids(second)]).toHaveLength(5);
+      expect(second).toContain('未読のメンション');
+      const plain = await call('get_mentions', { limit: 3 });
+      expect(await call('get_mentions', { cursor: cursorIn(plain), unread_only: true })).not.toContain('未読');
+    });
+
+    test('notes when a team\'s unread threads were cut at 4 pages', async () => {
+      put({ create_at: at(22, 1) });
+      routes = unreadBase('always_on', [member(C, at(22, 0), 0, 1)]);
+      routes[`GET /users/u1/teams/${T}/threads`] = () => ({ total_unread_threads: 999, threads: Array.from({ length: 50 }, (_, i) => thread(`t${String(i).padStart(25, '0')}`, 0, 0)) });
+      expect(await setup()('get_mentions', { unread_only: true })).toContain('未読スレッドは 200 件までしか取得していません');
+    });
+
+    test('when the threads API fails, the tool fails', async () => {
+      routes = unreadBase('always_on', [member(C, at(22, 0), 0, 1)]);
+      routes[`GET /users/u1/teams/${T}/threads`] = () => Response.json({ id: 'x', message: 'm', status_code: 403 }, { status: 403 });
+      await setup()('get_mentions', { unread_only: true }, true);
+      expect(searches).toEqual([]);
+    });
   });
 });
 
@@ -1419,6 +1544,227 @@ describe('read_channel', () => {
     const first = await call('read_channel', { channel: OTHER, from: 'unread', limit: 2 });
     const out = await call('read_channel', { channel: CH, cursor: cursorIn(first) }, true);
     expect(out).toContain('cursor');
+  });
+});
+
+describe('read_channel with since and until', () => {
+  const CH = 'c'.repeat(26);
+  const TEAM = 't'.repeat(26);
+  const T0 = Date.parse('2026-11-03T00:00:00Z');
+  type P = { id: string; user_id: string; channel_id: string; root_id: string; message: string; create_at: number };
+  let corpus: P[];
+  // Posts n = 0..count-1, one second apart from T0, so post n is at T0 + n s.
+  const fill = (count: number, at = (n: number) => T0 + n * 1000) => {
+    corpus = Array.from({ length: count }, (_, n) => ({ id: id(n), user_id: 'u2', channel_id: CH, root_id: '', message: `m${n}`, create_at: at(n) }));
+  };
+  const iso = (n: number) => new Date(T0 + n * 1000).toISOString();
+  const byNewest = () => [...corpus].sort((a, b) => b.create_at - a.create_at || (a.id < b.id ? -1 : 1));
+  const asList = (ps: P[]) => ({ order: ps.map((p) => p.id), posts: Object.fromEntries(ps.map((p) => [p.id, p])) });
+  // Like Mattermost: page/per_page by offset newest first, after= by create_at strictly later and oldest first, at most 200 per call.
+  const postsRoute = (req: Request) => {
+    const q = new URL(req.url).searchParams;
+    const per = Math.min(Number(q.get('per_page')), 200);
+    const after = q.get('after');
+    if (after) {
+      const t = corpus.find((p) => p.id === after)!.create_at;
+      return asList([...corpus].filter((p) => p.create_at > t).sort((a, b) => a.create_at - b.create_at).slice(0, per));
+    }
+    const k = Number(q.get('page') ?? 0);
+    return asList(byNewest().slice(k * per, (k + 1) * per));
+  };
+  const base = (): Record<string, Route> => ({
+    [`GET /channels/${CH}`]: () => ({ id: CH, name: 'town', display_name: 'Town', team_id: TEAM, type: 'O' }),
+    [`GET /teams/${TEAM}`]: () => ({ id: TEAM, name: 'team-a' }),
+    [`GET /channels/${CH}/posts`]: postsRoute,
+    'POST /users/ids': () => [{ id: 'u2', username: 'bob' }],
+  });
+  const shownIds = (out: string) => [...out.matchAll(/^--- post_id: ([a-z0-9]{26})/gm)].map((m) => m[1]);
+  const cursorIn = (out: string) => /next_cursor: (\S+)/.exec(out)?.[1];
+  const pages = () => urls.filter((u) => u.startsWith(`GET /channels/${CH}/posts`)).map((u) => new URLSearchParams(u.split('?')[1]));
+  const offsets = () => pages().filter((q) => q.has('page')).map((q) => Number(q.get('page')));
+
+  test.each([
+    [{ until: '2026-11-03T10:00' }, 'until は since と一緒に'],
+    [{ since: '2026-11-03T10:00', from: 'latest' }, 'since と from は同時に指定できません'],
+    [{ since: '2026-11-03T10:00', from: 'unread' }, 'since と from は同時に指定できません'],
+    [{ since: '2026-11-03T10:00', until: '2026-11-03T10:00' }, 'until は since より後'],
+    [{ since: '2026-11-03' }, 'since「2026-11-03」を日時として読めません'],
+    [{ since: '2026-11-03T10:00', until: 'later' }, 'until「later」を日時として読めません'],
+  ])('refuses %j before calling Mattermost', async (args, message) => {
+    routes = base();
+    const out = await setup()('read_channel', { channel: CH, ...args }, true);
+    expect(out).toContain(message);
+    expect(hits).toEqual([]);
+  });
+
+  test('reads from since, oldest first, including since itself and leaving out until itself, with replies, and says so', async () => {
+    fill(10);
+    corpus[4].root_id = id(1);
+    routes = base();
+    const out = await setup()('read_channel', { channel: CH, since: iso(3), until: iso(6) });
+    expect(shownIds(out)).toEqual([id(3), id(4), id(5)]);
+    expect(out).toContain('範囲: 2026-11-03T00:00:03Z | 2026-11-03T09:00:03+09:00 から 2026-11-03T00:00:06Z | 2026-11-03T09:00:06+09:00 の前まで、古い順（返信も含みます）');
+    expect(out).toContain('（続きはありません）');
+  });
+
+  test('takes a time without a zone as JST', async () => {
+    fill(10);
+    routes = base();
+    const out = await setup()('read_channel', { channel: CH, since: '2026-11-03T09:00:08' });
+    expect(shownIds(out)).toEqual([id(8), id(9)]);
+    expect(out).toContain('から 最新まで');
+  });
+
+  test('every call asks Mattermost to skip fetching threads', async () => {
+    fill(450);
+    routes = base();
+    const call = setup();
+    const first = await call('read_channel', { channel: CH, since: iso(5), limit: 3 });
+    await call('read_channel', { channel: CH, cursor: cursorIn(first) });
+    expect(pages().length).toBeGreaterThan(3);
+    expect(pages().every((q) => q.get('skipFetchThreads') === 'true')).toBe(true);
+  });
+
+  test('when page 0 holds a post before since, reads on after the newest such post without searching further', async () => {
+    fill(150);
+    routes = base();
+    const out = await setup()('read_channel', { channel: CH, since: iso(100), limit: 5 });
+    expect(offsets()).toEqual([0]);
+    expect(pages()[1].get('after')).toBe(id(99));
+    expect(shownIds(out)).toEqual([100, 101, 102, 103, 104].map(id));
+  });
+
+  test('widens the page by powers of two and narrows by halves to the first page holding a post before since', async () => {
+    fill(2000);
+    routes = base();
+    // Post 300 is on page 8 (offsets 1600..1799 hold posts 399..200); pages 0..7 are all at or after since.
+    const out = await setup()('read_channel', { channel: CH, since: iso(300), limit: 2 });
+    expect(offsets()).toEqual([0, 1, 2, 4, 8, 6, 7]);
+    expect(pages().find((q) => q.has('after'))!.get('after')).toBe(id(299));
+    expect(shownIds(out)).toEqual([id(300), id(301)]);
+  });
+
+  test('when the widening reaches an empty page, still finds an earlier page holding a post before since', async () => {
+    fill(1150);
+    routes = base();
+    // Pages 0..4 are full, page 5 holds posts 149..0 and pages from 6 on are empty, so page 8 is empty; post 120 is on page 5.
+    const out = await setup()('read_channel', { channel: CH, since: iso(120), limit: 2 });
+    expect(offsets()).toEqual([0, 1, 2, 4, 8, 6, 5]);
+    expect(shownIds(out)).toEqual([id(120), id(121)]);
+  });
+
+  test('when every post is at or after since, starts from the oldest post of the channel, including it', async () => {
+    fill(450);
+    routes = base();
+    const call = setup();
+    const out = await call('read_channel', { channel: CH, since: iso(-60), limit: 3 });
+    expect(shownIds(out)).toEqual([id(0), id(1), id(2)]);
+    const next = await call('read_channel', { channel: CH, cursor: cursorIn(out) });
+    expect(shownIds(next)).toEqual([id(3), id(4), id(5)]);
+  });
+
+  test('from the oldest post, stops at until without reading further', async () => {
+    fill(150);
+    routes = base();
+    const out = await setup()('read_channel', { channel: CH, since: iso(-60), until: iso(2) });
+    expect(shownIds(out)).toEqual([id(0), id(1)]);
+    expect(pages().some((q) => q.has('after'))).toBe(false);
+    expect(out).toContain('（続きはありません）');
+  });
+
+  test('says when the channel has no posts', async () => {
+    fill(0);
+    routes = base();
+    const out = await setup()('read_channel', { channel: CH, since: iso(0) });
+    expect(out).toContain('この範囲に投稿はありません。');
+    expect(offsets()).toEqual([0]);
+  });
+
+  test('pages on with the cursor, keeping since and until, and ends when the post after the page is at until', async () => {
+    fill(20);
+    routes = base();
+    const call = setup();
+    const first = await call('read_channel', { channel: CH, since: iso(2), until: iso(8), limit: 3 });
+    expect(shownIds(first)).toEqual([id(2), id(3), id(4)]);
+    hits = []; urls = [];
+    const second = await call('read_channel', { channel: CH, since: iso(0), cursor: cursorIn(first) });
+    expect(shownIds(second)).toEqual([id(5), id(6), id(7)]);
+    expect(Object.fromEntries(pages()[0])).toEqual({ after: id(4), per_page: '4', skipFetchThreads: 'true' });
+    expect(second).toContain('の前まで');
+    expect(second).toContain('（続きはありません）');
+  });
+
+  test('without until, a later page also shows posts that arrived after the first page', async () => {
+    fill(5);
+    routes = base();
+    const call = setup();
+    const first = await call('read_channel', { channel: CH, since: iso(1), limit: 2 });
+    corpus.push({ id: id(5), user_id: 'u2', channel_id: CH, root_id: '', message: 'm5', create_at: T0 + 5000 });
+    const second = await call('read_channel', { channel: CH, cursor: cursorIn(first) });
+    expect(shownIds(second)).toEqual([id(3), id(4)]);
+    expect(shownIds(await call('read_channel', { channel: CH, cursor: cursorIn(second) }))).toEqual([id(5)]);
+  });
+
+  test('when the start drifts before since, drops those posts and reads on until the page is full', async () => {
+    fill(30);
+    routes = base();
+    // A post deleted during the search shifts the pages: here the after= reads start well before since.
+    let first = true;
+    routes[`GET /channels/${CH}/posts`] = (req) => {
+      const q = new URL(req.url).searchParams;
+      if (q.has('after') && first) {
+        first = false;
+        return asList(corpus.slice(10, 14));
+      }
+      return postsRoute(req);
+    };
+    const out = await setup()('read_channel', { channel: CH, since: iso(20), limit: 3 });
+    expect(shownIds(out)).toEqual([id(20), id(21), id(22)]);
+    expect(cursorIn(out)).toBeDefined();
+  });
+
+  test('a range cursor is not taken for an unread or newest-first cursor, nor the other way round', async () => {
+    fill(10);
+    routes = base();
+    const call = setup();
+    const range = await call('read_channel', { channel: CH, since: iso(1), limit: 2 });
+    hits = []; urls = [];
+    await call('read_channel', { channel: CH, cursor: cursorIn(range) });
+    expect(pages().every((q) => !q.has('collapsedThreads') && !q.has('before'))).toBe(true);
+    const latest = await call('read_channel', { channel: CH, limit: 2 });
+    hits = []; urls = [];
+    const next = await call('read_channel', { channel: CH, cursor: cursorIn(latest) });
+    expect(next).not.toContain('範囲:');
+    expect(pages()[0].get('before')).toBe(id(8));
+  });
+
+  test('with a range cursor, does not check since, until or from', async () => {
+    fill(10);
+    routes = base();
+    const call = setup();
+    const first = await call('read_channel', { channel: CH, since: iso(1), limit: 2 });
+    const out = await call('read_channel', { channel: CH, cursor: cursorIn(first), until: 'x', from: 'unread' });
+    expect(shownIds(out)).toEqual([id(3), id(4)]);
+  });
+
+  test('an unread cursor still reads on as unread, with the CRT decision', async () => {
+    fill(10);
+    routes = { ...base(), [`GET /channels/${CH}/members/me`]: () => ({ last_viewed_at: T0 }), 'GET /config/client': () => ({ CollapsedThreads: 'always_on' }), [`GET /users/u1/channels/${CH}/posts/unread`]: () => asList(corpus.slice(1, 4)) };
+    const call = setup();
+    const first = await call('read_channel', { channel: CH, from: 'unread', limit: 2 });
+    hits = []; urls = [];
+    const out = await call('read_channel', { channel: CH, cursor: cursorIn(first) });
+    expect(out).not.toContain('範囲:');
+    expect(pages()[0].get('collapsedThreads')).toBe('true');
+  });
+
+  test('rejects a range cursor issued for another channel', async () => {
+    const OTHER = 'o'.repeat(26);
+    fill(10);
+    routes = { ...base(), [`GET /channels/${OTHER}`]: () => ({ id: OTHER, name: 'other', display_name: 'Other', team_id: TEAM, type: 'O' }), [`GET /channels/${OTHER}/posts`]: postsRoute };
+    const call = setup();
+    const first = await call('read_channel', { channel: OTHER, since: iso(1), limit: 2 });
+    expect(await call('read_channel', { channel: CH, cursor: cursorIn(first) }, true)).toContain('cursor');
   });
 });
 
