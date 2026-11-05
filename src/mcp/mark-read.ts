@@ -6,6 +6,9 @@ import { InputError, type MmPost } from './format.ts';
 import { myTeams, resolveChannel, type Mm } from './resolve.ts';
 import { failureText, guarded, text, type ToolContext } from './server.ts';
 import { collapsedThreads } from './tools-read.ts';
+import { POST_WORDING } from './tools-save-pin.ts';
+import { worded } from './tools-send.ts';
+import { missing, threadTeam } from './tools-threads.ts';
 
 const POST_ID = z.string().regex(/^[A-Za-z0-9]{26}$/);
 const MAX_ITEMS = 20;
@@ -33,8 +36,6 @@ type Counts = { total_msg_count: number; total_msg_count_root: number };
 type Member = { msg_count: number; msg_count_root: number; mention_count: number; mention_count_root: number };
 type ThreadState = { last_viewed_at: number; last_reply_at: number; unread_replies: number; unread_mentions: number };
 type Result = { line: string; ok: boolean };
-
-const missing = (e: unknown) => e instanceof MmError && (e.status === 403 || e.status === 404);
 
 function lastPost(mm: Mm, uid: string, id: string, reread: string): Promise<Post> {
   return mm.call<Post>(uid, 'GET', `/posts/${id}`).catch((e) => {
@@ -102,19 +103,15 @@ export async function markAsRead(mm: Mm, uid: string, args: Args): Promise<CallT
   }
 
   let anyTeam: string | undefined;
+  const firstTeam = async () => (anyTeam ??= (await myTeams(mm, uid))[0]?.id);
   for (const item of threads) {
     let label = `スレッド（post_id: ${item.post_id}）`;
     try {
       if (!crt) throw new InputError('スレッドの折りたたみ（CRT）が無効なため、スレッドの既読は画面に出ません。チャンネルを既読にすれば足ります。');
-      const p = await mm.call<Post & { reply_count?: number }>(uid, 'GET', `/posts/${item.post_id}`).catch((e) => {
-        if (missing(e)) throw new InputError('投稿が見つかりません（削除されたか、見る権限がありません）。');
-        throw e;
-      });
+      const p = await worded(mm.call<Post & { reply_count?: number }>(uid, 'GET', `/posts/${item.post_id}`), POST_WORDING);
       const root = p.root_id || p.id;
       label = `スレッド（親 post_id: ${root}）`;
-      const ch = await mm.call<{ team_id: string }>(uid, 'GET', `/channels/${p.channel_id}`);
-      // Not looking for the team the user has open: for a DM or group DM thread the team only tells clients which team's thread counts to update, and no API tells which one is open.
-      const team = ch.team_id || (anyTeam ??= (await myTeams(mm, uid))[0]?.id);
+      const { team } = await threadTeam(mm, uid, p.channel_id, firstTeam);
       if (!team) throw new InputError('所属しているチームがないため、スレッドを既読にできません。');
       const state = await mm.call<ThreadState>(uid, 'GET', `/users/${uid}/teams/${team}/threads/${root}`).catch(async (e) => {
         if (!(e instanceof MmError && e.status === 404)) throw e;

@@ -117,10 +117,7 @@ export async function sendMessage(mm: Mm, store: Store, uid: string, baseUrl: st
   const ch = await resolveTarget(mm, store, uid, args.channel, args.root_id, fileIds);
   checkUploaded(store, uid, ch.id, fileIds);
   const rootId = args.root_id;
-  if (rootId) {
-    const root = await mm.call<MmPost>(uid, 'GET', `/posts/${rootId}`);
-    if (root.channel_id !== ch.id) throw new InputError(`root_id ${rootId} の投稿はチャンネル「${ch.displayName || ch.name}」（channel_id: ${ch.id}）にありません。`);
-  }
+  if (rootId) await checkRoot(mm, uid, rootId, ch);
   const where = `チャンネル: ${ch.displayName || ch.name}（channel_id: ${ch.id}）${rootId ? `、返信先 post_id: ${rootId}` : ''}`;
   // Not only after a fresh post: an earlier attempt's cleanup may have failed, and a resend that did not post can retry it.
   const done = async (postId: string, note: string) => {
@@ -273,7 +270,7 @@ async function whereOf(mm: Mm, uid: string, post: OwnPost): Promise<Where> {
 
 const editSchema = {
   post_id: POST_ID.describe('編集する、本人の投稿の post_id'),
-  message: z.string().min(1).max(MAX_MESSAGE).describe('新しい本文（全体を置き換える）'),
+  message: z.string().min(1).max(MAX_MESSAGE).describe('新しい本文（全体を置き換える）。一覧のツール（read_channel など）の出力を元に書き換えるときは、先に get_post で読み直す。出力の本文は各行が 2 文字字下げされているので、各行の先頭の 2 文字の空白を外す。get_post に「本文を 4000 文字で切りました」とあれば、出力を元に書き換えない（切られた後ろが消える）'),
 };
 type EditArgs = { post_id: string; message: string };
 
