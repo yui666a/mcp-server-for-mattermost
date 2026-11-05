@@ -73,7 +73,7 @@ async function attempt(store: Store, mm: Mm, s: ClaimedScheduled, now: number): 
   const r = await postOnce(mm, s.mmUserId, { ...spec, fileIds }, s.pendingPostId!);
   if (r.kind === 'posted') {
     // Not the response's file_ids when Mattermost hid them (ABAC denies the user the download): it empties them and counts the attached files instead, so which ones were dropped is unknown, and keeping them all is the safe side.
-    if (r.redactedFileCount) {
+    if (r.redactedFileCount > 0 && !r.fileIds.length) {
       const dropped = fileIds.length - r.redactedFileCount;
       const note = dropped > 0 ? `添付した ${fileIds.length} 件のうち ${dropped} 件を Mattermost が外したため、投稿に付いていません（ファイルをダウンロードする権限が無いため、どれが外れたかは分かりません）。` : undefined;
       return { status: 'posted', postId: r.postId, fileIds, note };
