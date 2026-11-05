@@ -19,7 +19,30 @@ export function mentionTerms(u: MentionUser): string[] {
 const FENCE = /^ {0,3}(`{3,}|~{3,})/;
 const LIST_ITEM = /^ {0,3}([-+*]|\d{1,9}[.)])(\s|$)/;
 const INDENTED = /^( {4}|\t)/;
-const CODE_SPAN = /(?<!`)(`+)(?!`)[\s\S]*?(?<!`)\1(?!`)/g;
+
+// Not a regex with a backreference: it looks for a closing run from every opening one, which takes O(n^1.5) for runs of many lengths.
+export function stripCodeSpans(text: string): string {
+  const runs = [...text.matchAll(/`+/g)].map((m) => ({ at: m.index, len: m[0].length }));
+  const next: number[] = [];
+  const later = new Map<number, number>();
+  for (let i = runs.length - 1; i >= 0; i--) {
+    next[i] = later.get(runs[i].len) ?? -1;
+    later.set(runs[i].len, i);
+  }
+  let out = '';
+  let from = 0;
+  for (let i = 0; i < runs.length;) {
+    const j = next[i];
+    if (j < 0) {
+      i++;
+      continue;
+    }
+    out += `${text.slice(from, runs[i].at)} `;
+    from = runs[j].at + runs[j].len;
+    i = j + 1;
+  }
+  return out + text.slice(from);
+}
 
 // Not a full CommonMark parser: blocks are told apart line by line, so code nested in block quotes or deep lists is read as text.
 function textOf(message: string): string {
@@ -67,7 +90,7 @@ function textOf(message: string): string {
     out(line, item);
   }
   // Per block rather than over the whole message: like the server's parser, a code span cannot close in another paragraph or list item.
-  return blocks.map((b) => b.join('\n').replace(CODE_SPAN, ' ')).join('\n');
+  return blocks.map((b) => stripCodeSpans(b.join('\n'))).join('\n');
 }
 
 // Not removing link destinations or autolinks, though the server does not read them: the database search never hits inside them, and removing them risks erasing body text.
