@@ -7,7 +7,7 @@ import { MmError, RateLimited } from '../mattermost/client.ts';
 import { MAX_OPEN_UPLOAD_URLS, type HeldFile, type Store } from '../store.ts';
 import { InputError, type MmPost } from './format.ts';
 import { findPosted, postOnce } from './post.ts';
-import { myTeams, resolveChannel, teamNameOf, type ChannelRef, type Mm, type MmChannel } from './resolve.ts';
+import { myTeams, NoDirectChannel, resolveChannel, teamNameOf, type ChannelRef, type Mm, type MmChannel, type ResolvedChannel } from './resolve.ts';
 import { guarded, text, type ToolContext } from './server.ts';
 
 type FileArg = { name: string; content_text?: string; content_base64?: string };
@@ -95,6 +95,17 @@ export function checkUnposted(store: Store, uid: string, fileIds: string[]): voi
   if (held) throw heldError(held);
 }
 
+// Not creating the DM with root_id or file_ids: a DM not opened yet holds neither, and the call would fail right after leaving an empty DM.
+// Not reporting only the missing DM when file_ids are given: none of them can belong to a DM not opened yet, so the file is the real mistake.
+export async function resolveTarget(mm: Mm, store: Store, uid: string, channel: string, rootId: string | undefined, fileIds: string[]): Promise<ResolvedChannel> {
+  try {
+    return await resolveChannel(mm, uid, channel, { create: !rootId && !fileIds.length });
+  } catch (e) {
+    if (e instanceof NoDirectChannel && fileIds.length) checkUploaded(store, uid, '', fileIds);
+    throw e;
+  }
+}
+
 export const heldError = (h: HeldFile) =>
   new InputError(`file_id ${h.fileId} は予約（予約 ID: ${h.scheduledId}）の添付に使われています。投稿を試みる前の待機中の予約なら、cancel_scheduled_message で取り消すと使えます。同じファイルを別に送るときは、prepare_upload からアップロードし直してください。`);
 
@@ -103,8 +114,7 @@ const INFLIGHT = '同じ投稿を処理中です。少し待ってから read_ch
 export async function sendMessage(mm: Mm, store: Store, uid: string, baseUrl: string, args: Args): Promise<CallToolResult> {
   const files = decodeFiles(args.files ?? []);
   const fileIds = args.file_ids ?? [];
-  // Not creating the DM with root_id or file_ids: a DM not opened yet holds neither, and the call would fail right after leaving an empty DM.
-  const ch = await resolveChannel(mm, uid, args.channel, { create: !args.root_id && !fileIds.length });
+  const ch = await resolveTarget(mm, store, uid, args.channel, args.root_id, fileIds);
   checkUploaded(store, uid, ch.id, fileIds);
   const rootId = args.root_id;
   if (rootId) {
@@ -334,7 +344,7 @@ export async function checkRoot(mm: Mm, uid: string, rootId: string, ch: { id: s
 }
 
 // Not throwing when the caller has no team: send_message's cleanup has nothing to do then, since drafts are listed per team and a DM draft shows nowhere.
-async function draftsOf(mm: Mm, uid: string, ch: ChannelRef): Promise<Draft[] | undefined> {
+async function draftsOf(mm: Mm, uid: string, ch: Pick<ChannelRef, 'teamId'>): Promise<Draft[] | undefined> {
   const teamId = ch.teamId || (await myTeams(mm, uid))[0]?.id;
   if (!teamId) return undefined;
   return (await mm.call<Draft[] | null>(uid, 'GET', `/users/${uid}/teams/${teamId}/drafts`)) ?? [];
@@ -373,12 +383,20 @@ export async function saveDraft(mm: Mm, uid: string, args: DraftArgs): Promise<C
     throw new InputError('下書きの同期を切っているため保存していません。保存しても画面に届かないか、書きかけの下書きを上書きするおそれがあります。「設定 > 詳細設定」で下書きの同期を入れてください。');
   }
   const rootId = args.root_id ?? '';
+  const listOf = async (c: Pick<ChannelRef, 'teamId'>) => {
+    const l = await worded(draftsOf(mm, uid, c), { id: [DISABLED] });
+    if (!l) throw new InputError('所属しているチームがないため、既存の下書きを確かめられません。');
+    return l;
+  };
+  // Not listing only after resolving a DM it may create: with drafts disabled on the server the call then fails leaving it empty. A DM's drafts are listed on the first team, the same team as after resolving.
+  // Not listing early with root_id: no DM is created then, and a wrong root_id is the mistake to report first.
+  // Not listing again after resolving: a draft the user saves in between is missed, the same race as between this list and the save, which Mattermost cannot close.
+  const early = args.channel.trim().startsWith('@') && !rootId ? await listOf({ teamId: '' }) : undefined;
   // Not creating the DM with root_id: a DM not opened yet holds no root post, and the call would fail right after leaving an empty DM.
   const ch = await resolveChannel(mm, uid, args.channel, { create: !rootId });
   // Checked here rather than left to Mattermost: it saves a draft on any root_id, and one on a reply never shows in any thread.
   if (rootId) await checkRoot(mm, uid, rootId, ch);
-  const list = await worded(draftsOf(mm, uid, ch), { id: [DISABLED] });
-  if (!list) throw new InputError('所属しているチームがないため、既存の下書きを確かめられません。');
+  const list = early ?? await listOf(ch);
   const where = `チャンネル: ${ch.displayName || ch.name}（channel_id: ${ch.id}）${rootId ? `、返信先 post_id: ${rootId}` : ''}`;
   const existing = list.find((d) => d.channel_id === ch.id && (d.root_id || '') === rootId);
   if (existing?.message === args.message) return text(`同じ下書きがあります。保存し直していません。\n${where}\n${LEFT_BEHIND}`);
@@ -410,9 +428,12 @@ type PrepareArgs = { channel: string };
 const MiB = 1024 * 1024;
 
 export async function prepareUpload(mm: Mm, store: Store, uid: string, publicUrl: string, maxBytes: number, args: PrepareArgs): Promise<CallToolResult> {
+  const full = new InputError(`使われていないアップロード URL が ${MAX_OPEN_UPLOAD_URLS} 件あります。それを使うか、10 分の期限が切れるのを待ってください。`);
+  // Not left to createUploadUrl alone: resolving may create the DM first, and failing after that leaves it empty. A URL issued or released between the two checks still does.
+  if (store.openUploadUrlCount(uid) >= MAX_OPEN_UPLOAD_URLS) throw full;
   const ch = await resolveChannel(mm, uid, args.channel, { create: true });
   const token = store.createUploadUrl({ mmUserId: uid, channelId: ch.id });
-  if (!token) throw new InputError(`使われていないアップロード URL が ${MAX_OPEN_UPLOAD_URLS} 件あります。それを使うか、10 分の期限が切れるのを待ってください。`);
+  if (!token) throw full;
   const limit = maxBytes % MiB ? `${maxBytes} バイト` : `${maxBytes / MiB}MiB`;
   return text([
     `アップロード用の URL を発行しました。10 分間、1 回だけ使えます（1 回で ${MAX_UPLOAD_FILES} 件まで、送る本文は multipart の枠を含めて ${limit} まで）。`,
