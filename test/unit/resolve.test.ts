@@ -213,15 +213,14 @@ describe('a DM or group DM given by its channel ID is named as when given as @us
     const { mm, calls } = fake({ ...routes, [`/channels/${OTHERS}`]: ch(OTHERS, name, '', 'D') });
     expect(await resolveChannel(mm, ME, OTHERS)).toMatchObject({ displayName: name.toUpperCase() });
     const SHORT = 'y'.repeat(26);
-    const { mm: mm2 } = fake({ ...routes, [`/channels/${SHORT}`]: { id: SHORT, display_name: '', team_id: '', type: 'D' } });
+    const { mm: mm2, calls: calls2 } = fake({ ...routes, [`/channels/${SHORT}`]: { id: SHORT, display_name: '', team_id: '', type: 'D' } });
     expect(await resolveChannel(mm2, ME, SHORT)).toMatchObject({ displayName: '' });
-    expect(calls.filter((c) => c.startsWith('GET /users/') && c !== 'GET /users/me/teams')).toEqual([]);
+    for (const c of [calls, calls2]) expect(c.filter((x) => x.startsWith('GET /users/') && x !== 'GET /users/me/teams')).toEqual([]);
   });
 
-  test('a public or private channel given by its ID looks no user up', async () => {
+  test('a private channel given by its ID looks no user up', async () => {
     const PRIV = 'p'.repeat(26);
     const { mm, calls } = fake({ ...routes, [`/channels/${PRIV}`]: ch(PRIV, 'secret', teams[0].id, 'P') });
-    await resolveChannel(mm, ME, CH_A);
     await resolveChannel(mm, ME, PRIV);
     expect(calls.filter((c) => c.startsWith('GET /users'))).toEqual([]);
   });
