@@ -308,7 +308,7 @@ async function filterChannelIds(mm: Mm, userId: string, spec: string, written: s
     }
     // No DM means no posts to exclude, so the condition is dropped rather than failing the search.
     if (e instanceof NoDirectChannel && exclude) return [];
-    // Not the read tools' wording: a search reaches an archived channel only by its ID in in:, not by reading it.
+    // Not the read tools' wording: for a search, the way to an archived channel is its ID in in:, not read_channel.
     const byName = `チャンネル「${spec}」が見つかりません。名前の誤りなら search_channels で確かめてください。参加していない非公開チャンネルとアーカイブ済みのチャンネルは名前では見つかりません（アーカイブ済みのチャンネルは、参加していたなら、利用者に ID を確かめて in: に ID で指定すれば検索できます）。${RETRY}${ASK_ADMIN}`;
     if (e instanceof ChannelNotFound) throw new InputError(byName);
     if (e instanceof ChannelFetchError && e.id === 'app.team.get_by_name.missing.app_error') {

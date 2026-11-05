@@ -3383,7 +3383,7 @@ describe('search_files', () => {
     expect(out).toBe('この Mattermost ではファイルの検索が無効になっています（システムコンソールの設定）。ファイル名を含む投稿は search_posts で探せます。');
   });
 
-  test('lists the user\'s channels without archived ones, which the file search leaves out, and looks no listed channel up', async () => {
+  test('lists the user\'s channels without archived ones, which the file search leaves out unless in: names one by ID, and looks no listed channel up', async () => {
     routes = base();
     await setup()('search_files', { terms: 'fff' });
     expect(urls).toContain('GET /users/me/channels');
@@ -3485,6 +3485,12 @@ describe('search_files', () => {
       routes['GET /teams/name/team-b/channels/name/dup'] = mmError(404, 'app.team.get_by_name.missing.app_error');
       expect(await call('search_files', { terms: 'x in:team-b/dup' }, true)).toBe('チャンネル「team-b/dup」のチームが見つかりません。チーム名の誤りなら、list_my_channels で参加しているチームを確かめてください（チーム名はチャンネルの行の先頭に出ます）。');
       expect(onlyAsked()).toBe(true);
+    });
+
+    test('searches without archived channels when in: names no archived channel', async () => {
+      routes = base();
+      await setup()('search_files', { terms: 'x in:town' });
+      expect(bodies['/files/search']).toMatchObject({ terms: `x in:${A}`, include_deleted_channels: false });
     });
 
     test('searches an archived channel named by its ID in in: with archived channels included, and marks its channel line', async () => {
