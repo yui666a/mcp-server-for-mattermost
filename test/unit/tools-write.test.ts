@@ -4,6 +4,14 @@ import { BODY_CUT_NOTE } from '../../src/mcp/format.ts';
 import { MAX_OPEN_UPLOAD_URLS, type Store } from '../../src/store.ts';
 import { makeApp, SLOW, SLOW_TEST } from './helpers.ts';
 
+// Not bound inside a test: vitest returns the same spy when spyOn is called on a spy, and binding that spy would make it call itself.
+const realTimeout = AbortSignal.timeout.bind(AbortSignal);
+// Not left to the real clock: under load the cleanup's 5-second deadline and its 1-second margin before DELETE would run out while a test holds the lock.
+const freezeCleanupClock = () => {
+  vi.spyOn(AbortSignal, 'timeout').mockImplementation((ms) => (ms === 5000 ? new AbortController().signal : realTimeout(ms)));
+  vi.spyOn(performance, 'now').mockReturnValue(0);
+};
+
 type Route = (req: Request) => unknown;
 let routes: Record<string, Route>;
 let bodies: Record<string, unknown>;
@@ -822,8 +830,7 @@ describe('send_message with files', () => {
 
   test('the draft cleanup\'s 5-second deadline reaches the Mattermost requests, and running past it leaves the post a success', async () => {
     const ac = new AbortController();
-    const real = AbortSignal.timeout.bind(AbortSignal);
-    vi.spyOn(AbortSignal, 'timeout').mockImplementation((ms) => (ms === 5000 ? ac.signal : real(ms)));
+    vi.spyOn(AbortSignal, 'timeout').mockImplementation((ms) => (ms === 5000 ? ac.signal : realTimeout(ms)));
     serve({
       'GET /users/u1/teams/t1/drafts': (req) => new Promise((_, reject) => req.signal.addEventListener('abort', () => reject(req.signal.reason))),
     });
@@ -837,7 +844,7 @@ describe('send_message with files', () => {
   }, SLOW_TEST);
 });
 
-describe('a DM not opened yet', () => {
+describe('a DM not opened yet', { timeout: SLOW_TEST }, () => {
   const CAROL = 'k'.repeat(26);
   const OTHER_CH = 'c'.repeat(26);
   const NEW_DM = 'n'.repeat(26);
@@ -1154,6 +1161,7 @@ describe('a root_id in another channel than the DM or group DM it is sent to', (
 });
 
 describe('save_draft and send_message\'s draft cleanup for one draft target (user, channel, root_id) run one at a time across requests', () => {
+  beforeEach(freezeCleanupClock);
   const CH = 'c'.repeat(26);
   const LIST = 'GET /users/u1/teams/t1/drafts';
   const DEL = `DELETE /users/u1/channels/${CH}/drafts`;
@@ -1258,8 +1266,7 @@ describe('save_draft and send_message\'s draft cleanup for one draft target (use
 
   test('a cleanup waiting past its deadline returns before the holder finishes, and never calls Mattermost when its turn comes', async () => {
     const ac = new AbortController();
-    const timeout = AbortSignal.timeout.bind(AbortSignal);
-    vi.spyOn(AbortSignal, 'timeout').mockImplementation((ms) => (ms === 5000 ? ac.signal : timeout(ms)));
+    vi.spyOn(AbortSignal, 'timeout').mockImplementation((ms) => (ms === 5000 ? ac.signal : realTimeout(ms)));
     let open!: () => void;
     const gate = new Promise<void>((r) => { open = r; gates.push(r); });
     serve(async () => (await gate, [draft('hello')]));
