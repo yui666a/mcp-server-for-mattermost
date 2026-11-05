@@ -576,6 +576,7 @@ test('search_channels looks up the partners of more than 1,000 DMs in calls of a
   const out = await setup()('search_channels', { query: `name-${partner(1000)}` });
   expect(asked.map((x) => x.length)).toEqual([1000, 1]);
   expect(out).toContain(`@name-${partner(1000)}`);
+  expect(await setup()('search_channels', { query: `name-${partner(0)}` })).toContain(`@name-${partner(0)}`);
 });
 
 test('search_channels fails rather than leaving the DMs out when their partners cannot be read', async () => {
@@ -720,12 +721,17 @@ describe('list_my_channels', () => {
     expect(out).toContain('- alice, bob（表示名: alice, bob、');
   });
 
-  test('still lists the channels, a DM by its partner\'s user_id, when the partners\' names cannot be read', async () => {
-    routes = { ...base(), 'POST /users/ids': () => new Response('oops', { status: 503 }) };
+  test.each([[503, 'oops'], [403, '{"id":"api.context.permissions.app_error"}']])('still lists the channels, a DM by its partner\'s user_id, when the partners\' names cannot be read (%i)', async (status, body) => {
+    routes = { ...base(), 'POST /users/ids': () => new Response(body, { status }) };
     const out = await setup()('list_my_channels', {});
     expect(out).toContain(`channel_id: ${DM}`);
     expect(out).toContain('@u2');
     expect(out).toContain('- team-a/town');
+  });
+
+  test('fails on a rate limit while reading the partners\' names, as dmLabel does', async () => {
+    routes = { ...base(), 'POST /users/ids': () => new Response(null, { status: 429, headers: { 'x-ratelimit-reset': '7' } }) };
+    expect(await setup()('list_my_channels', {}, true)).toContain('呼び出しが多すぎます');
   });
 
   test('lists every channel the user is in, newest post first (ties by channel_id), with team, name, kind, ids and the last post time', async () => {
