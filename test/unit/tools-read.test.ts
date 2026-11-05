@@ -218,13 +218,13 @@ describe('search_posts in: filters', () => {
   });
 
   test.each([
-    ['x in:~\ufeff@bob ,carol', '「,carol」'],
-    ['x in:@bob \ufeff，carol', '「\ufeff，carol」'],
-  ])('a U+FEFF after ~ or before the next word does not hide a misplaced comma in %j', async (terms, word) => {
+    ['x in:~\ufeff@bob ,carol', '「,carol」', false],
+    ['x in:@bob \ufeff，carol', '「\ufeff，carol」', true],
+  ])('a U+FEFF after ~ or before the next word does not hide a misplaced comma in %j', async (terms, word, fullWidth) => {
     routes = base();
     const out = await setup()('search_posts', { terms }, true);
     expect(out).toContain(`の後の${word}`);
-    if (word.includes('，')) expect(out).toContain('区切りは半角のカンマ（,）で書いてください。');
+    expect(out.includes('区切りは半角のカンマ（,）で書いてください。')).toBe(fullWidth);
     expect(hits).not.toContain('POST /posts/search');
   });
 
