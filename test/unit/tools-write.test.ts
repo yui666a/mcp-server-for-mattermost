@@ -238,6 +238,15 @@ describe('edit_message and delete_message', () => {
   const edit = (s: ReturnType<typeof setup>, over: Record<string, unknown> = {}) => s.call('edit_message', { post_id: POST, message: 'new', ...over });
   const del = (s: ReturnType<typeof setup>) => s.call('delete_message', { post_id: POST });
 
+  test('edit_message and delete_message keep the channel\'s display name with a line break on one line', async () => {
+    serve(mine(), { [`GET /channels/${CH}`]: () => ({ id: CH, name: 'town', display_name: 'To\nwn', team_id: 't1', type: 'O' }) });
+    const s = setup();
+    for (const r of [await edit(s), await del(s)]) {
+      expect(r.isError).toBe(false);
+      expect(r.text).toContain(`チャンネル: To wn（channel_id: ${CH}）`);
+    }
+  });
+
   describe('only the caller\'s own posts are edited or deleted', () => {
     test.each([
       ['another user\'s post', { user_id: 'u2' }, '本人の投稿ではありません'],
@@ -482,6 +491,13 @@ describe('save_draft', () => {
   };
   const save = (over: Record<string, unknown> = {}) => setup().call('save_draft', { channel: CH, message: 'hello', ...over });
 
+  test('keeps the destination\'s display name with a line break on one line', async () => {
+    serve({ [`GET /channels/${CH}`]: () => ({ id: CH, name: 'town', display_name: 'To\nwn', team_id: 't1', type: 'O' }) });
+    const r = await save();
+    expect(r.isError).toBe(false);
+    expect(r.text).toContain(`投稿先: To wn（channel_id: ${CH}）`);
+  });
+
   describe('saving', () => {
     test('saves a channel draft and says it is in the input box, that the user sends it, and to reopen the channel if it was open', async () => {
       serve();
@@ -702,6 +718,14 @@ describe('send_message with files', () => {
   };
   const send = (files: unknown, over: Record<string, unknown> = {}) => setup().call('send_message', { channel: CH, message: 'm', files, ...over });
   const KiB128 = 128 * 1024;
+
+  test('send_message and prepare_upload keep the destination\'s display name with a line break on one line', async () => {
+    serve({ [`GET /channels/${CH}`]: () => ({ id: CH, name: 'town', display_name: 'To\nwn', team_id: 't1', type: 'O' }) });
+    for (const r of [await setup().call('send_message', { channel: CH, message: 'm' }), await setup().call('prepare_upload', { channel: CH })]) {
+      expect(r.isError).toBe(false);
+      expect(r.text).toContain(`投稿先: To wn（channel_id: ${CH}）`);
+    }
+  });
 
   test('sends content_text as its UTF-8 bytes and content_base64 as the decoded bytes, each as an octet-stream named by filename', async () => {
     serve();
