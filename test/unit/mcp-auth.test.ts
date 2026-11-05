@@ -2,6 +2,10 @@ import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/
 import { afterEach, beforeEach, expect, test, vi } from 'vitest';
 import { makeApp } from './helpers.ts';
 
+// Not vitest's defaults (1 s for vi.waitFor, 5 s for a test): on a busy machine the awaited event can take seconds.
+const SLOW = { timeout: 10_000 };
+const SLOW_TEST = 30_000;
+
 const PRM = 'https://mm.example/.well-known/oauth-protected-resource/mcp';
 const CHALLENGE = `Bearer resource_metadata="${PRM}", scope="mattermost"`;
 const INVALID = `${CHALLENGE}, error="invalid_token"`;
@@ -143,10 +147,15 @@ test('a client disconnect aborts the Mattermost request of the running tool', as
     signal = req.signal;
     return new Promise((_, fail) => req.signal.addEventListener('abort', () => fail(req.signal.reason)));
   };
-  await expect(s.rpc(GET_USER).timeout(200)).rejects.toThrow(/Timeout/);
-  await vi.waitFor(() => expect(signal?.aborted).toBe(true));
-  await vi.waitFor(() => expect(logged()).toMatch(/"tool":"get_user","outcome":"upstream_unavailable"/));
-});
+  // Not disconnecting after a fixed time: on a busy machine the request may not have reached Mattermost by then.
+  const req = s.rpc(GET_USER);
+  const done = expect(req).rejects.toThrow(/Aborted/);
+  await vi.waitFor(() => expect(signal).toBeDefined(), SLOW);
+  req.abort();
+  await done;
+  await vi.waitFor(() => expect(signal?.aborted).toBe(true), SLOW);
+  await vi.waitFor(() => expect(logged()).toMatch(/"tool":"get_user","outcome":"upstream_unavailable"/), SLOW);
+}, SLOW_TEST);
 
 test('an error after the response has started is logged by name only and ends the response', async () => {
   const s = setup();

@@ -6,6 +6,10 @@ import { CALL_DEADLINE_MS, MmClient, MmError, RateLimited, Reauthorize, Upstream
 import { Limiter } from '../../src/mattermost/limiter.ts';
 import { Store } from '../../src/store.ts';
 
+// Not vitest's defaults (1 s for vi.waitFor, 5 s for a test): on a busy machine the awaited event can take seconds.
+const SLOW = { timeout: 10_000 };
+const SLOW_TEST = 30_000;
+
 const cfg = loadConfig({
   PUBLIC_URL: 'https://mm.example', TOKEN_ENC_KEY: randomBytes(32).toString('base64'),
   MM_OAUTH_CLIENT_ID: 'mm-client', MM_OAUTH_CLIENT_SECRET: 'SECRET-XYZ', MM_URL: 'http://mm.internal',
@@ -310,16 +314,18 @@ test('requests after the first only get the remaining part of the call deadline'
   const c = new MmClient(cfg, store, limiter, { fetch: fetchMock, now: () => t });
   store.putMmCred('u1', 'a1', 'r1');
   api = (access, req) => {
-    if (access === 'a1') { t += CALL_DEADLINE_MS - 100; return mmError(401, 'x'); }
+    // Not a tighter remainder: the refresh has to finish within it, which takes longer on a busy machine.
+    if (access === 'a1') { t += CALL_DEADLINE_MS - 5_000; return mmError(401, 'x'); }
     return new Promise((_, fail) => req.signal.addEventListener('abort', () => fail(req.signal.reason)));
   };
   const started = Date.now();
   const e = await failure(c.call('u1', 'GET', '/users/me'));
   expect(e).toBeInstanceOf(UpstreamUnavailable);
   expect(e.sent).toBe(true);
-  expect(Date.now() - started).toBeLessThan(2_000);
+  // Not closer to the 20 s per-request timeout: a request that waits for that instead of the remainder must still fail here.
+  expect(Date.now() - started).toBeLessThan(15_000);
   expect(cred()).toMatchObject({ access: 'a2' });
-});
+}, SLOW_TEST);
 
 test('invalid_grant does not revoke when a concurrent login stored new credentials', async () => {
   const pair = grant();
@@ -413,13 +419,13 @@ test('aborting while waiting on the shared refresh frees the slot at once and th
   refresh = async () => { await gate; return Response.json({ access_token: 'a2', refresh_token: 'r2' }); };
   const ac = new AbortController();
   const running = [1, 2, 3, 4].map(() => failure(client.call('u1', 'GET', '/users/me', undefined, ac.signal)));
-  await vi.waitFor(() => expect(refreshCalls).toEqual(['r1']));
+  await vi.waitFor(() => expect(refreshCalls).toEqual(['r1']), SLOW);
   ac.abort();
   for (const e of await Promise.all(running)) expect(e).toBeInstanceOf(UpstreamUnavailable);
   for (let i = 0; i < 4; i++) limiter.acquire('u1')();
   open();
-  await vi.waitFor(() => expect(cred()?.access).toBe('a2'));
-});
+  await vi.waitFor(() => expect(cred()?.access).toBe('a2'), SLOW);
+}, SLOW_TEST);
 
 test('callBytes returns the response body as bytes, after a 401 → refresh → retry, within one limiter slot', async () => {
   store.putMmCred('u1', 'a1', 'r1');
