@@ -222,6 +222,7 @@ describe('save_draft against the local Mattermost', () => {
     const sent = await call('send_message', { channel: dm.id, message: `${TAG} dm to send` });
     expect(sent.isError).toBeFalsy();
     expect(sent.content[0].text).toContain('同じ本文の下書きを消しました');
+    expect(sent.content[0].text).toContain(`チャンネル: @${e.users.bob.username}（channel_id: ${dm.id}）`);
     expect((await listed()).find((d) => d.channel_id === dm.id && d.root_id === '')).toBeUndefined();
   });
 
