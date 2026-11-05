@@ -320,7 +320,7 @@ test('requests after the first only get the remaining part of the call deadline'
   const e = await failure(c.call('u1', 'GET', '/users/me'));
   expect(e).toBeInstanceOf(UpstreamUnavailable);
   expect(e.sent).toBe(true);
-  // Not closer to the 25 s deadline: waiting for the whole deadline instead of the remainder must still fail here.
+  // Not closer to the 20 s per-request timeout: a request that waits for that instead of the remainder must still fail here.
   expect(Date.now() - started).toBeLessThan(15_000);
   expect(cred()).toMatchObject({ access: 'a2' });
 }, SLOW_TEST);
