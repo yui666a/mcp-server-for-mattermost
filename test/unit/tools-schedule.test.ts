@@ -125,10 +125,10 @@ describe('schedule_message', () => {
       expect(hits).not.toContain('POST /channels/direct');
     });
 
-    test('with the pending schedules at the limit, refuses before resolving the channel, so no DM is created', async () => {
+    test.each(['@carol', ' @carol'])('with the pending schedules at the limit, refuses %j before resolving the channel, so no DM is created', async (channel) => {
       const s = setup();
       for (let i = 0; i < MAX_PENDING_SCHEDULED; i++) s.store.createScheduled({ mmUserId: 'u1', channelId: CH, message: `m${i}`, scheduledAt: NOW + DAY }, NOW);
-      const r = await s.call('schedule_message', { channel: '@carol', message: 'hello', at: '2026-11-03T10:00' });
+      const r = await s.call('schedule_message', { channel, message: 'hello', at: '2026-11-03T10:00' });
       expect(r.isError).toBe(true);
       expect(r.text).toContain(`待機中の予約が上限の ${MAX_PENDING_SCHEDULED} 件に達しています`);
       expect(hits).toEqual([]);
@@ -137,8 +137,8 @@ describe('schedule_message', () => {
     test.each([
       ['a channel name that does not exist', { channel: 'nowhere' }, 'チャンネル「nowhere」が見つかりません'],
       ['a file_id that was not uploaded', { channel: CH, file_ids: ['z'.repeat(26)] }, 'z'.repeat(26)],
+      ['a root_id that does not exist', { channel: CH, root_id: 'q'.repeat(26) }, `root_id ${'q'.repeat(26)} の投稿が見つかりません`],
     ])('with the pending schedules at the limit, %s is reported before the limit', async (_, args, error) => {
-      routes['GET /users/me/teams'] = () => [{ id: TEAM, name: 'team-a' }];
       const s = setup();
       for (let i = 0; i < MAX_PENDING_SCHEDULED; i++) s.store.createScheduled({ mmUserId: 'u1', channelId: CH, message: `m${i}`, scheduledAt: NOW + DAY }, NOW);
       const r = await s.call('schedule_message', { message: 'hello', at: '2026-11-03T10:00', ...args });
