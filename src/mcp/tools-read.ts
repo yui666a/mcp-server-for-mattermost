@@ -210,8 +210,8 @@ const capNote = (n: number, what: string) => (n >= MM_SEARCH_CAP
   ? [`（Mattermost の検索は ${MM_SEARCH_CAP} 件までしか返さないため、${what}は出ていない可能性があります。条件を絞ってください）`]
   : []);
 
-// Zero-width format characters too, not only what trim drops: Mattermost does not split words on them, so they stay in a word and hide a ~ or @.
-const unformat = (s: string) => s.replace(/^[\s\u200b-\u200d\u2060\ufeff]+|[\s\u200b-\u200d\u2060\ufeff]+$/g, '');
+// Format characters too (zero-width, direction marks, soft hyphen), not only what trim drops: Mattermost does not split words on them, so they stay in a word and hide a ~ or @.
+const unformat = (s: string) => s.replace(/^[\s\p{Cf}]+|[\s\p{Cf}]+$/gu, '');
 // Go's unicode.IsSpace, which Mattermost's strings.Fields splits on. Not JS's \s: it adds U+FEFF and lacks U+0085.
 const SEARCH_SPACE = /[\t\n\v\f\r \u0085\u00a0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000]+/;
 const SEARCH_FLAGS = ['from', 'channel', 'in', 'before', 'after', 'on', 'ext'];
@@ -289,7 +289,7 @@ export async function resolveInFilters(mm: Mm, userId: string, terms: string): P
   const notes: string[] = [];
   const out = words.map((w) => [w]);
   const written = (f: (typeof filters)[number]) => words.slice(f.at, f.at + f.span).join(' ');
-  // Trimmed here, not only in resolveChannel: a U+FEFF in front would otherwise hide a leading ~ or @ from the checks below.
+  // Not left to resolveChannel, which only trims: a format character in front would hide a leading ~ or @ from the checks below.
   const specOf = (f: (typeof filters)[number]) => unformat(unformat(f.value).replace(/^~+/, ''));
   for (const f of filters) {
     const next = words[f.at + f.span];
