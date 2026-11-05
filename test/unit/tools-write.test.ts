@@ -164,6 +164,12 @@ describe('remove_reaction', () => {
     expect(r.text).toContain('+1');
   });
 
+  test('drops spaces inside the colons of the emoji, as add_reaction does', async () => {
+    routes = { [path('white_check_mark')]: () => ({ status: 'OK' }) };
+    expect((await setup().call('remove_reaction', { post_id: POST, emoji: ': white_check_mark :' })).isError).toBe(false);
+    expect(hits).toEqual([path('white_check_mark')]);
+  });
+
   test.each(ESCAPES)('rejects the post_id %j without calling Mattermost', async (post_id) => {
     const r = await setup().call('remove_reaction', { post_id, emoji: 'smile' });
     expect(r.isError).toBe(true);

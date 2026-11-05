@@ -36,7 +36,7 @@ This project targets the other case:
 | `search_channels` | Find channels (public, joined private, DMs, group DMs) by name |
 | `list_my_channels` | List joined channels by most recent post |
 | `get_channel` | Channel type, purpose, header, member count, and pinned posts |
-| `list_channel_members` | List the members of a joined channel, ordered by username |
+| `list_channel_members` | List the members of a channel the user can read (usually a joined one), ordered by username |
 | `get_unreads` | Unread channels and, with collapsed reply threads, unread threads |
 | `get_mentions` | Posts that mention the user, optionally only the unread ones |
 | `list_followed_threads` | List followed threads, newest reply first, with collapsed reply threads |
