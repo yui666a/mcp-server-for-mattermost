@@ -2211,12 +2211,17 @@ describe('list_saved_posts', () => {
       expect(shownIds(out)).toEqual(all.slice(150, 200).map((p) => p.id));
     });
 
-    test.each([[10, 'row 0, as from the start'], [1000, 'row 0, as the row is past the 1000 it reads']])('with the row at %i, reads from %s', async (at) => {
+    test.each([
+      [10, 'row 0, as from the start', 0, 71],
+      [20, 'row 0, as from the start', 0, 71],
+      [21, 'row 1', 1, 91],
+      [1000, 'row 0, as the row is past the 1000 it reads', 0, 71],
+    ])('with the row at %i, reads from %s', async (at, _, from, size) => {
       const all = desc(1100);
       routes = { ...base(), [FLAGGED]: byOffset(all) };
-      await setup()('list_saved_posts', { cursor: cursorAt(all[at === 10 ? 10 : 999], at) });
-      expect(offsets()[0]).toBe(0);
-      expect(asked('per_page')[0]).toBe(71);
+      await setup()('list_saved_posts', { cursor: cursorAt(all[Math.min(at, 999)], at) });
+      expect(offsets()[0]).toBe(from);
+      expect(asked('per_page')[0]).toBe(size);
     });
 
     test('near row 1000, reads only up to row 1000 and shows nothing after it', async () => {
