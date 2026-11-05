@@ -1029,6 +1029,24 @@ describe('get_unreads', () => {
     }
   });
 
+  test('looks up the users of unread threads in calls of at most 1,000 ids, and names the users of every call', async () => {
+    const user = (i: number, j: number) => `r${String(i * 20 + j).padStart(4, '0')}`;
+    const many = Array.from({ length: 50 }, (_, i) => thread(`t${String(i).padStart(25, '0')}`, OLD, 9000 - i, {
+      post: { id: `t${String(i).padStart(25, '0')}`, user_id: `a${i}`, channel_id: OLD, root_id: '', message: `m${i}`, create_at: 100,
+        metadata: { reactions: Array.from({ length: 20 }, (_, j) => ({ user_id: user(i, j), emoji_name: j < 10 ? 'x' : 'y', create_at: j })) } },
+    }));
+    const asked: string[][] = [];
+    routes = {
+      ...base(),
+      [`GET /users/u1/teams/${T1}/threads`]: () => threadPage(many),
+      [`GET /users/u1/teams/${T2}/threads`]: () => threadPage([]),
+      'POST /users/ids': () => { const ids = bodies['/users/ids'] as string[]; asked.push(ids); return ids.map((x) => ({ id: x, username: `n${x}` })); },
+    };
+    const out = await setup()('get_unreads', { limit: 100 });
+    expect(asked.map((x) => x.length)).toEqual([1000, 51]);
+    for (const x of asked[1]) expect(out).toContain(`@n${x}`);
+  });
+
   test('keeps a channel\'s display name with a line break on one line', async () => {
     routes = { ...base(), 'GET /users/me/channels': () => channels().map((x) => (x.id === OLD ? { ...x, display_name: 'O\nLD' } : x)) };
     expect(await setup()('get_unreads', {})).toContain(`- team-a/old（表示名: O LD、channel_id: ${OLD}`);
@@ -1126,6 +1144,10 @@ describe('get_unreads', () => {
     test('a short page that skipped threads, as when a reply of the thread paged from is deleted, says so too', async () => {
       const out = await run([span(0, 50), 70], [span(50, 60), 70]);
       expect(out).toContain(SHORT);
+    });
+
+    test('a short first page below total, as when total also counts threads whose root post a retention policy removed, says such threads cannot be taken by calling again', async () => {
+      expect(await run([span(0, 10), 11])).toContain('データ保持ポリシーで根の投稿が消えたスレッドは、呼び直しても取得できません）');
     });
 
     test('says nothing when every thread was taken, also when the 4th page is full', async () => {
@@ -1576,10 +1598,9 @@ describe('get_mentions', () => {
       expect(await setup()('get_mentions', { unread_only: true })).toContain('未読スレッドは、50 件ずつ 4 回の取得で打ち切りました。');
     });
 
-    test('notes when a team\'s unread threads were not all taken', async () => {
+    test('notes when a team\'s unread threads were not all taken, as when a full page is followed by nothing', async () => {
       put({ create_at: at(22, 1) });
       routes = unreadBase('always_on', [member(C, at(22, 0), 0, 1)]);
-      // A full first page, then nothing: as when the thread paged from is deleted in between.
       let k = 0;
       routes[`GET /users/u1/teams/${T}/threads`] = () => ({ total_unread_threads: 60, threads: k++ ? [] : Array.from({ length: 50 }, (_, i) => thread(`t${String(i).padStart(25, '0')}`, 0, 0)) });
       expect(await setup()('get_mentions', { unread_only: true })).toContain('未読スレッドを total_unread_threads: 60 に対して取り切れませんでした。');
