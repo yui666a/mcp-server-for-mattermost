@@ -37,15 +37,15 @@ export async function requireMm(): Promise<Env> {
   }
 }
 
-// Deactivates the users the test made, whatever its outcome. Not letting a failed deactivation replace the test's own failure: that failure is the one to read.
+// Not stopping at the first failed deactivation: every user made has to go, and the test's own failure must not be replaced by the cleanup's.
 export async function withUsers(run: (made: string[]) => Promise<void>): Promise<void> {
+  const { mmUrl, adminToken } = env();
   const made: string[] = [];
   let ok = false;
   try {
     await run(made);
     ok = true;
   } finally {
-    const { mmUrl, adminToken } = env();
     const failed = (await Promise.allSettled(made.map(async (id) => {
       const res = await fetch(`${mmUrl}/api/v4/users/${id}`, { method: 'DELETE', headers: { authorization: `Bearer ${adminToken}` } });
       if (!res.ok) throw new Error(`DELETE /users/${id} -> ${res.status} ${await res.text()}`);
