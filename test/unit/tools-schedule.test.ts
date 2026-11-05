@@ -417,6 +417,25 @@ describe('list_scheduled_messages', () => {
   });
 
   test.each([
+    [404, 'store.sql_user.missing.app_error'],
+    [429, 'rate_limited'],
+  ])('a DM or group DM whose names cannot be looked up (%i) keeps Mattermost\'s name and the permalink, and the list still returns', async (status, id) => {
+    const DM = 'm'.repeat(26);
+    const GM = 'n'.repeat(26);
+    routes[`GET /channels/${DM}`] = () => ({ id: DM, name: `${UID}__${BOB}`, display_name: '', team_id: '', type: 'D' });
+    routes[`GET /channels/${GM}`] = () => ({ id: GM, name: 'h'.repeat(40), display_name: 'alice, bob, carol', team_id: '', type: 'G' });
+    routes[`GET /users/${BOB}`] = () => Response.json({ id, message: 'm', status_code: status }, { status });
+    routes['GET /users'] = () => Response.json({ id, message: 'm', status_code: status }, { status });
+    routes['GET /users/me/teams'] = () => [{ id: TEAM, name: 'team-a' }];
+    const s = setup();
+    for (const [i, channelId] of [DM, GM].entries()) s.setRow(s.store.createScheduled({ mmUserId: UID, channelId, message: 'x', scheduledAt: NOW + DAY + i * MIN }, NOW)!, "status = 'posted', post_id = ?", POSTED);
+    const r = await s.call('list_scheduled_messages', {});
+    expect(r.isError, r.text).toBe(false);
+    expect(r.text.match(/投稿先: .*/g)).toEqual([`投稿先: ${UID}__${BOB}（channel_id: ${DM}）`, `投稿先: alice, bob, carol（channel_id: ${GM}）`]);
+    expect(r.text.match(/\/team-a\/pl\//g)).toHaveLength(2);
+  });
+
+  test.each([
     [403, 'api.context.permissions.app_error'],
     [429, 'rate_limited'],
   ])('a posted row whose team lookup fails with %i is listed without a permalink, and the list still returns', async (status, id) => {

@@ -93,7 +93,8 @@ export async function listScheduledMessages(mm: Mm, store: Store, uid: string, b
       try {
         const ch = await mm.call<MmChannel>(uid, 'GET', `/channels/${id}`);
         // Not a name of its own for a DM or group DM: resolveChannel's is what the other outputs show, and two forms would read as two destinations.
-        const name = (await dmLabel(mm, uid, ch)) ?? (ch.display_name || ch.name);
+        // Not letting its re-login or rate limit drop the row's channel and permalink: the name is only for display, and Mattermost's name still names it.
+        const name = (await dmLabel(mm, uid, ch).catch(() => undefined)) ?? (ch.display_name || ch.name);
         v = { label: `${name}（channel_id: ${id}）`, ch };
       } catch {}
       channels.set(id, v);
