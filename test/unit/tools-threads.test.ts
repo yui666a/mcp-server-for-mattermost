@@ -152,7 +152,7 @@ describe('list_followed_threads', () => {
     expect(zero).not.toContain('（total: 450）。最終返信が');
   });
 
-  test('says a short page under a larger total holds follows of threads whose root post is gone, not that it stopped', async () => {
+  test('says a short page under a larger total holds follows the list cannot return, not that it stopped', async () => {
     routes = { ...base(), [`GET /users/u1/teams/${T1}/threads`]: () => page([thread(TH1, CH1, 5000)], 3) };
     const out = (await setup().call('list_followed_threads', {})).text;
     expect(out).toContain('（team-a と DM、グループ DM の total: 3 のうち 2 件は一覧に出せません。データ保持ポリシーで根の投稿が消えたスレッドのフォロー（unfollow_thread でも外せません）か、取得の合間に増えたフォローです）');
