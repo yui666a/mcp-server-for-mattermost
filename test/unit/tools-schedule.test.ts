@@ -613,6 +613,13 @@ describe('arguments a tool does not take', () => {
     expect(s.store.listScheduled('u1', { limit: 1 })[0].message).toBe('hello');
   });
 
+  test.each(['channel', 'root_id', 'files', 'file_ids'])('update_scheduled_message gives the cancel hint for %s alone', async (key) => {
+    const r = await setup().call('update_scheduled_message', { id: 'x', message: 'changed', [key]: 'v' });
+    expect(r.isError).toBe(true);
+    expect(r.text).toContain(`${GENERAL}${key}。`);
+    expect(r.text).toContain('投稿先と添付は変えられません');
+  });
+
   test('a key named like an Object method gets the general wording only', async () => {
     const r = await setup().call('update_scheduled_message', { id: 'x', message: 'changed', constructor: 1 });
     expect(r.isError).toBe(true);
