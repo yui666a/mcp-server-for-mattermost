@@ -1555,15 +1555,27 @@ describe('get_file', () => {
       expect(out).toContain('Shift_JIS');
     });
 
-    test.each([
-      ['UTF-8', 'a.txt', [...Buffer.from('aあ'), 0xe3, 0x81], 'aあ'],
-      ['Shift_JIS', 'a.csv', [0x61, 0x82, 0xa0, 0x82], 'aあ'],
-    ])('drops a %s character cut at the end of the fetched bytes and notes the cut', async (encoding, name, b, shown) => {
-      routes = { [INFO]: textInfo(name as string, 1_000_000), [FILE]: body(Uint8Array.from(b as number[])) };
+    // 40,000 bytes, the most fetched: a file that fills them may go on, so a character cut at their end is the fetch's, not the file's.
+    const FAMILY = '👨‍👩‍👧';
+    test('drops a UTF-8 character cut at the end of the fetched bytes without calling it incomplete', async () => {
+      const head = `${FAMILY.repeat(2222)}aa`;
+      const b = Uint8Array.from([...Buffer.from(head), 0xe3, 0x81]);
+      expect(b.length).toBe(40_000);
+      routes = { [INFO]: textInfo('a.txt', 1_000_000), [FILE]: body(b) };
       const out = await setup()('get_file', { file_id: F });
-      expect(content()).toBe(shown);
-      expect(out).toContain(encoding as string);
-      expect(out).toContain('先頭の 2 文字だけを返しました');
+      expect(content()).toBe(head);
+      expect(out).toContain('UTF-8');
+      expect(out).toContain('先頭の 2224 文字だけを返しました（ファイル全体は 1000000 バイト）');
+      expect(out).not.toContain('末尾に不完全な文字');
+    });
+
+    test('drops a Shift_JIS character cut at the end of the fetched bytes without calling it incomplete', async () => {
+      const b = Uint8Array.from([0x61, ...Array.from({ length: 19_999 }, () => [0x82, 0xa0]).flat(), 0x82]);
+      expect(b.length).toBe(40_000);
+      routes = { [INFO]: textInfo('a.csv', 1_000_000), [FILE]: body(b) };
+      const out = await setup()('get_file', { file_id: F });
+      expect(out).toContain('文字コード: Shift_JIS');
+      expect(out).toContain('先頭の 10000 文字だけを返しました');
       expect(out).not.toContain('末尾に不完全な文字');
     });
 
@@ -1623,6 +1635,69 @@ describe('get_file', () => {
       expect(out).not.toContain('先頭の');
     });
 
+    describe('whether the whole file was fetched', () => {
+      test.each([[1_000_000, 'larger'], [3, 'smaller']])('takes fewer bytes than the most fetched as the whole file whatever its size says (%i, %s)', async (size) => {
+        routes = { [INFO]: textInfo('a.md', size as number), [FILE]: body(Uint8Array.from([0x61, 0x62, 0xe3, 0x81])) };
+        const out = await setup()('get_file', { file_id: F });
+        expect(content()).toBe('ab');
+        expect(out).toContain('ファイルの末尾に不完全な文字があったため');
+        expect(out).not.toContain('先頭の');
+      });
+
+      test('at exactly the most fetched, takes the file as whole only when its size matches, and says "at least" when the size is smaller', async () => {
+        const b = new Uint8Array(Buffer.from('a'.repeat(40_000)));
+        routes = { [INFO]: textInfo('a.md', 40_000), [FILE]: body(b) };
+        expect(await setup()('get_file', { file_id: F })).toContain('先頭の 10000 文字だけを返しました（ファイル全体は 40000 バイト）');
+        routes = { [INFO]: textInfo('a.md', 100), [FILE]: body(b) };
+        expect(await setup()('get_file', { file_id: F })).toContain('先頭の 10000 文字だけを返しました（ファイル全体は少なくとも 40000 バイト）');
+      });
+
+      test('writes the bytes fetched, not the size it says, as the size of a whole file cut to 10,000 characters', async () => {
+        routes = { [INFO]: textInfo('a.md', 1_000_000), [FILE]: body(new Uint8Array(Buffer.from('a'.repeat(10_001)))) };
+        expect(await setup()('get_file', { file_id: F })).toContain('先頭の 10000 文字だけを返しました（ファイル全体は 10001 バイト）');
+      });
+
+      test('keeps UTF-8, with neither note, for ASCII ending in a UTF-8 lead byte when the fetch may have stopped there', async () => {
+        const b = Uint8Array.from([...Buffer.from('a'.repeat(39_999)), 0xe3]);
+        routes = { [INFO]: textInfo('a.log', 1_000_000), [FILE]: body(b) };
+        const out = await setup()('get_file', { file_id: F });
+        expect(out).toContain('文字コード: UTF-8');
+        expect(out).not.toContain('推定');
+        expect(out).not.toContain('末尾に不完全な文字');
+      });
+    });
+
+    describe('a whole file that is ASCII but for an incomplete last character (UTF-8 is only a guess)', () => {
+      test.each([
+        ['a.txt', [0x61, 0x62, 0x63, 0xc2], 'Shift_JIS', 'abcﾂ', false],
+        ['a.txt', [0x61, 0x62, 0x63, 0xe8, 0xa0], 'Shift_JIS', 'abc陟', false],
+        ['a.csv', [...Buffer.from('café', 'latin1')], 'UTF-8', 'caf', true],
+        ['a.md', [0x61, 0x62, 0x63, 0xc2], 'UTF-8', 'abc', true],
+      ])('reads %s %j as %s, noting the guess', async (name, b, encoding, shown, cut) => {
+        routes = { [INFO]: textInfo(name as string, (b as number[]).length), [FILE]: body(Uint8Array.from(b as number[])) };
+        const out = await setup()('get_file', { file_id: F });
+        expect(content()).toBe(shown);
+        expect(out).toContain(`文字コード: ${encoding}`);
+        expect(out).toContain(GUESSED);
+        expect(out.includes('末尾に不完全な文字')).toBe(cut);
+      });
+
+      test('keeps UTF-8 without a guess when the text has other non-ASCII characters', async () => {
+        routes = { [INFO]: textInfo('a.txt', 5), [FILE]: body(Uint8Array.from([...Buffer.from('あ'), 0xe3, 0x81])) };
+        const out = await setup()('get_file', { file_id: F });
+        expect(content()).toBe('あ');
+        expect(out).toContain('文字コード: UTF-8');
+        expect(out).not.toContain('推定');
+      });
+    });
+
+    test('says the file may be missing or unreadable in the store for a 404 from its reader', async () => {
+      routes = { [INFO]: textInfo('a.txt', 5), [FILE]: mmError(404, 'api.file.file_reader.app_error') };
+      const out = await setup()('get_file', { file_id: F });
+      expect(out).toContain('中身を取得できませんでした（HTTP 404）。保存先にファイルの実体が無いか、保存先から読めません。');
+      expect(last.content).toHaveLength(1);
+    });
+
     test('says nothing readable is left when the whole file is one incomplete character', async () => {
       routes = { [INFO]: textInfo('a.md', 1), [FILE]: body(Uint8Array.from([0xe3])) };
       const out = await setup()('get_file', { file_id: F });
@@ -1641,6 +1716,8 @@ describe('get_file', () => {
 
     test.each([
       ['a 500 with a Mattermost JSON error', mmError(500, 'api.file.get_file_info.app_error')],
+      ['a 500 with an empty id (hardened mode)', mmError(500, '')],
+      ['a 500 in HTML from a proxy', () => new Response('<html>500</html>', { status: 500, headers: { 'content-type': 'text/html' } })],
       ['a 502', () => new Response('bad gateway', { status: 502 })],
       ['a 503', () => new Response('unavailable', { status: 503 })],
       ['a 504', () => new Response('gateway timeout', { status: 504 })],
@@ -1687,17 +1764,18 @@ describe('get_file', () => {
       expect(out).toContain('先頭の 10000 文字だけを返しました（ファイル全体は 10001 バイト）');
     });
 
-    test('notes the cut when the file is larger than the bytes fetched, counting the characters returned', async () => {
-      const head = '👨‍👩‍👧'.repeat(2);
+    test('notes the cut when the file fills the bytes fetched and is larger, counting the characters returned', async () => {
+      const head = `${'👨‍👩‍👧'.repeat(2222)}abcd`;
+      expect(Buffer.byteLength(head)).toBe(40_000);
       routes = { [INFO]: textInfo('a.log', 1_000_000), [FILE]: body(new Uint8Array(Buffer.from(head))) };
       const out = await setup()('get_file', { file_id: F });
       expect(content()).toBe(head);
-      expect(out).toContain('先頭の 2 文字だけを返しました（ファイル全体は 1000000 バイト）');
+      expect(out).toContain('先頭の 2226 文字だけを返しました（ファイル全体は 1000000 バイト）');
     });
 
     test.each([
       [mmError(403, 'api.file.get_file.rejected_by_plugin'), 'Mattermost が中身のダウンロードを拒否しました（プラグインによる制限）'],
-      [mmError(404, 'api.file.file_reader.app_error'), '中身を取得できませんでした（HTTP 404）'],
+      [mmError(404, 'api.file.file_reader.app_error'), '中身を取得できませんでした（HTTP 404）。保存先にファイルの実体が無いか、保存先から読めません。'],
     ])('when fetching the content fails with a 4xx, still returns the information with the reason', async (route, reason) => {
       routes = { [INFO]: textInfo('a.txt', 5), [FILE]: route };
       const out = await setup()('get_file', { file_id: F });
@@ -2471,8 +2549,8 @@ describe('list_saved_posts', () => {
     routes = { ...base(), [FLAGGED]: byOffset(all) };
     const call = setup();
     const first = await call('list_saved_posts', { limit: 50 });
-    expect(offsets()).toEqual([0, 51, 231, 411, 591, 771, 951]);
-    expect(asked('per_page')).toEqual([71, 200, 200, 200, 200, 200, 49]);
+    expect(offsets()).toEqual([0, 51, 231, 411, 591, 771, 951, 1000]);
+    expect(asked('per_page')).toEqual([71, 200, 200, 200, 200, 200, 49, 20]);
     expect(first).toContain(NOTE);
     const cursor = cursorIn(first);
     expect(cursor).toBeDefined();
@@ -2481,6 +2559,100 @@ describe('list_saved_posts', () => {
     expect(end).toContain(NOTE);
     expect(end).not.toContain('保存した投稿はありません。');
     expect(cursorIn(end)).toBeUndefined();
+  });
+
+  test('does not add the note when nothing comes after row 1000, though it read up to there', async () => {
+    routes = { ...base(), [FLAGGED]: byOffset(Array.from({ length: 990 }, (_, i) => post(pid(i), 5000))) };
+    const out = await setup()('list_saved_posts', { limit: 50 });
+    expect(offsets()).toEqual([0, 51, 231, 411, 591, 771, 951, 1000]);
+    expect(out).not.toContain(NOTE);
+  });
+
+  describe('a cursor carries the row of the last post shown, and the next page starts reading 20 rows before it', () => {
+    const desc = (n: number, from = 0) => Array.from({ length: n }, (_, i) => post(pid(from + i), 100_000 - from - i));
+    const cursorAt = (p: { id: string; create_at: number }, at: number, per = 50) => Buffer.from(JSON.stringify({ create_at: p.create_at, id: p.id, per_page: per, at })).toString('base64url');
+    const atIn = (out: string) => JSON.parse(Buffer.from(cursorIn(out)!, 'base64url').toString()).at;
+
+    test('reads limit + 41 rows from there once, and gives the next cursor the row of its last post', async () => {
+      const all = desc(300);
+      routes = { ...base(), [FLAGGED]: byOffset(all) };
+      const call = setup();
+      const first = await call('list_saved_posts', { limit: 50 });
+      expect(atIn(first)).toBe(49);
+      urls.length = 0;
+      const second = await call('list_saved_posts', { cursor: cursorIn(first) });
+      expect(offsets()).toEqual([29]);
+      expect(asked('per_page')).toEqual([91]);
+      expect(shownIds(second)).toEqual(all.slice(50, 100).map((p) => p.id));
+      expect(atIn(second)).toBe(99);
+    });
+
+    test('pages through every post once, in order, with the row in each cursor', async () => {
+      const all = desc(300);
+      routes = { ...base(), [FLAGGED]: byOffset(all) };
+      const call = setup();
+      const seen: string[] = [];
+      let cursor: string | undefined;
+      do {
+        const out = await call('list_saved_posts', cursor ? { cursor } : { limit: 50 });
+        seen.push(...shownIds(out));
+        cursor = cursorIn(out);
+      } while (cursor);
+      expect(seen).toEqual(all.map((p) => p.id));
+    });
+
+    test('keeps the read when posts saved since put newer posts at its start', async () => {
+      const all = desc(300, 100);
+      routes = { ...base(), [FLAGGED]: byOffset([...desc(30), ...all]) };
+      const out = await setup()('list_saved_posts', { cursor: cursorAt(all[49], 49) });
+      expect(offsets()[0]).toBe(29);
+      expect(shownIds(out)).toEqual(all.slice(50, 100).map((p) => p.id));
+    });
+
+    test.each([
+      ['posts unsaved since moved older posts to its start', 30, desc(270, 30), 49],
+      ['it starts inside a group of the same time as the last post shown', 0, [...desc(10), ...Array.from({ length: 290 }, (_, i) => post(pid(500 + i), 5000))], 49],
+      ['the row is past the last saved post', 0, desc(300), 500],
+    ] as const)('reads again from row 0 when %s', async (_, gone, list, at) => {
+      routes = { ...base(), [FLAGGED]: byOffset([...list]) };
+      const last = gone ? desc(50)[49] : list[49];
+      const out = await setup()('list_saved_posts', { cursor: cursorAt(last, at) });
+      expect(offsets().slice(0, 2)).toEqual([at - 20, 0]);
+      const want = [...list].sort((x, y) => y.create_at - x.create_at || x.id.localeCompare(y.id)).filter((p) => p.create_at < last.create_at || (p.create_at === last.create_at && p.id > last.id)).slice(0, 50);
+      expect(shownIds(out)).toEqual(want.map((p) => p.id));
+    });
+
+    test('reads on from there when the row is far before the last post shown', async () => {
+      const all = desc(300);
+      routes = { ...base(), [FLAGGED]: byOffset(all) };
+      const out = await setup()('list_saved_posts', { cursor: cursorAt(all[149], 25) });
+      expect(offsets()).toEqual([5, 76]);
+      expect(shownIds(out)).toEqual(all.slice(150, 200).map((p) => p.id));
+    });
+
+    test.each([
+      [10, 'row 0, as from the start', 0, 71],
+      [20, 'row 0, as from the start', 0, 71],
+      [21, 'row 1', 1, 91],
+      [1000, 'row 0, as the row is past the 1000 it reads', 0, 71],
+    ])('with the row at %i, reads from %s', async (at, _, from, size) => {
+      const all = desc(1100);
+      routes = { ...base(), [FLAGGED]: byOffset(all) };
+      await setup()('list_saved_posts', { cursor: cursorAt(all[Math.min(at, 999)], at) });
+      expect(offsets()[0]).toBe(from);
+      expect(asked('per_page')[0]).toBe(size);
+    });
+
+    test('near row 1000, reads only up to row 1000 and shows nothing after it', async () => {
+      const all = desc(1100);
+      routes = { ...base(), [FLAGGED]: byOffset(all) };
+      const out = await setup()('list_saved_posts', { cursor: cursorAt(all[990], 990) });
+      expect(offsets()).toEqual([970, 1000]);
+      expect(asked('per_page')).toEqual([30, 20]);
+      expect(shownIds(out)).toEqual(all.slice(991, 1000).map((p) => p.id));
+      expect(out).toContain(NOTE);
+      expect(cursorIn(out)).toBeUndefined();
+    });
   });
 
   test('does not add the note when the last read before row 1000 is not empty and the stop condition holds', async () => {
