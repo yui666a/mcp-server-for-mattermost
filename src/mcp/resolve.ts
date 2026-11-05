@@ -47,7 +47,7 @@ export class Ambiguous extends InputError {
   }
 }
 
-// A subclass so that a search can say it in its own words: it leaves out archived channels, which the read tools can still read by ID.
+// A subclass so that a search can say it in its own words: it reaches an archived channel only by its ID in in:, not by reading it as the read tools do.
 export class ChannelNotFound extends InputError {
   constructor(spec: string) {
     super(`チャンネル「${spec}」が見つかりません。名前の誤りなら search_channels で確かめてください。参加していない非公開チャンネルとアーカイブ済みのチャンネルは名前では見つかりません（アーカイブ済みのチャンネルは書き込めませんが、読むだけなら利用者に ID を確かめて ID で指定できます）。${RETRY}${ASK_ADMIN}`);
