@@ -84,14 +84,17 @@ test('names that are not plain Mattermost names are rejected before any request'
   expect(calls.filter((c) => !c.endsWith('/users/me/teams'))).toEqual([]);
 });
 
-describe('a channel named like an ID (26 lower-case letters and digits)', () => {
+describe('a missing ID that is the name of a channel (26 lower-case letters and digits)', () => {
   const NAME = 'n'.repeat(26);
   const named = ch('f'.repeat(26), NAME, teams[0].id);
 
-  test('is looked up by name when no channel has that ID', async () => {
-    const { mm, calls } = fake({ ...routes, [`/teams/${teams[0].id}/channels/name/${NAME}`]: named });
-    expect(await resolveChannel(mm, ME, NAME)).toMatchObject({ id: named.id, name: NAME, teamName: 'team-a', raw: named });
+  test('is not used in place of the missing ID, but named in the error with its team/channel form', async () => {
+    const { mm, calls } = fake({ ...routes, [`/teams/${teams[0].id}/channels/name/${NAME}`]: named, [`/teams/name/team-a/channels/name/${NAME}`]: named });
+    await expect(resolveChannel(mm, ME, NAME)).rejects.toThrow(new InputError(
+      `チャンネル ID「${NAME}」のチャンネルはありませんが、その名前のチャンネルがあります。チャンネル名として指定するときは「team-a/${NAME}」の形で指定してください。`,
+    ));
     expect(calls).toEqual([`GET /channels/${NAME}`, 'GET /users/me/teams', `GET /teams/${teams[0].id}/channels/name/${NAME}`, `GET /teams/${teams[1].id}/channels/name/${NAME}`]);
+    expect(await resolveChannel(mm, ME, `team-a/${NAME}`)).toMatchObject({ id: named.id, name: NAME });
   });
 
   test('keeps the 404 of the ID when no channel has that name either', async () => {
@@ -102,11 +105,9 @@ describe('a channel named like an ID (26 lower-case letters and digits)', () => 
     expect(calls).toContain(`GET /teams/${teams[0].id}/channels/name/${NAME}`);
   });
 
-  test('is ambiguous when two teams have that name', async () => {
+  test('names every team that has that name', async () => {
     const { mm } = fake({ ...routes, [`/teams/${teams[0].id}/channels/name/${NAME}`]: named, [`/teams/${teams[1].id}/channels/name/${NAME}`]: ch('g'.repeat(26), NAME, teams[1].id) });
-    const e = await resolveChannel(mm, ME, NAME).catch((x) => x);
-    expect(e).toBeInstanceOf(Ambiguous);
-    expect(e.candidates).toEqual([{ team: 'team-a', name: NAME, id: 'f'.repeat(26) }, { team: 'team-b', name: NAME, id: 'g'.repeat(26) }]);
+    await expect(resolveChannel(mm, ME, NAME)).rejects.toThrow(`「team-a/${NAME}」か「team-b/${NAME}」の形で指定してください。`);
   });
 
   test('is not looked up by name after a 403, which means the ID exists', async () => {

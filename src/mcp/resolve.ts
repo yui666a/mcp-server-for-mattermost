@@ -85,11 +85,11 @@ export async function resolveChannel(mm: Mm, userId: string, spec: string, opts:
       // Only on 404 and only in lower case: a 403 means the ID exists, and a channel name cannot contain upper case.
       if (!(e instanceof ChannelFetchError && e.status === 404 && /^[a-z0-9]{26}$/.test(s))) throw e;
       const found = await byName(mm, userId, s, await myTeams(mm, userId));
-      if (found.length > 1) throw new Ambiguous(s, found.map((c) => ({ team: c.teamName, name: c.name, id: c.id })));
       if (!found.length) throw e;
-      return found[0];
+      // Not used in place of the ID: a user ID or post ID mistaken for a channel would send to whoever named a channel after it.
+      throw new InputError(`チャンネル ID「${s}」のチャンネルはありませんが、その名前のチャンネルがあります。チャンネル名として指定するときは${found.map((f) => `「${f.teamName}/${s}」`).join('か')}の形で指定してください。`);
     });
-    return 'raw' in c ? c : ref(c, await teamNameOf(mm, userId, c.team_id));
+    return ref(c, await teamNameOf(mm, userId, c.team_id));
   }
   const slash = s.indexOf('/');
   if (slash > 0) {
