@@ -162,6 +162,12 @@ describe('schedule_message', () => {
     });
   });
 
+  test('keeps the destination\'s display name with a line break on one line', async () => {
+    routes[`GET /channels/${CH}`] = () => ({ id: CH, name: 'town', display_name: 'To\nwn', team_id: TEAM, type: 'O' });
+    const r = await setup().call('schedule_message', { channel: CH, message: 'hello', at: '2026-11-03T10:00' });
+    expect(r.text).toContain(`投稿先: To wn（channel_id: ${CH}）`);
+  });
+
   test('saves the schedule without posting and reports its id, the destination, the time in UTC and JST, and where to check the result', async () => {
     const s = setup();
     const r = await s.call('schedule_message', { channel: CH, message: 'hello', root_id: ROOT, at: '2026-11-03T10:00' });
@@ -228,6 +234,15 @@ describe('schedule_message', () => {
     const r = await s.call('schedule_message', { channel: CH, message: 'one more', at: '2026-11-03T10:00' });
     expect(r.isError).toBe(true);
     expect(r.text).toContain('待機中の予約が上限の 20 件に達しています');
+  });
+
+  test('list_scheduled_messages keeps the destination\'s display name with a line break on one line', async () => {
+    const s = setup();
+    await s.schedule({ message: 'hello' });
+    routes[`GET /channels/${CH}`] = () => ({ id: CH, name: 'town', display_name: 'To\nwn', team_id: TEAM, type: 'O' });
+    const out = (await s.call('list_scheduled_messages', {})).text;
+    expect(out).toContain('To wn');
+    expect(out).not.toContain('To\nwn');
   });
 
   test('neither the message nor the time goes to the log', async () => {
@@ -731,7 +746,7 @@ describe('arguments a tool does not take', () => {
     const files = await s.call('schedule_message', { channel: CH, message: 'hello', at: '2026-11-03T10:00', files: [] });
     expect(files.isError).toBe(true);
     expect(files.text).toContain(`${GENERAL}files。`);
-    expect(files.text).toContain('中身を読めて合計 128KiB に収まるファイルを今すぐ送るなら send_message の files を、それ以外や予約では prepare_upload');
+    expect(files.text).toContain('中身を読めて合計 128KiB に収まる 1〜5 件のファイルを今すぐ送るなら、send_message の files を使えます。予約するときと、それ以外のファイルは、prepare_upload の説明の案内に従ってください。');
     const time = await s.call('schedule_message', { channel: CH, message: 'hello', at: '2026-11-03T10:00', time: '10:00' });
     expect(time.isError).toBe(true);
     expect(time.text).toContain(`${GENERAL}time。`);

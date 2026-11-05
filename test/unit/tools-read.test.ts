@@ -358,7 +358,8 @@ describe('search_posts in: filters', () => {
       ['x in:@bob 、@carol', 'in:@bob の後の「、@carol」'],
       ['x in:@bob 、carol、dave', 'in:@bob の後の「、carol、dave」'],
       ['x in:@bob 、', 'in:@bob の後の「、」'],
-      ['x in:@bob ，議事録', 'in:@bob の後の「，議事録」'],
+      ['x in:@bob ，carol', 'in:@bob の後の「，carol」'],
+      ['x in:@bob ，', 'in:@bob の後の「，」'],
       ['x channel:~@bob 、carol', 'channel:~@bob の後の「、carol」'],
       ['x in:@bob 、carol，dave', 'in:@bob の後の「、carol，dave」'],
     ])('%j is a separator error that asks for a half-width comma', async (terms, message) => {
@@ -373,6 +374,17 @@ describe('search_posts in: filters', () => {
       routes = { ...withGroup(), [`GET /teams/${T1}/channels/name/${DM_NAME}`]: () => ch(DM, DM_NAME, '', 'D') };
       await setup()('search_posts', { terms: 'x in:@bob 、議事録' });
       expect(sent()).toBe(`x in:${DM} 、議事録`);
+    });
+
+    test('a search word after the DM that starts with ， is kept as a search word', async () => {
+      routes = { ...withGroup(), [`GET /teams/${T1}/channels/name/${DM_NAME}`]: () => ch(DM, DM_NAME, '', 'D') };
+      await setup()('search_posts', { terms: 'x in:@bob ，議事録' });
+      expect(sent()).toBe(`x in:${DM} ，議事録`);
+    });
+
+    test('in:@bob、 is refused for its separator', async () => {
+      routes = withGroup();
+      expect(await setup()('search_posts', { terms: 'x in:@bob、' }, true)).toContain('@a,b の区切りは半角のカンマ（,）で書いてください。');
     });
 
     test('in:@bob、carol is refused for its separator', async () => {
@@ -451,7 +463,7 @@ describe('search_posts in: filters', () => {
     const twenty = [...Array(10).fill('in:only-a'), ...Array(9).fill('-in:town'), '-in: town'].join(' ');
     await call('search_posts', { terms: `x ${twenty}` });
     hits = [];
-    expect(await call('search_posts', { terms: `x ${twenty} in:@bob ,carol` }, true)).toContain('in: と channel: は 1 回の検索で 20 個まで指定できます。');
+    expect(await call('search_posts', { terms: `x ${twenty} in:@bob ,carol` }, true)).toContain('in: と channel: は、-in: などの除外も含めて 1 回の検索で 20 個まで指定できます。in: が多いときは検索を分け、除外が多いときは数を減らしてください（除外は検索を分けると効きません）。');
     expect(hits).toEqual([]);
   });
 
@@ -1033,6 +1045,11 @@ describe('get_unreads', () => {
     const out = await setup()('get_unreads', { limit: 100 });
     expect(asked.map((x) => x.length)).toEqual([1000, 51]);
     for (const x of asked[1]) expect(out).toContain(`@n${x}`);
+  });
+
+  test('keeps a channel\'s display name with a line break on one line', async () => {
+    routes = { ...base(), 'GET /users/me/channels': () => channels().map((x) => (x.id === OLD ? { ...x, display_name: 'O\nLD' } : x)) };
+    expect(await setup()('get_unreads', {})).toContain(`- team-a/old（表示名: O LD、channel_id: ${OLD}`);
   });
 
   test('with CRT on, counts root posts only, puts channels with mentions first, then newest root post first, and hides read, archived and mention-only channels without mentions', async () => {
@@ -3148,6 +3165,12 @@ describe('list_channel_members', () => {
     expect(out).toContain(`- @user1（名前: Ann Lee、ニックネーム: annie、役職: PM、user_id: ${user(1).id}）`);
     expect(out).toContain(`- @user2（Bot アカウント、user_id: ${user(2).id}）`);
     expect(names(out)).toEqual(['user1', 'user2', 'user3']);
+  });
+
+  test('keeps a member\'s name, nickname and position with a line break on one line', async () => {
+    routes = { ...base(), 'GET /users': () => [user(1, { first_name: 'A\nnn', nickname: 'an\u2028nie', position: 'P\nM' })] };
+    const out = await setup()('list_channel_members', { channel: C });
+    expect(out).toContain(`- @user1（名前: A nn、ニックネーム: an nie、役職: P M、user_id: ${user(1).id}）`);
   });
 
   test('pages with limit, a cursor keeping the page size; a full last page leads to an empty one that only says there is no more', async () => {
