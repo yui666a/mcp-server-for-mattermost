@@ -267,9 +267,10 @@ describe('reactions, edits and system messages', () => {
       expect(line).not.toContain('ほか');
     });
 
-    test('leaves out the item that would make it 4001, and sums up what was left out as kinds and reactions', () => {
-      const line = lineOf([...fill(4001), r('z', 'c'), r('x', 'c')]);
-      expect(line).toBe(`リアクション: ${item('a'.repeat(10), 'x')}、ほか 2 種類（リアクション 3 件）`);
+    test('leaves out the item that would make it 4001, and sums up what was left out as kinds and reactions, counting a user once per emoji', () => {
+      // y reacted with both left-out emoji, so the count is of reactions (4), not of people (3).
+      const line = lineOf([...fill(4001), r('z', 'c'), r('x', 'c'), r('y', 'c')]);
+      expect(line).toBe(`リアクション: ${item('a'.repeat(10), 'x')}、ほか 2 種類（リアクション 4 件）`);
     });
 
     test('always shows the first item, even when it alone is over the limit', () => {
