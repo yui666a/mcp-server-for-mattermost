@@ -278,7 +278,7 @@ MCP サーバー自身は管理者トークンや Bot アカウントを持た�
 | `set_custom_status` | 自分のカスタムステータス（絵文字、文言、期限）を設定する。期限は `set_status` の終了時刻と同じく読む |
 | `clear_custom_status` | 自分のカスタムステータスを消す |
 
-- どのツールも、引数（inputSchema）に無いキーを渡されたらツールを実行せずにエラーにし、受けないキーの名前を返す。MCP の SDK の既定では知らない引数を黙って捨てるので、名前を誤った引数（`file_ids` を `file_id` とするなど）を渡すと、それが無いものとして投稿や変更をしてしまうため。ツールの登録を 1 か所（`buildServer`）で包んで、各ツールの引数の定義を strict にする。そのため、ツールに新しい引数を足すときは必ず inputSchema に書く。引数を受けないツールも inputSchema に `{}` を書く（inputSchema の無いツールは包みの対象にならない）。zod のスキーマを直接渡すツールは、自分で strict にする。入れ子のオブジェクトの中のキーは対象にしない
+- どのツールも、引数（inputSchema）に無いキーを渡されたらツールを実行せずにエラーにし、受けないキーの名前を返す。MCP の SDK の既定では知らない引数を黙って捨てるので、名前を誤った引数（`file_ids` を `file_id` とするなど）を渡すと、それが無いものとして投稿や変更をしてしまうため。ツールの登録を 1 か所（`buildServer`）で包んで、各ツールの引数の定義を strict にする。そのため、ツールに新しい引数を足すときは必ず inputSchema に書く。引数を受けないツールも inputSchema に `{}` を書く（inputSchema の無いツールは包みの対象にならない）。zod のスキーマを直接渡すツールは、自分で strict にする。入れ子のオブジェクトの中のキーは対象にしない（`mark_as_read` の `channels` と `threads` の要素は例外。「既読にする」の節を参照）
 - 読み取り系のツールには MCP のツール注釈 `readOnlyHint: true` を付け、書き込み系のツール（`send_message`、`prepare_upload`、`add_reaction`、`remove_reaction`、`save_post`、`unsave_post`、`pin_post`、`unpin_post`、`edit_message`、`delete_message`、`save_draft`、`schedule_message`、`update_scheduled_message`、`cancel_scheduled_message`、`mark_as_read`、`set_status`、`set_custom_status`、`clear_custom_status`、`follow_thread`、`unfollow_thread`）には付けない。MCP クライアントが書き込みの前に利用者へ確認を求められるようにするため
 - `save_post`、`unsave_post`、`pin_post`、`unpin_post` の注釈は `readOnlyHint: false`、`destructiveHint: false`、`idempotentHint: true` とする。外す側も、利用者に見える状態は付け直しで戻せる（編集の期限を過ぎた投稿のピン留めを除く。ピン留めした人は記録されないので、他人のピン留めも付け直せる）。MCP の定義では `destructiveHint: false` は追加の更新だけを指すが、このサーバーは `mark_as_read` と同じく、取り消せるかどうかで付ける
 - 出力は LLM が読みやすいテキストとし、投稿ごとに投稿者のユーザー名、日時、本文、パーマリンク（`https://mattermost.example.com/<team>/pl/<post_id>`）を含める。読み取り系の出力には、チャンネルとチームの ID と名前も含め、LLM が続く呼び出しで ID を使えるようにする
@@ -396,6 +396,7 @@ MCP サーバー自身は管理者トークンや Bot アカウントを持た�
 - `last_post_id` を省いた項目は、結果の行に「呼んだ時点まで」を既読にしたと書く。本人の求めでない既読（投稿の本文に仕込まれた指示に従った場合など）に、後から気づけるようにするため
 - 1 件ごとの入力の誤りと Mattermost のエラーは、その項目の結果として書き、ほかの項目は続ける。既読にした項目もすでに既読の項目も無いときだけ、ツールのエラーにする。再ログイン、429、Mattermost の停止はツール全体のエラーにする。`last_post_id` を付けた呼び出しは冪等なので、失敗したらそのまま再実行してよい
 - 注釈は `destructiveHint: false`（画面の「未読にする」で戻せる）、`idempotentHint: false` とする。`last_post_id` を省いた呼び出しは、再実行の合間に届いた投稿まで既読を進めるため
+- `channels` と `threads` の要素の知らないキーは、引数の検証の段階で断り、どの項目も既読にしない（項目ごとの結果にはしない）。zod の `z.object` の既定のように捨てると、書き誤った `last_post_id` が無いものとして扱われ、最新まで既読にする。戻すには利用者が画面で「未読にする」を項目ごとに操作するしかないため
 
 ### `send_message` の二重投稿の防止
 
