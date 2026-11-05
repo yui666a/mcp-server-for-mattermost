@@ -38,7 +38,7 @@ const scheduleShape = {
     .describe('prepare_upload で、投稿先と同じチャンネルへ 24 時間以内にアップロードした file_id（1〜5 件）'),
 };
 const scheduleSchema = strictArgs(scheduleShape, {
-  files: 'files は予約では使えません。中身を読めて合計 128KiB に収まるファイルを今すぐ送るなら send_message の files を、それ以外や予約では prepare_upload でアップロードし、その file_id を file_ids に渡してください。',
+  files: 'files は予約では使えません。中身を読めて合計 128KiB に収まる 1〜5 件のファイルを今すぐ送るなら、send_message の files を使えます。予約するときと、それ以外のファイルは、prepare_upload の説明の案内に従ってください。',
 });
 type ScheduleArgs = { channel: string; message: string; root_id?: string; at: string; file_ids?: string[] };
 
@@ -181,7 +181,7 @@ export function registerScheduleTools(server: McpServer, ctx: ToolContext): void
   ) as unknown as ToolCallback<typeof scheduleSchema>);
 
   const listSchema = {
-    id: ID.optional().describe('この予約 ID の 1 件だけを、本文を切らずに返す。update_scheduled_message で本文を直す前に全文を得るのに使う。status、limit、cursor は値を見ずに無視する（型や範囲が不正ならエラー）'),
+    id: ID.optional().describe('この予約 ID の 1 件だけを、本文を切らずに返す。update_scheduled_message で本文を直す前に全文を得るのに使う。status、limit、cursor は使わない（不正な値ならエラー）'),
     status: z.enum(STATUSES).optional().describe('状態で絞る（pending: 待機中、sending: 投稿中、posted: 投稿済み、failed: 失敗）。cursor を渡したときは無視する'),
     limit: limitArg(20, 50),
     cursor: cursorArg,
@@ -196,7 +196,7 @@ export function registerScheduleTools(server: McpServer, ctx: ToolContext): void
 
   const destructive = { readOnlyHint: false, destructiveHint: true, idempotentHint: true };
   server.registerTool('update_scheduled_message', {
-    description: '待機中の本人の予約の本文か予定時刻を変える。message は本文全体を置き換える。書き換える前は、常に list_scheduled_messages に id を渡して全文を得る（一覧の本文は先頭 200 文字までで、後ろに別の行が続く）。投稿先と添付ファイルは変えられない（変えるときは取り消して予約し直す）。投稿中や投稿を試みた後の予約は変えられない',
+    description: '待機中の本人の予約の本文か予定時刻を変える。message は本文全体を置き換える。書き換える前は、常に list_scheduled_messages に id を渡して全文を得る（一覧の本文は先頭 200 文字までで、2 行目以降を字下げし、後ろに別の行が続く）。投稿先と添付ファイルは変えられない（変えるときは取り消して予約し直す）。投稿中や投稿を試みた後の予約は変えられない',
     inputSchema: updateSchema,
     annotations: destructive,
   }, guarded(ctx, 'update_scheduled_message', async (args: { id: string; message?: string; at?: string }) => updateScheduledMessage(ctx.store, uid, args),
