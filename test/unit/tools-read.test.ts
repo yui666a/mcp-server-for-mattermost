@@ -515,7 +515,7 @@ describe('search_posts in: filters', () => {
   test.each([
     ['x in:nowhere', 'チャンネル「nowhere」が見つかりません。'],
     ['x -in:nowhere', 'チャンネル「nowhere」が見つかりません。'],
-    [`x in:${pad('zz')}`, `チャンネル「${pad('zz')}」が見つかりません。`],
+    [`x in:${pad('zz')}`, `チャンネル「${pad('zz')}」が見つかりません。ID の誤りなら search_channels で確かめてください。`],
     ['x in:team-a/nowhere', 'チャンネル「team-a/nowhere」が見つかりません。'],
     [`x in:${PV}`, `チャンネル「${PV}」を見る権限がありません（参加していない非公開チャンネルなど）。`],
     ['x in:team-a/private', 'チャンネル「team-a/private」を見る権限がありません（参加していない非公開チャンネルなど）。'],
@@ -2309,6 +2309,13 @@ describe('get_file', () => {
     expect(logged).not.toContain(Buffer.from(b).toString('base64').slice(16, 40));
     expect(logged).not.toContain('SECRETPIXELS');
   });
+});
+
+test('read_channel says of a channel name it cannot find that an archived channel cannot be written to but can be read by ID', async () => {
+  routes = { 'GET /users/me/teams': () => [{ id: 't'.repeat(26), name: 'team-a' }] };
+  const out = await setup()('read_channel', { channel: 'nowhere' }, true);
+  expect(out).toContain('チャンネル「nowhere」が見つかりません。');
+  expect(out).toContain('アーカイブ済みのチャンネルは書き込めませんが、読むだけなら利用者に ID を確かめて ID で指定できます');
 });
 
 describe('read_channel', () => {
