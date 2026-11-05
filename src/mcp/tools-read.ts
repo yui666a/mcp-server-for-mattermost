@@ -336,7 +336,7 @@ export async function collapsedThreads(mm: Mm, uid: string): Promise<{ on: boole
   const server = (await mm.call<{ CollapsedThreads?: string }>(uid, 'GET', '/config/client?format=old')).CollapsedThreads ?? '';
   if (server !== 'default_on' && server !== 'default_off') return { on: server === 'always_on', label: `サーバー設定: ${server}` };
   const pref = await mm.call<{ value: string }>(uid, 'GET', CRT_PREF).catch((e) => {
-    // A 400 rather than 404 is how Mattermost answers for a user who never saved the preference.
+    // Not treating the 400 as an error: Mattermost answers 400 rather than 404 for a user who never saved the preference.
     if (e instanceof MmError && e.status === 400 && e.id === 'app.preference.get.app_error') return undefined;
     throw e;
   });
