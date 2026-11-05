@@ -546,6 +546,11 @@ export class Store {
     });
   }
 
+  otherClaimPostIds(mmUserId: string, claimId: number): Set<string> {
+    const rows = this.db.prepare('SELECT post_id FROM post_claims WHERE mm_user_id = ? AND id != ? AND post_id IS NOT NULL').all(mmUserId, claimId) as Row[];
+    return new Set(rows.map((r) => r.post_id));
+  }
+
   otherScheduledPostIds(mmUserId: string, id: string): Set<string> {
     const rows = this.db.prepare('SELECT post_id FROM scheduled_posts WHERE mm_user_id = ? AND id != ? AND post_id IS NOT NULL').all(mmUserId, id) as Row[];
     return new Set(rows.map((r) => r.post_id));
