@@ -52,6 +52,29 @@ const posts = (n: number) => {
   return { order, posts: Object.fromEntries(order.map((p, i) => [p, { id: p, user_id: 'u1', channel_id: 'c'.repeat(26), root_id: '', message: `m${i}`, create_at: 0 }])) };
 };
 
+test('search_posts looks up more than 1,000 users in calls of at most 1,000 ids, and names the users of every call', async () => {
+  // 50 posts by 50 authors, each with 2 emoji of 10 users: 1,050 users, all short enough to be named on the reactions lines.
+  const order = Array.from({ length: 50 }, (_, i) => id(i));
+  const user = (i: number, j: number) => `r${String(i * 20 + j).padStart(4, '0')}`;
+  const found = { order, posts: Object.fromEntries(order.map((p, i) => [p, {
+    id: p, user_id: `a${i}`, channel_id: 'c'.repeat(26), root_id: '', message: `m${i}`, create_at: 0,
+    metadata: { reactions: Array.from({ length: 20 }, (_, j) => ({ user_id: user(i, j), emoji_name: j < 10 ? 'x' : 'y', create_at: j })) },
+  }])) };
+  const asked: string[][] = [];
+  routes = {
+    'POST /posts/search': () => found,
+    'GET /users/me/channels': () => [{ id: 'c'.repeat(26), name: 'town', display_name: 'Town', team_id: 't'.repeat(26), type: 'O' }],
+    'GET /users/me/teams': () => [{ id: 't'.repeat(26), name: 'team-a' }],
+    'POST /users/ids': () => { const ids = bodies['/users/ids'] as string[]; asked.push(ids); return ids.map((x) => ({ id: x, username: `n${x}` })); },
+  };
+  const out = await setup()('search_posts', { terms: 'm', limit: 50 });
+  expect(asked.map((x) => x.length)).toEqual([1000, 50]);
+  const all = [...order.keys()].flatMap((i) => [`a${i}`, ...Array.from({ length: 20 }, (_, j) => user(i, j))]);
+  expect(asked.flat().sort()).toEqual(all.sort());
+  for (const x of asked[1]) expect(out).toContain(`@n${x}`);
+  expect(out).not.toContain('user_id: ');
+});
+
 test('search_posts sends the JST offset, shows the channel and team names, and notes the 100-result cap', async () => {
   routes = {
     'POST /posts/search': () => posts(100),
@@ -449,7 +472,7 @@ test('search_posts looks up the names of the users who reacted, and notes a post
   routes = {
     'POST /posts/search': () => ({ order: [P], posts: { [P]: {
       id: P, user_id: 'u1', channel_id: 'c'.repeat(26), root_id: '', message: '', create_at: 0,
-      props: { attachments: [{ text: 'x'.repeat(4001) }] }, metadata: { reactions: [{ user_id: 'u2', emoji_name: '+1' }] },
+      props: { attachments: [{ text: 'x'.repeat(4001) }] }, metadata: { reactions: [{ user_id: 'u2', emoji_name: '+1', create_at: 1 }] },
     } } }),
     'GET /users/me/channels': () => [{ id: 'c'.repeat(26), name: 'alerts', display_name: 'Alerts', team_id: 't'.repeat(26), type: 'O' }],
     'GET /users/me/teams': () => [{ id: 't'.repeat(26), name: 'team-a' }],
@@ -521,6 +544,15 @@ describe('get_post', () => {
     const out = await setup()('get_post', { post: ROOT });
     expect(out.match(/切りました/g)).toHaveLength(1);
     expect(out).toContain('\n（メッセージ添付をここで切りました。続きは Mattermost の画面で確認してください）\n');
+  });
+
+  test('looks up exactly 1,000 users (the author and 999 reacting users) in one call to /users/ids', async () => {
+    const reactions = Array.from({ length: 999 }, (_, i) => ({ user_id: `r${String(i).padStart(4, '0')}`, emoji_name: `e${String(Math.floor(i / 10)).padStart(2, '0')}`.slice(-2), create_at: i }));
+    const asked: string[][] = [];
+    routes = { ...base, [`GET /posts/${ROOT}`]: () => post({ id: ROOT, metadata: { reactions } }),
+      'POST /users/ids': () => { const ids = bodies['/users/ids'] as string[]; asked.push(ids); return ids.map((x) => ({ id: x, username: `n${x}` })); } };
+    await setup()('get_post', { post: ROOT });
+    expect(asked.map((x) => x.length)).toEqual([1000]);
   });
 
   test('accepts a bare post_id', async () => {
@@ -1148,7 +1180,7 @@ describe('get_unreads', () => {
       ...base(),
       'GET /users/me/channel_members': () => members().filter((m) => m.channel_id !== DM),
       [`GET /users/u1/teams/${T1}/threads`]: () => threadPage([thread(TH_DM, DM, 4000, { post: {
-        id: TH_DM, user_id: 'u1', channel_id: DM, root_id: '', message: 'mine', create_at: 100, metadata: { reactions: [{ user_id: 'u3', emoji_name: 'eyes' }] },
+        id: TH_DM, user_id: 'u1', channel_id: DM, root_id: '', message: 'mine', create_at: 100, metadata: { reactions: [{ user_id: 'u3', emoji_name: 'eyes', create_at: 1 }] },
       } })]),
       [`GET /users/u1/teams/${T2}/threads`]: () => threadPage([]),
       'POST /users/ids': () => [{ id: 'u1', username: 'alice' }, { id: 'u2', username: 'bob' }, { id: 'u3', username: 'carol' }],
@@ -2831,7 +2863,7 @@ describe('list_saved_posts', () => {
   });
 
   test('looks up the names of the users who reacted, and notes a post whose message attachments were cut, as search_posts does', async () => {
-    const p = { ...post('r'.repeat(26), 1000), props: { attachments: [{ text: 'x'.repeat(4001) }] }, metadata: { reactions: [{ user_id: 'u2', emoji_name: '+1' }] } };
+    const p = { ...post('r'.repeat(26), 1000), props: { attachments: [{ text: 'x'.repeat(4001) }] }, metadata: { reactions: [{ user_id: 'u2', emoji_name: '+1', create_at: 1 }] } };
     routes = { ...base(), [FLAGGED]: byOffset([p]), 'POST /users/ids': () => [{ id: 'u1', username: 'alice' }, { id: 'u2', username: 'bob' }] };
     const out = await setup()('list_saved_posts', {});
     expect(bodies['/users/ids']).toEqual(['u1', 'u2']);
