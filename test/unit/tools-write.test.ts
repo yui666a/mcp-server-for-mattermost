@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto';
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
+import { BODY_CUT_NOTE } from '../../src/mcp/format.ts';
 import { MAX_OPEN_UPLOAD_URLS, type Store } from '../../src/store.ts';
 import { makeApp } from './helpers.ts';
 
@@ -289,7 +290,11 @@ describe('edit_message and delete_message', () => {
     test('the message argument says to reread the post with get_post, drop the 2-space indent, and not rewrite a cut post from the output', async () => {
       const t = (await setup().tools()).find((x) => x.name === 'edit_message')! as unknown as { description: string; inputSchema: { properties: { message: { description: string } } } };
       const d = t.inputSchema.properties.message.description;
-      for (const s of ['先に get_post で読み直す', '2 文字字下げ', '先頭の 2 文字の空白を外す', '本文を 4000 文字で切りました', '出力を元に書き換えない']) expect(d).toContain(s);
+      for (const s of ['先に get_post で読み直す', '2 文字字下げ', '先頭の 2 文字の空白を外す', '出力を元に書き換えない']) expect(d).toContain(s);
+      // The very wording get_post writes when it cuts a message, so changing the limit or the note cannot leave this guidance behind.
+      expect(d).toContain(`「${BODY_CUT_NOTE}」`);
+      expect(d).toContain('LF になり');
+      expect(d).toContain('Mattermost の画面で編集するよう利用者に伝える');
       expect(t.description).toBe('本人の投稿の本文を書き換える。他人、webhook、Bot の投稿とシステムメッセージは扱わない。元の本文は上書きされる。編集で足したメンションは通知されない');
     });
 

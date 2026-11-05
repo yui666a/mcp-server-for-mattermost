@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto';
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
+import { BODY_CUT_NOTE } from '../../src/mcp/format.ts';
 import { makeApp } from './helpers.ts';
 
 type Route = (req: Request) => unknown;
@@ -471,7 +472,8 @@ describe('get_post', () => {
 
   test('notes at the end that the message was cut', async () => {
     routes = { ...base, [`GET /posts/${ROOT}`]: () => post({ id: ROOT, message: 'x'.repeat(4001) }) };
-    expect((await setup()('get_post', { post: ROOT })).split('\n').at(-1)).toBe('（本文を 4000 文字で切りました）');
+    expect((await setup()('get_post', { post: ROOT })).split('\n').at(-1)).toBe(`（${BODY_CUT_NOTE}）`);
+    expect(BODY_CUT_NOTE).toBe('本文を 4000 文字で切りました');
   });
 
   test('notes cut message attachments only where they were cut, not again at the end', async () => {
