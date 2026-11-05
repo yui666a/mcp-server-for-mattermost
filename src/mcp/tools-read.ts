@@ -399,9 +399,9 @@ export function registerReadTools(server: McpServer, ctx: ToolContext): void {
       }) as unknown as ToolCallback<S>);
   }
 
-  // The channel line of a post or file, and the team its permalink uses (DMs and group DMs have none, so the first team of the user).
+  // Not the channel's own team for the permalink of a DM or group DM: they have none, so the user's first team.
   async function places(mm: Mm): Promise<(channelId: string) => { where: string; team: string }> {
-    // Not the default listing: it leaves out archived channels the user is still in, where saved posts can sit.
+    // Not the default listing: it leaves out archived channels the user is still in, where saved posts and files can sit.
     const channels = new Map((await mm.call<MmChannel[]>(uid, 'GET', '/users/me/channels?include_deleted=true')).map((x) => [x.id, x]));
     const teams = await myTeams(mm, uid);
     const teamName = new Map(teams.map((t) => [t.id, t.name]));
