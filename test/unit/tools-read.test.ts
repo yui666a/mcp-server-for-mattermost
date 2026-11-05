@@ -1024,7 +1024,8 @@ describe('get_unreads', () => {
     const full = () => threadPage(Array.from({ length: 50 }, () => thread(`t${String(n++).padStart(25, '0')}`, OLD, 5000)), 321);
     routes = { ...base(), [`GET /users/u1/teams/${T1}/threads`]: full, [`GET /users/u1/teams/${T2}/threads`]: () => Response.json({ id: 'x', message: 'nope' }, { status: 403 }) };
     const out = await setup()('get_unreads', {});
-    expect(out).not.toContain('の未読スレッドは、');
+    // Not matching the note's wording: in this output total_unread_threads appears only in the cap note, the marker the test "...for at most 4 pages..." also checks.
+    expect(out).not.toContain('total_unread_threads');
     expect(out).toContain('未読のあるチャンネル: 4 件、未読のスレッド: 取得できませんでした');
     expect(out).toContain('未読のスレッドを取得できませんでした');
   });
@@ -2263,6 +2264,20 @@ describe('list_saved_posts', () => {
   const asked = (key: string) => urls.filter((u) => u.startsWith(FLAGGED)).map((u) => Number(new URL(`http://x${u.slice(4)}`).searchParams.get(key)));
   const offsets = () => asked('page');
   const NOTE = '新しい 1000 件だけ';
+
+  test('labels a saved post in an archived channel with that channel and builds the permalink from its team', async () => {
+    const OLD = 'g'.repeat(26);
+    const T2 = 'u'.repeat(26);
+    routes = { ...base(),
+      'GET /users/me/teams': () => [{ id: T, name: 'team-a' }, { id: T2, name: 'team-b' }],
+      // Mattermost lists an archived channel only when include_deleted is true.
+      'GET /users/me/channels': (req) => (new URL(req.url).searchParams.get('include_deleted') === 'true' ? [{ id: OLD, name: 'old', display_name: 'Old', team_id: T2, type: 'O', delete_at: 5 }] : []),
+      [FLAGGED]: byOffset([{ ...post('x'.repeat(26), 2), channel_id: OLD }]) };
+    const out = await setup()('list_saved_posts', {});
+    expect(urls).toContain('GET /users/me/channels?include_deleted=true');
+    expect(out).toContain(`チャンネル: Old（name: old、channel_id: ${OLD}）`);
+    expect(out).toContain(`https://mm.example/team-b/pl/${'x'.repeat(26)}`);
+  });
 
   test('lists the saved posts newest first (ties by post_id) with their channel and team', async () => {
     const [a, b, c] = [post('b'.repeat(26), 2000), post('a'.repeat(26), 2000), post('c'.repeat(26), 3000)];
