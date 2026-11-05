@@ -6,7 +6,7 @@ import type { MmPost } from '../../src/mcp/format.ts';
 import type { Mm } from '../../src/mcp/resolve.ts';
 import { checkRoot, sendMessage } from '../../src/mcp/tools-send.ts';
 import { INFLIGHT_GRACE, Store } from '../../src/store.ts';
-import { SLOW, SLOW_TEST } from './helpers.ts';
+import { freezeCleanupClock, SLOW, SLOW_TEST } from './helpers.ts';
 
 const UID = 'u'.repeat(26);
 const CH = 'c'.repeat(26);
@@ -15,7 +15,7 @@ const DM = 'd'.repeat(26);
 const BASE = 'https://mm.example';
 const id = (n: number) => `p${String(n).padStart(25, '0')}`;
 
-type Mode = 'before' | 'after' | 'lost' | 'reject' | 'rate429' | 'relogin' | undefined;
+type Mode = 'before' | 'after' | 'lost' | 'reject' | 'rate429' | 'rate429doubt' | 'relogin' | undefined;
 
 type Upload = { query: URLSearchParams; type: string; bytes: Uint8Array };
 type FakeOpts = {
@@ -84,6 +84,7 @@ function fakeMm(opts: FakeOpts = {}) {
         created.push(body);
         if (mode === 'reject') throw new MmError(400, 'bad_request', 'bad');
         if (mode === 'rate429') throw new RateLimited(5, true);
+        if (mode === 'rate429doubt') throw new RateLimited(5, true, true);
         if (mode === 'lost') throw new UpstreamUnavailable('Mattermost unreachable', true);
         const dup = body.pending_post_id ? byPending.get(body.pending_post_id) : undefined;
         const kept = body.file_ids && (opts.keepFiles?.(body.file_ids) ?? body.file_ids);
@@ -185,6 +186,61 @@ test('a re-login that Mattermost only answered with 401 leaves no duplicate-guar
   const r = await f.send({ channel: 'team-a/dup', message: 'hello' });
   expect(textOf(r)).toContain('投稿しました。');
   expect(f.created).toHaveLength(1);
+});
+
+describe('a retry with inline files tells posts apart by the size of the files', () => {
+  const FILE = { name: 'a.txt', content_text: 'hello' };
+  const lost = async () => {
+    let first = true;
+    const f = fakeMm({ failPost: () => (first ? ((first = false), 'lost') : undefined) });
+    await expect(f.send({ channel: 'team-a/dup', message: 'hello', files: [FILE] })).rejects.toBeInstanceOf(UpstreamUnavailable);
+    return f;
+  };
+  const withFile = (f: ReturnType<typeof fakeMm>, postId: string, size: number) =>
+    f.posts.push({ id: postId, user_id: UID, channel_id: CH, root_id: '', message: 'hello', create_at: 1_000_001, file_ids: [`f${postId}`], metadata: { files: [{ id: `f${postId}`, size }] } } as MmPost);
+  const resend = (f: ReturnType<typeof fakeMm>) => f.send({ channel: 'team-a/dup', message: 'hello', files: [FILE] });
+
+  test('a post whose file has the same size is taken for the earlier attempt', async () => {
+    const f = await lost();
+    withFile(f, id(7), 5);
+    f.advance(31_000);
+    expect(textOf(await resend(f))).toContain(`post_id: ${id(7)}`);
+    expect(f.created).toHaveLength(1);
+  });
+
+  test('when the only candidate differs in file size, it posts nothing, says it cannot tell, and keeps saying so on a resend', async () => {
+    const f = await lost();
+    withFile(f, id(7), 6);
+    f.advance(31_000);
+    const r = await resend(f);
+    expect(r.isError).toBe(true);
+    expect(textOf(r)).toContain('添付ファイルの大きさが違うため、この送信が投稿されたかは分かりません');
+    expect(textOf(r)).toContain('allow_duplicate: true');
+    f.advance(31_000);
+    expect(textOf(await resend(f))).toContain('添付ファイルの大きさが違うため');
+    expect(f.created).toHaveLength(1);
+  });
+
+  test('a post whose file has the same size is taken even when an older post differs in size', async () => {
+    const f = await lost();
+    withFile(f, id(6), 6);
+    withFile(f, id(7), 5);
+    f.posts[f.posts.length - 2].create_at = 1_000_000;
+    f.advance(31_000);
+    expect(textOf(await resend(f))).toContain(`post_id: ${id(7)}`);
+    expect(f.created).toHaveLength(1);
+  });
+
+  test('a candidate of another size that another send has recorded is left out, and the send posts again', async () => {
+    const f = await lost();
+    withFile(f, id(7), 6);
+    const c = f.store.claimPost({ mmUserId: UID, channelId: CH, bodyHash: 'another send' });
+    if (c.kind !== 'new') throw new Error('claim not new');
+    f.store.completePost(c.id, id(7));
+    f.advance(31_000);
+    await resend(f);
+    expect(f.created).toHaveLength(2);
+  });
 });
 
 describe('a retry does not take a post another record owns for its own earlier post', () => {
@@ -334,6 +390,13 @@ test('a 429 from Mattermost drops the claim', async () => {
   const f = fakeMm({ failPost: () => (first ? ((first = false), 'rate429') : undefined) });
   await expect(f.send({ channel: 'team-a/dup', message: '429' })).rejects.toBeInstanceOf(RateLimited);
   expect((await f.send({ channel: 'team-a/dup', message: '429' })).isError).toBeFalsy();
+});
+
+test('a 429 after an earlier request of the call may have posted keeps the claim', async () => {
+  let first = true;
+  const f = fakeMm({ failPost: () => (first ? ((first = false), 'rate429doubt') : undefined) });
+  await expect(f.send({ channel: 'team-a/dup', message: '429' })).rejects.toBeInstanceOf(RateLimited);
+  expect(textOf(await f.send({ channel: 'team-a/dup', message: '429' }))).toContain('処理中');
 });
 
 test('a failed lookup on the retry path keeps the claim', async () => {
@@ -784,6 +847,7 @@ describe('a draft with the sent message is cleared after the post', () => {
   });
 
   test('the cleanup waits and retries while this MCP\'s own Limiter is full, then clears the draft', async () => {
+    freezeCleanupClock();
     let busy = 2;
     let delBusy = 1;
     const f = fakeMm({
@@ -807,6 +871,7 @@ describe('a draft with the sent message is cleared after the post', () => {
   });
 
   test('a DELETE retried while the Limiter is full is not sent once less than a second is left', async () => {
+    vi.spyOn(AbortSignal, 'timeout').mockImplementation(() => new AbortController().signal);
     vi.spyOn(performance, 'now').mockReturnValueOnce(0).mockReturnValueOnce(3000).mockReturnValue(4500);
     const f = fakeMm({ drafts: () => [draft()], failDelete: () => new RateLimited(1, false) });
     const r = await f.send({ channel: 'team-a/dup', message: 'hello' });
@@ -825,7 +890,8 @@ describe('a draft with the sent message is cleared after the post', () => {
     expect(logged.map((l) => JSON.parse(l))).toEqual([expect.objectContaining({ event: 'draft_cleanup_failed', name: 'TimeoutError' })]);
   });
 
-  test('a client cancelling in the middle of the wait stops it without calling Mattermost again', async () => {
+  test('a client cancelling during the wait for the Limiter stops it without calling Mattermost again', async () => {
+    freezeCleanupClock();
     const client = new AbortController();
     const f = fakeMm({ drafts: () => { setTimeout(() => client.abort(), 20); throw new RateLimited(1, false); } });
     await f.send({ channel: 'team-a/dup', message: 'hello' }, client.signal);
@@ -833,7 +899,7 @@ describe('a draft with the sent message is cleared after the post', () => {
     expect(logged).toEqual([]);
   });
 
-  test('waiting for the Limiter stops when the client cancels, without logging or calling Mattermost again', async () => {
+  test('a client that has already cancelled when the Limiter refuses stops the cleanup without logging or calling Mattermost again', async () => {
     const client = new AbortController();
     const f = fakeMm({ drafts: () => { client.abort(); throw new RateLimited(1, false); } });
     await f.send({ channel: 'team-a/dup', message: 'hello' }, client.signal);
