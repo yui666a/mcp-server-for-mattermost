@@ -20,7 +20,7 @@ This project targets the other case:
 - **Works with Team Edition.** It is developed and tested against Mattermost Team Edition 11.7.8.
 - **Per-user OAuth with its own authorization server.** MCP clients register themselves (Dynamic Client Registration) and receive tokens that are valid only for this server. The user's Mattermost tokens are kept server-side, encrypted, and are never handed to the MCP client (no token passthrough). Every authorization shows a consent page that displays the client's redirect URI.
 - **Scheduled posts on Team Edition.** Mattermost's scheduled-post API is not available on Team Edition, so the server stores scheduled posts itself and posts them with the user's token when they are due.
-- **Guard rails for an LLM caller.** It suppresses duplicate posts when a client retries, edits and deletes only the user's own posts, refuses to delete a thread root that has replies, does not overwrite a different draft unless asked, and clears a draft with the same text in the same place once that text is posted with `send_message` (scheduled posts leave it).
+- **Guard rails for an LLM caller.** It suppresses duplicate posts when a client retries, edits and deletes only the user's own posts, refuses to delete a thread root that has replies, does not overwrite a different draft unless asked, and clears a draft with the same text in the same place once that text is posted with `send_message` (a draft with attachments is kept, and scheduled posts leave it).
 
 ## Tools
 
@@ -44,7 +44,7 @@ This project targets the other case:
 | `mark_as_read` | Mark channels and threads read, skipping channels with posts by anyone else after the newest post read |
 | `search_users` | Find users by name or username |
 | `get_user` | A user's profile with time zone, local time, and status |
-| `send_message` | Post to a channel or thread (`@username`, or `@a,b` for a group DM, works even before the DM exists), optionally with small inline files or files uploaded through `prepare_upload`; clears a draft with the same text afterwards |
+| `send_message` | Post to a channel or thread (`@username`, or `@a,b` for a group DM, works even before the DM exists), optionally with small inline files or files uploaded through `prepare_upload`; clears a draft with the same text afterwards unless the draft has attachments |
 | `prepare_upload` | Issue a one-time URL for uploading local files (screenshots, PDFs, photos) with `curl` (creates the DM for `@username` or `@a,b` if it does not exist yet); for clients that can run commands on the user's machine, such as Claude Code and Codex CLI |
 | `add_reaction` / `remove_reaction` | Add or remove the user's own reaction |
 | `save_post` / `unsave_post` | Save (flag) a post in a joined channel, or remove it from the saved posts |
