@@ -11,6 +11,11 @@ export type MmPost = {
 };
 export type PostCtx = { baseUrl: string; teamName: string; usernames: Map<string, string>; channel?: string };
 
+// For a 403 or 404 that may be Mattermost's passing failure as much as a lost membership.
+export const RETRY = '参加しているはずなら、Mattermost の一時的な障害の可能性があります。少し待ってから再試行してください。';
+// RETRY for a message that has already named the passing failure as a cause.
+export const RETRY_SOON = '参加しているはずなら、少し待ってから再試行してください。';
+export const ASK_ADMIN = '続くなら、チャンネルから外されたか、サーバーの権限の設定で読む権限が外されている可能性があるので、管理者に確かめてください。';
 export const BAD_CURSOR = 'cursor が不正です。前回の出力の next_cursor をそのまま渡してください。';
 const JST_MS = 9 * 3600_000;
 const segmenter = new Intl.Segmenter();
