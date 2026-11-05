@@ -195,7 +195,7 @@ export function channelInline(c: ChannelRef): string {
 function channelError(e: unknown): never {
   // Not converting a missing team: /teams/name/{team}/channels/name/{channel} answers it with 404 too.
   if (e instanceof ChannelFetchError && e.id !== 'app.team.get_by_name.missing.app_error') {
-    if (e.status === 403) throw new InputError('このチャンネルを見る権限がありません（参加していない非公開チャンネルなど）。参加しているはずなら、Mattermost の一時的な障害の可能性があります。少し待ってから再試行してください。');
+    if (e.status === 403) throw new InputError('このチャンネルを見る権限がありません（参加していない非公開チャンネルなど）。参加しているはずなら、Mattermost の一時的な障害の可能性があります。少し待ってから再試行してください。続くなら、チャンネルから外されたか、サーバーの権限の設定で読む権限が外されている可能性があるので、管理者に確かめてください。');
     if (e.status === 404) throw new InputError('チャンネルが見つかりません（参加していない非公開チャンネルを名前で指定した場合も、Mattermost はこの結果を返します）');
   }
   throw e;
@@ -917,7 +917,7 @@ export function registerReadTools(server: McpServer, ctx: ToolContext): void {
           `種類: ${kind[ch.raw.type] ?? ch.raw.type}`,
           ...indented('目的', ch.raw.purpose || 'なし'),
           ...indented('ヘッダー', ch.raw.header || 'なし'),
-          `メンバー数: ${stats ? stats.member_count : '取得できません（参加していないか、一時的な障害）'}`,
+          `メンバー数: ${stats ? stats.member_count : '取得できません（参加していないか、一時的な障害か、権限の設定）'}`,
         );
       }
       // Sorting here rather than asking Mattermost for a page: /pinned has neither a limit nor paging.
@@ -945,7 +945,7 @@ export function registerReadTools(server: McpServer, ctx: ToolContext): void {
       const q = new URLSearchParams({ in_channel: ch.id, active: 'true', page: String(page), per_page: String(per) });
       // Not rewording the 403 of /users alone: the user may leave the channel before /stats.
       const refused = (e: unknown): never => {
-        if (e instanceof MmError && e.status === 403) throw new InputError('このチャンネルのメンバーを見る権限がありません。参加していないチャンネルのメンバーは、公開チャンネルでも見られません。参加しているはずなら、Mattermost の一時的な障害の可能性があります。少し待ってから再試行してください。');
+        if (e instanceof MmError && e.status === 403) throw new InputError('このチャンネルのメンバーを見る権限がありません。参加していないチャンネルのメンバーは、公開チャンネルでも見られません。参加しているはずなら、Mattermost の一時的な障害の可能性があります。少し待ってから再試行してください。続くなら、チャンネルから外されたか、サーバーの権限の設定で読む権限が外されている可能性があるので、管理者に確かめてください。');
         throw e;
       };
       const users = await mm.call<UserRef[]>(uid, 'GET', `/users?${q}`).catch(refused);
