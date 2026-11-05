@@ -732,6 +732,8 @@ describe('get_post', () => {
     expect(await call('read_thread', { post_id: ROOT }, true)).toBe('この投稿のチャンネルが見つかりません（取得の合間に削除されたなど）。');
     routes = { ...base, [`GET /posts/${ROOT}`]: () => post({ id: ROOT }), [`GET /posts/${ROOT}/thread`]: mmError(403) };
     expect(await call('read_thread', { post_id: ROOT }, true)).toBe('このスレッドを見る権限がありません。参加しているはずなら、Mattermost の一時的な障害の可能性があります。少し待ってから再試行してください。続くなら、チャンネルから外されたか、サーバーの権限の設定で読む権限が外されている可能性があるので、管理者に確かめてください。');
+    routes[`GET /posts/${ROOT}/thread`] = mmError(404);
+    expect(await call('read_thread', { post_id: ROOT }, true)).toBe('このスレッドが見つかりません（取得の合間に削除されたなど）。');
   });
 });
 
