@@ -2,7 +2,7 @@ import type { McpServer, ToolCallback } from '@modelcontextprotocol/sdk/server/m
 import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
 import { z } from 'zod';
 import { MmError, UpstreamUnavailable, type MmClient } from '../mattermost/client.ts';
-import { BAD_CURSOR, decodeCursor, encodeCursor, fileLine, formatPost, formatTime, graphemeCount, InputError, localTime, postTruncated, postUserIds, truncate, type MmFileInfo, type MmPost } from './format.ts';
+import { BAD_CURSOR, BODY_CUT_NOTE, BODY_MAX_CHARS, decodeCursor, encodeCursor, fileLine, formatPost, formatTime, graphemeCount, InputError, localTime, postTruncated, postUserIds, truncate, type MmFileInfo, type MmPost } from './format.ts';
 import { pageCursor, paginate } from './paging.ts';
 import { mentionsMe, mentionTerms, type MentionUser } from './mentions.ts';
 import { parsePostRef } from './permalink.ts';
@@ -159,7 +159,7 @@ export function render({ lines, next, posts = [], notes = [] }: Page): string {
   return [
     ...lines,
     ...notes,
-    ...(posts.some(postTruncated) ? ['（本文かメッセージ添付を 4000 文字で切った投稿があります）'] : []),
+    ...(posts.some(postTruncated) ? [`（本文かメッセージ添付を ${BODY_MAX_CHARS} 文字で切った投稿があります）`] : []),
     next ? `next_cursor: ${encodeCursor(next)}` : '（続きはありません）',
   ].join('\n');
 }
@@ -239,13 +239,13 @@ function channelFilters(words: string[]): { at: number; span: number; value: str
   return found;
 }
 
-async function filterChannelIds(mm: Mm, userId: string, spec: string, exclude: boolean, notes: string[]): Promise<string[]> {
+async function filterChannelIds(mm: Mm, userId: string, spec: string, written: string, exclude: boolean, notes: string[]): Promise<string[]> {
   try {
     return [(await resolveChannel(mm, userId, spec)).id];
   } catch (e) {
     if (e instanceof Ambiguous) {
       const ids = [...new Set(e.candidates.map((c) => c.id))];
-      if (ids.length > 1 && !exclude) notes.push(`in:${spec} は複数のチームにあるため、すべてで探しました（${e.candidates.map((c) => c.team).join('、')}）。`);
+      if (ids.length > 1 && !exclude) notes.push(`${written} は複数のチームにあるため、すべてで探しました（${e.candidates.map((c) => c.team).join('、')}）。`);
       return ids;
     }
     // No DM means no posts to exclude, so the condition is dropped rather than failing the search.
@@ -268,12 +268,15 @@ export async function resolveInFilters(mm: Mm, userId: string, terms: string): P
   if (filters.length > MAX_CHANNEL_FILTERS) throw new InputError(`in: と channel: は 1 回の検索で ${MAX_CHANNEL_FILTERS} 個まで指定できます。`);
   const notes: string[] = [];
   const out = words.map((w) => [w]);
+  const written = (f: (typeof filters)[number]) => words.slice(f.at, f.at + f.span).join(' ');
+  // Trimmed here, not only in resolveChannel: a U+FEFF in front would otherwise hide a leading ~ or @ from the checks below.
+  const specOf = (f: (typeof filters)[number]) => f.value.trim().replace(/^~+/, '');
   for (const f of filters) {
     const next = words[f.at + f.span];
     // Not treating every 、 as a comma: 、 also starts search words such as 、議事録.
-    if (f.value.replace(/^~+/, '').startsWith('@') && /^[,，]|^、[A-Za-z0-9._,@、，-]*$/.test(next ?? '')) {
+    if (specOf(f).startsWith('@') && /^[,，]|^、[A-Za-z0-9._,@、，-]*$/.test(next ?? '')) {
       const fullWidth = /^[、，]/.test(next ?? '') ? '区切りは半角のカンマ（,）で書いてください。' : '';
-      throw new InputError(`in:${f.value} の後の「${next}」: 検索の in: では @a,b のようにカンマの前後に空白を入れずに書いてください。${fullWidth}`);
+      throw new InputError(`${written(f)} の後の「${next}」: 検索の条件では @a,b のようにカンマの前後に空白を入れずに書いてください。${fullWidth}`);
     }
   }
   // Kept for this search only, not across searches: a channel created or joined in between would stay unseen.
@@ -288,8 +291,8 @@ export async function resolveInFilters(mm: Mm, userId: string, terms: string): P
   };
   // Sequential rather than Promise.all: parallel lookups would exceed the per-user concurrency limit.
   for (const f of filters) {
-    const spec = f.value.replace(/^~+/, '');
-    const ids = await filterChannelIds(cached, userId, spec, f.exclude, notes);
+    const spec = specOf(f);
+    const ids = await filterChannelIds(cached, userId, spec, written(f), f.exclude, notes);
     out.splice(f.at, f.span, ids.map((id) => `${f.exclude ? '-' : ''}in:${id}`), ...(f.span === 2 ? [[]] : []));
   }
   const rewritten = out.flat().join(' ');
@@ -418,19 +421,28 @@ export function registerReadTools(server: McpServer, ctx: ToolContext): void {
       }) as unknown as ToolCallback<S>);
   }
 
-  async function withChannels(mm: Mm, shown: MmPost[]): Promise<string[]> {
-    // Not the default listing: it leaves out archived channels the user is still in, where saved posts can sit.
+  // Not the channel's own team for the permalink of a DM or group DM: they have none, so the user's first team.
+  async function places(mm: Mm): Promise<(channelId: string) => { where: string; team: string }> {
+    // Not the default listing: it leaves out archived channels the user is still in, where saved posts and files can sit.
     const channels = new Map((await mm.call<MmChannel[]>(uid, 'GET', '/users/me/channels?include_deleted=true')).map((x) => [x.id, x]));
     const teams = await myTeams(mm, uid);
     const teamName = new Map(teams.map((t) => [t.id, t.name]));
-    const users = await usernames(mm, uid, shown);
-    return shown.map((p) => {
-      const ch = channels.get(p.channel_id);
+    return (channelId) => {
+      const ch = channels.get(channelId);
       const team = ch?.team_id ? teamName.get(ch.team_id) : undefined;
       const where = ch
         ? channelLines({ id: ch.id, name: ch.name, displayName: ch.display_name, teamId: ch.team_id, teamName: team ?? '' }).join(' | ')
-        : `channel_id: ${p.channel_id}`;
-      return formatPost(p, { baseUrl: base, teamName: team ?? teams[0]?.name ?? '', usernames: users, channel: where });
+        : `channel_id: ${channelId}`;
+      return { where, team: team ?? teams[0]?.name ?? '' };
+    };
+  }
+
+  async function withChannels(mm: Mm, shown: MmPost[]): Promise<string[]> {
+    const placeOf = await places(mm);
+    const users = await usernames(mm, uid, shown);
+    return shown.map((p) => {
+      const { where, team } = placeOf(p.channel_id);
+      return formatPost(p, { baseUrl: base, teamName: team, usernames: users, channel: where });
     });
   }
 
@@ -539,21 +551,18 @@ export function registerReadTools(server: McpServer, ctx: ToolContext): void {
       const shown = all.slice(page * per, (page + 1) * per);
       const lines = [`ファイルの検索: ${terms}`];
       if (shown.length) {
-        const channels = new Map((await mm.call<MmChannel[]>(uid, 'GET', '/users/me/channels')).map((x) => [x.id, x]));
-        const teams = await myTeams(mm, uid);
-        const teamName = new Map(teams.map((t) => [t.id, t.name]));
+        const placeOf = await places(mm);
         // Not looking up the uploader of a channel bookmark file: its user_id is the fixed string "bookmark".
         const ids = [...new Set(shown.filter((f) => f.post_id).map((f) => f.user_id))];
         const users = ids.length ? new Map((await mm.call<UserRef[]>(uid, 'POST', '/users/ids', ids)).map((u) => [u.id, u.username])) : new Map<string, string>();
         for (const f of shown) {
-          const ch = channels.get(f.channel_id);
-          const team = ch?.team_id ? teamName.get(ch.team_id) : undefined;
+          const { where, team } = placeOf(f.channel_id);
           const who = users.get(f.user_id);
           lines.push(
             `--- ${fileLine(f)}`,
             `${f.post_id ? (who ? `@${who}` : `user_id: ${f.user_id}`) : 'チャンネルのブックマークのファイル（投稿なし）'} | ${formatTime(f.create_at)}`,
-            ch ? channelLines({ id: ch.id, name: ch.name, displayName: ch.display_name, teamId: ch.team_id, teamName: team ?? '' }).join(' | ') : `channel_id: ${f.channel_id}`,
-            ...(f.post_id ? [`post_id: ${f.post_id}`, `${base}/${team ?? teams[0]?.name ?? ''}/pl/${f.post_id}`] : []),
+            where,
+            ...(f.post_id ? [`post_id: ${f.post_id}`, `${base}/${team}/pl/${f.post_id}`] : []),
           );
         }
       } else lines.push('一致するファイルはありません。');
@@ -598,7 +607,7 @@ export function registerReadTools(server: McpServer, ctx: ToolContext): void {
         r.order.map((id) => r.posts[id]).filter(Boolean).sort(oldestFirst),
         (last) => ({ channel_id: ch.id, after: last.id, per_page: per, crt }),
         c ? '投稿はありません。' : '未読はありません。',
-        `${sinceAgain}）`,
+        `${sinceAgain}。同じミリ秒の投稿が多いときは、limit を大きくして読み直すと抜けにくくなります）`,
       );
       if (range) {
         if (rc && rc.channel_id !== ch.id) throw new InputError(BAD_CURSOR);
@@ -609,10 +618,10 @@ export function registerReadTools(server: McpServer, ctx: ToolContext): void {
         };
         const forward = async (after: string | undefined, got: MmPost[]) => {
           for (let at = after; at && got.length <= per;) {
-            // Not taking per+1 as for a page shown: the posts of the last millisecond are left to the next fetch, which would then always be needed.
-            const page = (await posts({ after: at, per_page: String(per + 2) })).sort(oldestFirst);
-            const done = page.length <= per + 1 || page.some((p) => range.until !== undefined && p.create_at >= range.until);
-            const n = done ? page.length : tieStart(page) || page.length;
+            const page = (await posts({ after: at, per_page: String(per + 1) })).sort(oldestFirst);
+            const done = page.length <= per || page.some((p) => range.until !== undefined && p.create_at >= range.until);
+            // Not leaving the last millisecond to the next fetch when the page fills the result: renderPage moves it to the next page, and leaving it always would cost a second fetch.
+            const n = done || got.length + page.filter(inRange).length > per ? page.length : tieStart(page) || page.length;
             got.push(...page.slice(0, n).filter(inRange));
             if (done) break;
             at = page[n - 1].id;
@@ -655,7 +664,7 @@ export function registerReadTools(server: McpServer, ctx: ToolContext): void {
           all,
           (last) => ({ channel_id: ch.id, after: last.id, since: range.since, until: range.until, per_page: per }),
           'この範囲に投稿はありません。',
-          `${sinceAgain}${range.until === undefined ? '' : '。until は前と同じ値を渡してください'}）`,
+          `${sinceAgain}${range.until === undefined ? '' : '。until は前と同じ値を渡してください'}。同じミリ秒の投稿が多いときは、limit を大きくして読み直すと抜けにくくなります）`,
         );
       }
       let head: string[] = [];
@@ -687,7 +696,7 @@ export function registerReadTools(server: McpServer, ctx: ToolContext): void {
       // Paging with before=<post_id> rather than page numbers: new posts arriving between calls would shift pages.
       const q = new URLSearchParams({ per_page: String(per + 1), ...(c && 'before' in c ? { before: c.before } : {}), skipFetchThreads: 'true' });
       const r = await mm.call<PostList>(uid, 'GET', `/channels/${ch.id}/posts?${q}`);
-      return renderPage(head, r.order.map((id) => r.posts[id]).filter(Boolean), (last) => ({ before: last.id, per_page: per }), '投稿はありません。', 'cursor を渡さずに呼ぶと、最新から読み直せます）');
+      return renderPage(head, r.order.map((id) => r.posts[id]).filter(Boolean), (last) => ({ before: last.id, per_page: per }), '投稿はありません。', 'cursor を渡さずに呼ぶと、最新から読み直せます。同じミリ秒の投稿が多いときは、limit を大きくして読み直すと抜けにくくなります）');
     });
 
   tool('read_thread', 'スレッドの親投稿と返信を古い順に読む。post_id はスレッド内のどの投稿でもよい。親投稿は最初のページにだけ含める',
@@ -715,7 +724,7 @@ export function registerReadTools(server: McpServer, ctx: ToolContext): void {
       });
     });
 
-  tool('get_post', '1 件の投稿を読む。post は post_id か、パーマリンクの URL（…/<チーム名>/pl/<post_id>）。本文は各行を 2 文字字下げし、4000 文字を超える本文は切って出す（edit_message で書き換えるときは字下げを外し、切った投稿は出力を元に書き換えない）',
+  tool('get_post', `1 件の投稿を読む。post は post_id か、パーマリンクの URL（…/<チーム名>/pl/<post_id>）。本文は各行を 2 文字字下げし、${BODY_MAX_CHARS} 文字を超える本文は切って出す（edit_message で書き換えるときは字下げを外し、切った投稿は出力を元に書き換えない）`,
     { post: z.string().min(1) },
     async ({ post }, mm) => {
       const id = parsePostRef(post, base);
@@ -736,7 +745,7 @@ export function registerReadTools(server: McpServer, ctx: ToolContext): void {
         ...(p.root_id ? [`スレッド内の返信です。親 post_id: ${p.root_id}。read_thread でスレッド全体を読めます。`]
           : replies ? [`返信があります。read_thread に post_id: ${p.id} を渡すと、スレッド全体を読めます。`] : []),
         // Not noting cut message attachments again: formatPost already says where it cut them.
-        ...(truncate(p.message).truncated ? ['（本文を 4000 文字で切りました）'] : []),
+        ...(truncate(p.message).truncated ? [`（${BODY_CUT_NOTE}）`] : []),
       ].join('\n');
     });
 
