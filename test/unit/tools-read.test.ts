@@ -1446,6 +1446,7 @@ describe('read_channel', () => {
     expect(out).not.toContain('古い順');
     expect(hits).not.toContain(`GET /channels/${CH}/members/me`);
     expect(query(`GET /channels/${CH}/posts`).get('per_page')).toBe('3');
+    expect(query(`GET /channels/${CH}/posts`).get('skipFetchThreads')).toBe('true');
   });
 
   test('from unread starts at the first unread post, oldest first, asking for one more than the limit and ignoring posts outside order', async () => {
@@ -1515,6 +1516,7 @@ describe('read_channel', () => {
     expect(hits).not.toContain(`GET /channels/${CH}/members/me`);
     expect(hits).not.toContain(`GET /users/u1/channels/${CH}/posts/unread`);
     expect(query(`GET /channels/${CH}/posts`).get('before')).toBe(id(2));
+    expect(query(`GET /channels/${CH}/posts`).get('skipFetchThreads')).toBe('true');
   });
 
   test('a later unread page with no posts left says there are no posts rather than no unread', async () => {
