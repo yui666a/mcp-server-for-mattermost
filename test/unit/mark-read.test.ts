@@ -108,8 +108,8 @@ describe('mark_as_read for channels', () => {
     expect(r.text).not.toContain('\u200b');
   });
 
-  test.each([[403, 'このチャンネルを見る権限がありません'], [404, 'チャンネルが見つかりません']])('words a channel spec Mattermost answers with %i, as get_channel does', async (status, wording) => {
-    routes = { ...base(), 'GET /teams/name/team-a/channels/name/nowhere': mmError(status, 'app.channel.get_by_name.missing.app_error') };
+  test.each([[403, 'api.context.permissions.app_error', 'このチャンネルを見る権限がありません'], [404, 'app.channel.get_by_name.missing.app_error', 'チャンネルが見つかりません']])('words a channel spec Mattermost answers with %i, as get_channel does', async (status, mmId, wording) => {
+    routes = { ...base(), 'GET /teams/name/team-a/channels/name/nowhere': mmError(status, mmId) };
     const r = await setup().call({ channels: [{ channel: 'team-a/nowhere' }] });
     expect(r.text).toContain(wording);
   });
