@@ -194,7 +194,6 @@ export function channelLines(c: ChannelRef & { archived?: boolean }): string[] {
   ];
 }
 
-
 // For a post fetched by id: get_post and read_thread word its 403 and 404 alike.
 function postError(e: unknown): never {
   if (e instanceof MmError && e.status === 403) throw new InputError(`この投稿を見る権限がありません（参加していない非公開チャンネルなど）。${RETRY}${ASK_ADMIN}`);
