@@ -407,7 +407,7 @@ export function registerReadTools(server: McpServer, ctx: ToolContext): void {
   tool('search_files', 'ファイルを名前で探す（サーバーが中身を抽出していれば中身にも当たる）。参加しているチャンネル、DM、グループ DM のファイルが対象で、参加していない公開チャンネルとアーカイブ済みのチャンネルのファイルは出ない。Mattermost の検索構文（from:、in:、ext:、before:、after:、on: など）を使え、日付は日本時間（JST）で解釈する。in: にはチャンネル ID、「チーム名/チャンネル名」、チャンネル名、@ユーザー名（DM）、@a,b（グループ DM。カンマの前後に空白を入れない）を渡せる。同じ名前が複数のチームにあれば、すべてで探す。見つからなければエラー。DM は作らない。名前は語の単位で当たり、日本語の名前は名前全体か先頭からの前方一致（例: 2026年10月*）でしか当たらない。新しい順。file_id は get_file に、post_id は get_post に渡せる',
     { terms: z.string().min(1), limit: limitArg(20, 50), cursor: cursorArg },
     async ({ terms, limit, cursor }, mm) => {
-      // files marks the cursor as this tool's, so that a search_posts cursor of the same shape is not taken for one.
+      // Marked here rather than on search_posts' cursor: that one is used more, and its cursors issued before a deploy would stop working.
       const c = cursorOf(z.object({ page: z.number().int().min(0), per_page: perPage(50), files: z.literal(true) }).strict(), cursor);
       const per = c?.per_page ?? limit ?? 20;
       const page = c?.page ?? 0;
@@ -420,6 +420,7 @@ export function registerReadTools(server: McpServer, ctx: ToolContext): void {
       const q = await resolveInFilters(mm, uid, terms).catch(async (e) => {
         if (!(e instanceof InputError)) throw e;
         // Asked with "*" only after a failure: Mattermost checks the setting before converting channel names, and "*" alone searches nothing.
+        // Any other failure of this request is set aside: the in: error stays true and is the one the caller can act on.
         await search('*', 1).catch((off) => {
           if (off instanceof InputError) throw off;
         });

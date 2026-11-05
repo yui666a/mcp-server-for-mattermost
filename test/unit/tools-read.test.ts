@@ -2150,8 +2150,12 @@ describe('search_files', () => {
   });
 
   test('when the "*" request fails otherwise, reports the in: error', async () => {
-    routes = { ...base(), 'POST /files/search': mmError(500) };
+    routes = { ...base(), 'POST /files/search': () => {
+      searched.push((bodies['/files/search'] as { terms: string }).terms);
+      return mmError(500)();
+    } };
     expect(await setup()('search_files', { terms: 'x in:nowhere' }, true)).toBe('チャンネル「nowhere」が見つかりません。');
+    expect(searched).toEqual(['*']);
   });
 
   test('rejects a cursor of another shape', async () => {
