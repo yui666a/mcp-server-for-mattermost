@@ -99,6 +99,9 @@ describe('read_channel from unread and mark_as_read against the local Mattermost
     }
     // Not comparing the order: posts of the same millisecond are shown by post_id, not in the order they were posted.
     expect([...seen].sort()).toEqual([...unread].sort());
+    const { posts } = await mmApi<{ posts: Record<string, { create_at: number }> }>(aliceMm, 'GET', `/channels/${ch}/posts?per_page=50`);
+    const at = seen.map((id) => posts[id].create_at);
+    expect(at).toEqual([...at].sort((a, b) => a - b));
     expect((await unreadOf(ch)).msg_count_root).toBe(5);
   });
 
