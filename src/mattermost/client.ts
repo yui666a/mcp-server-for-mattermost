@@ -118,7 +118,7 @@ export class MmClient {
     try {
       return await read(res);
     } catch (e) {
-      if (at.signal?.aborted && e instanceof UpstreamUnavailable && !(e instanceof CallAborted)) throw new CallAborted(e.message, e.sent);
+      if (at.signal?.aborted && e instanceof UpstreamUnavailable && !(e instanceof CallAborted)) throw new CallAborted(e.message, e.sent, e.status, e.id, e.plainBody);
       throw e;
     }
   }
