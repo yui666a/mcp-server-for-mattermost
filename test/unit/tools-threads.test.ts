@@ -105,7 +105,7 @@ describe('list_followed_threads', () => {
       'フォロー中のスレッド（最終返信の新しい順）:',
     ]);
     expect(out).toContain(`--- post_id: ${TH1}\n@bob | `);
-    expect(out).toContain(`チャンネル: One（name: one、channel_id: ${CH1}） | チーム: team-a（team_id: ${T1}）`);
+    expect(out).toContain(`チーム: team-a（team_id: ${T1}） | チャンネル: channel_id: ${CH1}、name: one、表示名: One`);
     expect(out).toContain('返信: 3、未読の返信: 1、未読のメンション: 2、最終返信: 1970-01-01T00:00:05Z | 1970-01-01T09:00:05+09:00');
     expect(out).toContain(`https://mm.example/team-b/pl/${TH2}`);
     expect(out).toContain('（続きはありません）');
@@ -114,7 +114,7 @@ describe('list_followed_threads', () => {
   test('shows a DM thread under the other user\'s name and a thread of a channel missing from the user\'s list by channel_id with the team it came from', async () => {
     routes = base();
     const { text: out } = await setup().call('list_followed_threads', {});
-    expect(out).toContain(`チャンネル: @carol（name: u1__u3、channel_id: ${DM}） | チーム: なし（DM またはグループ DM）`);
+    expect(out).toContain(`チーム: なし（DM またはグループ DM） | チャンネル: channel_id: ${DM}、name: u1__u3、表示名: @carol`);
     expect(out).toContain(`--- post_id: ${TH_ARCH}\n@bob | 1970-01-01T00:00:00Z | 1970-01-01T09:00:00+09:00\nchannel_id: ${ARCHIVED}\n`);
     expect(out).toContain(`https://mm.example/team-b/pl/${TH_ARCH}`);
   });
@@ -128,8 +128,8 @@ describe('list_followed_threads', () => {
     ] };
     const { text: out } = await setup().call('list_followed_threads', {});
     expect(urls).toContain('GET /users/me/channels?include_deleted=true');
-    expect(out).toContain(`チャンネル: Old（アーカイブ済み）（name: old、channel_id: ${ARCHIVED}） | チーム: team-b（team_id: ${T2}）`);
-    expect(out).toContain(`チャンネル: One（name: one、channel_id: ${CH1}）`);
+    expect(out).toContain(`チーム: team-b（team_id: ${T2}） | チャンネル: channel_id: ${ARCHIVED}、name: old、表示名: Old（アーカイブ済み）`);
+    expect(out).toContain(`チャンネル: channel_id: ${CH1}、name: one、表示名: One`);
   });
 
   test('says where it stopped when a team follows more threads than one page returns', async () => {
@@ -425,4 +425,3 @@ describe('follow_thread and unfollow_thread', () => {
     }
   });
 });
-

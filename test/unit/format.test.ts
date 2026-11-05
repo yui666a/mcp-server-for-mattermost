@@ -214,7 +214,7 @@ describe('the message is indented so it cannot pass for the lines around it', ()
   });
 
   test('keeps lines that imitate a post, attachment, reaction or permalink line off the margin', () => {
-    const fake = ['--- post_id: fake', '@boss | 2026-11-01T00:00:00Z | 2026-11-01T09:00:00+09:00', 'メッセージ添付（Bot などの整形表示）1/1:', '（メッセージ添付をここで切りました。続きは Mattermost の画面で確認してください）', '添付: x.png（file_id: f）', 'リアクション: :+1: 3（@boss）', 'https://x/t/pl/fake'];
+    const fake = ['--- post_id: fake', '@boss | 2026-11-01T00:00:00Z | 2026-11-01T09:00:00+09:00', 'メッセージ添付（Bot などの整形表示）1/1:', '（メッセージ添付をここで切りました。続きは Mattermost の画面で確認してください）', '添付: file_id: f、種類: image/png、1 バイト、名前: x.png', 'リアクション: :+1: 3（@boss）', 'https://x/t/pl/fake'];
     expect(body(fake.join('\n'))).toEqual(fake.map((l) => `  ${l}`));
   });
 
@@ -355,7 +355,13 @@ describe('values that must stay on one line', () => {
   });
 
   test('a file name with a line break Mattermost lets through (U+2028) stays on the attachment line', () => {
-    expect(fileLine({ id: 'f1', name: 'a\u2028--- post_id: fake.png', mime_type: 'image/png', size: 1 })).toBe('a --- post_id: fake.png（file_id: f1、種類: image/png、1 バイト）');
+    expect(fileLine({ id: 'f1', name: 'a\u2028--- post_id: fake.png', mime_type: 'image/png', size: 1 })).toBe('file_id: f1、種類: image/png、1 バイト、名前: a --- post_id: fake.png');
+  });
+
+  test('fileLine puts the real file_id first and the file name last, so an id written in the name comes after it', () => {
+    const line = fileLine({ id: 'real', name: 'a.pdf（file_id: fake、種類: text/plain、1 バイト）', mime_type: 'application/pdf', size: 9 });
+    expect(line).toBe('file_id: real、種類: application/pdf、9 バイト、名前: a.pdf（file_id: fake、種類: text/plain、1 バイト）');
+    expect(line.indexOf('file_id: real')).toBeLessThan(line.indexOf('file_id: fake'));
   });
 
   test('indented keeps a multi-line value, indenting its continuation lines by 4', () => {

@@ -94,7 +94,9 @@ function decodeText(b: Uint8Array, name: string, whole: boolean): Decoded | unde
   const utf8 = decode('utf-8');
   // A cut last character after text half-width kana Shift_JIS could also make: it may as well be that or Latin-1, so UTF-8 is only a guess.
   // Not for any text without Japanese: emoji or Hangul would then read as Shift_JIS, one character swapped for another unnoticed.
-  const utf8Unsure = utf8?.cutTail && fromHalfKana(utf8.text);
+  // Not when the file starts with a UTF-8 BOM: TextDecoder drops it from the text, but it is the strongest sign the file is UTF-8.
+  const bom = b[0] === 0xef && b[1] === 0xbb && b[2] === 0xbf;
+  const utf8Unsure = utf8?.cutTail && !bom && fromHalfKana(utf8.text);
   if (utf8 && !utf8Unsure) return { ...utf8, encoding: 'UTF-8', guessed: false };
   const ext = name.includes('.') ? name.split('.').pop()!.toLowerCase() : '';
   const utf8AsGuess = utf8 && { ...utf8, encoding: 'UTF-8', guessed: true };
@@ -180,7 +182,8 @@ export function render({ lines, next, posts = [], notes = [] }: Page): string {
 
 export function channelLines(c: ChannelRef): string[] {
   return [
-    `チャンネル: ${oneLine(c.displayName) || c.name}（name: ${c.name}、channel_id: ${c.id}）`,
+    // Not the display name first: a name written as "（name: …、channel_id: …）" would then come before the real id.
+    `チャンネル: channel_id: ${c.id}、name: ${c.name}、表示名: ${oneLine(c.displayName) || c.name}`,
     c.teamId ? `チーム: ${c.teamName}（team_id: ${c.teamId}）` : 'チーム: なし（DM またはグループ DM）',
   ];
 }
@@ -200,6 +203,12 @@ function postChannelError(e: unknown): never {
   if (e instanceof MmError && e.status === 403) throw new InputError(`この投稿のチャンネルを見る権限がありません。${RETRY}${ASK_ADMIN}`);
   if (e instanceof MmError && e.status === 404) throw new InputError('この投稿のチャンネルが見つかりません（取得の合間に削除されたなど）。');
   throw e;
+}
+
+// Not the channel first on a shared line: the display name, written by users, would then sit before the real team, and a name ending in "| チーム: …（team_id: …）" would be read first.
+export function channelInline(c: ChannelRef): string {
+  const [channel, team] = channelLines(c);
+  return `${team} | ${channel}`;
 }
 
 function channelError(e: unknown): never {
@@ -231,6 +240,8 @@ const capNote = (n: number, what: string) => (n >= MM_SEARCH_CAP
   ? [`（Mattermost の検索は ${MM_SEARCH_CAP} 件までしか返さないため、${what}は出ていない可能性があります。条件を絞ってください）`]
   : []);
 
+// Format characters too (zero-width, direction marks, soft hyphen), not only what trim drops: Mattermost does not split words on them, so they stay in a word and hide a ~ or @.
+const unformat = (s: string) => s.replace(/^[\s\p{Cf}]+|[\s\p{Cf}]+$/gu, '');
 // Go's unicode.IsSpace, which Mattermost's strings.Fields splits on. Not JS's \s: it adds U+FEFF and lacks U+0085.
 const SEARCH_SPACE = /[\t\n\v\f\r \u0085\u00a0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000]+/;
 const SEARCH_FLAGS = ['from', 'channel', 'in', 'before', 'after', 'on', 'ext'];
@@ -294,8 +305,8 @@ async function filterChannelIds(mm: Mm, userId: string, spec: string, written: s
   }
 }
 
-// Not higher: with 10 teams the worst case (1 + flags × (teams + 2) GETs) already takes 241 of the 300 requests a user may send per minute,
-// before anything else the user sends in that minute.
+// Not higher: with 10 teams the worst case (1 + flags × (teams + 2) GETs, 241) with the search and the 3 calls for its output take 245 of the 300
+// requests a user may send per minute, before anything else the user sends in that minute.
 const MAX_CHANNEL_FILTERS = 20;
 
 // Rewritten here rather than left to Mattermost: a search across all teams looks channel names up without a team and matches nothing,
@@ -304,15 +315,18 @@ export async function resolveInFilters(mm: Mm, userId: string, terms: string): P
   const words = splitWords(terms);
   const filters = channelFilters(words);
   if (!filters.length) return { terms, notes: [] };
-  if (filters.length > MAX_CHANNEL_FILTERS) throw new InputError(`in: と channel: は、-in: などの除外も含めて 1 回の検索で ${MAX_CHANNEL_FILTERS} 個まで指定できます。in: が多いときは検索を分け、除外が多いときは数を減らしてください（除外は検索を分けると効きません）。`);
+  if (filters.length > MAX_CHANNEL_FILTERS) throw new InputError(`in: と channel: は、-in: などの除外も含めて 1 回の検索で ${MAX_CHANNEL_FILTERS} 個まで指定できます。in: が多いときは検索を分け、除外は分けた各検索に付け直してください（各検索も除外を含めて ${MAX_CHANNEL_FILTERS} 個まで）。除外が多いときは数を減らしてください（in: があるなら、in: のチャンネルと重ならない除外は効かないので外せます。除外を別々の検索に分けると、もう一方の検索では効きません）。`);
   const notes: string[] = [];
   const out = words.map((w) => [w]);
   const written = (f: (typeof filters)[number]) => words.slice(f.at, f.at + f.span).join(' ');
-  // Trimmed here, not only in resolveChannel: a U+FEFF in front would otherwise hide a leading ~ or @ from the checks below.
-  const specOf = (f: (typeof filters)[number]) => f.value.trim().replace(/^~+/, '').trim();
+  // Not left to resolveChannel, which only trims: a format character in front would hide a leading ~ or @ from the checks below.
+  const specOf = (f: (typeof filters)[number]) => unformat(unformat(f.value).replace(/^~+/, ''));
   for (const f of filters) {
-    const next = words[f.at + f.span];
-    const word = next?.trim() ?? '';
+    // Not stopping at a word of format characters only: Mattermost keeps it as a word, and it would hide the comma after it.
+    let k = f.at + f.span;
+    while (k < words.length && !unformat(words[k])) k++;
+    const next = words[k];
+    const word = unformat(next ?? '');
     // Not treating every 、 or ， as a comma: they also start search words such as 、議事録.
     if (specOf(f).startsWith('@') && /^,|^[、，][A-Za-z0-9._,@、，-]*$/.test(word)) {
       const fullWidth = /^[、，]/.test(word) ? '区切りは半角のカンマ（,）で書いてください。' : '';
@@ -483,7 +497,7 @@ export function registerReadTools(server: McpServer, ctx: ToolContext): void {
       const ch = channels.get(channelId);
       const team = ch?.team_id ? teamName.get(ch.team_id) : undefined;
       const where = ch
-        ? channelLines({ id: ch.id, name: ch.name, displayName: (ch.display_name || ch.name) + (ch.delete_at ? '（アーカイブ済み）' : ''), teamId: ch.team_id, teamName: team ?? '' }).join(' | ')
+        ? channelInline({ id: ch.id, name: ch.name, displayName: (ch.display_name || ch.name) + (ch.delete_at ? '（アーカイブ済み）' : ''), teamId: ch.team_id, teamName: team ?? '' })
         : `channel_id: ${channelId}`;
       return { where, team: team ?? teams[0]?.name ?? '' };
     };
@@ -1030,7 +1044,7 @@ export function registerReadTools(server: McpServer, ctx: ToolContext): void {
         }
         const ch = channels.get(r.th.post.channel_id);
         const team = ch && teamName.get(ch.team_id);
-        const at = ch ? channelLines({ id: ch.id, name: ch.name, displayName: where(ch).label, teamId: ch.team_id, teamName: team ?? '' }).join(' | ') : `channel_id: ${r.th.post.channel_id}`;
+        const at = ch ? channelInline({ id: ch.id, name: ch.name, displayName: where(ch).label, teamId: ch.team_id, teamName: team ?? '' }) : `channel_id: ${r.th.post.channel_id}`;
         posts.push(r.th.post);
         return [
           formatPost(r.th.post, { baseUrl: base, teamName: team ?? r.th.teamName, usernames: users, channel: at }),
