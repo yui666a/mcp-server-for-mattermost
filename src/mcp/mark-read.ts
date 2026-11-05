@@ -11,7 +11,7 @@ const POST_ID = z.string().regex(/^[A-Za-z0-9]{26}$/);
 const MAX_ITEMS = 20;
 const AFTER_PAGE = 200;
 
-// Not dropping unknown keys of an item as the SDK does: a misspelled last_post_id would be dropped and the item marked read up to the newest post, which only the user can undo, item by item, in the Mattermost UI.
+// Not dropping unknown keys of an item as zod's z.object does: a misspelled last_post_id would be dropped and the item marked read up to the newest post, which only the user can undo, item by item, in the Mattermost UI.
 const item = <T extends z.ZodRawShape>(shape: T, keys: string) =>
   z.strictObject(shape, { error: (iss) => iss.code === 'unrecognized_keys' ? `受けない引数です: ${iss.keys.join(', ')}。${keys}` : undefined });
 
