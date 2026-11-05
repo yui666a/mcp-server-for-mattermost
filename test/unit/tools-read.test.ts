@@ -243,7 +243,32 @@ describe('search_posts in: filters', () => {
       expect(hits).not.toContain('POST /posts/search');
     });
 
-    test('the space check runs before any lookup', async () => {
+      test.each([
+      ['x in:@bob 、carol', 'in:@bob の後の「、carol」'],
+      ['x in:@bob 、@carol', 'in:@bob の後の「、@carol」'],
+      ['x in:@bob 、carol、dave', 'in:@bob の後の「、carol、dave」'],
+      ['x in:@bob 、', 'in:@bob の後の「、」'],
+      ['x in:@bob ，議事録', 'in:@bob の後の「，議事録」'],
+    ])('%j is a separator error that asks for a half-width comma', async (terms, message) => {
+      routes = withGroup();
+      const out = await setup()('search_posts', { terms }, true);
+      expect(out).toContain(message);
+      expect(out).toContain('区切りは半角のカンマ（,）で書いてください。');
+      expect(hits).not.toContain('POST /posts/search');
+    });
+
+    test('a search word after the DM that starts with 、 is kept as a search word', async () => {
+      routes = { ...withGroup(), [`GET /teams/${T1}/channels/name/${DM_NAME}`]: () => ch(DM, DM_NAME, '', 'D') };
+      await setup()('search_posts', { terms: 'x in:@bob 、議事録' });
+      expect(sent()).toBe(`x in:${DM} 、議事録`);
+    });
+
+    test('in:@bob、carol is refused for its separator', async () => {
+      routes = withGroup();
+      expect(await setup()('search_posts', { terms: 'x in:@bob、carol' }, true)).toContain('@a,b の区切りは半角のカンマ（,）で書いてください。');
+    });
+
+  test('the space check runs before any lookup', async () => {
       routes = withGroup();
       await setup()('search_posts', { terms: 'x in:only-a in:@bob ,carol' }, true);
       expect(hits).toEqual([]);
@@ -612,7 +637,7 @@ describe('get_channel', () => {
       'GET /teams/name/no-team/channels/name/town': mmError(404, 'app.team.get_by_name.missing.app_error'),
     };
     const call = setup();
-    expect(await call('get_channel', { channel: '@nobody' }, true)).toContain('Mattermost がエラーを返しました（404）');
+    expect(await call('get_channel', { channel: '@nobody' }, true)).toBe('ユーザー「@nobody」が見つかりません。');
     expect(await call('get_channel', { channel: 'no-team/town' }, true)).toContain('Mattermost がエラーを返しました（404）');
   });
 });
