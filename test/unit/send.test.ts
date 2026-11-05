@@ -37,6 +37,7 @@ function fakeMm(opts: FakeOpts = {}) {
       calls.push({ method, path: p, signal });
       if (method === 'GET' && p === '/users/me/teams') return opts.teams ?? [{ id: 'ta', name: 'team-a' }, { id: 'tb', name: 'team-b' }];
       if (method === 'GET' && p === `/channels/${DM}`) return { id: DM, name: `${UID}__${OTHER}`, display_name: '', team_id: '', type: 'D' };
+      if (method === 'GET' && p === `/users/${OTHER}`) return { id: OTHER, username: 'olive' };
       if (method === 'GET' && /^\/users\/[^/]+\/teams\/[^/]+\/drafts$/.test(p)) return opts.drafts ? opts.drafts(signal) : [];
       if (method === 'GET' && p === '/users/me/preferences/advanced_settings/name/sync_drafts') {
         if (typeof opts.syncOff === 'function') return opts.syncOff();
@@ -150,10 +151,10 @@ describe('root_id', () => {
     expect(f.created).toHaveLength(1);
   });
 
-  test('a root_id in another channel than a DM given by its channel_id names the DM by its internal name, which is all Mattermost gives', async () => {
+  test('a root_id in another channel than a DM given by its channel_id names the DM by the other user, as when given as @user', async () => {
     const f = fakeMm();
     await expect(f.send({ channel: DM, message: 'hi', root_id: id(0) })).rejects.toMatchObject({
-      message: `root_id ${id(0)} の投稿はチャンネル「${UID}__${OTHER}」（channel_id: ${DM}）にありません。`,
+      message: `root_id ${id(0)} の投稿はチャンネル「@olive」（channel_id: ${DM}）にありません。`,
     });
   });
 });
