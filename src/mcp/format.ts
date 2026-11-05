@@ -55,8 +55,9 @@ export const lines = (s: string): string[] => s.split(LINE_BREAK);
 // A space rather than nothing: the words on either side of a break would otherwise run together into another word.
 export const oneLine = (s: string): string => lines(s).join(' ');
 
+// Not the name first: a name written as "（file_id: …）" would then come before the real id.
 export const fileLine = (f: MmFileInfo): string =>
-  `${oneLine(f.name)}（file_id: ${f.id}、種類: ${oneLine(f.mime_type) || '不明'}、${f.size} バイト${f.width && f.height ? `、${f.width}x${f.height}` : ''}）`;
+  `file_id: ${f.id}、種類: ${oneLine(f.mime_type) || '不明'}、${f.size} バイト${f.width && f.height ? `、${f.width}x${f.height}` : ''}、名前: ${oneLine(f.name)}`;
 
 function attachmentLines(p: MmPost): string[] {
   const shown = p.metadata?.files?.length ? p.metadata.files.map((f) => `添付: ${fileLine(f)}`)
