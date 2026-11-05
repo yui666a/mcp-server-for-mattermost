@@ -3,10 +3,10 @@ import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
 import { z } from 'zod';
 import { FileHeld, MAX_PENDING_SCHEDULED, type Scheduled, type ScheduledStatus, type Store } from '../store.ts';
 import { encodeCursor, formatTime, InputError, truncate } from './format.ts';
-import { resolveChannel, teamNameOf, type Mm, type MmChannel, type UserRef } from './resolve.ts';
+import { teamNameOf, type Mm, type MmChannel, type UserRef } from './resolve.ts';
 import { guarded, text, type ToolContext } from './server.ts';
 import { cursorArg, cursorOf, limitArg, perPage } from './tools-read.ts';
-import { checkRoot, checkUnposted, checkUploaded, heldError, MAX_UPLOAD_FILES } from './tools-send.ts';
+import { checkRoot, checkUnposted, checkUploaded, heldError, MAX_UPLOAD_FILES, resolveTarget } from './tools-send.ts';
 import { parseWhen } from './when.ts';
 
 const MIN_AHEAD = 60_000;
@@ -40,8 +40,9 @@ type ScheduleArgs = { channel: string; message: string; root_id?: string; at: st
 export async function scheduleMessage(mm: Mm, store: Store, uid: string, args: ScheduleArgs): Promise<CallToolResult> {
   const at = when(args.at);
   const fileIds = args.file_ids ?? [];
-  // Not creating the DM with root_id or file_ids: a DM not opened yet holds neither, and the call would fail right after leaving an empty DM.
-  const ch = await resolveChannel(mm, uid, args.channel, { create: !args.root_id && !fileIds.length });
+  // Not left to createScheduled alone: resolving may create the DM first, and failing after that leaves it empty. A schedule added or put back to pending between the two checks still does.
+  if (store.pendingScheduledCount(uid) >= MAX_PENDING_SCHEDULED) throw new InputError(`待機中の予約が上限の ${MAX_PENDING_SCHEDULED} 件に達しています。不要な予約を cancel_scheduled_message で取り消してください。`);
+  const ch = await resolveTarget(mm, store, uid, args.channel, args.root_id, fileIds);
   if (args.root_id) await checkRoot(mm, uid, args.root_id, ch);
   checkUploaded(store, uid, ch.id, fileIds);
   checkUnposted(store, uid, fileIds);
