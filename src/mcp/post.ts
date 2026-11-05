@@ -6,7 +6,7 @@ import { failureText } from './server.ts';
 export type PostSpec = { channelId: string; rootId?: string; message: string };
 // Not dropping error: send_message rethrows it to keep the wording its callers already see.
 export type Posting =
-  | { kind: 'posted'; postId: string; fileCount: number; fileIds: string[] }
+  | { kind: 'posted'; postId: string; fileCount: number; fileIds: string[]; redactedFileCount: number }
   | { kind: 'retryable'; sent: boolean; error: unknown }
   | { kind: 'failed'; reason: string; error: unknown };
 
@@ -20,8 +20,9 @@ export async function postOnce(mm: Mm, uid: string, s: PostSpec & { fileIds: str
     pending_post_id: pendingPostId,
   };
   try {
-    const post = await mm.call<MmPost>(uid, 'POST', '/posts', body);
-    return { kind: 'posted', postId: post.id, fileCount: post.file_ids?.length ?? 0, fileIds: post.file_ids ?? [] };
+    // Not in MmPost: only the create response is read for it, and Mattermost leaves it out when nothing was hidden.
+    const post = await mm.call<MmPost & { metadata?: { redacted_file_count?: number } }>(uid, 'POST', '/posts', body);
+    return { kind: 'posted', postId: post.id, fileCount: post.file_ids?.length ?? 0, fileIds: post.file_ids ?? [], redactedFileCount: post.metadata?.redacted_file_count ?? 0 };
   } catch (e) {
     if (e instanceof MmError || e instanceof Reauthorize) return { kind: 'failed', reason: failureText(e), error: e };
     // Not passing RateLimited.sent on: a 429 means Mattermost refused this request, so nothing was posted by it.
