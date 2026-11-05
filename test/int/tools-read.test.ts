@@ -95,7 +95,13 @@ describe('read tools against the local Mattermost', () => {
     }
   });
 
-  afterAll(() => vi.restoreAllMocks());
+  afterAll(async () => {
+    try {
+      await mmApi(e.adminToken, 'DELETE', `/channels/${channel.id}`);
+    } finally {
+      vi.restoreAllMocks();
+    }
+  });
 
   test('read_channel paginates without gaps or duplicates', async () => {
     const all = await mmApi<{ order: string[]; posts: Record<string, { create_at: number }> }>(aliceMm, 'GET', `/channels/${channel.id}/posts?per_page=200`);
@@ -120,21 +126,25 @@ describe('read tools against the local Mattermost', () => {
 
   test('read_channel with since and until reads that range oldest first in JST, with replies and attachment-only posts', async () => {
     const ch = await mmApi<{ id: string }>(aliceMm, 'POST', '/channels', { team_id: e.teams.a.id, name: `range-${TAG}`, display_name: `range ${TAG}`, type: 'O' });
-    // Only an admin's create_at is kept; Mattermost replaces anyone else's with the current time.
-    const at = (h: number, m: number) => Date.UTC(2026, 9, 1, h - 9, m);
-    const post = async (h: number, m: number, o: Record<string, unknown> = {}) =>
-      (await mmApi<{ id: string }>(e.adminToken, 'POST', '/posts', { channel_id: ch.id, message: `${TAG} ${h}:${m}`, create_at: at(h, m), ...o })).id;
-    const before = await post(10, 0);
-    const start = await post(11, 0);
-    const attachment = await post(11, 15, { message: '', props: { attachments: [{ text: `${TAG} attachment only` }] } });
-    const reply = await post(11, 30, { root_id: start });
-    await post(12, 0);
-    await mmApi(aliceMm, 'POST', '/posts', { channel_id: ch.id, message: `${TAG} now` });
-    const r = await call('alice', 'read_channel', { channel: ch.id, since: '2026-10-01T11:00', until: '2026-10-01T12:00' });
-    expect(r.isError, r.content[0].text).toBeFalsy();
-    expect(postIds(r)).toEqual([start, attachment, reply]);
-    expect(r.content[0].text).toContain('attachment only');
-    expect(postIds(r)).not.toContain(before);
+    try {
+      // Only an admin's create_at is kept; Mattermost replaces anyone else's with the current time.
+      const at = (h: number, m: number) => Date.UTC(2026, 9, 1, h - 9, m);
+      const post = async (h: number, m: number, o: Record<string, unknown> = {}) =>
+        (await mmApi<{ id: string }>(e.adminToken, 'POST', '/posts', { channel_id: ch.id, message: `${TAG} ${h}:${m}`, create_at: at(h, m), ...o })).id;
+      const before = await post(10, 0);
+      const start = await post(11, 0);
+      const attachment = await post(11, 15, { message: '', props: { attachments: [{ text: `${TAG} attachment only` }] } });
+      const reply = await post(11, 30, { root_id: start });
+      await post(12, 0);
+      await mmApi(aliceMm, 'POST', '/posts', { channel_id: ch.id, message: `${TAG} now` });
+      const r = await call('alice', 'read_channel', { channel: ch.id, since: '2026-10-01T11:00', until: '2026-10-01T12:00' });
+      expect(r.isError, r.content[0].text).toBeFalsy();
+      expect(postIds(r)).toEqual([start, attachment, reply]);
+      expect(r.content[0].text).toContain('attachment only');
+      expect(postIds(r)).not.toContain(before);
+    } finally {
+      await mmApi(e.adminToken, 'DELETE', `/channels/${ch.id}`);
+    }
   });
 
   test('read_thread returns parent only on first page, ascending', async () => {
