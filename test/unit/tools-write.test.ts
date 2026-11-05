@@ -305,7 +305,7 @@ describe('edit_message and delete_message', () => {
       // Not a literal: a changed limit or note would otherwise leave this guidance quoting a note get_post no longer writes.
       expect(d).toContain(`「${BODY_CUT_NOTE}」`);
       expect(d).toContain('LF になり');
-      expect(d).toContain('切った投稿を出力を元に書き換えたいときは、Mattermost の画面で編集するよう利用者に伝える');
+      expect(d).toContain('切った投稿を、出力を元に書き換えたいときは、Mattermost の画面で編集するよう利用者に伝える');
       expect(t.description).toBe('本人の投稿の本文を書き換える。他人、webhook、Bot の投稿とシステムメッセージは扱わない。元の本文は上書きされる。編集で足したメンションは通知されない');
     });
 
