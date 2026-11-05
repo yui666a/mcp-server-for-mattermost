@@ -1908,6 +1908,14 @@ describe('get_file', () => {
         expect(out).toContain('末尾に不完全な文字');
       });
 
+      test('says nothing readable is left for a UTF-8 BOM followed only by a cut character, instead of reading it as EUC-JP', async () => {
+        const b = Uint8Array.from([0xef, 0xbb, 0xbf, 0xc2]);
+        routes = { [INFO]: textInfo('a.txt', b.length), [FILE]: body(b) };
+        const out = await setup()('get_file', { file_id: F });
+        expect(out).toContain('ファイルの末尾に不完全な文字があり、それを除くと読める中身がありません。');
+        expect(out).not.toContain('文字コード');
+      });
+
       test('reads a file as not text when Node cannot make a Shift_JIS or EUC-JP decoder, instead of failing', async () => {
         const Real = globalThis.TextDecoder;
         vi.stubGlobal('TextDecoder', class extends Real {
