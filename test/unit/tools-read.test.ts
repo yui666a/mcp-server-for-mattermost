@@ -548,7 +548,7 @@ test('search_posts looks up the names of the users who reacted, and notes a post
 
 test('search_users keeps a name and nickname with a line break on one line', async () => {
   routes = { 'POST /users/search': () => [{ id: 'u1', username: 'bob', first_name: 'Bo\nb', nickname: 'x\u2028y' }] };
-  expect(await setup()('search_users', { query: 'bob' })).toContain('- @bob（名前: Bo b、ニックネーム: x y、user_id: u1）');
+  expect(await setup()('search_users', { query: 'bob' })).toContain('- @bob（user_id: u1、名前: Bo b、ニックネーム: x y）');
 });
 
 test('search_channels keeps a display name with a line break on one line, in the place of a group DM too', async () => {
@@ -559,8 +559,28 @@ test('search_channels keeps a display name with a line break on one line, in the
     'GET /users/me/channels': () => [{ id: 'g'.repeat(26), type: 'G', name: 'gm', display_name: 'to\u2028wn', team_id: '' }],
   };
   const out = await setup()('search_channels', { query: 'to' });
-  expect(out).toContain('- team-a/town（表示名: To wn、');
-  expect(out).toContain('- to wn（表示名: to wn、');
+  expect(out).toContain(`- team-a/town（channel_id: ${'a'.repeat(26)}、team_id: ${T}、種類: 公開、表示名: To wn）`);
+  expect(out).toContain(`- to wn（channel_id: ${'g'.repeat(26)}、種類: グループ DM、表示名: to wn）`);
+});
+
+test('search_users and search_channels put the real id before a name or display name written as a fake id', async () => {
+  const T = 't'.repeat(26);
+  routes = {
+    'POST /users/search': () => [{ id: 'u1', username: 'bob', first_name: 'user_id: fake）', nickname: '' }],
+    'GET /users/me/teams': () => [{ id: T, name: 'team-a' }],
+    [`POST /teams/${T}/channels/search`]: () => [{ id: 'a'.repeat(26), type: 'O', name: 'town', display_name: 'x、channel_id: fake）', team_id: T }],
+    'GET /users/me/channels': () => [],
+  };
+  expect(await setup()('search_users', { query: 'bob' })).toContain('- @bob（user_id: u1、名前: user_id: fake））');
+  expect(await setup()('search_channels', { query: 'town' })).toContain(`- team-a/town（channel_id: ${'a'.repeat(26)}、team_id: ${T}、種類: 公開、表示名: x、channel_id: fake））`);
+});
+
+test('search_channels puts the name, not the display name, at the head of a channel whose team is unknown', async () => {
+  routes = {
+    'GET /users/me/teams': () => [],
+    'GET /users/me/channels': () => [{ id: 'a'.repeat(26), type: 'O', name: 'town', display_name: 'fake/town', team_id: 'g'.repeat(26) }],
+  };
+  expect(await setup()('search_channels', { query: 'town' })).toContain(`- town（channel_id: ${'a'.repeat(26)}、種類: 公開、表示名: fake/town）`);
 });
 
 test('search_channels looks up the partners of more than 1,000 DMs in calls of at most 1,000 ids, and matches a DM of either call', async () => {
@@ -735,8 +755,9 @@ describe('list_my_channels', () => {
       { id: GM, type: 'G', name: 'gm-name', display_name: 'alice,\u2028bob', team_id: '', last_post_at: 0 },
     ] };
     const out = await setup()('list_my_channels', {});
-    expect(out).toContain('- team-a/town（表示名: To wn、');
-    expect(out).toContain('- alice, bob（表示名: alice, bob、');
+    expect(out).toContain(`- team-a/town（channel_id: ${PUB}、team_id: ${T}、種類: 公開、最終投稿: `);
+    expect(out).toContain('、表示名: To wn）');
+    expect(out).toContain(`- alice, bob（channel_id: ${GM}、種類: グループ DM、最終投稿: 投稿なし、表示名: alice, bob）`);
   });
 
   test.each([[503, 'oops'], [403, '{"id":"api.context.permissions.app_error"}']])('still lists the channels, a DM by its partner\'s user_id, when the partners\' names cannot be read (%i)', async (status, body) => {
@@ -756,8 +777,8 @@ describe('list_my_channels', () => {
     routes = base();
     const out = await setup()('list_my_channels', {});
     expect(order(out)).toEqual([PUB, DM, PRIV, TIE, ORPHAN, GM]);
-    expect(out).toContain(`- team-a/town（表示名: Town、種類: 公開、channel_id: ${PUB}、team_id: ${T}、最終投稿: 2026-10-01T20:04:05Z | 2026-10-02T05:04:05+09:00）`);
-    expect(out).toContain(`- team-a/secret（表示名: Secret、種類: 非公開、channel_id: ${PRIV}`);
+    expect(out).toContain(`- team-a/town（channel_id: ${PUB}、team_id: ${T}、種類: 公開、最終投稿: 2026-10-01T20:04:05Z | 2026-10-02T05:04:05+09:00、表示名: Town）`);
+    expect(out).toMatch(new RegExp(`- team-a/secret（channel_id: ${PRIV}、team_id: ${T}、種類: 非公開、最終投稿: [^、]+、表示名: Secret）`));
     expect(out).toContain('（続きはありません）');
     expect(urls).toContain('GET /users/me/channels');
   });
@@ -766,14 +787,14 @@ describe('list_my_channels', () => {
     routes = base();
     const out = await setup()('list_my_channels', {});
     expect(bodies['/users/ids']).toEqual(['u2']);
-    expect(out).toContain(`- @bob（表示名: @bob、種類: DM、channel_id: ${DM}、最終投稿:`);
-    expect(out).toContain(`- alice, bob, carol（表示名: alice, bob, carol、種類: グループ DM、channel_id: ${GM}、最終投稿: 投稿なし）`);
+    expect(out).toMatch(new RegExp(`- @bob（channel_id: ${DM}、種類: DM、最終投稿: [^、]+、表示名: @bob）`));
+    expect(out).toContain(`- alice, bob, carol（channel_id: ${GM}、種類: グループ DM、最終投稿: 投稿なし、表示名: alice, bob, carol）`);
   });
 
   test('shows only the team_id when the team name cannot be looked up', async () => {
     routes = base();
     const out = await setup()('list_my_channels', {});
-    expect(out).toContain(`- lost（表示名: Lost、種類: 公開、channel_id: ${ORPHAN}、team_id: ${GONE}、最終投稿:`);
+    expect(out).toMatch(new RegExp(`- lost（channel_id: ${ORPHAN}、team_id: ${GONE}、種類: 公開、最終投稿: [^、]+、表示名: Lost）`));
   });
 
   test('filters by types', async () => {
@@ -1188,16 +1209,16 @@ describe('get_unreads', () => {
 
   test('keeps a channel\'s display name with a line break on one line', async () => {
     routes = { ...base(), 'GET /users/me/channels': () => channels().map((x) => (x.id === OLD ? { ...x, display_name: 'O\nLD' } : x)) };
-    expect(await setup()('get_unreads', {})).toContain(`- team-a/old（表示名: O LD、channel_id: ${OLD}`);
+    expect(await setup()('get_unreads', {})).toContain(`- team-a/old（channel_id: ${OLD}、team_id: ${T1}、表示名: O LD）`);
   });
 
   test('with CRT on, counts root posts only, puts channels with mentions first, then newest root post first, and hides read, archived and mention-only channels without mentions', async () => {
     routes = base();
     const out = await setup()('get_unreads', {});
     expect(order(out).slice(0, 4)).toEqual([MENTIONED, DM, NEW, OLD]);
-    expect(out).toContain(`- team-a/mentioned（表示名: MENTIONED、channel_id: ${MENTIONED}、team_id: ${T1}）未読: 1、メンション: 1、最終のルート投稿: ${'1970-01-01T00:00:00Z | 1970-01-01T09:00:00+09:00'}`);
-    expect(out).toContain(`- team-a/old（表示名: OLD、channel_id: ${OLD}、team_id: ${T1}）未読: 2、メンション: 0、最終のルート投稿:`);
-    expect(out).toContain(`- @bob（表示名: @bob、channel_id: ${DM}）未読: 1、メンション: 1`);
+    expect(out).toContain(`- team-a/mentioned（channel_id: ${MENTIONED}、team_id: ${T1}、表示名: MENTIONED）未読: 1、メンション: 1、最終のルート投稿: ${'1970-01-01T00:00:00Z | 1970-01-01T09:00:00+09:00'}`);
+    expect(out).toContain(`- team-a/old（channel_id: ${OLD}、team_id: ${T1}、表示名: OLD）未読: 2、メンション: 0、最終のルート投稿:`);
+    expect(out).toContain(`- @bob（channel_id: ${DM}、表示名: @bob）未読: 1、メンション: 1`);
     for (const hidden of [QUIET, MUTED, ARCHIVED]) expect(out).not.toContain(hidden);
     expect(out).not.toContain(`channel_id: ${MUTED_MENTION}`);
   });
@@ -1213,7 +1234,7 @@ describe('get_unreads', () => {
     routes = base('disabled');
     const out = await setup()('get_unreads', {});
     expect(order(out)).toEqual([OLD, MUTED_MENTION, MENTIONED, DM, NEW]);
-    expect(out).toContain(`channel_id: ${OLD}、team_id: ${T1}）未読: 3、メンション: 1、最終投稿:`);
+    expect(out).toContain(`channel_id: ${OLD}、team_id: ${T1}、表示名: OLD）未読: 3、メンション: 1、最終投稿:`);
     expect(out).toContain('- team-b/new');
     expect(hits.some((h) => h.includes('/threads'))).toBe(false);
     expect(out).toContain('未読のあるチャンネル: 5 件');
@@ -3398,15 +3419,15 @@ describe('list_channel_members', () => {
     expect(urls).toContain(`GET /users?in_channel=${C}&active=true&page=0&per_page=50`);
     expect(out).toContain(`チャンネル: channel_id: ${C}、name: town、表示名: Town`);
     expect(out).toContain('メンバー数: 3');
-    expect(out).toContain(`- @user1（名前: Ann Lee、ニックネーム: annie、役職: PM、user_id: ${user(1).id}）`);
-    expect(out).toContain(`- @user2（Bot アカウント、user_id: ${user(2).id}）`);
+    expect(out).toContain(`- @user1（user_id: ${user(1).id}、名前: Ann Lee、ニックネーム: annie、役職: PM）`);
+    expect(out).toContain(`- @user2（user_id: ${user(2).id}、Bot アカウント）`);
     expect(names(out)).toEqual(['user1', 'user2', 'user3']);
   });
 
   test('keeps a member\'s name, nickname and position with a line break on one line', async () => {
     routes = { ...base(), 'GET /users': () => [user(1, { first_name: 'A\nnn', nickname: 'an\u2028nie', position: 'P\nM' })] };
     const out = await setup()('list_channel_members', { channel: C });
-    expect(out).toContain(`- @user1（名前: A nn、ニックネーム: an nie、役職: P M、user_id: ${user(1).id}）`);
+    expect(out).toContain(`- @user1（user_id: ${user(1).id}、名前: A nn、ニックネーム: an nie、役職: P M）`);
   });
 
   test('pages with limit, a cursor keeping the page size; a full last page leads to an empty one that only says there is no more', async () => {
