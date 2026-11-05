@@ -3,7 +3,7 @@ import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
 import { idArg } from './args.ts';
 import { ASK_ADMIN, POST_FORBIDDEN, RETRY, RETRY_SOON } from './format.ts';
 import type { Mm } from './resolve.ts';
-import { guarded, text, type ToolContext } from './server.ts';
+import { guarded, text, type ToolContext } from './tool.ts';
 import { worded, type Wording } from './tools-send.ts';
 
 const POST_ID = idArg;

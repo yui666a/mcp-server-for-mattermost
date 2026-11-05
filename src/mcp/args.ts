@@ -2,7 +2,7 @@ import { z } from 'zod';
 import { unformat } from './format.ts';
 
 // Not the SDK's default of dropping unknown keys: a misspelled or misplaced argument (file_id, files on a schedule) would run the tool without what the caller meant.
-// Not in server.ts: server.ts and the tool files import each other, and a const there could be read before it is set.
+// Not in server.ts: server.ts imports every tool module to register it, so a tool module importing it back would form a cycle.
 export function strictArgs<T extends z.ZodRawShape>(shape: T, hints: Record<string, string> = {}) {
   return z.strictObject(shape, {
     error: (iss) => {

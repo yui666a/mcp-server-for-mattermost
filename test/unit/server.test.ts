@@ -59,6 +59,6 @@ test.each([
   ['a blank message', '  ', 'Mattermost がエラーを返しました（403）。'],
 ])('a Mattermost error with %s is worded without a dangling colon', async (_, message, text) => {
   const { MmError } = await import('../../src/mattermost/client.ts');
-  const { failureText } = await import('../../src/mcp/server.ts');
+  const { failureText } = await import('../../src/mcp/tool.ts');
   expect(failureText(new MmError(403, 'x', message))).toBe(text);
 });

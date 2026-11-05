@@ -10,7 +10,7 @@ import { idArg } from './args.ts';
 import { BODY_CUT_NOTE, indented, InputError, oneLine, truncate, unformat, type MmPost } from './format.ts';
 import { lookPosted, postOnce } from './post.ts';
 import { myTeams, NoDirectChannel, resolveChannel, teamNameOf, type ChannelRef, type Mm, type MmChannel, type ResolvedChannel } from './resolve.ts';
-import { guarded, text, type ToolContext } from './server.ts';
+import { guarded, text, type ToolContext } from './tool.ts';
 
 type FileArg = { name: string; content_text?: string; content_base64?: string };
 type Args = { channel: string; message: string; root_id?: string; allow_duplicate?: boolean; files?: FileArg[]; file_ids?: string[] };

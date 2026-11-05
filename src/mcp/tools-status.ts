@@ -3,7 +3,7 @@ import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
 import { z } from 'zod';
 import { formatTime, InputError } from './format.ts';
 import type { Mm } from './resolve.ts';
-import { guarded, text, type ToolContext } from './server.ts';
+import { guarded, text, type ToolContext } from './tool.ts';
 import { PRESENCE } from './tools-read.ts';
 import { worded, type Wording } from './tools-send.ts';
 import { parseWhen } from './when.ts';

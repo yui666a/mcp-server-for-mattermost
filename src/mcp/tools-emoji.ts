@@ -3,7 +3,7 @@ import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
 import { z } from 'zod';
 import { InputError } from './format.ts';
 import type { Mm } from './resolve.ts';
-import { guarded, text, type ToolContext } from './server.ts';
+import { guarded, text, type ToolContext } from './tool.ts';
 import { worded } from './tools-send.ts';
 
 // Mattermost's fixed cap for /emoji/search (web.PerPageMaximum); the endpoint takes no page, so a full page cannot be continued.
