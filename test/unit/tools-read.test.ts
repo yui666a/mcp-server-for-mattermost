@@ -1818,6 +1818,13 @@ describe('read_channel', () => {
     expect(out).toContain('（続きはありません）');
   });
 
+  test('with nothing unread, does not read again even if Mattermost names a post before', async () => {
+    routes = { ...base(), [`GET /users/u1/channels/${CH}/posts/unread`]: () => ({ order: [], posts: {}, prev_post_id: id(1) }) };
+    const out = await setup()('read_channel', { channel: CH, from: 'unread' });
+    expect(out).toContain('未読はありません。');
+    expect(hits).not.toContain(`GET /channels/${CH}/posts`);
+  });
+
   test('when no read position is recorded, says so and reads newest first with a newest-first cursor', async () => {
     routes = { ...base('always_on', 0), [`GET /channels/${CH}/posts`]: () => list([1, 2, 3]) };
     const out = await setup()('read_channel', { channel: CH, from: 'unread', limit: 2 });
@@ -1863,6 +1870,49 @@ describe('read_channel', () => {
     routes = { ...base(), [`GET /users/u1/channels/${CH}/posts/unread`]: () => ({ order: [id(9), id(8)], posts: { [id(9)]: same(9), [id(8)]: same(8) } }) };
     const out = await setup()('read_channel', { channel: CH, from: 'unread' });
     expect(shownIds(out)).toEqual([id(8), id(9)]);
+  });
+
+  describe('the first unread page', () => {
+    // Post 1 is read; posts 2 and 3 share the first unread millisecond.
+    const corpus = [p(1), p(2, { create_at: 1010 }), p(3, { create_at: 1010 }), p(4, { create_at: 1020 }), p(5, { create_at: 1030 })];
+    // Like Mattermost: posts/unread reads strictly after the first unread post, so post 3 is left out, and names the post before it.
+    const unread = (prev: string) => () => ({ order: [id(5), id(4), id(2)], posts: Object.fromEntries(corpus.map((x) => [x.id, x])), prev_post_id: prev });
+    // Like Mattermost: after= by create_at strictly later, the oldest per_page, listed newest first.
+    const after = (req: Request) => {
+      const q = new URL(req.url).searchParams;
+      const t = corpus.find((x) => x.id === q.get('after'))?.create_at;
+      const got = t === undefined ? [] : corpus.filter((x) => x.create_at > t).slice(0, Number(q.get('per_page'))).reverse();
+      return { order: got.map((x) => x.id), posts: Object.fromEntries(got.map((x) => [x.id, x])) };
+    };
+
+    test.each([['always_on', 'true'], ['disabled', 'false']])('with CRT %s, reads again after the post before the first unread one, so posts of its millisecond are not left out', async (crt, collapsed) => {
+      routes = { ...base(crt), [`GET /users/u1/channels/${CH}/posts/unread`]: unread(id(1)), [`GET /channels/${CH}/posts`]: after };
+      const out = await setup()('read_channel', { channel: CH, from: 'unread', limit: 4 });
+      expect(shownIds(out)).toEqual([id(2), id(3), id(4), id(5)]);
+      expect(Object.fromEntries(query(`GET /channels/${CH}/posts`))).toEqual({ after: id(1), per_page: '5', collapsedThreads: collapsed, skipFetchThreads: 'true' });
+      expect(out).toContain('（続きはありません）');
+    });
+
+    test('gives a cursor after the last post shown when more posts follow', async () => {
+      routes = { ...base(), [`GET /users/u1/channels/${CH}/posts/unread`]: unread(id(1)), [`GET /channels/${CH}/posts`]: after };
+      const out = await setup()('read_channel', { channel: CH, from: 'unread', limit: 3 });
+      expect(shownIds(out)).toEqual([id(2), id(3), id(4)]);
+      expect(JSON.parse(Buffer.from(cursorIn(out)!, 'base64url').toString())).toMatchObject({ channel_id: CH, after: id(4), crt: true });
+    });
+
+    test('keeps Mattermost\'s page when there is no post before the first unread one', async () => {
+      routes = { ...base(), [`GET /users/u1/channels/${CH}/posts/unread`]: unread(''), [`GET /channels/${CH}/posts`]: after };
+      const out = await setup()('read_channel', { channel: CH, from: 'unread', limit: 4 });
+      expect(shownIds(out)).toEqual([id(2), id(4), id(5)]);
+      expect(hits).not.toContain(`GET /channels/${CH}/posts`);
+    });
+
+    test('keeps Mattermost\'s page when the post before is gone by the second call', async () => {
+      routes = { ...base(), [`GET /users/u1/channels/${CH}/posts/unread`]: unread(id(9)), [`GET /channels/${CH}/posts`]: after };
+      const out = await setup()('read_channel', { channel: CH, from: 'unread', limit: 4 });
+      expect(shownIds(out)).toEqual([id(2), id(4), id(5)]);
+      expect(out).not.toContain('未読はありません');
+    });
   });
 
   test('rejects an unread cursor issued for another channel', async () => {
@@ -1915,10 +1965,12 @@ describe('read_channel with since and until', () => {
     return asList(byNewest().slice(k * per, (k + 1) * per));
   };
   // Like Mattermost: the oldest post after last_viewed_at, then those strictly after it.
+  // Like Mattermost: the oldest post after last_viewed_at, then those strictly after it, naming the newest post before it.
   const unreadRoute = (viewed: number) => (req: Request) => {
     const after = Number(new URL(req.url).searchParams.get('limit_after'));
     const first = byOldest().find((p) => p.create_at > viewed);
-    return asList(first ? [first, ...byOldest().filter((p) => p.create_at > first.create_at).slice(0, after - 1)] : []);
+    const prev = first ? byNewest().find((p) => p.create_at < first.create_at)?.id ?? '' : '';
+    return { ...asList(first ? [first, ...byOldest().filter((p) => p.create_at > first.create_at).slice(0, after - 1)] : []), prev_post_id: prev };
   };
   const base = (): Record<string, Route> => ({
     [`GET /channels/${CH}`]: () => ({ id: CH, name: 'town', display_name: 'Town', team_id: TEAM, type: 'O' }),
