@@ -6,10 +6,7 @@ import type { MmPost } from '../../src/mcp/format.ts';
 import type { Mm } from '../../src/mcp/resolve.ts';
 import { checkRoot, sendMessage } from '../../src/mcp/tools-send.ts';
 import { INFLIGHT_GRACE, Store } from '../../src/store.ts';
-
-// Not vitest's defaults (1 s for vi.waitFor, 5 s for a test): on a busy machine the awaited event can take seconds.
-const SLOW = { timeout: 10_000 };
-const SLOW_TEST = 30_000;
+import { SLOW, SLOW_TEST } from './helpers.ts';
 
 const UID = 'u'.repeat(26);
 const CH = 'c'.repeat(26);
