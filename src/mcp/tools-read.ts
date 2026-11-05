@@ -273,8 +273,8 @@ export async function resolveInFilters(mm: Mm, userId: string, terms: string): P
   const specOf = (f: (typeof filters)[number]) => f.value.trim().replace(/^~+/, '').trim();
   for (const f of filters) {
     const next = words[f.at + f.span];
-    // Not treating every 、 as a comma: 、 also starts search words such as 、議事録.
     const word = next?.trim() ?? '';
+    // Not treating every 、 as a comma: 、 also starts search words such as 、議事録.
     if (specOf(f).startsWith('@') && /^[,，]|^、[A-Za-z0-9._,@、，-]*$/.test(word)) {
       const fullWidth = /^[、，]/.test(word) ? '区切りは半角のカンマ（,）で書いてください。' : '';
       throw new InputError(`${written(f)} の後の「${next}」: 検索の条件では @a,b のようにカンマの前後に空白を入れずに書いてください。${fullWidth}`);
