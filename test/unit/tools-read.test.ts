@@ -563,6 +563,32 @@ test('search_channels keeps a display name with a line break on one line, in the
   expect(out).toContain('- to wn（表示名: to wn、');
 });
 
+test('search_channels looks up the partners of more than 1,000 DMs in calls of at most 1,000 ids, and matches a DM of either call', async () => {
+  const partner = (i: number) => `p${String(i).padStart(25, '0')}`;
+  const dms = Array.from({ length: 1001 }, (_, i) => ({ id: `d${String(i).padStart(25, '0')}`, type: 'D', name: `u1__${partner(i)}`, display_name: '', team_id: '' }));
+  const asked: string[][] = [];
+  routes = {
+    'GET /users/me/teams': () => [{ id: 't'.repeat(26), name: 'team-a' }],
+    [`POST /teams/${'t'.repeat(26)}/channels/search`]: () => [],
+    'GET /users/me/channels': () => dms,
+    'POST /users/ids': () => { const ids = bodies['/users/ids'] as string[]; asked.push(ids); return ids.map((x) => ({ id: x, username: `name-${x}` })); },
+  };
+  const out = await setup()('search_channels', { query: `name-${partner(1000)}` });
+  expect(asked.map((x) => x.length)).toEqual([1000, 1]);
+  expect(out).toContain(`@name-${partner(1000)}`);
+  expect(await setup()('search_channels', { query: `name-${partner(0)}` })).toContain(`@name-${partner(0)}`);
+});
+
+test('search_channels fails rather than leaving the DMs out when their partners cannot be read', async () => {
+  routes = {
+    'GET /users/me/teams': () => [{ id: 't'.repeat(26), name: 'team-a' }],
+    [`POST /teams/${'t'.repeat(26)}/channels/search`]: () => [],
+    'GET /users/me/channels': () => [{ id: 'd'.repeat(26), type: 'D', name: 'u1__u2', display_name: '', team_id: '' }],
+    'POST /users/ids': () => new Response('oops', { status: 503 }),
+  };
+  expect(await setup()('search_channels', { query: 'bob' }, true)).toContain('Mattermost に一時的に接続できません');
+});
+
 test('search_users notes the 100-result cap', async () => {
   routes = { 'POST /users/search': () => Array.from({ length: 100 }, (_, i) => ({ id: `u${i}`, username: `user${i}` })) };
   const call = setup();
@@ -693,6 +719,19 @@ describe('list_my_channels', () => {
     const out = await setup()('list_my_channels', {});
     expect(out).toContain('- team-a/town（表示名: To wn、');
     expect(out).toContain('- alice, bob（表示名: alice, bob、');
+  });
+
+  test.each([[503, 'oops'], [403, '{"id":"api.context.permissions.app_error"}']])('still lists the channels, a DM by its partner\'s user_id, when the partners\' names cannot be read (%i)', async (status, body) => {
+    routes = { ...base(), 'POST /users/ids': () => new Response(body, { status }) };
+    const out = await setup()('list_my_channels', {});
+    expect(out).toContain(`channel_id: ${DM}`);
+    expect(out).toContain('@u2');
+    expect(out).toContain('- team-a/town');
+  });
+
+  test('fails on a rate limit while reading the partners\' names, as dmLabel does', async () => {
+    routes = { ...base(), 'POST /users/ids': () => new Response(null, { status: 429, headers: { 'x-ratelimit-reset': '7' } }) };
+    expect(await setup()('list_my_channels', {}, true)).toContain('呼び出しが多すぎます');
   });
 
   test('lists every channel the user is in, newest post first (ties by channel_id), with team, name, kind, ids and the last post time', async () => {
@@ -1241,7 +1280,13 @@ describe('get_unreads', () => {
     const out = await setup()('get_unreads', {});
     expect(out).toContain(`channel_id: ${MENTIONED}`);
     expect(out).not.toContain(`post_id: ${TH1}`);
-    expect(out).toContain('未読のスレッドを取得できませんでした');
+    expect(out).toContain('未読のスレッドを取得できませんでした（Mattermost のエラー 403: nope）');
+  });
+
+  test('says only the status when the threads API answers 4xx with a body that is not JSON', async () => {
+    routes = { ...base(), [`GET /users/u1/teams/${T2}/threads`]: () => new Response('<html>403</html>', { status: 403, headers: { 'content-type': 'text/html' } }) };
+    const out = await setup()('get_unreads', {});
+    expect(out).toContain('未読のスレッドを取得できませんでした（Mattermost のエラー 403）。');
   });
 
   test('when the threads API answers 4xx after a team hit the 4-page cap, drops that cap note and says the thread count is unavailable', async () => {
