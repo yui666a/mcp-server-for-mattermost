@@ -6,7 +6,7 @@ import { BAD_CURSOR, BODY_CUT_NOTE, BODY_MAX_CHARS, decodeCursor, encodeCursor, 
 import { pageCursor, paginate } from './paging.ts';
 import { mentionsMe, mentionTerms, type MentionUser } from './mentions.ts';
 import { parsePostRef } from './permalink.ts';
-import { Ambiguous, ChannelFetchError, myTeams, NoDirectChannel, resolveChannel, resolveUser, teamNameOf, unformat, type ChannelRef, type Mm, type MmChannel, type MmTeam, type UserRef } from './resolve.ts';
+import { Ambiguous, ChannelFetchError, myTeams, NoDirectChannel, resolveChannel, resolveUser, teamNameOf, unformat, type ChannelRef, type Mm, type MmChannel, type MmTeam, type ResolvedChannel, type UserRef } from './resolve.ts';
 import { guarded, text, type ToolContext } from './server.ts';
 import { worded, type Wording } from './tools-send.ts';
 import { parseWhen } from './when.ts';
@@ -181,6 +181,8 @@ export function render({ lines, next, posts = [], notes = [] }: Page): string {
 }
 
 // archived is a field rather than words added to the display name: a display name written as "（アーカイブ済み）" would otherwise pass for one.
+const resolvedLines = (ch: ResolvedChannel) => channelLines({ ...ch, archived: !!(ch.raw as ResolvedChannel['raw'] & { delete_at?: number }).delete_at });
+
 export function channelLines(c: ChannelRef & { archived?: boolean }): string[] {
   return [
     // Not the display name first: a name written as "（name: …、channel_id: …）" would then come before the real id.
@@ -662,7 +664,7 @@ export function registerReadTools(server: McpServer, ctx: ToolContext): void {
       const renderPage = async (head: string[], all: MmPost[], next: (last: MmPost) => object, none: string, gone: string) => {
         const shown = all.slice(0, all.length > per ? tieStart(all.slice(0, per + 1)) || per : per);
         const users = await usernames(mm, uid, shown);
-        const lines = [...channelLines(ch), ...head, ...shown.map((p) => formatPost(p, { baseUrl: base, teamName: ch.teamName, usernames: users }))];
+        const lines = [...resolvedLines(ch), ...head, ...shown.map((p) => formatPost(p, { baseUrl: base, teamName: ch.teamName, usernames: users }))];
         // Not asking Mattermost whether the cursor's post is gone: GET /posts answers 404 for soft and hard deletes alike, and a cursor is only given while posts remain past it.
         if (!shown.length) lines.push(none, ...(c ? [GONE + gone] : []));
         return render({ lines, posts: shown, next: shown.length < all.length ? next(shown[shown.length - 1]) : undefined });
@@ -775,8 +777,8 @@ export function registerReadTools(server: McpServer, ctx: ToolContext): void {
       const per = c?.per_page ?? limit ?? 50;
       const p = await mm.call<MmPost>(uid, 'GET', `/posts/${post_id}`).catch(postError);
       const rootId = p.root_id || p.id;
-      const raw = await mm.call<MmChannel>(uid, 'GET', `/channels/${p.channel_id}`).catch(postChannelError);
-      const ch: ChannelRef = { id: raw.id, name: raw.name, displayName: raw.display_name, teamId: raw.team_id, teamName: await teamNameOf(mm, uid, raw.team_id) };
+      const raw = await mm.call<MmChannel & { delete_at?: number }>(uid, 'GET', `/channels/${p.channel_id}`).catch(postChannelError);
+      const ch: ChannelRef & { archived: boolean } = { id: raw.id, name: raw.name, displayName: raw.display_name, teamId: raw.team_id, teamName: await teamNameOf(mm, uid, raw.team_id), archived: !!raw.delete_at };
       // Asking for one more than needed and dropping the root: Mattermost counts the root in perPage on the first page only.
       const q = new URLSearchParams({ perPage: String(per + 1), direction: 'down', ...(c ? { fromPost: c.from_post, fromCreateAt: String(c.from_create_at) } : {}) });
       const r = await mm.call<PostList>(uid, 'GET', `/posts/${rootId}/thread?${q}`);
@@ -798,8 +800,8 @@ export function registerReadTools(server: McpServer, ctx: ToolContext): void {
     async ({ post }, mm) => {
       const id = parsePostRef(post, base);
       const p = await mm.call<MmPost & { reply_count?: number }>(uid, 'GET', `/posts/${id}`).catch(postError);
-      const raw = await mm.call<MmChannel>(uid, 'GET', `/channels/${p.channel_id}`).catch(postChannelError);
-      const ch: ChannelRef = { id: raw.id, name: raw.name, displayName: raw.display_name, teamId: raw.team_id, teamName: await teamNameOf(mm, uid, raw.team_id) };
+      const raw = await mm.call<MmChannel & { delete_at?: number }>(uid, 'GET', `/channels/${p.channel_id}`).catch(postChannelError);
+      const ch: ChannelRef & { archived: boolean } = { id: raw.id, name: raw.name, displayName: raw.display_name, teamId: raw.team_id, teamName: await teamNameOf(mm, uid, raw.team_id), archived: !!raw.delete_at };
       const users = await usernames(mm, uid, [p]);
       const replies = p.reply_count ?? 0;
       // Not using render(): its "no more pages" line means nothing for a single post.
@@ -929,7 +931,7 @@ export function registerReadTools(server: McpServer, ctx: ToolContext): void {
       const ch = await resolveChannel(mm, uid, channel).catch(channelError);
       if (c && c.channel_id !== ch.id) throw new InputError(BAD_CURSOR);
       const kind: Record<string, string> = { O: '公開', P: '非公開', D: 'DM', G: 'グループ DM' };
-      const lines = channelLines(ch);
+      const lines = resolvedLines(ch);
       if (!c) {
         const stats = await mm.call<{ member_count: number }>(uid, 'GET', `/channels/${ch.id}/stats?exclude_files_count=true`).catch((e) => {
           if (e instanceof MmError && e.status === 403) return undefined;
@@ -974,7 +976,7 @@ export function registerReadTools(server: McpServer, ctx: ToolContext): void {
         throw e;
       };
       const users = await mm.call<UserRef[]>(uid, 'GET', `/users?${q}`).catch(refused);
-      const lines = channelLines(ch);
+      const lines = resolvedLines(ch);
       if (!c) lines.push(`メンバー数: ${(await mm.call<{ member_count: number }>(uid, 'GET', `/channels/${ch.id}/stats?exclude_files_count=true`).catch(refused)).member_count}`);
       lines.push(...users.map((u) => {
         const name = [u.first_name, u.last_name].filter(Boolean).join(' ');
