@@ -296,26 +296,27 @@ test('@、, with no name at all, is left to the name check', async () => {
 describe('a real channel ID written in upper case', () => {
   const UPPER = CH_A.toUpperCase();
 
-  test('is looked up again in lower case before any name', async () => {
+  test('is looked up in lower case from the start, which is the only case Mattermost IDs have', async () => {
     const { mm, calls } = fake(routes);
     expect(await resolveChannel(mm, ME, UPPER)).toMatchObject({ id: CH_A });
-    expect(calls.slice(0, 2)).toEqual([`GET /channels/${UPPER}`, `GET /channels/${CH_A}`]);
+    expect(calls[0]).toBe(`GET /channels/${CH_A}`);
+    expect(calls).not.toContain(`GET /channels/${UPPER}`);
   });
 
-  test('goes on to the names only when the lower case ID is not found either', async () => {
+  test('goes on to the names in lower case when the lower case ID is not found', async () => {
     const { mm, calls } = fake(Object.fromEntries(Object.entries(routes).filter(([k]) => k !== `/channels/${CH_A}`)));
     await expect(resolveChannel(mm, ME, UPPER)).rejects.toMatchObject({ status: 404 });
-    expect(calls.slice(0, 3)).toEqual([`GET /channels/${UPPER}`, `GET /channels/${CH_A}`, 'GET /users/me/teams']);
+    expect(calls.slice(0, 3)).toEqual([`GET /channels/${CH_A}`, 'GET /users/me/teams', `GET /teams/${teams[0].id}/channels/name/${CH_A}`]);
   });
 
-  test.each([403, 500])('a %i for the lower case ID is thrown as it is, without looking names up', async (status) => {
+  test.each([403, 500])('a %i for the ID is thrown as it is, without looking names up', async (status) => {
     const calls: string[] = [];
     const mm: Mm = { call: async (_u, m, p) => {
       calls.push(`${m} ${p}`);
-      throw new MmError(p === `/channels/${UPPER}` ? 404 : status, 'x', 'x');
+      throw new MmError(status, 'x', 'x');
     } };
     await expect(resolveChannel(mm, ME, UPPER)).rejects.toMatchObject({ status });
-    expect(calls).toEqual([`GET /channels/${UPPER}`, `GET /channels/${CH_A}`]);
+    expect(calls).toEqual([`GET /channels/${CH_A}`]);
   });
 });
 
@@ -327,6 +328,26 @@ test.each(['@bob、carol', '@bob，carol', '@a,b、c', '@bob、', '@bob、、car
   const { mm, calls } = fake(routes);
   await expect(resolveChannel(mm, ME, spec)).rejects.toThrow(new InputError('@a,b の区切りは半角のカンマ（,）で書いてください。読点（、）や全角のカンマ（，）は使えません。'));
   expect(calls).toEqual([]);
+});
+
+describe('format characters before or after a spec are removed, as they slip in with a copy', () => {
+  test.each([
+    ['\u200b@bob', DM],
+    ['only-a\u200b', CH_A],
+    ['\ufeffteam-b/general-dup', CH_B],
+    [`\u200e${CH_A.toUpperCase()}\u200b`, CH_A],
+  ])('%j is resolved', async (spec, id) => {
+    expect(await resolveChannel(fake(routes).mm, ME, spec)).toMatchObject({ id });
+  });
+
+  test('a user spec too', async () => {
+    expect(await resolveUser(fake(routes).mm, ME, '\u200b@bob\u00ad')).toMatchObject({ id: BOB });
+  });
+
+  test('an error shows the spec without them', async () => {
+    const e = await resolveChannel(fake(routes).mm, ME, '\u200bnowhere').catch((x) => x);
+    expect(e.message).toBe('チャンネル「nowhere」が見つかりません。');
+  });
 });
 
 test('every form of channel spec also returns the fetched channel as raw', async () => {

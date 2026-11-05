@@ -100,6 +100,13 @@ describe('mark_as_read for channels', () => {
     expect(hits).not.toContain('POST /channels/direct');
   });
 
+  test('names a channel it cannot resolve without the format characters around the spec', async () => {
+    routes = base();
+    const r = await setup().call({ channels: [{ channel: '\u200bnowhere\u200b' }] });
+    expect(r.text).toContain('チャンネル「nowhere」');
+    expect(r.text).not.toContain('\u200b');
+  });
+
   test('marks each channel read right after checking it when nothing but the user\'s own posts (sent through this app) follow last_post_id', async () => {
     routes = { ...base(), [`GET /channels/${CH}/posts`]: () => after([post(1, { user_id: 'u1', props: { from_oauth_app: 'true' } })]) };
     const r = await setup().call({ channels: [{ channel: CH, last_post_id: LAST }, { channel: CH2 }] });
