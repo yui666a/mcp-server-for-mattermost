@@ -1,5 +1,5 @@
 import type { McpServer, ToolCallback } from '@modelcontextprotocol/sdk/server/mcp.js';
-import type { CallToolResult, ToolAnnotations } from '@modelcontextprotocol/sdk/types.js';
+import type { ToolAnnotations } from '@modelcontextprotocol/sdk/types.js';
 import { z } from 'zod';
 import { MmError } from '../mattermost/client.ts';
 import { formatPost, formatTime, InputError, postUserIds, type MmPost } from './format.ts';
@@ -27,11 +27,10 @@ export function registerThreadTools(server: McpServer, ctx: ToolContext): void {
   const uid = ctx.mmUserId;
   const base = ctx.cfg.mmBrowserUrl;
 
-  function tool<S extends z.ZodRawShape>(name: string, description: string, inputSchema: S, annotations: ToolAnnotations, fn: (args: z.infer<z.ZodObject<S>>, mm: Mm) => Promise<string | CallToolResult>) {
+  function tool<S extends z.ZodRawShape>(name: string, description: string, inputSchema: S, annotations: ToolAnnotations, fn: (args: z.infer<z.ZodObject<S>>, mm: Mm) => Promise<string>) {
     server.registerTool(name, { description, inputSchema, annotations },
       guarded(ctx, name, async (args: z.infer<z.ZodObject<S>>, extra: { signal: AbortSignal }) => {
-        const r = await fn(args, { call: (u, m, p, b) => ctx.mm.call(u, m, p, b, extra.signal) });
-        return typeof r === 'string' ? text(r) : r;
+        return text(await fn(args, { call: (u, m, p, b) => ctx.mm.call(u, m, p, b, extra.signal) }));
       // Cast for the same reason as in tools-read.ts: the SDK's callback type does not resolve for a generic shape.
       }) as unknown as ToolCallback<S>);
   }
@@ -124,16 +123,22 @@ export function registerThreadTools(server: McpServer, ctx: ToolContext): void {
       });
       const { team } = await channelOf(mm, r.channelId);
       const label = `スレッド（親 post_id: ${r.root}）`;
-      const following = await mm.call(uid, 'GET', `/users/${uid}/teams/${team}/threads/${r.root}`).then(() => true, (e) => {
+      const noReplies = '返信がまだないため、最初の返信があるまで list_followed_threads には出ません。';
+      let following = await mm.call(uid, 'GET', `/users/${uid}/teams/${team}/threads/${r.root}`).then(() => true, (e) => {
         if (e instanceof MmError && e.status === 404) return false;
         throw e;
       });
+      // Not taking the thread state's 404 as unfollowed for a root post without replies: Mattermost has no thread state until the first reply, followed or not.
+      if (!following && !r.replies) {
+        const t = await mm.call<{ posts: Record<string, { is_following?: boolean }> }>(uid, 'GET', `/posts/${r.root}/thread?collapsedThreads=true`);
+        following = t.posts[r.root]?.is_following === true;
+      }
       // Not calling PUT for a followed thread: Mattermost marks the thread read on every follow, which would drop unread replies the user has not seen.
-      if (following) return `${label}はすでにフォローしています。`;
+      if (following) return [`${label}はすでにフォローしています。`, ...(r.replies ? [] : [noReplies])].join('\n');
       await mm.call(uid, 'PUT', `/users/${uid}/teams/${team}/threads/${r.root}/following`);
       return [
         `${label}をフォローしました。フォローした時点までの返信は既読になります（Mattermost の動作）。`,
-        ...(r.replies ? [] : ['返信がまだないため、最初の返信があるまで list_followed_threads には出ません。']),
+        ...(r.replies ? [] : [noReplies]),
       ].join('\n');
     });
 
