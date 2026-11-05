@@ -102,7 +102,7 @@ export async function resolveChannel(mm: Mm, userId: string, spec: string, opts:
         `チャンネル ID「${s}」のチャンネルはありません。ユーザー ID や投稿 ID を渡したのなら、チャンネルの指定ではありません。`,
         `同じ文字列を名前に持つチャンネルはあります。そのチャンネルを指すときだけ、${found.map((f) => `「${f.teamName}/${lower}」`).join('か')}の形で指定してください。`,
         // Not "- " at the head: mark_as_read puts this message in one item of its list, where such a line would read as another item.
-        // Not indented either: shown as Markdown, an indented line reads as a code block or as part of the list item above it.
+        // Not indented either: an indented line can show as a quote or code where the result is shown as Markdown.
         ...found.map((f) => `\n候補「${f.teamName}/${lower}」の表示名: ${oneLine(f.displayName || f.name)}`),
       ].join(''));
     });
