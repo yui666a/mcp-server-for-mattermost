@@ -1713,10 +1713,11 @@ describe('get_file', () => {
         }
       });
 
-      test('keeps UTF-8 without a guess when the text has Japanese, as a log cut at its size limit', async () => {
-        routes = { [INFO]: textInfo('a.txt', 20), [FILE]: body(Uint8Array.from([...Buffer.from('日本語のログ'), 0xe3, 0x81])) };
+      test.each([['日本語のログ'], ['、'], ['Ａ']])('keeps UTF-8 without a guess when the text has Japanese (%s), as a log cut at its size limit', async (head) => {
+        const b = Uint8Array.from([...Buffer.from(head), 0xe3, 0x81]);
+        routes = { [INFO]: textInfo('a.txt', b.length), [FILE]: body(b) };
         const out = await setup()('get_file', { file_id: F });
-        expect(content()).toBe('日本語のログ');
+        expect(content()).toBe(head);
         expect(out).toContain('文字コード: UTF-8');
         expect(out).not.toContain('推定');
       });
