@@ -11,7 +11,7 @@ const SEARCH_MAX = 200;
 
 export async function searchEmoji(mm: Mm, uid: string, args: { name: string }): Promise<CallToolResult> {
   // Not lowercasing: names made through the API may contain capitals, and Mattermost matches case-sensitively.
-  const term = args.name.trim().replace(/^:/, '').replace(/:$/, '');
+  const term = args.name.trim().replace(/^:/, '').replace(/:$/, '').trim();
   if (!term) throw new InputError('name に絵文字名の一部を指定してください。');
   if (term.length > 64) throw new InputError('name は 64 文字までにしてください（絵文字名の上限）。');
   const found = await worded(mm.call<{ name: string }[]>(uid, 'POST', '/emoji/search', { term, prefix_only: false }), {
