@@ -217,7 +217,9 @@ export class MmClient {
       log('mm_api_failed', { ...fields, error: (e as Error)?.name, ms: this.deps.now() - started });
       throw new UpstreamUnavailable('Mattermost unreachable', at.sent);
     }
-    at.sent = true;
+    // Not counting a 401 as sent: Mattermost refuses an invalid session before calling the handler, so nothing was done.
+    // This does not hold for an API whose handler returns 401 itself (deleteChannel, deleteUser); recheck before using one.
+    if (res.status !== 401) at.sent = true;
     log('mm_api', { ...fields, status: res.status, ms: this.deps.now() - started });
     if (res.status >= 300 && res.status < 400) {
       await discard(res);
