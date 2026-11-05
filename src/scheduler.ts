@@ -9,7 +9,6 @@ const PER_TICK = 20;
 const LATE_AFTER = 3600_000;
 const UNKNOWN = '投稿されたか不明です。Mattermost の画面で確かめてください。';
 const LATE = '予定時刻を 1 時間過ぎたため投稿していません。';
-const INTERNAL = '内部エラーのため投稿していません。';
 const UNSEALED = '本文を復号できないため投稿していません。予約を入れ直してください。';
 const POST_WORDING: Wording = {
   id: [
@@ -38,7 +37,8 @@ export async function tick(store: Store, mm: Mm, now: number): Promise<void> {
       o = await attempt(store, mm, s, now);
     } catch (e) {
       log('scheduled_post_error', { name: (e as Error)?.name });
-      o = failed(s.firstAttemptAt === null ? INTERNAL : UNKNOWN);
+      // Not "not posted" for an error before the post: nothing that can throw runs before postOnce, and the lookups of a retry catch their own errors.
+      o = failed(UNKNOWN);
     }
     store.settleScheduled(id, now, o);
     log('scheduled_post', { mm_user_id: s.mmUserId, outcome: o.status });
