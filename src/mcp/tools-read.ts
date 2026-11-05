@@ -927,7 +927,7 @@ export function registerReadTools(server: McpServer, ctx: ToolContext): void {
       if (!c) lines.push(`メンバー数: ${(await mm.call<{ member_count: number }>(uid, 'GET', `/channels/${ch.id}/stats?exclude_files_count=true`).catch(refused)).member_count}`);
       lines.push(...users.map((u) => {
         const name = [u.first_name, u.last_name].filter(Boolean).join(' ');
-        return `- @${u.username}（${[name && `名前: ${name}`, u.nickname && `ニックネーム: ${u.nickname}`, u.position && `役職: ${u.position}`, u.is_bot && 'Bot アカウント', `user_id: ${u.id}`].filter(Boolean).join('、')}）`;
+        return `- @${u.username}（${[name && `名前: ${oneLine(name)}`, u.nickname && `ニックネーム: ${oneLine(u.nickname)}`, u.position && `役職: ${oneLine(u.position)}`, u.is_bot && 'Bot アカウント', `user_id: ${u.id}`].filter(Boolean).join('、')}）`;
       }));
       if (!users.length && !c) lines.push('メンバーはいません。');
       // Not asking for one more row to tell the last page: Mattermost pages by page * per_page, so a full last page is followed by an empty one.
@@ -985,7 +985,7 @@ export function registerReadTools(server: McpServer, ctx: ToolContext): void {
         ? new Map((await mm.call<UserRef[]>(uid, 'POST', '/users/ids', userIds)).map((u) => [u.id, u.username]))
         : new Map<string, string>();
       const where = (x: MmChannel) => {
-        const label = x.type === 'D' ? `@${users.get(other(x)) ?? other(x)}` : x.display_name || x.name;
+        const label = x.type === 'D' ? `@${users.get(other(x)) ?? other(x)}` : oneLine(x.display_name || x.name);
         const team = teamName.get(x.team_id);
         return { label, path: team ? `${team}/${x.name}` : x.type === 'D' || x.type === 'G' ? label : x.name };
       };

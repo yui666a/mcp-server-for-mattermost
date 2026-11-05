@@ -169,6 +169,12 @@ describe('mark_as_read for channels', () => {
     expect(r.text).toContain(`last_post_id ${LAST} の投稿が見つかりません（削除されたか、見る権限がありません）。read_channel で読み直して`);
   });
 
+  test('keeps a channel\'s display name with a line break on one line in the result', async () => {
+    routes = { ...base(), [`GET /channels/${CH}`]: () => channel(CH, 'town', { display_name: 'To\nwn' }) };
+    const r = await setup().call({ channels: [{ channel: CH }] });
+    expect(r.text).toContain(`- チャンネル To wn（channel_id: ${CH}）: `);
+  });
+
   test('rejects a last_post_id from another channel', async () => {
     routes = { ...base(), [`GET /posts/${LAST}`]: () => post(0, { channel_id: CH2 }) };
     const r = await setup().call({ channels: [{ channel: CH, last_post_id: LAST }] });
