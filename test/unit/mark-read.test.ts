@@ -407,7 +407,7 @@ describe('mark_as_read for threads', () => {
   });
 
   test('looks up the user\'s teams once for several DM threads in one call', async () => {
-    const DM2 = 'e'.repeat(26);
+    const DM2 = 'f'.repeat(26);
     const ROOT2 = 'q'.repeat(26);
     routes = threads({
       [`GET /posts/${ROOT}`]: () => post(0, { id: ROOT, channel_id: DM }),

@@ -23,7 +23,7 @@ const POST_ID = z.string().regex(/^[A-Za-z0-9]{26}$/).describe('スレッドの�
 export const missing = (e: unknown) => e instanceof MmError && (e.status === 403 || e.status === 404);
 const followAnnotations: ToolAnnotations = { readOnlyHint: false, destructiveHint: false, idempotentHint: true };
 
-// Not looking for the team the user has open: neither the follow API nor the read API checks the team, which only names where Mattermost sends the change event.
+// Not looking for the team the user has open: no API tells which one is open, and neither the follow API nor the read API checks the team, which only names where Mattermost sends the change event.
 export async function threadTeam(mm: Mm, uid: string, channelId: string, firstTeam = async () => (await myTeams(mm, uid))[0]?.id): Promise<{ team: string | undefined; direct: boolean }> {
   const ch = await mm.call<{ team_id: string; type: string }>(uid, 'GET', `/channels/${channelId}`);
   return { team: ch.team_id || await firstTeam(), direct: ch.type === 'D' || ch.type === 'G' };
