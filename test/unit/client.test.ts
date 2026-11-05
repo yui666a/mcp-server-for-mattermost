@@ -248,6 +248,20 @@ test.each([500, 502, 503, 504])('%i stays UpstreamUnavailable', async (status) =
   expect(await failure(client.call('u1', 'GET', '/users/me'))).toBeInstanceOf(UpstreamUnavailable);
 });
 
+test('a 5xx UpstreamUnavailable carries its status, and the Mattermost id only for a 500 with a JSON error', async () => {
+  store.putMmCred('u1', 'a1', 'r1');
+  api = () => mmError(500, 'app.file_info.get.app_error');
+  expect(await failure(client.callBytes('u1', '/files/f'))).toMatchObject({ status: 500, id: 'app.file_info.get.app_error', sent: true });
+  api = () => new Response("seeker can't seek\n", { status: 500, headers: { 'content-type': 'text/plain' } });
+  const plain = await failure(client.callBytes('u1', '/files/f', undefined, { maxBytes: 10 }));
+  expect(plain).toBeInstanceOf(UpstreamUnavailable);
+  expect(plain).toMatchObject({ status: 500, id: undefined, sent: true });
+  for (const status of [502, 503, 504]) {
+    api = () => mmError(status, 'x');
+    expect(await failure(client.call('u1', 'GET', '/users/me'))).toMatchObject({ status, id: undefined, sent: true });
+  }
+});
+
 test('each call takes one limiter slot for its whole duration and is rejected unsent beyond the limit', async () => {
   store.putMmCred('u1', 'a1', 'r1');
   const acquire = vi.spyOn(limiter, 'acquire');
