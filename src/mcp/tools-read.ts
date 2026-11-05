@@ -313,7 +313,7 @@ async function filterChannelIds(mm: Mm, userId: string, spec: string, written: s
     if (e instanceof ChannelFetchError && e.id === 'app.team.get_by_name.missing.app_error') {
       throw new InputError(`チャンネル「${spec}」のチームが見つかりません。チーム名の誤りなら、list_my_channels で参加しているチームを確かめてください（チーム名はチャンネルの行の先頭に出ます）。`);
     }
-    // By name a private channel the user is not in answers 404, so a 403 there means a team the user is not in.
+    // Not the private-channel wording for team/channel: by name Mattermost answers 404 to a private channel the user is not in.
     if (e instanceof ChannelFetchError && e.status === 403) throw new InputError(`チャンネル「${spec}」を見る権限がありません（${spec.includes('/') ? '参加していないチームのチャンネルなど' : '参加していない非公開チャンネルなど'}）。${RETRY}${ASK_ADMIN}`);
     // Told apart by the form of the spec, not by Mattermost's id: a 404 without an id, as a proxy may give, still gets a fitting message.
     if (e instanceof ChannelFetchError && e.status === 404) {
@@ -321,7 +321,7 @@ async function filterChannelIds(mm: Mm, userId: string, spec: string, written: s
     }
     throw e;
   }
-  // Only an ID reaches an archived channel: lookups by name leave them out. An -in: of one is kept, as the search leaves it out anyway.
+  // Not dropping an -in: of an archived channel: the search leaves it out anyway.
   // Not searching with include_deleted_channels instead: the tool descriptions and the listing behind the channel lines assume archived channels stay out.
   if (!exclude && (ch.raw as { delete_at?: number }).delete_at) throw new InputError(`チャンネル「${spec}」はアーカイブ済みで、検索の対象外です。読むなら read_channel に渡します。`);
   return [ch.id];

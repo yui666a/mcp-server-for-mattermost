@@ -3456,7 +3456,9 @@ describe('search_files', () => {
       routes[`GET /channels/${B}`] = mmError(404, 'app.channel.get.existing.app_error');
       expect(await call('search_files', { terms: `x in:${B}` }, true)).toBe(`チャンネル「${B}」が見つかりません。ID の誤りなら search_channels で確かめてください。`);
       routes['GET /teams/name/team-b/channels/name/dup'] = mmError(404, 'app.team.get_by_name.missing.app_error');
+      const asked = searched.length;
       expect(await call('search_files', { terms: `x in:${'a'.repeat(26)}` }, true)).toBe(`チャンネル「${'a'.repeat(26)}」はアーカイブ済みで、検索の対象外です。読むなら read_channel に渡します。`);
+      expect(searched.slice(asked)).toEqual(['*']);
       expect(await call('search_files', { terms: 'x in:team-b/dup' }, true)).toBe('チャンネル「team-b/dup」のチームが見つかりません。チーム名の誤りなら、list_my_channels で参加しているチームを確かめてください（チーム名はチャンネルの行の先頭に出ます）。');
       expect(onlyAsked()).toBe(true);
     });
