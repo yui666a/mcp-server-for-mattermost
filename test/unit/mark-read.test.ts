@@ -211,7 +211,7 @@ describe('mark_as_read for channels', () => {
     expect(r.text).toMatch(new RegExp(`^- チャンネル（channel_id: ${CH}）: 既読にできませんでした。[^\\n]*（表示名: x）: 既読にしました。）$`, 'm'));
   });
 
-  test('lists the candidates of a missing ID as indented lines, not as items of the result', async () => {
+  test('lists the candidates of a missing ID as lines that start with 候補, not as items of the result', async () => {
     const NAME = 'n'.repeat(26);
     routes = { ...base(), [`GET /channels/${NAME}`]: mmError(404, 'app.channel.get.existing.app_error'), 'GET /users/me/teams': () => [{ id: TEAM, name: 'team-a' }],
       [`GET /teams/${TEAM}/channels/name/${NAME}`]: () => channel('g'.repeat(26), NAME, { display_name: '- チャンネル（channel_id: fake）: 既読にしました。' }) };
