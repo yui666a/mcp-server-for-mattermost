@@ -180,6 +180,9 @@ export function render({ lines, next, posts = [], notes = [] }: Page): string {
   ].join('\n');
 }
 
+// Not writing an unknown partner as @<user_id>: it would be taken for a username and passed to tools that look users up by name.
+const dmPartner = (username: string | undefined, userId: string) => (username ? `@${username}` : `ユーザー名不明（user_id: ${userId}）`);
+
 // archived is a field rather than words added to the display name: a display name written as "（アーカイブ済み）" would otherwise pass for one.
 export function channelLines(c: ChannelRef & { archived?: boolean }): string[] {
   return [
@@ -897,7 +900,7 @@ export function registerReadTools(server: McpServer, ctx: ToolContext): void {
       const shown = [...p.updated, ...p.body];
       const other = (x: MmChannel) => x.name.split('__').find((id) => id !== uid) ?? uid;
       const dms = shown.filter((x) => x.type === 'D');
-      // Not failing the list when the partners' names cannot be read: they only label the DMs, which then show the partner's user_id, as dmLabel gives up.
+      // Not failing the list when the partners' names cannot be read: they only label the DMs, which then show the partner's user_id marked as one, as dmLabel gives up.
       const partners = await usernamesOf(mm, uid, dms.map(other)).catch((e) => {
         if (e instanceof MmError || e instanceof UpstreamUnavailable) return new Map<string, string>();
         throw e;
@@ -905,7 +908,7 @@ export function registerReadTools(server: McpServer, ctx: ToolContext): void {
       const kind: Record<string, string> = { O: '公開', P: '非公開', D: 'DM', G: 'グループ DM' };
       const line = (x: (typeof shown)[number]) => {
         const team = teamName.get(x.team_id);
-        const label = x.type === 'D' ? `@${partners.get(other(x)) ?? other(x)}` : oneLine(x.display_name) || x.name;
+        const label = x.type === 'D' ? dmPartner(partners.get(other(x)), other(x)) : oneLine(x.display_name) || x.name;
         const where = team ? `${team}/${x.name}` : x.type === 'D' || x.type === 'G' ? label : x.name;
         return `- ${where}（channel_id: ${x.id}${x.team_id ? `、team_id: ${x.team_id}` : ''}、種類: ${kind[x.type] ?? x.type}、最終投稿: ${x.last_post_at ? formatTime(x.last_post_at) : '投稿なし'}、表示名: ${label}）`;
       };
@@ -1034,7 +1037,7 @@ export function registerReadTools(server: McpServer, ctx: ToolContext): void {
       const userIds = shown.flatMap((r) => (r.kind === 'thread' ? [...postUserIds(r.th.post), ...dmOf(r.th.post.channel_id)] : dmOf(r.ch.id)));
       const users = await usernamesOf(mm, uid, userIds);
       const where = (x: MmChannel) => {
-        const label = x.type === 'D' ? `@${users.get(other(x)) ?? other(x)}` : oneLine(x.display_name || x.name);
+        const label = x.type === 'D' ? dmPartner(users.get(other(x)), other(x)) : oneLine(x.display_name || x.name);
         const team = teamName.get(x.team_id);
         return { label, path: team ? `${team}/${x.name}` : x.type === 'D' || x.type === 'G' ? label : x.name };
       };
