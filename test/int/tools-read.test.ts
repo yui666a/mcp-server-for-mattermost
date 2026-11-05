@@ -429,7 +429,7 @@ describe('read tools against the local Mattermost', () => {
     test('for the id of a private channel bob has not joined, says he has no permission', async () => {
       const r = await call('bob', 'get_channel', { channel: e.teams.a.privateChannelId! });
       expect(r.isError).toBe(true);
-      expect(r.content[0].text).toBe('このチャンネルを見る権限がありません（参加していない非公開チャンネルなど）');
+      expect(r.content[0].text).toBe('このチャンネルを見る権限がありません（参加していない非公開チャンネルなど）。参加しているはずなら、Mattermost の一時的な障害の可能性があります。少し待ってから再試行してください。');
     });
 
     test('pages through 3 pinned posts with pinned_limit 2', async () => {
