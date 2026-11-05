@@ -379,6 +379,9 @@ describe('mark_as_read for threads', () => {
     expect(r.text).toContain(`（channel_id: ${CH2}）: 処理中に中断しました（既読になったかは分かりません）。`);
     expect(r.text).toContain(`ここで中断しました。Mattermost に一時的に接続できません。しばらくしてから再試行してください。次の 1 件は処理していません: スレッド（post_id: ${ROOT}）。再実行するときは、中断した項目と処理していない項目だけを渡してください。`);
     expect(hits.filter((h) => h.startsWith('GET /users/u1/teams/'))).toEqual([]);
+    const logged = vi.mocked(process.stdout.write).mock.calls.map(([l]) => JSON.parse(String(l)));
+    expect(logged).toContainEqual(expect.objectContaining({ event: 'tool_interrupted', mm_user_id: 'u1', tool: 'mark_as_read', outcome: 'upstream_unavailable' }));
+    expect(logged).toContainEqual(expect.objectContaining({ event: 'tool_call', tool: 'mark_as_read', outcome: 'tool_error' }));
   });
 
   test('stops at a rate limit in the threads before writing, saying that thread was not marked', async () => {
@@ -388,6 +391,12 @@ describe('mark_as_read for threads', () => {
     expect(r.text).toContain(`（channel_id: ${CH}）: 呼んだ時点までのすべてを既読にしました。`);
     expect(r.text).toContain(`スレッド（親 post_id: ${ROOT}）: 処理中に中断しました（既読にしていません）。`);
     expect(r.text).toContain('ここで中断しました。呼び出しが多すぎます。7 秒後に再試行してください。再実行するときは');
+  });
+
+  test('says an item was not marked when its write is rate limited', async () => {
+    routes = threads({ 'POST /channels/members/u1/mark_read': once(() => ({ status: 'OK', last_viewed_at_times: {} }), () => new Response(null, { status: 429, headers: { 'x-ratelimit-reset': '7' } })) });
+    const r = await setup().call({ channels: [{ channel: CH }, { channel: CH2 }] });
+    expect(r.text).toContain(`（channel_id: ${CH2}）: 処理中に中断しました（既読にしていません）。`);
   });
 
   test('stops with the results so far even when they are all failures', async () => {

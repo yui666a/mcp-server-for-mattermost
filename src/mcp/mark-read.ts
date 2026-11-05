@@ -1,7 +1,7 @@
 import type { McpServer, ToolCallback } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
 import { z } from 'zod';
-import { MmError } from '../mattermost/client.ts';
+import { MmError, RateLimited } from '../mattermost/client.ts';
 import { strictArgs } from './args.ts';
 import { InputError, type MmPost } from './format.ts';
 import { myTeams, resolveChannel, type Mm } from './resolve.ts';
@@ -49,7 +49,6 @@ function lastPost(mm: Mm, uid: string, id: string, reread: string): Promise<Post
 
 const itemError = (e: unknown): e is InputError | MmError => e instanceof InputError || e instanceof MmError;
 
-// Stops the run with the line for the item it stopped in. changed is true when that item may have been marked read.
 class Interrupted extends Error {
   readonly line: string;
   readonly changed: boolean;
@@ -76,8 +75,9 @@ export async function markAsRead(mm: Mm, uid: string, args: Args): Promise<CallT
   const failed = (label: string, e: unknown): Result => {
     if (e instanceof Interrupted) throw e;
     if (itemError(e)) return { line: `- ${label}: 既読にできませんでした。${failureText(e)}`, ok: false };
-    // Not saying the item stayed unread once its write was sent: it may have reached Mattermost before the timeout or the 5xx.
-    throw new Interrupted(`- ${label}: 処理中に中断しました（${writing ? '既読になったかは分かりません' : '既読にしていません'}）。`, writing, e);
+    // Not saying the item stayed unread once its write was sent: it may have reached Mattermost before the timeout or the 5xx. A rate limit, or a failure known to be raised before sending, left it unread.
+    const maybe = writing && !(e instanceof RateLimited) && (e as { sent?: boolean }).sent !== false;
+    throw new Interrupted(`- ${label}: 処理中に中断しました（${maybe ? '既読になったかは分かりません' : '既読にしていません'}）。`, maybe, e);
   };
   try {
     await markItems();
@@ -96,122 +96,122 @@ export async function markAsRead(mm: Mm, uid: string, args: Args): Promise<CallT
   return text(['既読にした結果:', ...results.map((r) => r.line)].join('\n'), !results.some((r) => r.ok));
 
   async function markItems(): Promise<void> {
-  const seen = new Set<string>();
+    const seen = new Set<string>();
 
-  for (const item of channels) {
-    started++;
-    writing = false;
-    let label = `チャンネル「${item.channel}」`;
-    try {
-      const ch = await resolveChannel(mm, uid, item.channel);
-      label = `チャンネル ${ch.displayName || ch.name}（channel_id: ${ch.id}）`;
-      if (seen.has(ch.id)) throw new InputError('同じチャンネルがほかの項目と重なっています。1 件にまとめてください。');
-      seen.add(ch.id);
-      const me = await mm.call<Member>(uid, 'GET', `/channels/${ch.id}/members/me`).catch((e) => {
-        if (missing(e)) throw new InputError('このチャンネルに参加していません。');
-        throw e;
-      });
-      const raw = ch.raw as unknown as Counts;
-      const unread = crt ? raw.total_msg_count_root - me.msg_count_root : raw.total_msg_count - me.msg_count;
-      if (unread <= 0 && !(crt ? me.mention_count_root : me.mention_count)) {
-        results.push({ line: `- ${label}: すでに既読です。`, ok: true });
-        continue;
-      }
-      if (item.last_post_id) {
-        const last = await lastPost(mm, uid, item.last_post_id, 'read_channel');
-        if (last.channel_id !== ch.id) throw new InputError(`last_post_id ${last.id} の投稿はこのチャンネルにありません。`);
-        // Not comparing with the channel's last_post_at: editing or pinning moves it forward and deleting never moves it back.
-        const q = new URLSearchParams({ after: last.id, per_page: String(AFTER_PAGE), collapsedThreads: String(crt), skipFetchThreads: 'true' });
-        const r = await mm.call<{ order: string[]; posts: Record<string, Post> }>(uid, 'GET', `/channels/${ch.id}/posts?${q}`);
-        const after = r.order.map((id) => r.posts[id]).filter(Boolean);
-        const mine = (p: Post) => p.user_id === uid && !p.props?.from_webhook && !p.props?.from_bot;
-        if (after.some((p) => !mine(p) && !JOIN_LEAVE.has(p.type ?? ''))) {
-          results.push({ line: `- ${label}: last_post_id より後に、読んでいない投稿があります。既読にしていません。read_channel の from: "unread" で最後まで読んでから、読んだ中で最も新しい投稿を渡してください。`, ok: false });
-          continue;
-        }
-        if (after.length >= AFTER_PAGE) {
-          results.push({ line: `- ${label}: last_post_id より後に自分の投稿（と参加・退出の通知）が ${AFTER_PAGE} 件以上あり、その先を確かめられないため既読にしていません。`, ok: false });
-          continue;
-        }
-      }
-      // Not using /channels/members/{id}/view: it also switches the user's active channel, which changes what they are notified about.
-      // Not batching every channel into one mark_read after all the checks: the gap between a channel's check and its marking would grow to the whole run.
-      writing = true;
-      await mm.call(uid, 'POST', `/channels/members/${uid}/mark_read`, [ch.id]);
-      results.push({ line: `- ${label}: ${item.last_post_id ? '既読にしました。' : '呼んだ時点までのすべてを既読にしました。'}`, ok: true });
-    } catch (e) {
-      results.push(failed(label, e));
-    }
-  }
-
-  let anyTeam: string | undefined;
-  const firstTeam = async () => (anyTeam ??= (await myTeams(mm, uid))[0]?.id);
-  for (const item of threads) {
-    started++;
-    writing = false;
-    let label = `スレッド（post_id: ${item.post_id}）`;
-    try {
-      if (!crt) throw new InputError('スレッドの折りたたみ（CRT）が無効なため、スレッドの既読は画面に出ません。チャンネルを既読にすれば足ります。');
-      const p = await worded(mm.call<Post & { reply_count?: number }>(uid, 'GET', `/posts/${item.post_id}`), POST_WORDING);
-      const root = p.root_id || p.id;
-      label = `スレッド（親 post_id: ${root}）`;
-      const { team } = await threadTeam(mm, uid, p.channel_id, firstTeam);
-      if (!team) throw new InputError('所属しているチームがないため、スレッドを既読にできません。');
-      const state = await mm.call<ThreadState>(uid, 'GET', `/users/${uid}/teams/${team}/threads/${root}`).catch(async (e) => {
-        if (!(e instanceof MmError && e.status === 404)) throw e;
-        // Not pointing a root post without replies to follow_thread: Mattermost has no thread state for it until the first reply, followed or not.
-        if (!p.root_id && !p.reply_count) throw new InputError('このスレッドには返信が無いため、既読にするものがありません。');
-        // Not pointing a thread of a channel the user has not joined to follow_thread: follow_thread refuses it. A public channel's posts are readable without joining, so the 404 alone does not tell.
-        await mm.call(uid, 'GET', `/channels/${p.channel_id}/members/me`).catch((m) => {
-          if (missing(m)) throw new InputError('このスレッドのチャンネルに参加していません。参加していないチャンネルのスレッドは未読に数えられないので、既読にするものがありません。');
-          throw m;
+    for (const item of channels) {
+      started++;
+      writing = false;
+      let label = `チャンネル「${item.channel}」`;
+      try {
+        const ch = await resolveChannel(mm, uid, item.channel);
+        label = `チャンネル ${ch.displayName || ch.name}（channel_id: ${ch.id}）`;
+        if (seen.has(ch.id)) throw new InputError('同じチャンネルがほかの項目と重なっています。1 件にまとめてください。');
+        seen.add(ch.id);
+        const me = await mm.call<Member>(uid, 'GET', `/channels/${ch.id}/members/me`).catch((e) => {
+          if (missing(e)) throw new InputError('このチャンネルに参加していません。');
+          throw e;
         });
-        throw new InputError('このスレッドはフォローしていないため、既読の状態がありません（フォローしていないスレッドの返信は未読に数えられません）。フォローするなら follow_thread を使ってください（フォローした時点までの返信が既読になります）。');
-      });
-      let at = state.last_reply_at;
-      if (item.last_post_id) {
-        const last = await lastPost(mm, uid, item.last_post_id, 'read_thread');
-        if (last.id !== root && last.root_id !== root) throw new InputError(`last_post_id ${last.id} の投稿はこのスレッドにありません。`);
-        at = last.create_at;
-      }
-      const upTo = item.last_post_id ? 'last_post_id までは' : 'すでに';
-      const put = (ts: number) => {
-        writing = true;
-        return mm.call<ThreadState>(uid, 'PUT', `/users/${uid}/teams/${team}/threads/${root}/read/${ts}`);
-      };
-      // Not failing the item when only clearing the mention fails: the position already stands at or past the one to write, so the thread is read.
-      // Not pointing a call without last_post_id to a plain retry: it would also mark read the replies that arrived meanwhile.
-      const retry = item.last_post_id ? 'このスレッドを同じ last_post_id で再実行すると消せることがあります。' : 'このスレッドを read_thread で読み、読んだ最終返信を last_post_id に渡して再実行すると消せることがあります。';
-      const clearing = (ts: number, read: string) => put(ts).catch((e) => {
-        if (!itemError(e)) throw new Interrupted(`- ${label}: ${read}ただし、位置ちょうどの返信のメンションを消す前に中断しました。${retry}`, true, e);
-        const why = failureText(e);
-        return `ただし、位置ちょうどの返信のメンションは消せませんでした。${why}${why.endsWith('。') ? '' : '。'}${retry}`;
-      });
-      // Not writing the read post's own time: Mattermost counts unread replies after the position but mentions from it, so a mention on that post would stay.
-      // Not writing a position before the current one: the threads API moves it backwards too, which would unread what the user has read since.
-      const to = Math.max(at + 1, state.last_viewed_at);
-      let done: string;
-      if (to === state.last_viewed_at) {
-        // Not rewriting the position while replies after it are unread: the mention count would not change, and the user may read further meanwhile.
-        if (!state.unread_mentions || state.unread_replies) {
-          results.push({ line: `- ${label}: ${upTo}既読です。`, ok: true });
+        const raw = ch.raw as unknown as Counts;
+        const unread = crt ? raw.total_msg_count_root - me.msg_count_root : raw.total_msg_count - me.msg_count;
+        if (unread <= 0 && !(crt ? me.mention_count_root : me.mention_count)) {
+          results.push({ line: `- ${label}: すでに既読です。`, ok: true });
           continue;
         }
-        // Not rewriting the same position for a mention with no unread reply: Mattermost counts mentions from the position, so one on a reply at it would stay. No reply is after it, so one millisecond on reads none.
-        const r = await clearing(to + 1, `${upTo}既読です。`);
-        done = typeof r === 'string' ? `${upTo}既読です。${r}` : `${upTo}既読です${r.unread_mentions ? '' : '（残っていたメンションを消しました）'}。`;
-      } else {
-        const r = await put(to);
-        // Not leaving a mention with no unread reply: it is on a reply at the position, which already counts as read.
-        const read = item.last_post_id ? '既読にしました。' : '呼んだ時点の最終返信までを既読にしました。';
-        const left = r.unread_mentions && !r.unread_replies ? await clearing(to + 1, read) : undefined;
-        done = read + (typeof left === 'string' ? left : '');
+        if (item.last_post_id) {
+          const last = await lastPost(mm, uid, item.last_post_id, 'read_channel');
+          if (last.channel_id !== ch.id) throw new InputError(`last_post_id ${last.id} の投稿はこのチャンネルにありません。`);
+          // Not comparing with the channel's last_post_at: editing or pinning moves it forward and deleting never moves it back.
+          const q = new URLSearchParams({ after: last.id, per_page: String(AFTER_PAGE), collapsedThreads: String(crt), skipFetchThreads: 'true' });
+          const r = await mm.call<{ order: string[]; posts: Record<string, Post> }>(uid, 'GET', `/channels/${ch.id}/posts?${q}`);
+          const after = r.order.map((id) => r.posts[id]).filter(Boolean);
+          const mine = (p: Post) => p.user_id === uid && !p.props?.from_webhook && !p.props?.from_bot;
+          if (after.some((p) => !mine(p) && !JOIN_LEAVE.has(p.type ?? ''))) {
+            results.push({ line: `- ${label}: last_post_id より後に、読んでいない投稿があります。既読にしていません。read_channel の from: "unread" で最後まで読んでから、読んだ中で最も新しい投稿を渡してください。`, ok: false });
+            continue;
+          }
+          if (after.length >= AFTER_PAGE) {
+            results.push({ line: `- ${label}: last_post_id より後に自分の投稿（と参加・退出の通知）が ${AFTER_PAGE} 件以上あり、その先を確かめられないため既読にしていません。`, ok: false });
+            continue;
+          }
+        }
+        // Not using /channels/members/{id}/view: it also switches the user's active channel, which changes what they are notified about.
+        // Not batching every channel into one mark_read after all the checks: the gap between a channel's check and its marking would grow to the whole run.
+        writing = true;
+        await mm.call(uid, 'POST', `/channels/members/${uid}/mark_read`, [ch.id]);
+        results.push({ line: `- ${label}: ${item.last_post_id ? '既読にしました。' : '呼んだ時点までのすべてを既読にしました。'}`, ok: true });
+      } catch (e) {
+        results.push(failed(label, e));
       }
-      results.push({ line: `- ${label}: ${done}`, ok: true });
-    } catch (e) {
-      results.push(failed(label, e));
     }
-  }
+
+    let anyTeam: string | undefined;
+    const firstTeam = async () => (anyTeam ??= (await myTeams(mm, uid))[0]?.id);
+    for (const item of threads) {
+      started++;
+      writing = false;
+      let label = `スレッド（post_id: ${item.post_id}）`;
+      try {
+        if (!crt) throw new InputError('スレッドの折りたたみ（CRT）が無効なため、スレッドの既読は画面に出ません。チャンネルを既読にすれば足ります。');
+        const p = await worded(mm.call<Post & { reply_count?: number }>(uid, 'GET', `/posts/${item.post_id}`), POST_WORDING);
+        const root = p.root_id || p.id;
+        label = `スレッド（親 post_id: ${root}）`;
+        const { team } = await threadTeam(mm, uid, p.channel_id, firstTeam);
+        if (!team) throw new InputError('所属しているチームがないため、スレッドを既読にできません。');
+        const state = await mm.call<ThreadState>(uid, 'GET', `/users/${uid}/teams/${team}/threads/${root}`).catch(async (e) => {
+          if (!(e instanceof MmError && e.status === 404)) throw e;
+          // Not pointing a root post without replies to follow_thread: Mattermost has no thread state for it until the first reply, followed or not.
+          if (!p.root_id && !p.reply_count) throw new InputError('このスレッドには返信が無いため、既読にするものがありません。');
+          // Not pointing a thread of a channel the user has not joined to follow_thread: follow_thread refuses it. A public channel's posts are readable without joining, so the 404 alone does not tell.
+          await mm.call(uid, 'GET', `/channels/${p.channel_id}/members/me`).catch((m) => {
+            if (missing(m)) throw new InputError('このスレッドのチャンネルに参加していません。参加していないチャンネルのスレッドは未読に数えられないので、既読にするものがありません。');
+            throw m;
+          });
+          throw new InputError('このスレッドはフォローしていないため、既読の状態がありません（フォローしていないスレッドの返信は未読に数えられません）。フォローするなら follow_thread を使ってください（フォローした時点までの返信が既読になります）。');
+        });
+        let at = state.last_reply_at;
+        if (item.last_post_id) {
+          const last = await lastPost(mm, uid, item.last_post_id, 'read_thread');
+          if (last.id !== root && last.root_id !== root) throw new InputError(`last_post_id ${last.id} の投稿はこのスレッドにありません。`);
+          at = last.create_at;
+        }
+        const upTo = item.last_post_id ? 'last_post_id までは' : 'すでに';
+        const put = (ts: number) => {
+          writing = true;
+          return mm.call<ThreadState>(uid, 'PUT', `/users/${uid}/teams/${team}/threads/${root}/read/${ts}`);
+        };
+        // Not failing the item when only clearing the mention fails: the position already stands at or past the one to write, so the thread is read.
+        // Not pointing a call without last_post_id to a plain retry: it would also mark read the replies that arrived meanwhile.
+        const retry = item.last_post_id ? 'このスレッドを同じ last_post_id で再実行すると消せることがあります。' : 'このスレッドを read_thread で読み、読んだ最終返信を last_post_id に渡して再実行すると消せることがあります。';
+        const clearing = (ts: number, read: string) => put(ts).catch((e) => {
+          if (!itemError(e)) throw new Interrupted(`- ${label}: ${read}ただし、位置ちょうどの返信のメンションを消す前に中断しました。${retry}`, true, e);
+          const why = failureText(e);
+          return `ただし、位置ちょうどの返信のメンションは消せませんでした。${why}${why.endsWith('。') ? '' : '。'}${retry}`;
+        });
+        // Not writing the read post's own time: Mattermost counts unread replies after the position but mentions from it, so a mention on that post would stay.
+        // Not writing a position before the current one: the threads API moves it backwards too, which would unread what the user has read since.
+        const to = Math.max(at + 1, state.last_viewed_at);
+        let done: string;
+        if (to === state.last_viewed_at) {
+          // Not rewriting the position while replies after it are unread: the mention count would not change, and the user may read further meanwhile.
+          if (!state.unread_mentions || state.unread_replies) {
+            results.push({ line: `- ${label}: ${upTo}既読です。`, ok: true });
+            continue;
+          }
+          // Not rewriting the same position for a mention with no unread reply: Mattermost counts mentions from the position, so one on a reply at it would stay. No reply is after it, so one millisecond on reads none.
+          const r = await clearing(to + 1, `${upTo}既読です。`);
+          done = typeof r === 'string' ? `${upTo}既読です。${r}` : `${upTo}既読です${r.unread_mentions ? '' : '（残っていたメンションを消しました）'}。`;
+        } else {
+          const r = await put(to);
+          // Not leaving a mention with no unread reply: it is on a reply at the position, which already counts as read.
+          const read = item.last_post_id ? '既読にしました。' : '呼んだ時点の最終返信までを既読にしました。';
+          const left = r.unread_mentions && !r.unread_replies ? await clearing(to + 1, read) : undefined;
+          done = read + (typeof left === 'string' ? left : '');
+        }
+        results.push({ line: `- ${label}: ${done}`, ok: true });
+      } catch (e) {
+        results.push(failed(label, e));
+      }
+    }
   }
 }
 
