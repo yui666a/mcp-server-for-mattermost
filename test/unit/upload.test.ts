@@ -10,7 +10,7 @@ const CH = 'c'.repeat(26);
 const fileId = (n: number) => `f${String(n).padStart(25, '0')}`;
 
 let out: string[];
-let uploads: { query: URLSearchParams; bytes: Uint8Array }[];
+let uploads: { query: URLSearchParams; bytes: Uint8Array; auth: string | null }[];
 let onUpload: (n: number) => Response | undefined | Promise<Response | undefined>;
 
 beforeEach(() => {
@@ -29,7 +29,7 @@ function setup(env: Record<string, string> = {}) {
       const n = uploads.length;
       const refused = await onUpload(n);
       if (refused) return refused;
-      uploads.push({ query: new URL(req.url).searchParams, bytes: new Uint8Array(await req.arrayBuffer()) });
+      uploads.push({ query: new URL(req.url).searchParams, bytes: new Uint8Array(await req.arrayBuffer()), auth: req.headers.get('authorization') });
       return Response.json({ file_infos: [{ id: fileId(n) }] }, { status: 201 });
     }
     if (req.method === 'GET' && path === `/channels/${CH}`) return Response.json({ id: CH, name: 'town', display_name: 'Town', team_id: 't1', type: 'O', purpose: '', header: '' });
@@ -54,10 +54,15 @@ describe('POST /mcp/upload/:token', () => {
     expect(r.text).toContain(`file_id: ${fileId(0)}（report.pdf、8 バイト）`);
     expect(r.text).toContain(`file_id: ${fileId(1)}（スクリーンショット.png、2 バイト）`);
     expect(r.text).toContain('予約するときは schedule_message の file_ids に渡します');
-    expect(uploads.map((u) => [u.query.get('channel_id'), u.query.get('filename'), [...u.bytes]])).toEqual([
-      [CH, 'report.pdf', [...Buffer.from('%PDF-1.7')]],
-      [CH, 'スクリーンショット.png', [0x89, 0x50]],
+    expect(uploads.map((u) => [u.auth, u.query.get('channel_id'), u.query.get('filename'), [...u.bytes]])).toEqual([
+      ['Bearer mm-access', CH, 'report.pdf', [...Buffer.from('%PDF-1.7')]],
+      ['Bearer mm-access', CH, 'スクリーンショット.png', [0x89, 0x50]],
     ]);
+  });
+
+  test('records the uploaded files for the user and channel, as not yet used by a post', async () => {
+    const s = setup();
+    await s.req.post(s.url()).attach('file', Buffer.from('a'), 'a.txt').attach('file', Buffer.from('b'), 'b.txt');
     expect(s.store.uploadedFiles(UID, [fileId(0), fileId(1)])).toEqual([
       { fileId: fileId(0), channelId: CH, postId: null },
       { fileId: fileId(1), channelId: CH, postId: null },
@@ -179,7 +184,8 @@ function rawPost(port: number, path: string, body: Buffer, opts: { chunked?: boo
   });
 }
 
-describe('replies before the whole body has arrived', () => {
+// Not vitest's 5 s: these send megabytes over a real socket, which takes seconds on a busy machine.
+describe('replies before the whole body has arrived', { timeout: 30_000 }, () => {
   let close: () => void;
   afterEach(() => close?.());
   async function listen(env: Record<string, string> = {}) {
@@ -200,10 +206,11 @@ describe('replies before the whole body has arrived', () => {
     const s = await listen();
     let release!: () => void;
     const held = new Promise<undefined>((r) => { release = () => r(undefined); });
-    let entered = false;
-    onUpload = (n) => (n === 0 ? ((entered = true), held) : undefined);
+    let enter!: () => void;
+    const entered = new Promise<void>((r) => { enter = r; });
+    onUpload = (n) => (n === 0 ? (enter(), held) : undefined);
     const first = rawPost(s.port, s.url(), Buffer.from('first'));
-    await vi.waitFor(() => expect(entered).toBe(true));
+    await entered;
     const url = s.url();
     const second = await rawPost(s.port, url, Buffer.alloc(9 * 1024 * 1024));
     expect([second.status, second.error]).toEqual([429, undefined]);
@@ -235,15 +242,22 @@ describe('replies before the whole body has arrived', () => {
   test('a client that goes away mid-body leaves the URL usable and is not logged as an unexpected error', async () => {
     const s = await listen();
     const url = s.url();
+    // Not made after rawPost: the log can come before it resolves.
+    const loggedOnce = new Promise<void>((r) => vi.spyOn(process.stdout, 'write').mockImplementation((line) => { out.push(String(line)); if (String(line).includes('"event":"upload"')) r(); return true; }));
     await rawPost(s.port, url, Buffer.alloc(1024 * 1024), { chunked: true, stopAfter: 100_000 });
-    await vi.waitFor(() => expect(logged()).toHaveLength(1));
+    await loggedOnce;
+    expect(logged()).toHaveLength(1);
     expect(logged()[0]).toMatchObject({ outcome: 'client_gone', files: 0 });
     expect(out.join('')).not.toContain('upload_unhandled_error');
     expect((await rawPost(s.port, url, Buffer.from('ok'))).status).toBe(200);
   });
 });
 
-describe('a client that stops sending mid-body', () => {
+// Not 15 s (BODY_IDLE_MS) or more: the handler must use the idle limit it is given, not its default.
+const IDLE_ENDED_WITHIN = 10_000;
+
+// Not vitest's 5 s: it would cut the test before IDLE_ENDED_WITHIN on a busy machine.
+describe('a client that stops sending mid-body', { timeout: 30_000 }, () => {
   let close: () => void;
   afterEach(() => close?.());
   async function listen(idleMs: number) {
@@ -260,7 +274,7 @@ describe('a client that stops sending mid-body', () => {
     const url = s.url();
     const started = Date.now();
     const r = await rawPost(s.port, url, Buffer.alloc(1024 * 1024), { stallAfter: 100_000 });
-    expect(Date.now() - started).toBeLessThan(2000);
+    expect(Date.now() - started).toBeLessThan(IDLE_ENDED_WITHIN);
     expect([r.status, r.connection]).toEqual([408, 'close']);
     expect(r.text).toContain('同じ URL で');
     expect(logged()[0]).toMatchObject({ outcome: 'stalled', files: 0 });
@@ -271,7 +285,7 @@ describe('a client that stops sending mid-body', () => {
     const s = await listen(200);
     const started = Date.now();
     const r = await rawPost(s.port, '/mcp/upload/' + 'x'.repeat(43), Buffer.alloc(1024 * 1024), { stallAfter: 100_000 });
-    expect(Date.now() - started).toBeLessThan(2000);
+    expect(Date.now() - started).toBeLessThan(IDLE_ENDED_WITHIN);
     expect(r.status).toBe(404);
   });
 });

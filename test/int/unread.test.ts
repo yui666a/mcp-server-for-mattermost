@@ -150,6 +150,16 @@ describe('read_channel from unread and mark_as_read against the local Mattermost
     await mmApi(aliceMm, 'PUT', `/users/${e.users.alice.id}/teams/${e.teams.a.id}/threads/${root}/read/${Date.now() + 60_000}`);
   });
 
+  test('mark_as_read does not point to follow_thread for a thread in a public channel alice has not joined', async () => {
+    const ch = (await mmApi<{ id: string }>(bobMm, 'POST', '/channels', { team_id: e.teams.a.id, name: `t9-away-${TAG}`, display_name: `t9 away ${TAG}`, type: 'O' })).id;
+    channels.push(ch);
+    const root = await say(bobMm, ch, 'root');
+    await say(bobMm, ch, 'reply', root);
+    const r = await call('mark_as_read', { threads: [{ post_id: root }] });
+    expect(r.content[0].text).toContain('このスレッドのチャンネルに参加していません。');
+    expect(r.content[0].text).not.toContain('follow_thread');
+  });
+
   describe('a mention on a reply one millisecond after last_post_id', () => {
     type State = { last_viewed_at: number; unread_replies: number; unread_mentions: number };
     const threadState = (root: string) => mmApi<State>(aliceMm, 'GET', `/users/${e.users.alice.id}/teams/${e.teams.a.id}/threads/${root}`);

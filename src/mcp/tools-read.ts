@@ -20,7 +20,8 @@ type FileList = { order: string[]; file_infos: Record<string, FoundFile> };
 
 const MM_SEARCH_CAP = 100;
 const SAVED_PAGE = 200;
-const SAVED_PAGES = 5;
+const SAVED_OVERLAP = 20;
+const SAVED_SCAN = 1000;
 const POST_PAGE = 200;
 const JST_OFFSET_SEC = 9 * 3600;
 const DAY_MS = 86_400_000;
@@ -317,7 +318,7 @@ async function unreadThreads(mm: Mm, uid: string, teams: MmTeam[], keep: (channe
       for (const x of got) if (keep(x.post.channel_id) && !threads.has(x.id)) threads.set(x.id, { ...x, teamName: t.name });
       if (got.length < THREAD_PAGE) break;
       if (n === THREAD_PAGES) {
-        notes.push(`（${t.name} の未読スレッドは ${THREAD_PAGE * THREAD_PAGES} 件までしか取得していません（total_unread_threads: ${r.total_unread_threads}））`);
+        notes.push(`（${t.name} の未読スレッドは、${THREAD_PAGE} 件ずつ ${THREAD_PAGES} 回の取得で打ち切りました。境目と同じ時刻のスレッドは取り直すので、取得した異なるスレッドは ${THREAD_PAGE * THREAD_PAGES} 件より少ないことがあります（total_unread_threads: ${r.total_unread_threads}））`);
         break;
       }
       // Not paging from the last thread alone: before= is strict, so threads sharing its last_reply_at would drop out; they are taken again and the Map drops the repeats.
@@ -392,24 +393,36 @@ export function registerReadTools(server: McpServer, ctx: ToolContext): void {
       let rest: MmPost[] = [];
       let capped = false;
       // Not putting Mattermost's offset in the cursor: saving or unsaving between pages would shift it.
-      for (let k = 0; ; k++) {
-        if (k === SAVED_PAGES) {
-          capped = true;
-          break;
-        }
-        // Not sending k as page: Mattermost uses page as the row offset, not as a page number.
-        const r = await mm.call<PostList>(uid, 'GET', `/users/${uid}/posts/flagged?page=${k * SAVED_PAGE}&per_page=${SAVED_PAGE}`);
+      // Not reading 200 rows from the start: the first page is the common call, and Mattermost adds metadata to every row it returns.
+      let at = 0;
+      let size = Math.min(SAVED_PAGE, per + SAVED_OVERLAP + 1);
+      for (;;) {
+        // Not sending a page number: Mattermost uses page as the row offset.
+        const r = await mm.call<PostList>(uid, 'GET', `/users/${uid}/posts/flagged?page=${at}&per_page=${size}`);
         const got = r.order.map((id) => r.posts[id]).filter(Boolean);
         // Not stopping at a short page: Mattermost drops posts the user may not read after counting the page.
+        // Not taking an empty first read as the end: the first read is small, and all of its rows may be ones the user may not read.
+        if (!got.length && at === 0 && size < SAVED_PAGE) {
+          size = SAVED_PAGE;
+          continue;
+        }
         if (!got.length) break;
         for (const p of got) found.set(p.id, p);
         rest = [...found.values()].filter(older).sort(newestFirst);
         if (rest.length > per && Math.min(...got.map((p) => p.create_at)) < rest[per - 1].create_at) break;
+        // Not starting where the last read ended: Mattermost orders only by create_at, so posts of the same time can swap places between reads and one at the boundary would come in neither.
+        // Not more rows back: a larger group of the same time across a boundary comes only from bulk imports, and an unsave during the call uses up the same margin.
+        at += size - SAVED_OVERLAP;
+        if (at + SAVED_OVERLAP >= SAVED_SCAN) {
+          capped = true;
+          break;
+        }
+        size = Math.min(SAVED_PAGE, SAVED_SCAN - at);
       }
       const shown = rest.slice(0, per);
       const last = shown.at(-1);
       const lines = ['保存した投稿（新しい順）', ...(shown.length ? await withChannels(mm, shown) : c ? [] : ['保存した投稿はありません。'])];
-      const notes = capped ? [`（保存した投稿のうち新しい ${SAVED_PAGE * SAVED_PAGES} 件だけを見ています）`] : [];
+      const notes = capped ? [`（保存した投稿のうち新しい ${SAVED_SCAN} 件だけを見ています）`] : [];
       return render({ lines, posts: shown, notes, next: rest.length > per && last ? { create_at: last.create_at, id: last.id, per_page: per } : undefined });
     });
 
