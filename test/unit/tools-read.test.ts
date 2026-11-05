@@ -974,6 +974,46 @@ describe('get_unreads', () => {
     expect(out).not.toContain(ARCHIVED);
     expect(order(out).slice(-2)).toEqual([TH1, TH_DM]);
     expect(out).toContain('未読のあるチャンネル: 4 件、未読のスレッド: 2 件');
+    expect(out).not.toContain('取り切れませんでした');
+  });
+
+  describe('when fewer threads come back than total_unread_threads', () => {
+    const h = (k: number) => thread(`h${String(k).padStart(25, '0')}`, OLD, 9000 - k);
+    const span = (from: number, to: number) => Array.from({ length: to - from }, (_, k) => h(from + k));
+    // Pages in the order given, whatever before= says: each call stands for what Mattermost answered after something changed in between.
+    const pages = (...ps: [unknown[], number][]) => {
+      let k = 0;
+      return () => threadPage(...(ps[k++] ?? [[], 0]));
+    };
+    const run = async (...ps: [unknown[], number][]) => {
+      routes = { ...base(), [`GET /users/u1/teams/${T1}/threads`]: pages(...ps), [`GET /users/u1/teams/${T2}/threads`]: () => threadPage([]) };
+      return setup()('get_unreads', { limit: 100 });
+    };
+    const SHORT = 'の未読スレッドを total_unread_threads:';
+
+    test('a later page with nothing, as when the thread paged from is deleted, says the threads were not all taken, against the largest total', async () => {
+      const out = await run([span(0, 50), 60], [[], 59]);
+      expect(out).toContain('team-a の未読スレッドを total_unread_threads: 60 に対して取り切れませんでした。');
+      // The last total alone would match the 50 taken here: the deleted thread no longer counts.
+      expect(await run([span(0, 50), 51], [[], 50])).toContain(SHORT);
+    });
+
+    test('counts each thread once, so pages repeating the threads at their edge do not make up the total', async () => {
+      const out = await run([span(0, 50), 100], [span(49, 99), 100], [[], 100]);
+      expect(out).toContain(SHORT);
+    });
+
+    test('a short page that skipped threads, as when a reply of the thread paged from is deleted, says so too', async () => {
+      const out = await run([span(0, 50), 70], [span(50, 60), 70]);
+      expect(out).toContain(SHORT);
+    });
+
+    test('says nothing when every thread was taken, also when the 4th page is full', async () => {
+      expect(await run([span(0, 50), 80], [span(50, 80), 80])).not.toContain(SHORT);
+      const full = await run([span(0, 50), 200], [span(50, 100), 200], [span(100, 150), 200], [span(150, 200), 200]);
+      expect(full).not.toContain(SHORT);
+      expect(full).not.toContain('打ち切りました');
+    });
   });
 
   test('follows a team\'s unread threads with before= for at most 4 pages, then says it stopped and gives total_unread_threads', async () => {
