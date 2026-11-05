@@ -293,7 +293,7 @@ describe('mark_as_read for channels', () => {
 
   test.each([
     ['rate limited', () => new Response(null, { status: 429, headers: { 'x-ratelimit-reset': '7' } })],
-    ['unavailable', () => new Response('oops', { status: 503 })],
+    ['unavailable', unavailable],
   ])('fails the whole tool when Mattermost is %s', async (_, r) => {
     routes = { ...base(), [`GET /channels/${CH}/members/me`]: r };
     const out = await setup().call({ channels: [{ channel: CH }] });
