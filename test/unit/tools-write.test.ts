@@ -1025,6 +1025,23 @@ describe('save_draft and send_message\'s draft cleanup of one user run one at a 
     expect(hits.lastIndexOf(LIST)).toBeLessThan(hits.indexOf(SAVE));
   });
 
+  test('a cleanup for a thread does not wait for a save_draft to the channel itself, since they touch different drafts', async () => {
+    const ROOT = 'r'.repeat(26);
+    let open!: () => void;
+    const gate = new Promise<void>((r) => { open = r; });
+    let n = 0;
+    serve(async () => (n++ === 0 ? (await gate, []) : [{ ...draft('hello'), root_id: ROOT }]));
+    routes[`GET /posts/${ROOT}`] = () => ({ id: ROOT, channel_id: CH, root_id: '', user_id: 'u2', message: 'root', create_at: 1 });
+    routes[`DELETE /users/u1/channels/${CH}/drafts/${ROOT}`] = () => ({ status: 'OK' });
+    const s = setup();
+    const saving = s.call('save_draft', { channel: CH, message: 'mine' });
+    await vi.waitFor(() => expect(count(LIST)).toBe(1));
+    const r = await s.call('send_message', { channel: CH, message: 'hello', root_id: ROOT });
+    expect(r.text).toContain('同じ本文の下書きを消しました');
+    open();
+    expect((await saving).isError).toBe(false);
+  });
+
   test('a save_draft that fails while holding the lock lets the cleanup behind it run', async () => {
     let open!: () => void;
     const gate = new Promise<void>((r) => { open = r; });
