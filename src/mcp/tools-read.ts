@@ -179,6 +179,7 @@ async function usernames(mm: Mm, uid: string, posts: MmPost[]): Promise<Map<stri
   return new Map(users.map((u) => [u.id, u.username]));
 }
 
+const FILE_SEARCH_OFF = 'この Mattermost ではファイルの検索が無効になっています（システムコンソールの設定）。ファイル名を含む投稿は search_posts で探せます。';
 const capNote = (n: number, what: string) => (n >= MM_SEARCH_CAP
   ? [`（Mattermost の検索は ${MM_SEARCH_CAP} 件までしか返さないため、${what}は出ていない可能性があります。条件を絞ってください）`]
   : []);
@@ -248,12 +249,17 @@ async function filterChannelIds(mm: Mm, userId: string, spec: string, exclude: b
   }
 }
 
+// Not higher: with 10 teams the worst case (1 + names × teams GETs) already takes 201 of the 300 requests a user may send per minute,
+// before anything else the user sends in that minute.
+const MAX_CHANNEL_FILTERS = 20;
+
 // Rewritten here rather than left to Mattermost: a search across all teams looks channel names up without a team and matches nothing,
 // and in:@user creates the DM (GetOrCreateDirectChannel) from a read-only tool.
 export async function resolveInFilters(mm: Mm, userId: string, terms: string): Promise<{ terms: string; notes: string[] }> {
   const words = splitWords(terms);
   const filters = channelFilters(words);
   if (!filters.length) return { terms, notes: [] };
+  if (filters.length > MAX_CHANNEL_FILTERS) throw new InputError(`in: と channel: は 1 回の検索で ${MAX_CHANNEL_FILTERS} 個まで指定できます。`);
   const notes: string[] = [];
   const out = words.map((w) => [w]);
   for (const f of filters) {
@@ -262,10 +268,20 @@ export async function resolveInFilters(mm: Mm, userId: string, terms: string): P
       throw new InputError(`in:${f.value} の後の「${next}」: 検索の in: では @a,b のようにカンマの前後に空白を入れずに書いてください。`);
     }
   }
+  // Kept for this search only, not across searches: a channel created or joined in between would stay unseen.
+  // POST is not kept: a group DM's POST /users/usernames rarely repeats within one search.
+  const memo = new Map<string, Promise<unknown>>();
+  const cached: Mm = {
+    call: <T>(u: string, m: string, p: string, b?: unknown, sig?: AbortSignal) => {
+      if (m !== 'GET') return mm.call<T>(u, m, p, b, sig);
+      if (!memo.has(p)) memo.set(p, mm.call<T>(u, m, p, b, sig));
+      return memo.get(p) as Promise<T>;
+    },
+  };
   // Sequential rather than Promise.all: parallel lookups would exceed the per-user concurrency limit.
   for (const f of filters) {
     const spec = f.value.replace(/^~+/, '');
-    const ids = await filterChannelIds(mm, userId, spec, f.exclude, notes);
+    const ids = await filterChannelIds(cached, userId, spec, f.exclude, notes);
     out.splice(f.at, f.span, ids.map((id) => `${f.exclude ? '-' : ''}in:${id}`), ...(f.span === 2 ? [[]] : []));
   }
   const rewritten = out.flat().join(' ');
@@ -401,7 +417,7 @@ export function registerReadTools(server: McpServer, ctx: ToolContext): void {
   tool('search_posts', '参加しているチームのメッセージを検索する。Mattermost の検索構文（from:、in:、before:、after:、on: など）をそのまま使える。in: にはチャンネル ID、「チーム名/チャンネル名」、チャンネル名、@ユーザー名（DM）、@a,b（グループ DM。カンマの前後に空白を入れない）を渡せる。同じ名前が複数のチームにあれば、すべてで探す。見つからなければエラー。参加していないチャンネルは 0 件になる。DM は作らない。日付は日本時間（JST）で解釈する。新しい順。メッセージ添付（Bot や webhook などが付ける整形表示）の中身は検索の対象外（Mattermost の標準のデータベース検索は添付を検索しないため。その中身を探すなら read_channel で読む。read_channel なら since と until で期間を指定して読める）',
     { terms: z.string().min(1), limit: limitArg(20, 50), cursor: cursorArg },
     async ({ terms, limit, cursor }, mm) => {
-      const c = cursorOf(z.object({ page: z.number().int().min(0), per_page: perPage(50) }), cursor);
+      const c = cursorOf(z.object({ page: z.number().int().min(0), per_page: perPage(50) }).strict(), cursor);
       const per = c?.per_page ?? limit ?? 20;
       const page = c?.page ?? 0;
       const filtered = await resolveInFilters(mm, uid, terms);
@@ -460,19 +476,27 @@ export function registerReadTools(server: McpServer, ctx: ToolContext): void {
   tool('search_files', 'ファイルを名前で探す（サーバーが中身を抽出していれば中身にも当たる）。参加しているチャンネル、DM、グループ DM のファイルが対象で、参加していない公開チャンネルとアーカイブ済みのチャンネルのファイルは出ない。Mattermost の検索構文（from:、in:、ext:、before:、after:、on: など）を使え、日付は日本時間（JST）で解釈する。in: にはチャンネル ID、「チーム名/チャンネル名」、チャンネル名、@ユーザー名（DM）、@a,b（グループ DM。カンマの前後に空白を入れない）を渡せる。同じ名前が複数のチームにあれば、すべてで探す。見つからなければエラー。DM は作らない。名前は語の単位で当たり、日本語の名前は名前全体か先頭からの前方一致（例: 2026年10月*）でしか当たらない。新しい順。file_id は get_file に、post_id は get_post に渡せる',
     { terms: z.string().min(1), limit: limitArg(20, 50), cursor: cursorArg },
     async ({ terms, limit, cursor }, mm) => {
-      const c = cursorOf(z.object({ page: z.number().int().min(0), per_page: perPage(50) }).strict(), cursor);
+      // Marked here rather than on search_posts' cursor: that one is used more, and its cursors issued before a deploy would stop working.
+      const c = cursorOf(z.object({ page: z.number().int().min(0), per_page: perPage(50), files: z.literal(true) }).strict(), cursor);
       const per = c?.per_page ?? limit ?? 20;
       const page = c?.page ?? 0;
-      const q = await resolveInFilters(mm, uid, terms);
-      // Not passing the cursor's page to Mattermost: its database search returns nothing for page > 0.
-      const r = await mm.call<FileList>(uid, 'POST', '/files/search', {
-        terms: q.terms, is_or_search: false, include_deleted_channels: false, time_zone_offset: JST_OFFSET_SEC, page: 0, per_page: MM_SEARCH_CAP,
+      const search = (t: string, perPageOf: number) => mm.call<FileList>(uid, 'POST', '/files/search', {
+        terms: t, is_or_search: false, include_deleted_channels: false, time_zone_offset: JST_OFFSET_SEC, page: 0, per_page: perPageOf,
       }).catch((e) => {
-        if (e instanceof MmError && e.status === 501 && e.id === 'store.sql_file_info.search.disabled') {
-          throw new InputError('この Mattermost ではファイルの検索が無効になっています（システムコンソールの設定）。ファイル名を含む投稿は search_posts で探せます。');
-        }
+        if (e instanceof MmError && e.status === 501 && e.id === 'store.sql_file_info.search.disabled') throw new InputError(FILE_SEARCH_OFF);
         throw e;
       });
+      const q = await resolveInFilters(mm, uid, terms).catch(async (e) => {
+        if (!(e instanceof InputError)) throw e;
+        // Asked with "*" only after a failure: Mattermost checks the setting before converting channel names, and "*" alone searches nothing.
+        // Any other failure of this request is set aside: the in: error stays true and is the one the caller can act on.
+        await search('*', 1).catch((off) => {
+          if (off instanceof InputError) throw off;
+        });
+        throw e;
+      });
+      // Not passing the cursor's page to Mattermost: its database search returns nothing for page > 0.
+      const r = await search(q.terms, MM_SEARCH_CAP);
       const all = r.order.map((id) => r.file_infos[id]).filter(Boolean);
       const shown = all.slice(page * per, (page + 1) * per);
       const lines = [`ファイルの検索: ${terms}`];
@@ -496,7 +520,7 @@ export function registerReadTools(server: McpServer, ctx: ToolContext): void {
         }
       } else lines.push('一致するファイルはありません。');
       const more = all.length > (page + 1) * per;
-      return render({ lines, notes: [...q.notes, ...capNote(all.length, 'これより古い一致')], next: more ? { page: page + 1, per_page: per } : undefined });
+      return render({ lines, notes: [...q.notes, ...capNote(all.length, 'これより古い一致')], next: more ? { page: page + 1, per_page: per, files: true } : undefined });
     });
 
   tool('read_channel', 'チャンネルの投稿を読む。既定は新しい順。from: "unread" なら未読の先頭から古い順に読み、スレッドの折りたたみ（CRT）が有効ならルート投稿だけを返す。読むだけで、既読にはしない。channel はチャンネル ID、「チーム名/チャンネル名」、チャンネル名、@ユーザー名（DM）、@a,b（グループ DM）のどれか。since を渡すと、その時刻から until（省くと最新）の前までを古い順に読み、返信も含む',
