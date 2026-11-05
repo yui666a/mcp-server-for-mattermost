@@ -15,7 +15,7 @@ export type MmChannel = { id: string; name: string; display_name: string; team_i
 export type MmChannelFull = MmChannel & { purpose: string; header: string };
 export type ResolvedChannel = ChannelRef & { raw: MmChannelFull };
 
-// A subclass rather than converting to a message here: the other tools keep the generic Mattermost error, and only the tools that report a channel's own errors word it.
+// A subclass rather than converting to a message here: the other tools keep the generic Mattermost error, and only callers that word a channel lookup's 403 and 404 themselves convert it.
 export class ChannelFetchError extends MmError {}
 export class NoDirectChannel extends InputError {}
 export type MmTeam = { id: string; name: string; display_name?: string };
