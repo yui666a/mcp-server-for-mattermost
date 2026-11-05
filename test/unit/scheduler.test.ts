@@ -475,14 +475,68 @@ describe('a schedule with files', () => {
     expect(marks()).toEqual(['p'.repeat(26), 'p'.repeat(26)]);
   });
 
-  test('a post that lost files to Mattermost is posted with a note, and only the kept files are recorded', async () => {
+  test('a post that lost files to Mattermost is posted with a note naming them, keeps only the kept files, and lets the dropped ones go', async () => {
     const s = setup();
     const marks = uploaded(s);
     routes['POST /posts'] = () => ({ id: 'p'.repeat(26), file_ids: [F2] });
     const id = s.make({ fileIds: [F1, F2] });
     await s.run();
-    expect(s.row(id)).toMatchObject({ status: 'posted', error: '添付した 2 件のうち 1 件を Mattermost が外したため、投稿に付いていません。' });
+    expect(s.row(id)).toMatchObject({ status: 'posted', error: `添付した 2 件のうち 1 件（${F1}）を Mattermost が外したため、投稿に付いていません。` });
+    expect(s.store.listScheduled(UID, { limit: 10 }).find((r) => r.id === id)?.fileIds).toEqual([F2]);
     expect(marks()).toEqual([null, 'p'.repeat(26)]);
+    expect(s.store.heldScheduledFiles(UID, [F1, F2])).toEqual([{ fileId: F2, scheduledId: id }]);
+  });
+
+  const fileIdsOf = (s: ReturnType<typeof setup>, id: string) => s.store.listScheduled(UID, { limit: 10 }).find((r) => r.id === id)?.fileIds;
+
+  test('a first attempt that Mattermost refuses fails, forgets the attempt, and lets its files go', async () => {
+    const s = setup();
+    routes['POST /posts'] = () => mmError(403, 'api.context.permissions.app_error');
+    const id = s.make({ fileIds: [F1] });
+    await s.run();
+    expect(s.row(id)).toMatchObject({ status: 'failed', first_attempt_at: null, pending_post_id: null });
+    expect(fileIdsOf(s, id)).toEqual([F1]);
+    expect(s.store.heldScheduledFiles(UID, [F1])).toEqual([]);
+  });
+
+  test('a first attempt that needs re-login before anything was sent fails and lets its files go', async () => {
+    const s = setup();
+    s.store.revokeUser(UID);
+    const id = s.make({ fileIds: [F1] });
+    await s.run();
+    expect(s.row(id)).toMatchObject({ status: 'failed', error: REAUTH, first_attempt_at: null });
+    expect(s.store.heldScheduledFiles(UID, [F1])).toEqual([]);
+  });
+
+  test('a first attempt that needs re-login after sending fails as maybe posted and keeps its files', async () => {
+    const s = setup();
+    routes['POST /posts'] = () => { s.store.revokeUser(UID); return new Response(null, { status: 401 }); };
+    const id = s.make({ fileIds: [F1] });
+    await s.run();
+    expect(s.row(id)).toMatchObject({ status: 'failed', error: UNKNOWN });
+    expect(s.row(id).first_attempt_at).not.toBeNull();
+    expect(s.store.heldScheduledFiles(UID, [F1])).toEqual([{ fileId: F1, scheduledId: id }]);
+  });
+
+  test('a retry that Mattermost refuses fails but keeps the attempt and its files, since the earlier attempt may have posted', async () => {
+    const s = setup();
+    routes[`GET /channels/${CH}/posts`] = () => postList();
+    routes['POST /posts'] = () => mmError(403, 'api.context.permissions.app_error');
+    const id = attempted(s, { fileIds: [F1] });
+    await s.run(NOW + MIN);
+    expect(s.row(id)).toMatchObject({ status: 'failed', first_attempt_at: NOW, pending_post_id: 'pending-1' });
+    expect(fileIdsOf(s, id)).toEqual([F1]);
+    expect(s.store.heldScheduledFiles(UID, [F1])).toEqual([{ fileId: F1, scheduledId: id }]);
+  });
+
+  test('a schedule put back to pending after a temporary failure keeps its file_ids and its files', async () => {
+    const s = setup();
+    routes['POST /posts'] = () => new Response(null, { status: 503 });
+    const id = s.make({ fileIds: [F1, F2] });
+    await s.run();
+    expect(s.row(id)).toMatchObject({ status: 'pending' });
+    expect(fileIdsOf(s, id)).toEqual([F1, F2]);
+    expect(s.store.heldScheduledFiles(UID, [F1, F2])).toHaveLength(2);
   });
 
   test('a retry that finds the earlier post with every file records the files without posting', async () => {
