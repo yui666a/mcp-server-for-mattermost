@@ -49,7 +49,7 @@ Mattermost は公式の MCP サーバーを [Mattermost Agents プラグイン](
 | `prepare_upload` | PC のファイル（スクリーンショット、PDF、写真など）を `curl` で送るための使い捨ての URL を発行する。`@ユーザー名` や `@a,b` の DM が無ければ作る。Claude Code や Codex CLI のように PC でコマンドを実行できるクライアント向け |
 | `add_reaction` / `remove_reaction` | 自分のリアクションを付ける、外す |
 | `save_post` / `unsave_post` | 参加しているチャンネルの投稿を保存する（フラグを付ける）、保存から外す |
-| `pin_post` / `unpin_post` | 参加しているチャンネルの投稿をピン留めする、ピン留めを外す |
+| `pin_post` / `unpin_post` | 参加しているチャンネルの投稿をピン留めする、ピン留めを外す（他人のピン留めも外れる） |
 | `edit_message` / `delete_message` | 自分の投稿を編集する、削除する |
 | `save_draft` | 本人が画面から送る Mattermost の下書きとして保存する。`@ユーザー名` や `@a,b` の DM が無ければ作る。同じ本文を `send_message` で送ると消える |
 | `schedule_message` | 投稿を予約する（1 分後から 30 日後まで）。`@ユーザー名` や `@a,b` の DM が無ければ作る。`prepare_upload` でアップロードしたファイルを添付できる |
@@ -61,7 +61,7 @@ Mattermost は公式の MCP サーバーを [Mattermost Agents プラグイン](
 
 時刻は JST で扱う。`schedule_message`、`set_status`（`dnd_until`）、`set_custom_status`（`until`）の時刻（`YYYY-MM-DDTHH:mm[:ss[.sss]]`）はオフセットが無ければ `+09:00` として読むので、ほかのタイムゾーンなら `Z` か `+hh:mm`（`-hh:mm`）を付ける。検索の日付（`on:`、`before:`、`after:`）は JST の日として扱い、出力の時刻は UTC と JST を併記する。
 
-読み取り系のツールが出す投稿には、メッセージ添付（Bot や webhook が投稿する整形表示。Mattermost の標準のデータベース検索は対象にしない）、リアクションと付けた人、編集の時刻、システムメッセージかどうかも含める。
+読み取り系のツールが出す投稿には、メッセージ添付（Bot や webhook が投稿する整形表示。Mattermost の標準のデータベース検索は対象にしない）、リアクションと付けた人（`get_unreads` と `list_followed_threads` のスレッドは、Mattermost のスレッドの一覧がリアクションを返さないため、通常はリアクションがあることだけ。`get_post` で確かめられる）、編集の時刻、システムメッセージかどうかも含める。
 
 読み取り系のツールには MCP の `readOnlyHint` を付けており、クライアントは書き込みの前に利用者へ確認を求められる。
 

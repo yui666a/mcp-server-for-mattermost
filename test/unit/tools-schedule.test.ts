@@ -73,7 +73,7 @@ function setup() {
     if (r.isError) throw new Error(r.text);
     return /予約 ID: (\S+)/.exec(r.text)![1];
   };
-  return { call, tools, store: ctx.store, db, setRow, schedule };
+  return { call, rpc, tools, store: ctx.store, db, setRow, schedule };
 }
 
 describe('schedule_message', () => {
@@ -671,5 +671,74 @@ describe('one schedule in full', () => {
     const check = '本文は list_scheduled_messages に id を渡すと確かめられます。';
     expect((await s.call('update_scheduled_message', { id, message: 'y' })).text).toContain(check);
     expect((await s.call('update_scheduled_message', { id, at: '2026-11-04T10:00' })).text).not.toContain(check);
+  });
+});
+
+describe('arguments a tool does not take', () => {
+  const GENERAL = '受けない引数です: ';
+
+  test('every tool declares that it takes no other arguments', async () => {
+    const all = (await setup().tools()) as unknown as { name: string; inputSchema: { additionalProperties?: boolean } }[];
+    expect(all.length).toBeGreaterThan(20);
+    expect(all.filter((t) => t.inputSchema.additionalProperties !== false).map((t) => t.name)).toEqual([]);
+  });
+
+  test('send_message refuses a misspelled file_ids instead of posting without the file', async () => {
+    const r = await setup().call('send_message', { channel: CH, message: 'hello', file_id: 'f'.repeat(26) });
+    expect(r.isError).toBe(true);
+    expect(r.text).toContain(`${GENERAL}file_id。`);
+    expect(hits.filter((h) => h.startsWith('POST'))).toEqual([]);
+  });
+
+  test('schedule_message points files to send_message and prepare_upload, and gives no attachment hint for other keys', async () => {
+    const s = setup();
+    const files = await s.call('schedule_message', { channel: CH, message: 'hello', at: '2026-11-03T10:00', files: [] });
+    expect(files.isError).toBe(true);
+    expect(files.text).toContain(`${GENERAL}files。`);
+    expect(files.text).toContain('今すぐ送るなら send_message の files を、予約するなら prepare_upload');
+    const time = await s.call('schedule_message', { channel: CH, message: 'hello', at: '2026-11-03T10:00', time: '10:00' });
+    expect(time.isError).toBe(true);
+    expect(time.text).toContain(`${GENERAL}time。`);
+    expect(time.text).not.toContain('prepare_upload');
+    expect(s.store.listScheduled('u1', { limit: 10 })).toEqual([]);
+  });
+
+  test('an unknown key and an invalid value are both reported, the value with its place', async () => {
+    const r = await setup().call('schedule_message', { channel: CH, message: '', at: '2026-11-03T10:00', time: '10:00' });
+    expect(r.isError).toBe(true);
+    expect(r.text).toContain(`${GENERAL}time。`);
+    expect(r.text.split('\n').some((l) => !l.includes(GENERAL) && l.endsWith(' at message'))).toBe(true);
+  });
+
+  test('update_scheduled_message gives the cancel hint once for several keys it cannot change, and changes nothing', async () => {
+    const s = setup();
+    const id = await s.schedule({});
+    const r = await s.call('update_scheduled_message', { id, message: 'changed', channel: CH2, file_ids: ['f'.repeat(26)] });
+    expect(r.isError).toBe(true);
+    expect(r.text).toContain(`${GENERAL}channel, file_ids。`);
+    expect(r.text.split('投稿先と添付は変えられません').length - 1).toBe(1);
+    expect(s.store.listScheduled('u1', { limit: 1 })[0].message).toBe('hello');
+  });
+
+  test.each(['channel', 'root_id', 'files', 'file_ids'])('update_scheduled_message gives the cancel hint for %s alone', async (key) => {
+    const r = await setup().call('update_scheduled_message', { id: 'x', message: 'changed', [key]: 'v' });
+    expect(r.isError).toBe(true);
+    expect(r.text).toContain(`${GENERAL}${key}。`);
+    expect(r.text).toContain('投稿先と添付は変えられません');
+  });
+
+  test('a key named like an Object method gets the general wording only', async () => {
+    const r = await setup().call('update_scheduled_message', { id: 'x', message: 'changed', constructor: 1 });
+    expect(r.isError).toBe(true);
+    expect(r.text).toContain(`${GENERAL}constructor。ツールの引数（inputSchema）にあるものだけを渡してください。`);
+    expect(r.text).not.toContain('function');
+    expect(r.text).not.toContain('cancel_scheduled_message');
+  });
+
+  test('_meta on the request is not taken as an argument', async () => {
+    const s = setup();
+    const body = await s.rpc('tools/call', { name: 'list_scheduled_messages', arguments: {}, _meta: { progressToken: 1 } });
+    expect(body.result.isError ?? false).toBe(false);
+    expect(body.result.content[0].text).toContain('予約はありません');
   });
 });
