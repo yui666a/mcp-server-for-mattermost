@@ -64,7 +64,7 @@ export async function scheduleMessage(mm: Mm, store: Store, uid: string, args: S
   return text([
     '予約しました。',
     `予約 ID: ${id}`,
-    `投稿先: ${oneLine(ch.displayName || ch.name)}（channel_id: ${ch.id}）${args.root_id ? `、返信先 post_id: ${args.root_id}` : ''}`,
+    `投稿先: channel_id: ${ch.id}${args.root_id ? `、返信先 post_id: ${args.root_id}` : ''}、表示名: ${oneLine(ch.displayName || ch.name)}`,
     `予定時刻: ${formatTime(at)}`,
     ...(fileIds.length ? [`添付: ${fileIds.join(', ')}`] : []),
     '結果は list_scheduled_messages で確かめられます。',
@@ -86,16 +86,16 @@ export async function listScheduledMessages(mm: Mm, store: Store, uid: string, b
   const shown = rows.slice(0, per);
   if (!shown.length && !c) return text('予約はありません。');
   // Not failing the list on any of these lookups: it is the only place a user learns a schedule failed, and a channel they have left answers 403.
-  const channels = new Map<string, { label: string; ch?: MmChannel }>();
+  const channels = new Map<string, { name?: string; ch?: MmChannel }>();
   const channelOf = async (id: string) => {
     if (!channels.has(id)) {
-      let v: { label: string; ch?: MmChannel } = { label: `channel_id: ${id}` };
+      let v: { name?: string; ch?: MmChannel } = {};
       try {
         const ch = await mm.call<MmChannel>(uid, 'GET', `/channels/${id}`);
         // Not a name of its own for a DM or group DM: resolveChannel's is what the other outputs show, and two forms would read as two destinations.
         // Not letting its re-login or rate limit drop the row's channel and permalink: the name is only for display, and Mattermost's name still names it.
         const name = (await dmLabel(mm, uid, ch).catch(() => undefined)) ?? oneLine(ch.display_name || ch.name);
-        v = { label: `${name}（channel_id: ${id}）`, ch };
+        v = { name, ch };
       } catch {}
       channels.set(id, v);
     }
@@ -115,7 +115,7 @@ export async function listScheduledMessages(mm: Mm, store: Store, uid: string, b
     return teams.get(id);
   };
   const out: string[] = [];
-  for (const s of shown) out.push(...await row(s, (await channelOf(s.channelId)).label, teamOf, baseUrl, !!one));
+  for (const s of shown) out.push(...await row(s, (await channelOf(s.channelId)).name, teamOf, baseUrl, !!one));
   // Not ending a single schedule with the paging line: its body comes last so that everything after its heading is the body.
   if (one) return text(out.join('\n'));
   const last = shown.at(-1);
@@ -123,11 +123,12 @@ export async function listScheduledMessages(mm: Mm, store: Store, uid: string, b
   return text(out.join('\n'));
 }
 
-async function row(s: Scheduled, where: string, teamOf: (channelId: string) => Promise<string | undefined>, baseUrl: string, full: boolean): Promise<string[]> {
+async function row(s: Scheduled, name: string | undefined, teamOf: (channelId: string) => Promise<string | undefined>, baseUrl: string, full: boolean): Promise<string[]> {
   const out = [
     `--- 予約 ID: ${s.id}`,
     `状態: ${STATUS[s.status]}`,
-    `投稿先: ${where}${s.rootId ? `、返信先 post_id: ${s.rootId}` : ''}`,
+    // Not the display name first: one written as "（channel_id: …）" would then come before the real id.
+    `投稿先: channel_id: ${s.channelId}${s.rootId ? `、返信先 post_id: ${s.rootId}` : ''}${name ? `、表示名: ${name}` : ''}`,
     `予定時刻: ${formatTime(s.scheduledAt)}`,
   ];
   const head = s.message === undefined ? undefined : truncate(s.message, 200);
