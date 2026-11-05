@@ -3,7 +3,7 @@ import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
 import { z } from 'zod';
 import { FileHeld, MAX_PENDING_SCHEDULED, type Scheduled, type ScheduledStatus, type Store } from '../store.ts';
 import { strictArgs } from './args.ts';
-import { encodeCursor, formatTime, InputError, lines, truncate } from './format.ts';
+import { encodeCursor, formatTime, InputError, lines, oneLine, truncate } from './format.ts';
 import { teamNameOf, type Mm, type MmChannel, type UserRef } from './resolve.ts';
 import { guarded, text, type ToolContext } from './server.ts';
 import { cursorArg, cursorOf, limitArg, perPage } from './tools-read.ts';
@@ -64,7 +64,7 @@ export async function scheduleMessage(mm: Mm, store: Store, uid: string, args: S
   return text([
     '予約しました。',
     `予約 ID: ${id}`,
-    `投稿先: ${ch.displayName || ch.name}（channel_id: ${ch.id}）${args.root_id ? `、返信先 post_id: ${args.root_id}` : ''}`,
+    `投稿先: ${oneLine(ch.displayName || ch.name)}（channel_id: ${ch.id}）${args.root_id ? `、返信先 post_id: ${args.root_id}` : ''}`,
     `予定時刻: ${formatTime(at)}`,
     ...(fileIds.length ? [`添付: ${fileIds.join(', ')}`] : []),
     '結果は list_scheduled_messages で確かめられます。',
@@ -91,7 +91,7 @@ export async function listScheduledMessages(mm: Mm, store: Store, uid: string, b
   const groupLabel = async (ch: MmChannel) => {
     const users = await mm.call<UserRef[]>(uid, 'GET', `/users?${new URLSearchParams({ in_channel: ch.id, per_page: '200' })}`).catch(() => []);
     const others = users.filter((u) => u.id !== uid);
-    return others.length ? others.map((u) => `@${u.username}`).sort().join(', ') : ch.display_name || ch.name;
+    return others.length ? others.map((u) => `@${u.username}`).sort().join(', ') : oneLine(ch.display_name || ch.name);
   };
   const channels = new Map<string, { label: string; ch?: MmChannel }>();
   const channelOf = async (id: string) => {
@@ -101,7 +101,7 @@ export async function listScheduledMessages(mm: Mm, store: Store, uid: string, b
         const ch = await mm.call<MmChannel>(uid, 'GET', `/channels/${id}`);
         const other = ch.name.split('__').find((x) => x !== uid) ?? uid;
         const name = ch.type === 'D' ? `@${(await mm.call<UserRef>(uid, 'GET', `/users/${other}`)).username}`
-          : ch.type === 'G' ? await groupLabel(ch) : ch.display_name || ch.name;
+          : ch.type === 'G' ? await groupLabel(ch) : oneLine(ch.display_name || ch.name);
         v = { label: `${name}（channel_id: ${id}）`, ch };
       } catch {}
       channels.set(id, v);
