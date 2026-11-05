@@ -604,7 +604,7 @@ export function registerReadTools(server: McpServer, ctx: ToolContext): void {
         r.order.map((id) => r.posts[id]).filter(Boolean).sort(oldestFirst),
         (last) => ({ channel_id: ch.id, after: last.id, per_page: per, crt }),
         c ? '投稿はありません。' : '未読はありません。',
-        `${sinceAgain}）`,
+        `${sinceAgain}。同じミリ秒の投稿が多いときは、limit を大きくして読み直すと抜けにくくなります）`,
       );
       if (range) {
         if (rc && rc.channel_id !== ch.id) throw new InputError(BAD_CURSOR);
@@ -615,10 +615,10 @@ export function registerReadTools(server: McpServer, ctx: ToolContext): void {
         };
         const forward = async (after: string | undefined, got: MmPost[]) => {
           for (let at = after; at && got.length <= per;) {
-            // Not taking per+1 as for a page shown: the posts of the last millisecond are left to the next fetch, which would then always be needed.
-            const page = (await posts({ after: at, per_page: String(per + 2) })).sort(oldestFirst);
-            const done = page.length <= per + 1 || page.some((p) => range.until !== undefined && p.create_at >= range.until);
-            const n = done ? page.length : tieStart(page) || page.length;
+            const page = (await posts({ after: at, per_page: String(per + 1) })).sort(oldestFirst);
+            const done = page.length <= per || page.some((p) => range.until !== undefined && p.create_at >= range.until);
+            // Not leaving the last millisecond to the next fetch when the page fills the result: renderPage moves it to the next page, and leaving it always would cost a second fetch.
+            const n = done || got.length + page.filter(inRange).length > per ? page.length : tieStart(page) || page.length;
             got.push(...page.slice(0, n).filter(inRange));
             if (done) break;
             at = page[n - 1].id;
@@ -661,7 +661,7 @@ export function registerReadTools(server: McpServer, ctx: ToolContext): void {
           all,
           (last) => ({ channel_id: ch.id, after: last.id, since: range.since, until: range.until, per_page: per }),
           'この範囲に投稿はありません。',
-          `${sinceAgain}${range.until === undefined ? '' : '。until は前と同じ値を渡してください'}）`,
+          `${sinceAgain}${range.until === undefined ? '' : '。until は前と同じ値を渡してください'}。同じミリ秒の投稿が多いときは、limit を大きくして読み直すと抜けにくくなります）`,
         );
       }
       let head: string[] = [];
@@ -693,7 +693,7 @@ export function registerReadTools(server: McpServer, ctx: ToolContext): void {
       // Paging with before=<post_id> rather than page numbers: new posts arriving between calls would shift pages.
       const q = new URLSearchParams({ per_page: String(per + 1), ...(c && 'before' in c ? { before: c.before } : {}), skipFetchThreads: 'true' });
       const r = await mm.call<PostList>(uid, 'GET', `/channels/${ch.id}/posts?${q}`);
-      return renderPage(head, r.order.map((id) => r.posts[id]).filter(Boolean), (last) => ({ before: last.id, per_page: per }), '投稿はありません。', 'cursor を渡さずに呼ぶと、最新から読み直せます）');
+      return renderPage(head, r.order.map((id) => r.posts[id]).filter(Boolean), (last) => ({ before: last.id, per_page: per }), '投稿はありません。', 'cursor を渡さずに呼ぶと、最新から読み直せます。同じミリ秒の投稿が多いときは、limit を大きくして読み直すと抜けにくくなります）');
     });
 
   tool('read_thread', 'スレッドの親投稿と返信を古い順に読む。post_id はスレッド内のどの投稿でもよい。親投稿は最初のページにだけ含める',
