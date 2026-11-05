@@ -2993,7 +2993,6 @@ describe('search_files', () => {
       expect(await call('search_files', { terms: `x in:${B}` }, true)).toBe(`チャンネル「${B}」が見つかりません。`);
       expect(onlyAsked()).toBe(true);
     });
-
   });
 });
 
