@@ -120,11 +120,12 @@ describe('a missing ID that is the name of a channel (26 lower-case letters and 
     expect(calls).toEqual([`GET /channels/${NAME}`]);
   });
 
-  test('is not looked up by name when it has upper case, which a channel name cannot', async () => {
+  test('with upper case, is looked up by name in lower case, which is the only case a channel name has', async () => {
     const upper = 'N'.repeat(26);
-    const { mm, calls } = fake(routes);
-    await expect(resolveChannel(mm, ME, upper)).rejects.toMatchObject({ status: 404 });
-    expect(calls).toEqual([`GET /channels/${upper}`]);
+    const { mm, calls } = fake({ ...routes, [`/teams/${teams[0].id}/channels/name/${NAME}`]: named });
+    await expect(resolveChannel(mm, ME, upper)).rejects.toThrow(`「team-a/${NAME}」（${NAME.toUpperCase()}）の形で指定してください。`);
+    expect(calls).toContain(`GET /teams/${teams[0].id}/channels/name/${NAME}`);
+    await expect(resolveChannel(fake(routes).mm, ME, upper)).rejects.toMatchObject({ status: 404 });
   });
 
   test('an error other than not-found while looking up by name is not swallowed', async () => {
@@ -224,6 +225,57 @@ describe('a DM or group DM given by its channel ID is named as when given as @us
     await resolveChannel(mm, ME, PRIV);
     expect(calls.filter((c) => c.startsWith('GET /users'))).toEqual([]);
   });
+});
+
+describe('names are looked up in lower case, which is all Mattermost allows', () => {
+  test('a bare channel name, keeping the name as written in the errors', async () => {
+    const { mm, calls } = fake(routes);
+    expect(await resolveChannel(mm, ME, 'Only-A')).toMatchObject({ id: CH_A, teamName: 'team-a' });
+    expect(calls).toContain(`GET /teams/${teams[0].id}/channels/name/only-a`);
+    await expect(resolveChannel(mm, ME, 'NoWhere')).rejects.toThrow(new InputError('チャンネル「NoWhere」が見つかりません。'));
+    const e = await resolveChannel(mm, ME, 'General-Dup').catch((x) => x);
+    expect(e).toBeInstanceOf(Ambiguous);
+    expect(e.message).toContain('「General-Dup」に当たるチャンネルが複数あります。');
+  });
+
+  test('team/channel, with the team name in lower case in the result', async () => {
+    const { mm, calls } = fake(routes);
+    expect(await resolveChannel(mm, ME, 'Team-B/General-Dup')).toMatchObject({ id: CH_B, teamName: 'team-b' });
+    expect(calls).toEqual(['GET /teams/name/team-b/channels/name/general-dup']);
+  });
+});
+
+describe('@user that cannot be looked up', () => {
+  test.each([
+    [404, 'app.user.get_by_username.app_error'],
+    [403, 'api.context.permissions.app_error'],
+    [400, 'api.context.invalid_url_param.app_error', '@all'],
+  ])('a %i from the user lookup says the user is not found', async (status, id, spec = '@ghost') => {
+    const mm: Mm = { call: async <T>(_u: string, _m: string, p: string) => {
+      if (p === '/users/me/teams') return teams as T;
+      throw new MmError(status, id, 'x');
+    } };
+    await expect(resolveChannel(mm, ME, spec)).rejects.toThrow(new InputError(`ユーザー「${spec}」が見つかりません。`));
+  });
+
+  test('a 403 from the teams lookup is not reported as a missing user', async () => {
+    const mm: Mm = { call: async () => {
+      throw new MmError(403, 'api.context.permissions.app_error', 'x');
+    } };
+    const e = await resolveChannel(mm, ME, '@bob').catch((x) => x);
+    expect(e).toBeInstanceOf(MmError);
+    expect(e.status).toBe(403);
+  });
+});
+
+test('a 、 before a word that cannot be a user name is left to the name check, not called a separator', async () => {
+  await expect(resolveChannel(fake(routes).mm, ME, '@bob、議事録')).rejects.toThrow('使えない文字を含みます');
+});
+
+test.each(['@bob、carol', '@bob，carol', '@a,b、c'])('%j is refused for its separator before any request', async (spec) => {
+  const { mm, calls } = fake(routes);
+  await expect(resolveChannel(mm, ME, spec)).rejects.toThrow(new InputError('@a,b の区切りは半角のカンマ（,）で書いてください。読点（、）や全角のカンマ（，）は使えません。'));
+  expect(calls).toEqual([]);
 });
 
 test('every form of channel spec also returns the fetched channel as raw', async () => {
