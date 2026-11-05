@@ -4,7 +4,21 @@ import { InputError, oneLine } from './format.ts';
 
 // Format characters (Unicode Cf: zero-width, direction marks, soft hyphen) too, not only what trim drops: they slip in with a copy, and no
 // channel, team or user name or ID can have them, as those are ASCII only.
-export const unformat = (s: string) => s.replace(/^[\s\p{Cf}]+|[\s\p{Cf}]+$/gu, '');
+const EDGE = /^[\s\p{Cf}]$/u;
+// Not one regex with [\s\p{Cf}]+$: it restarts at every position of a long run of spaces followed by other text, taking time quadratic in the length, and arguments have no length limit.
+export const unformat = (s: string) => {
+  const t = s.replace(/^[\s\p{Cf}]+/u, '');
+  let end = t.length;
+  while (end > 0) {
+    // Not one UTF-16 unit at a time: some Cf characters (tags, U+E0001 and up) are surrogate pairs.
+    const lo = t.charCodeAt(end - 1);
+    const hi = t.charCodeAt(end - 2);
+    const start = end >= 2 && lo >= 0xdc00 && lo <= 0xdfff && hi >= 0xd800 && hi <= 0xdbff ? end - 2 : end - 1;
+    if (!EDGE.test(t.slice(start, end))) break;
+    end = start;
+  }
+  return t.slice(0, end);
+};
 export type Mm = Pick<MmClient, 'call'>;
 export type ChannelRef = { id: string; name: string; displayName: string; teamId: string; teamName: string };
 export type UserRef = {
