@@ -305,7 +305,7 @@ describe('read tools against the local Mattermost', () => {
     await mmApi(aliceMm, 'DELETE', `/posts/${id}`);
     const r = await call('alice', 'get_post', { post: id });
     expect(r.isError).toBe(true);
-    expect(r.content[0].text).toBe('投稿が見つかりません（削除されたか、存在しません）');
+    expect(r.content[0].text).toBe('投稿が見つかりません（削除されたか、存在しません）。');
   });
 
   test('get_post on a reply gives the parent post_id', async () => {
