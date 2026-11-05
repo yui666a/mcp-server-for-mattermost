@@ -51,6 +51,29 @@ const posts = (n: number) => {
   return { order, posts: Object.fromEntries(order.map((p, i) => [p, { id: p, user_id: 'u1', channel_id: 'c'.repeat(26), root_id: '', message: `m${i}`, create_at: 0 }])) };
 };
 
+test('search_posts looks up more than 1,000 users in calls of at most 1,000 ids, and names the users of every call', async () => {
+  // 50 posts by 50 authors, each with 2 emoji of 10 users: 1,050 users, all short enough to be named on the reactions lines.
+  const order = Array.from({ length: 50 }, (_, i) => id(i));
+  const user = (i: number, j: number) => `r${String(i * 20 + j).padStart(4, '0')}`;
+  const found = { order, posts: Object.fromEntries(order.map((p, i) => [p, {
+    id: p, user_id: `a${i}`, channel_id: 'c'.repeat(26), root_id: '', message: `m${i}`, create_at: 0,
+    metadata: { reactions: Array.from({ length: 20 }, (_, j) => ({ user_id: user(i, j), emoji_name: j < 10 ? 'x' : 'y', create_at: j })) },
+  }])) };
+  const asked: string[][] = [];
+  routes = {
+    'POST /posts/search': () => found,
+    'GET /users/me/channels': () => [{ id: 'c'.repeat(26), name: 'town', display_name: 'Town', team_id: 't'.repeat(26), type: 'O' }],
+    'GET /users/me/teams': () => [{ id: 't'.repeat(26), name: 'team-a' }],
+    'POST /users/ids': () => { const ids = bodies['/users/ids'] as string[]; asked.push(ids); return ids.map((x) => ({ id: x, username: `n${x}` })); },
+  };
+  const out = await setup()('search_posts', { terms: 'm', limit: 50 });
+  expect(asked.map((x) => x.length)).toEqual([1000, 50]);
+  const all = [...order.keys()].flatMap((i) => [`a${i}`, ...Array.from({ length: 20 }, (_, j) => user(i, j))]);
+  expect(asked.flat().sort()).toEqual(all.sort());
+  for (const x of asked[1]) expect(out).toContain(`@n${x}`);
+  expect(out).not.toContain('user_id: ');
+});
+
 test('search_posts sends the JST offset, shows the channel and team names, and notes the 100-result cap', async () => {
   routes = {
     'POST /posts/search': () => posts(100),
@@ -344,17 +367,13 @@ describe('get_post', () => {
     expect(out).toContain('\n（メッセージ添付をここで切りました。続きは Mattermost の画面で確認してください）\n');
   });
 
-  test.each([[999, 1], [1000, 2]])('looks up %i reacting users and the author in %i calls to /users/ids of at most 1,000 ids each, and names everyone shown', async (n, calls) => {
-    // 100 two-letter emoji with 10 users each fit the reactions line, so every reacting user may be shown.
-    const reactions = Array.from({ length: n }, (_, i) => ({ user_id: `r${String(i).padStart(4, '0')}`, emoji_name: `e${String(Math.floor(i / 10)).padStart(2, '0')}`.slice(-2), create_at: i }));
+  test('looks up exactly 1,000 users (the author and 999 reacting users) in one call to /users/ids', async () => {
+    const reactions = Array.from({ length: 999 }, (_, i) => ({ user_id: `r${String(i).padStart(4, '0')}`, emoji_name: `e${String(Math.floor(i / 10)).padStart(2, '0')}`.slice(-2), create_at: i }));
     const asked: string[][] = [];
     routes = { ...base, [`GET /posts/${ROOT}`]: () => post({ id: ROOT, metadata: { reactions } }),
-      'POST /users/ids': () => { const ids = bodies['/users/ids'] as string[]; asked.push(ids); return ids.map((id) => ({ id, username: `n${id}` })); } };
-    const out = await setup()('get_post', { post: ROOT });
-    expect(asked.map((x) => x.length)).toEqual(calls === 1 ? [1000] : [1000, 1]);
-    // The real names are longer than the shortest estimate, so the last emoji may be summed up instead; every name shown is still known.
-    expect(out).toContain('@nr0000');
-    expect(out).not.toContain('user_id: r');
+      'POST /users/ids': () => { const ids = bodies['/users/ids'] as string[]; asked.push(ids); return ids.map((x) => ({ id: x, username: `n${x}` })); } };
+    await setup()('get_post', { post: ROOT });
+    expect(asked.map((x) => x.length)).toEqual([1000]);
   });
 
   test('accepts a bare post_id', async () => {
