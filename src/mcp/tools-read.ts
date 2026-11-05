@@ -217,10 +217,13 @@ export function channelInline(c: ChannelRef & { archived?: boolean }): string {
 // The 404 of looking a channel up by id: /channels/{id} gives it only for a channel that does not exist, whereas a 404 by name may also be a private or archived channel, or a passing failure.
 const BY_ID_404 = 'app.channel.get.existing.app_error';
 
-export function channelError(e: unknown): never {
+// Not the private-channel wording for team/channel: by name Mattermost answers 404 to a private channel the user is not in.
+const forbiddenExample = (spec: string) => (spec.includes('/') ? '参加していないチームのチャンネルや、見る権限の無い公開チャンネルなど' : '参加していない非公開チャンネルなど');
+
+export function channelError(e: unknown, spec: string): never {
   // Not converting a missing team: /teams/name/{team}/channels/name/{channel} answers it with 404 too.
   if (e instanceof ChannelFetchError && e.id !== 'app.team.get_by_name.missing.app_error') {
-    if (e.status === 403) throw new InputError(`このチャンネルを見る権限がありません（参加していない非公開チャンネルなど）。${RETRY}${ASK_ADMIN}`);
+    if (e.status === 403) throw new InputError(`このチャンネルを見る権限がありません（${forbiddenExample(spec)}）。${RETRY}${ASK_ADMIN}`);
     // Not keying on the name lookup's ids: a 404 without an id, as a proxy may give, is better read as one by name, which guides to retrying.
     if (e.status === 404 && e.id !== BY_ID_404) throw new InputError(`チャンネルが見つかりません（参加していない非公開チャンネルとアーカイブ済みのチャンネルは、名前で指定すると Mattermost はこの結果を返します。アーカイブ済みなら、チャンネル ID を利用者に確かめて ID で指定すると読めます）。名前の誤りなら search_channels で確かめてください。${RETRY}${ASK_ADMIN}`);
     if (e.status === 404) throw new InputError('チャンネルが見つかりません。ID の誤りなら search_channels で確かめてください。');
@@ -314,8 +317,7 @@ async function filterChannelIds(mm: Mm, userId: string, spec: string, written: s
     if (e instanceof ChannelFetchError && e.id === 'app.team.get_by_name.missing.app_error') {
       throw new InputError(`チャンネル「${spec}」のチームが見つかりません。チーム名の誤りなら、list_my_channels で参加しているチームを確かめてください（チーム名はチャンネルの行の先頭に出ます）。`);
     }
-    // Not the private-channel wording for team/channel: by name Mattermost answers 404 to a private channel the user is not in.
-    if (e instanceof ChannelFetchError && e.status === 403) throw new InputError(`チャンネル「${spec}」を見る権限がありません（${spec.includes('/') ? '参加していないチームのチャンネルや、見る権限の無い公開チャンネルなど' : '参加していない非公開チャンネルなど'}）。${RETRY}${ASK_ADMIN}`);
+    if (e instanceof ChannelFetchError && e.status === 403) throw new InputError(`チャンネル「${spec}」を見る権限がありません（${forbiddenExample(spec)}）。${RETRY}${ASK_ADMIN}`);
     // Told apart by the form of the spec, not by Mattermost's id: a 404 without an id, as a proxy may give, still gets a fitting message.
     if (e instanceof ChannelFetchError && e.status === 404) {
       throw new InputError(spec.includes('/') ? byName : `チャンネル「${spec}」が見つかりません。ID の誤りなら search_channels で確かめてください。`);
@@ -681,7 +683,7 @@ export function registerReadTools(server: McpServer, ctx: ToolContext): void {
       const per = c?.per_page ?? limit ?? 30;
       const rc = c && 'since' in c ? c : undefined;
       const range = rc ?? (!c && (since !== undefined || until !== undefined) ? rangeOf(since, until, from) : undefined);
-      const ch = await resolveChannel(mm, uid, channel).catch(channelError);
+      const ch = await resolveChannel(mm, uid, channel).catch((e) => channelError(e, channel));
       const GONE = '（カーソルの起点かその続きの投稿が削除されたか、同じミリ秒の投稿が多かったため、続きを取りこぼしている可能性があります。';
       const renderPage = async (head: string[], all: MmPost[], next: (last: MmPost) => object, none: string, gone: string) => {
         const shown = all.slice(0, all.length > per ? tieStart(all.slice(0, per + 1)) || per : per);
@@ -954,7 +956,7 @@ export function registerReadTools(server: McpServer, ctx: ToolContext): void {
     async ({ channel, pinned_limit, cursor }, mm) => {
       const c = cursorOf(z.object({ channel_id: z.string(), create_at: z.number().int(), id: z.string(), per_page: perPage(50) }), cursor);
       const per = c?.per_page ?? pinned_limit ?? 10;
-      const ch = await resolveChannel(mm, uid, channel).catch(channelError);
+      const ch = await resolveChannel(mm, uid, channel).catch((e) => channelError(e, channel));
       if (c && c.channel_id !== ch.id) throw new InputError(BAD_CURSOR);
       const kind: Record<string, string> = { O: '公開', P: '非公開', D: 'DM', G: 'グループ DM' };
       const lines = resolvedLines(ch);
@@ -995,7 +997,7 @@ export function registerReadTools(server: McpServer, ctx: ToolContext): void {
       const c = cursorOf(z.object({ channel_id: z.string(), page: z.number().int().min(0), per_page: perPage(200) }).strict(), cursor);
       const per = c?.per_page ?? limit ?? 50;
       const page = c?.page ?? 0;
-      const ch = await resolveChannel(mm, uid, channel).catch(channelError);
+      const ch = await resolveChannel(mm, uid, channel).catch((e) => channelError(e, channel));
       if (c && c.channel_id !== ch.id) throw new InputError(BAD_CURSOR);
       // Not joining /channels/{id}/members with the users: /users?in_channel gives the profiles in one call.
       const q = new URLSearchParams({ in_channel: ch.id, active: 'true', page: String(page), per_page: String(per) });
