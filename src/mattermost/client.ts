@@ -22,7 +22,8 @@ export class MmError extends Error {
   readonly status: number;
   readonly id: string | undefined;
   constructor(status: number, id: string | undefined, message: string | undefined) {
-    super(message ?? `Mattermost API error: ${status}`);
+    // Not a placeholder naming the status: the failure texts already show it, and would show it twice.
+    super(message ?? '');
     this.status = status;
     this.id = id;
   }
