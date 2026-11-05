@@ -1,11 +1,12 @@
 import type { McpServer, ToolCallback } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
+import { setTimeout as sleep } from 'node:timers/promises';
 import { z } from 'zod';
 import { randomToken, sha256 } from '../crypto.ts';
 import { log } from '../log.ts';
 import { MmError, RateLimited, Reauthorize } from '../mattermost/client.ts';
 import { MAX_OPEN_UPLOAD_URLS, type HeldFile, type Store } from '../store.ts';
-import { BODY_CUT_NOTE, InputError, type MmPost } from './format.ts';
+import { BODY_CUT_NOTE, InputError, oneLine, type MmPost } from './format.ts';
 import { findPosted, postOnce } from './post.ts';
 import { myTeams, NoDirectChannel, resolveChannel, teamNameOf, type ChannelRef, type Mm, type MmChannel, type ResolvedChannel } from './resolve.ts';
 import { guarded, text, type ToolContext } from './server.ts';
@@ -149,7 +150,7 @@ export async function sendMessage(mm: Mm, store: Store, uid: string, baseUrl: st
   checkUploaded(store, uid, ch.id, fileIds);
   const rootId = args.root_id;
   if (rootId) await checkRoot(mm, uid, rootId, ch);
-  const where = `チャンネル: ${ch.displayName || ch.name}（channel_id: ${ch.id}）${rootId ? `、返信先 post_id: ${rootId}` : ''}`;
+  const where = `チャンネル: ${oneLine(ch.displayName || ch.name)}（channel_id: ${ch.id}）${rootId ? `、返信先 post_id: ${rootId}` : ''}`;
   // Not only after a fresh post: an earlier attempt's cleanup may have failed, and a resend that did not post can retry it.
   const done = async (postId: string, note: string) => {
     const cleared = await clearSentDraft(mm, uid, ch, rootId ?? '', args.message, client);
@@ -298,7 +299,7 @@ async function ownPost(mm: Mm, store: Store, uid: string, postId: string): Promi
 // Looked up before the write rather than after: once DELETE has succeeded, a failing lookup would report an irreversible success as an error.
 async function whereOf(mm: Mm, uid: string, post: OwnPost): Promise<Where> {
   const ch = await mm.call<MmChannel>(uid, 'GET', `/channels/${post.channel_id}`);
-  return { line: `チャンネル: ${ch.display_name || ch.name}（channel_id: ${ch.id}）`, teamName: await teamNameOf(mm, uid, ch.team_id) };
+  return { line: `チャンネル: ${oneLine(ch.display_name || ch.name)}（channel_id: ${ch.id}）`, teamName: await teamNameOf(mm, uid, ch.team_id) };
 }
 
 const editSchema = {
@@ -369,7 +370,7 @@ export async function checkRoot(mm: Mm, uid: string, rootId: string, ch: { id: s
   const root = await worded(mm.call<MmPost>(uid, 'GET', `/posts/${rootId}`), {
     status: [[404, `root_id ${rootId} の投稿が見つかりません。`], [403, `root_id ${rootId} の投稿を見られません。`]],
   });
-  if (root.channel_id !== ch.id) throw new InputError(`root_id ${rootId} の投稿はチャンネル「${ch.displayName || ch.name}」（channel_id: ${ch.id}）にありません。`);
+  if (root.channel_id !== ch.id) throw new InputError(`root_id ${rootId} の投稿はチャンネル「${oneLine(ch.displayName || ch.name)}」（channel_id: ${ch.id}）にありません。`);
   if (root.root_id) throw new InputError(`root_id ${rootId} は返信です。スレッドの親投稿の post_id を指定してください。`);
 }
 
@@ -386,6 +387,23 @@ const DELETE_MARGIN_MS = 1000;
 
 class TooLateToDelete extends Error {
   name = 'TimeoutError';
+}
+
+// ponytail: a fixed wait; a queue in the Limiter if callers other than the cleanup need to wait their turn.
+const LIMITER_WAIT_MS = 100;
+
+// Not waiting on Mattermost's 429 or a per-minute limit further away: neither frees up within the cleanup's 5 seconds.
+async function untilAdmitted<T>(attempt: () => Promise<T>, stop: AbortSignal, before?: () => void): Promise<T> {
+  for (;;) {
+    before?.();
+    try {
+      return await attempt();
+    } catch (e) {
+      if (!(e instanceof RateLimited) || e.sent || e.retryAfterSec > 1) throw e;
+    }
+    // Not the AbortError sleep throws: the deadline's TimeoutError keeps the log the same as a deadline hit while waiting for the lock or a DELETE held back.
+    await sleep(LIMITER_WAIT_MS, undefined, { signal: stop }).catch(() => { throw stop.reason; });
+  }
 }
 
 // Not kept on the server or ctx: app.ts builds a server per request, and a lock there would never be shared between two calls.
@@ -423,12 +441,19 @@ async function withDraftLock<T>(uid: string, channelId: string, rootId: string, 
 // Not deleting only when the text still matches: Mattermost has no conditional delete, so an edit saved between the list and the DELETE is lost.
 // Not left running past the deadline: a late DELETE could remove a draft the user rewrote after reading that it was not cleared. A DELETE already sent still completes on Mattermost.
 async function clearSentDraft(mm: Mm, uid: string, ch: ChannelRef, rootId: string, message: string, client?: AbortSignal): Promise<string> {
-  const deadline = AbortSignal.timeout(CLEANUP_MS);
   // Not Date.now: the deadline runs on a timer, which a wall clock set back or forward would not match.
+  // Not measured after the timer is set: the margin below would then be a little optimistic.
   const until = performance.now() + CLEANUP_MS;
-  const quick: Mm = { call: (u, m, p, b) => mm.call(u, m, p, b, deadline) };
+  const deadline = AbortSignal.timeout(CLEANUP_MS);
+  const stop = client ? AbortSignal.any([deadline, client]) : deadline;
+  // Not sending a DELETE the deadline may cut off: the lock would be let go while Mattermost still runs it, and a save behind could be the draft it deletes. Checked again before every retry, since waiting for the Limiter uses up the margin.
+  const marginLeft = () => {
+    if (until - performance.now() < DELETE_MARGIN_MS) throw new TooLateToDelete('too little time left to delete the draft');
+  };
+  // Not giving up when this MCP's own Limiter is full: drafts are locked per target, so one user's cleanups run side by side and can fill the per-user slots for a moment.
+  const quick: Mm = { call: (u, m, p, b) => untilAdmitted(() => mm.call(u, m, p, b, deadline), stop, m === 'DELETE' ? marginLeft : undefined) };
   try {
-    return await withDraftLock(uid, ch.id, rootId, () => clearLocked(quick, uid, ch, rootId, message, until), client ? AbortSignal.any([deadline, client]) : deadline);
+    return await withDraftLock(uid, ch.id, rootId, () => clearLocked(quick, uid, ch, rootId, message), stop);
   } catch (e) {
     if (e instanceof MmError && e.status === 501 && e.id === DISABLED[1]) return '';
     // Not logged when the client gave up: the request was cancelled, not the cleanup broken.
@@ -439,14 +464,12 @@ async function clearSentDraft(mm: Mm, uid: string, ch: ChannelRef, rootId: strin
   }
 }
 
-async function clearLocked(quick: Mm, uid: string, ch: ChannelRef, rootId: string, message: string, until: number): Promise<string> {
+async function clearLocked(quick: Mm, uid: string, ch: ChannelRef, rootId: string, message: string): Promise<string> {
   const d = (await draftsOf(quick, uid, ch))?.find((x) => x.channel_id === ch.id && (x.root_id || '') === rootId && x.message === message);
   if (!d) return '';
   if (d.file_ids?.length) return '同じ本文の下書きがありますが、添付ファイルが付いているため消していません。そのまま送ると、同じ本文がもう一度投稿されます。';
   // Not deleting with sync off: the webapp clears its stored draft on draft_deleted whatever the setting, wiping unsynced text kept only in the browser.
   if (await syncDraftsOff(quick, uid)) return '同じ本文の下書きがありますが、下書きの同期を切っているため消していません。同期を入れ直すと画面に出るので、送らずに消してください。';
-  // Not sending a DELETE the deadline may cut off: the lock would be let go while Mattermost still runs it, and a save behind could be the draft it deletes.
-  if (until - performance.now() < DELETE_MARGIN_MS) throw new TooLateToDelete('too little time left to delete the draft');
   await quick.call(uid, 'DELETE', `/users/${uid}/channels/${ch.id}/drafts${rootId ? `/${rootId}` : ''}`);
   const p = d.priority;
   return [
@@ -472,7 +495,7 @@ export async function saveDraft(mm: Mm, uid: string, args: DraftArgs): Promise<C
   const ch = await resolveChannel(mm, uid, args.channel, { create: !rootId });
   // Checked here rather than left to Mattermost: it saves a draft on any root_id, and one on a reply never shows in any thread.
   if (rootId) await checkRoot(mm, uid, rootId, ch);
-  const where = `チャンネル: ${ch.displayName || ch.name}（channel_id: ${ch.id}）${rootId ? `、返信先 post_id: ${rootId}` : ''}`;
+  const where = `チャンネル: ${oneLine(ch.displayName || ch.name)}（channel_id: ${ch.id}）${rootId ? `、返信先 post_id: ${rootId}` : ''}`;
   // Not locking the resolving above: one call may take tens of seconds, and a send_message cleanup waiting behind it would always run out of time.
   // Not leaving the list and the save unlocked: a save made between the cleanup's list and its DELETE would be the draft it deletes.
   const same = await withDraftLock(uid, ch.id, rootId, () => saveLocked(mm, uid, ch, rootId, args, where));
@@ -529,7 +552,7 @@ export async function prepareUpload(mm: Mm, store: Store, uid: string, publicUrl
   const limit = maxBytes % MiB ? `${maxBytes} バイト` : `${maxBytes / MiB}MiB`;
   return text([
     `アップロード用の URL を発行しました。10 分間、1 回だけ使えます（1 回で ${MAX_UPLOAD_FILES} 件まで、送る本文は multipart の枠を含めて ${limit} まで）。`,
-    `投稿先: ${ch.displayName || ch.name}（channel_id: ${ch.id}）`,
+    `投稿先: ${oneLine(ch.displayName || ch.name)}（channel_id: ${ch.id}）`,
     '実行する前に、送るファイルのパスと投稿先を利用者に示して、確認を取ってください。',
     '',
     `curl -sS -F 'file=@<ファイルのパス>' ${publicUrl}/mcp/upload/${token}`,
