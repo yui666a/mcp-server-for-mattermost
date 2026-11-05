@@ -2,10 +2,13 @@ export class RateLimited extends Error {
   name = 'RateLimited';
   readonly retryAfterSec: number;
   readonly sent: boolean;
-  constructor(retryAfterSec: number, sent: boolean) {
+  // true when an earlier request of the same call may have been carried out before this one was refused.
+  readonly doubt: boolean;
+  constructor(retryAfterSec: number, sent: boolean, doubt = false) {
     super(`rate limited; retry after ${retryAfterSec}s`);
     this.retryAfterSec = retryAfterSec;
     this.sent = sent;
+    this.doubt = doubt;
   }
 }
 
