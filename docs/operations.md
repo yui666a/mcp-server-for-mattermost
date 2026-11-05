@@ -60,7 +60,7 @@ docker compose logs --no-log-prefix mcp | grep '"event":"tool_call"'
 
 | `event` | 内容 |
 |---|---|
-| `tool_call` | ツールの呼び出し。`mm_user_id`、`tool`、`outcome`（`ok`、`tool_error`、`input_error`、`reauthorize`、`rate_limited`、`upstream_unavailable`、`mm_error`、`error`）、`ms` |
+| `tool_call` | ツールの呼び出し。`mm_user_id`、`tool`、`outcome`（`ok`、`tool_error`、`input_error`、`invalid_args`（ツールを呼ぶ前に MCP SDK が、inputSchema に合わない引数を断った。受けない引数、型・形式・長さ・範囲の誤り、必須の欠け。`input_error` は、スキーマには合うがツールが処理の中で断ったもの）、`reauthorize`、`rate_limited`、`upstream_unavailable`、`mm_error`、`error`）、`ms` |
 | `tool_interrupted` | `mark_as_read` が再ログイン・429・Mattermost の停止などで途中で中断し、それまでの結果をツールのエラーとして返したとき。`mm_user_id`、`tool`、`outcome`（中断の原因。`tool_call` の `outcome` と同じ値。このとき `tool_call` の `outcome` は `tool_error` になる） |
 | `scheduled_post` | 予約の投稿の結果。`mm_user_id`、`outcome` |
 | `upload` | `prepare_upload` の URL へのアップロード。`mm_user_id`、`outcome`（`ok`、`too_large`、`client_gone`（本文の途中で接続が切れた）、`stalled`（本文を待つ間に 15 秒データが来なかった）、`InputError`、`MmError`、`RateLimited`、`UpstreamUnavailable` など）、`files`（Mattermost へ送れた件数）、`bytes`（受け取ったファイルの合計）、`ms`。URL が無効なときと、同時に処理できる件数を超えたときは出ない |
@@ -85,8 +85,9 @@ docker compose exec mcp node src/admin.ts purge-credentials          # 認可途
 ```
 
 `purge-credentials` を稼働中に実行すると、全利用者が再ログインになる。
-通常はバックアップからの復元でだけ使い、そのときは `invalidate-scheduled`（待機中と投稿中の予約をすべて失敗にする。投稿済みと失敗の予約は残す）も続けて実行する。
-復元では、どちらも MCP サーバーを起動する前に、単独のコンテナで実行する（下の「バックアップと復元」）。
+通常はバックアップからの復元でだけ使い、そのときは続けて `invalidate-scheduled` も実行する。
+`invalidate-scheduled` は待機中と投稿中の予約をすべて失敗にし、投稿済みと失敗の予約は残す。
+復元では、`purge-credentials` と `invalidate-scheduled` のどちらも MCP サーバーを起動する前に、単独のコンテナで実行する（下の「バックアップと復元」）。
 `invalidate-scheduled` は稼働中には実行しない。巡回が投稿している途中の予約まで失敗にするので、投稿は届いているのに一覧では「投稿されたか不明」の失敗と出て、利用者が確かめずに入れ直すと同じ投稿が 2 回になりうるため。
 また、失敗の理由の文言も、復元のときに向けたものになっている。
 

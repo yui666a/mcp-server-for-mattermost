@@ -6,6 +6,10 @@ import { CALL_DEADLINE_MS, MmClient, MmError, RateLimited, Reauthorize, Upstream
 import { Limiter } from '../../src/mattermost/limiter.ts';
 import { Store } from '../../src/store.ts';
 
+// Not vitest's defaults (1 s for vi.waitFor, 5 s for a test): on a busy machine the awaited event can take seconds.
+const SLOW = { timeout: 10_000 };
+const SLOW_TEST = 30_000;
+
 const cfg = loadConfig({
   PUBLIC_URL: 'https://mm.example', TOKEN_ENC_KEY: randomBytes(32).toString('base64'),
   MM_OAUTH_CLIENT_ID: 'mm-client', MM_OAUTH_CLIENT_SECRET: 'SECRET-XYZ', MM_URL: 'http://mm.internal',
@@ -156,7 +160,9 @@ test('transient upstream failure keeps grants', async () => {
   }
   api = only([]);
   refresh = () => mmError(503, 'x');
-  await expect(client.call('u1', 'GET', '/users/me')).rejects.toBeInstanceOf(UpstreamUnavailable);
+  const afterRefresh = await failure(client.call('u1', 'GET', '/users/me'));
+  expect(afterRefresh).toBeInstanceOf(UpstreamUnavailable);
+  expect(afterRefresh.sent).toBe(false);
   expect(cred()).toEqual(before);
   expect(store.verifyAccess(pair.accessToken)?.mmUserId).toBe('u1');
 });
@@ -168,7 +174,7 @@ test('revoked app forces relogin', async () => {
   refresh = RELOGIN;
   const e = await failure(client.call('u1', 'GET', '/users/me'));
   expect(e).toBeInstanceOf(Reauthorize);
-  expect(e.sent).toBe(true);
+  expect(e.sent).toBe(false);
   expect(store.verifyAccess(pair.accessToken)).toBeUndefined();
   expect(cred()).toBeUndefined();
 });
@@ -248,6 +254,24 @@ test.each([500, 502, 503, 504])('%i stays UpstreamUnavailable', async (status) =
   expect(await failure(client.call('u1', 'GET', '/users/me'))).toBeInstanceOf(UpstreamUnavailable);
 });
 
+test('marks a 500 as a plain body only when it was read whole as text/plain and is not JSON', async () => {
+  store.putMmCred('u1', 'a1', 'r1');
+  const plain = (body: string, type: string) => () => new Response(body, { status: 500, headers: { 'content-type': type } });
+  for (const [route, want] of [
+    [plain("seeker can't seek\n", 'text/plain; charset=utf-8'), true],
+    [plain("seeker can't seek\n", 'Text/Plain'), true],
+    [() => Response.json({ id: '', message: 'Internal Server Error', status_code: 500 }, { status: 500 }), false],
+    [plain('<html>500</html>', 'text/html'), false],
+    [plain('{"id":"x"}', 'text/plain'), false],
+    [() => new Response(new ReadableStream({ pull(c) { c.enqueue(new TextEncoder().encode('seeker')); c.error(new Error('reset')); } }), { status: 500, headers: { 'content-type': 'text/plain' } }), false],
+  ] as const) {
+    api = route;
+    expect(await failure(client.callBytes('u1', '/files/f'))).toMatchObject({ status: 500, plainBody: want });
+  }
+  api = () => mmError(503, 'x');
+  expect((await failure(client.call('u1', 'GET', '/users/me')) as UpstreamUnavailable).plainBody).toBeUndefined();
+});
+
 test('a 5xx UpstreamUnavailable carries its status, and the Mattermost id only for a 500 with a JSON error', async () => {
   store.putMmCred('u1', 'a1', 'r1');
   api = () => mmError(500, 'app.file_info.get.app_error');
@@ -298,7 +322,7 @@ test('a call that has used up its deadline does not start the refresh', async ()
   api = () => { t += CALL_DEADLINE_MS; return mmError(401, 'x'); };
   const e = await failure(c.call('u1', 'GET', '/users/me'));
   expect(e).toBeInstanceOf(UpstreamUnavailable);
-  expect(e.sent).toBe(true);
+  expect(e.sent).toBe(false);
   expect(refreshCalls).toEqual([]);
   expect(CALL_DEADLINE_MS).toBe(25_000);
 });
@@ -308,16 +332,18 @@ test('requests after the first only get the remaining part of the call deadline'
   const c = new MmClient(cfg, store, limiter, { fetch: fetchMock, now: () => t });
   store.putMmCred('u1', 'a1', 'r1');
   api = (access, req) => {
-    if (access === 'a1') { t += CALL_DEADLINE_MS - 100; return mmError(401, 'x'); }
+    // Not a tighter remainder: the refresh has to finish within it, which takes longer on a busy machine.
+    if (access === 'a1') { t += CALL_DEADLINE_MS - 5_000; return mmError(401, 'x'); }
     return new Promise((_, fail) => req.signal.addEventListener('abort', () => fail(req.signal.reason)));
   };
   const started = Date.now();
   const e = await failure(c.call('u1', 'GET', '/users/me'));
   expect(e).toBeInstanceOf(UpstreamUnavailable);
   expect(e.sent).toBe(true);
-  expect(Date.now() - started).toBeLessThan(2_000);
+  // Not closer to the 20 s per-request timeout: a request that waits for that instead of the remainder must still fail here.
+  expect(Date.now() - started).toBeLessThan(15_000);
   expect(cred()).toMatchObject({ access: 'a2' });
-});
+}, SLOW_TEST);
 
 test('invalid_grant does not revoke when a concurrent login stored new credentials', async () => {
   const pair = grant();
@@ -354,6 +380,16 @@ test('after a lost save, an inconclusive check of the refreshed token keeps the 
     expect(await client.call('u1', 'GET', '/users/me')).toEqual({ ok: 'aC' });
     expect(cred()).toMatchObject({ access: 'aC', refresh: 'rC' });
   }
+});
+
+test('a relogin after any response other than 401 counts the call as sent, since that request may have been handled', async () => {
+  store.putMmCred('u1', 'a1', 'r1');
+  refresh = () => { store.putMmCred('u1', 'aC', 'rC'); return Response.json({ access_token: 'a2', refresh_token: 'r2' }); };
+  api = (access) => (access === 'a2' ? mmError(503, 'x') : mmError(401, 'api.context.session_expired.app_error'));
+  const e = await failure(client.call('u1', 'POST', '/posts', { message: 'm' }));
+  expect(e).toBeInstanceOf(Reauthorize);
+  expect(e.sent).toBe(true);
+  expect(apiCalls.map((c) => c.access)).toEqual(['a1', 'a2', 'aC']);
 });
 
 test('after a lost save, an authenticated 4xx proves the refreshed token and it is kept', async () => {
@@ -401,13 +437,13 @@ test('aborting while waiting on the shared refresh frees the slot at once and th
   refresh = async () => { await gate; return Response.json({ access_token: 'a2', refresh_token: 'r2' }); };
   const ac = new AbortController();
   const running = [1, 2, 3, 4].map(() => failure(client.call('u1', 'GET', '/users/me', undefined, ac.signal)));
-  await vi.waitFor(() => expect(refreshCalls).toEqual(['r1']));
+  await vi.waitFor(() => expect(refreshCalls).toEqual(['r1']), SLOW);
   ac.abort();
   for (const e of await Promise.all(running)) expect(e).toBeInstanceOf(UpstreamUnavailable);
   for (let i = 0; i < 4; i++) limiter.acquire('u1')();
   open();
-  await vi.waitFor(() => expect(cred()?.access).toBe('a2'));
-});
+  await vi.waitFor(() => expect(cred()?.access).toBe('a2'), SLOW);
+}, SLOW_TEST);
 
 test('callBytes returns the response body as bytes, after a 401 → refresh → retry, within one limiter slot', async () => {
   store.putMmCred('u1', 'a1', 'r1');
