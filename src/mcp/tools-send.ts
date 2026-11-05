@@ -202,7 +202,7 @@ type ReactionArgs = { post_id: string; emoji: string };
 const emojiHint = (name: string) => `絵文字「${name}」がありません。標準の絵文字名（例: white_check_mark、+1）か、search_emoji で調べたカスタム絵文字名を指定してください。`;
 // Checked rather than encoded: the name goes into a path, where "." and ".." survive encoding and fetch would normalise them into another endpoint.
 function emojiName(raw: string): string {
-  const name = raw.trim().replace(/^:/, '').replace(/:$/, '');
+  const name = raw.trim().replace(/^:/, '').replace(/:$/, '').trim();
   if (!/^[A-Za-z0-9_+-]{1,64}$/.test(name)) throw new InputError(emojiHint(name));
   return name;
 }
