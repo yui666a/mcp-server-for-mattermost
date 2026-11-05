@@ -2,11 +2,8 @@ import { createHash } from 'node:crypto';
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 import { BODY_CUT_NOTE } from '../../src/mcp/format.ts';
 import { MAX_OPEN_UPLOAD_URLS, type Store } from '../../src/store.ts';
-import { makeApp } from './helpers.ts';
+import { makeApp, SLOW, SLOW_TEST } from './helpers.ts';
 
-// Not vitest's defaults (1 s for vi.waitFor, 5 s for a test): on a busy machine the awaited event can take seconds.
-const SLOW = { timeout: 10_000 };
-const SLOW_TEST = 30_000;
 // Not bound inside a test: vitest returns the same spy when spyOn is called on a spy, and binding that spy would make it call itself.
 const realTimeout = AbortSignal.timeout.bind(AbortSignal);
 // Not left to the real clock: under load the cleanup's 5-second deadline and its 1-second margin before DELETE would run out while a test holds the lock.
@@ -305,7 +302,7 @@ describe('edit_message and delete_message', () => {
       // Not a literal: a changed limit or note would otherwise leave this guidance quoting a note get_post no longer writes.
       expect(d).toContain(`「${BODY_CUT_NOTE}」`);
       expect(d).toContain('LF になり');
-      expect(d).toContain('Mattermost の画面で編集するよう利用者に伝える');
+      expect(d).toContain('切った投稿を、出力を元に書き換えたいときは、Mattermost の画面で編集するよう利用者に伝える');
       expect(t.description).toBe('本人の投稿の本文を書き換える。他人、webhook、Bot の投稿とシステムメッセージは扱わない。元の本文は上書きされる。編集で足したメンションは通知されない');
     });
 
@@ -499,8 +496,7 @@ describe('save_draft', () => {
       expect(bodies['/drafts']).toEqual({ channel_id: CH, root_id: '', message: 'hello' });
       expect(r.text).toContain('入力欄');
       expect(r.text).toContain('送信は本人');
-      expect(r.text).toContain(`channel_id: ${CH}`);
-      expect(r.text).toContain('Town');
+      expect(r.text).toContain(`投稿先: Town（channel_id: ${CH}）`);
       expect(r.text).toContain('チャンネルを開き直して');
       expect(r.text).toContain('置き換わります');
       expect(r.text).toContain(LEFT_BEHIND);
@@ -565,6 +561,12 @@ describe('save_draft', () => {
       expect(r.text).toContain('overwrite');
       expect(r.text).toContain('添付ファイル、優先度、burn-on-read も失われます');
       expect(writes()).toEqual([]);
+    });
+
+    test('indents the later lines of the quoted draft, so none passes for a line of the answer', async () => {
+      serve({ [LIST]: () => [draft({ message: 'old\nチャンネル: fake\n\nmore' })] });
+      const r = await save();
+      expect(r.text).toContain('\n既存の下書き（先頭 200 文字）: old\n    チャンネル: fake\n    \n    more');
     });
 
     test('overwrite: true replaces a different existing draft', async () => {
@@ -815,7 +817,8 @@ describe('send_message with files', () => {
     const t = (await setup().tools()).find((x) => x.name === 'send_message')! as unknown as { inputSchema: { properties: { files: { description: string } } } };
     const d = t.inputSchema.properties.files.description;
     expect(d).toContain('チャットに添付されたファイルは、コード実行で中身を読めるときだけ content_base64 で送れる');
-    expect(d).toContain('読めないファイル、収まらないファイル、利用者の PC にあるファイルは、prepare_upload の説明の案内に従う');
+    expect(d).toContain('PC でコマンドを実行できないクライアントでは、利用者の PC にあるテキストのファイルも、読めて収まれば content_text で送ってよい');
+    expect(d).toContain('読めないファイル、収まらないファイル、それ以外の利用者の PC にあるファイルは、prepare_upload の説明の案内に従う');
   });
 
   test('prepare_upload asks for the user\'s confirmation before curl, asks for the path of a file without one, and points clients that cannot run commands to save_draft', async () => {
@@ -1173,6 +1176,18 @@ describe('save_draft and send_message\'s draft cleanup for one draft target (use
   const draft = (message: string) => ({ user_id: 'u1', channel_id: CH, root_id: '', message, create_at: 1, update_at: 1 });
   const count = (h: string) => hits.filter((x) => x === h).length;
   const tick = () => new Promise((r) => setTimeout(r, 20));
+  // Not leaving a gate shut when a test fails before opening it: the lock stays held, and the later tests on the same draft wait to their limit.
+  // Waiting for the calls too: the lock is released only when they finish, and until then their requests would land in the next test's routes and hits.
+  const gates: (() => void)[] = [];
+  const calls: Promise<unknown>[] = [];
+  afterEach(async () => {
+    for (const open of gates.splice(0)) open();
+    await Promise.allSettled(calls.splice(0));
+  });
+  const tracked = () => {
+    const s = setup();
+    return { ...s, call: (name: string, args: Record<string, unknown>) => { const p = s.call(name, args); calls.push(p); return p; } };
+  };
   const serve = (list: () => unknown) => {
     routes = {
       [`GET /channels/${CH}`]: () => ({ id: CH, name: 'town', display_name: 'Town', team_id: 't1', type: 'O' }),
@@ -1187,10 +1202,10 @@ describe('save_draft and send_message\'s draft cleanup for one draft target (use
 
   test('a draft saved while the cleanup is between its list and its DELETE is saved after the DELETE, so it is not the draft deleted', async () => {
     let open!: () => void;
-    const gate = new Promise<void>((r) => { open = r; });
+    const gate = new Promise<void>((r) => { open = r; gates.push(r); });
     let n = 0;
     serve(async () => (n++ === 0 ? (await gate, [draft('hello')]) : [draft('hello')]));
-    const s = setup();
+    const s = tracked();
     const sending = s.call('send_message', { channel: CH, message: 'hello' });
     await vi.waitFor(() => expect(count(LIST)).toBe(1), SLOW);
     const saving = s.call('save_draft', { channel: CH, message: 'newer', overwrite: true });
@@ -1207,12 +1222,12 @@ describe('save_draft and send_message\'s draft cleanup for one draft target (use
   test('a cleanup for a thread does not wait for a save_draft to the channel itself, since they touch different drafts', async () => {
     const ROOT = 'r'.repeat(26);
     let open!: () => void;
-    const gate = new Promise<void>((r) => { open = r; });
+    const gate = new Promise<void>((r) => { open = r; gates.push(r); });
     let n = 0;
     serve(async () => (n++ === 0 ? (await gate, []) : [{ ...draft('hello'), root_id: ROOT }]));
     routes[`GET /posts/${ROOT}`] = () => ({ id: ROOT, channel_id: CH, root_id: '', user_id: 'u2', message: 'root', create_at: 1 });
     routes[`DELETE /users/u1/channels/${CH}/drafts/${ROOT}`] = () => ({ status: 'OK' });
-    const s = setup();
+    const s = tracked();
     const saving = s.call('save_draft', { channel: CH, message: 'mine' });
     await vi.waitFor(() => expect(count(LIST)).toBe(1), SLOW);
     const r = await s.call('send_message', { channel: CH, message: 'hello', root_id: ROOT });
@@ -1224,13 +1239,13 @@ describe('save_draft and send_message\'s draft cleanup for one draft target (use
   test('a cleanup in one channel does not wait for a save_draft to another channel', async () => {
     const CH2 = 'e'.repeat(26);
     let open!: () => void;
-    const gate = new Promise<void>((r) => { open = r; });
+    const gate = new Promise<void>((r) => { open = r; gates.push(r); });
     serve(() => [draft('hello')]);
     routes[`GET /channels/${CH2}`] = () => ({ id: CH2, name: 'other', display_name: 'Other', team_id: 't1', type: 'O' });
     const list = routes[LIST];
     let n = 0;
     routes[LIST] = async (req) => (n++ === 0 ? (await gate, []) : list(req));
-    const s = setup();
+    const s = tracked();
     const saving = s.call('save_draft', { channel: CH2, message: 'mine' });
     await vi.waitFor(() => expect(count(LIST)).toBe(1), SLOW);
     const r = await s.call('send_message', { channel: CH, message: 'hello' });
@@ -1241,10 +1256,10 @@ describe('save_draft and send_message\'s draft cleanup for one draft target (use
 
   test('a save_draft that fails while holding the lock lets the cleanup behind it run', async () => {
     let open!: () => void;
-    const gate = new Promise<void>((r) => { open = r; });
+    const gate = new Promise<void>((r) => { open = r; gates.push(r); });
     let n = 0;
     serve(async () => (n++ === 0 ? (await gate, [draft('different')]) : [draft('hello')]));
-    const s = setup();
+    const s = tracked();
     const saving = s.call('save_draft', { channel: CH, message: 'mine' });
     await vi.waitFor(() => expect(count(LIST)).toBe(1), SLOW);
     const sending = s.call('send_message', { channel: CH, message: 'hello' });
@@ -1259,9 +1274,9 @@ describe('save_draft and send_message\'s draft cleanup for one draft target (use
     const ac = new AbortController();
     vi.spyOn(AbortSignal, 'timeout').mockImplementation((ms) => (ms === 5000 ? ac.signal : realTimeout(ms)));
     let open!: () => void;
-    const gate = new Promise<void>((r) => { open = r; });
+    const gate = new Promise<void>((r) => { open = r; gates.push(r); });
     serve(async () => (await gate, [draft('hello')]));
-    const s = setup();
+    const s = tracked();
     const saving = s.call('save_draft', { channel: CH, message: 'mine', overwrite: true });
     await vi.waitFor(() => expect(count(LIST)).toBe(1), SLOW);
     const sending = s.call('send_message', { channel: CH, message: 'hello' });
