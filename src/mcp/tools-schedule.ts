@@ -1,7 +1,7 @@
 import type { McpServer, ToolCallback } from '@modelcontextprotocol/sdk/server/mcp.js';
-import { CallAborted } from '../mattermost/client.ts';
 import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
 import { z } from 'zod';
+import { CallAborted } from '../mattermost/client.ts';
 import { FileHeld, MAX_PENDING_SCHEDULED, type Scheduled, type ScheduledStatus, type Store } from '../store.ts';
 import { idArg, strictArgs } from './args.ts';
 import { encodeCursor, formatTime, indented, InputError, oneLine, truncate, unformat } from './format.ts';
@@ -115,7 +115,9 @@ export async function listScheduledMessages(mm: Mm, store: Store, uid: string, b
       let name: string | undefined;
       try {
         name = ch && (await teamNameOf(mm, uid, ch.team_id));
-      } catch {}
+      } catch (e) {
+        if (e instanceof CallAborted) throw e;
+      }
       // Not building a permalink from an empty team name: /<team>/pl/<id> needs one, and //pl/ opens nothing.
       teams.set(id, name || undefined);
     }
