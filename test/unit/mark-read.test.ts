@@ -167,6 +167,8 @@ describe('mark_as_read for channels', () => {
     const r = await setup().call({ channels: [{ channel: CH, last_post_id: LAST }] });
     expect(r.isError).toBe(true);
     expect(r.text).toContain(`last_post_id ${LAST} の投稿が見つかりません（削除されたか、見る権限がありません）。read_channel で読み直して`);
+    if (status === 403) expect(r.text).toContain('この投稿のチャンネルに参加しているはずなら、Mattermost の一時的な障害の可能性があります。少し待ってから再試行してください。');
+    else expect(r.text).not.toContain('再試行');
   });
 
   test('keeps a channel\'s display name with a line break on one line in the result', async () => {
@@ -206,6 +208,7 @@ describe('mark_as_read for channels', () => {
     routes = { ...base(), [`GET /channels/${CH}/members/me`]: mmError(403, 'api.context.permissions.app_error') };
     const r = await setup().call({ channels: [{ channel: CH }] });
     expect(r.text).toContain('このチャンネルに参加しているかを確かめられませんでした（参加していないか、Mattermost の一時的な障害）。参加しているはずなら、少し待ってから再試行してください。');
+    expect(r.text).toContain('続くなら、チャンネルから外されたか、サーバーの権限の設定で読む権限が外されている可能性があるので、管理者に確かめてください。');
     expect(r.text).not.toContain('参加していません');
   });
 
@@ -492,6 +495,9 @@ describe('mark_as_read for threads', () => {
     routes = threads({ [`GET /posts/${id(5)}`]: mmError(404, 'app.post.get.app_error') });
     const r = await setup().call({ threads: [{ post_id: ROOT, last_post_id: id(5) }] });
     expect(r.text).toContain('read_thread で読み直して');
+    expect(r.text).not.toContain('再試行');
+    routes = threads({ [`GET /posts/${id(5)}`]: mmError(403, 'api.context.permissions.app_error') });
+    expect((await setup().call({ threads: [{ post_id: ROOT, last_post_id: id(5) }] })).text).toContain('この投稿のチャンネルに参加しているはずなら、Mattermost の一時的な障害の可能性があります。少し待ってから再試行してください。');
   });
 
   test('points to follow_thread for a thread with replies the user does not follow', async () => {
@@ -528,7 +534,7 @@ describe('mark_as_read for threads', () => {
       const r = await setup().call({ threads: [{ post_id: postId }] });
       expect(r.text, postId).toContain(status === 404
         ? 'このスレッドのチャンネルに参加していません。参加していないチャンネルのスレッドは未読に数えられないので、既読にするものがありません。'
-        : 'このスレッドのチャンネルに参加しているかを確かめられませんでした（参加していないか、Mattermost の一時的な障害）。参加していないなら、既読にするものはありません。参加しているはずなら、少し待ってから再試行してください。');
+        : 'このスレッドのチャンネルに参加しているかを確かめられませんでした（参加していないか、Mattermost の一時的な障害）。参加していないなら、既読にするものはありません。参加しているはずなら、少し待ってから再試行してください。続くなら、チャンネルから外されたか、サーバーの権限の設定で読む権限が外されている可能性があるので、管理者に確かめてください。');
       expect(r.text, postId).not.toContain('follow_thread');
     }
   });
