@@ -301,7 +301,9 @@ describe('mark_as_read for threads', () => {
     const r = await setup().call({ threads: [{ post_id: ROOT }] });
     expect(r.text).toContain('すでに既読です。');
     expect(puts()).toEqual([`PUT /users/u1/teams/${TEAM}/threads/${ROOT}/read/1011`]);
+    hits = [];
     expect((await setup().call({ threads: [{ post_id: ROOT, last_post_id: id(5) }] })).text).toContain('last_post_id までは既読です。');
+    expect(puts()).toEqual([`PUT /users/u1/teams/${TEAM}/threads/${ROOT}/read/1011`]);
   });
 
   test('writes one millisecond further when a mention is left with no unread reply after marking, so a mention on a reply at the position is cleared', async () => {
