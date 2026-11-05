@@ -426,6 +426,7 @@ describe('an unexpected error fails only that schedule', () => {
     const fine = s.make({ message: 'fine' });
     await s.run();
     expect(s.row(sentBroken)).toMatchObject({ status: 'failed', error: UNKNOWN });
+    expect(s.row(sentBroken).first_attempt_at).not.toBeNull();
     expect(s.row(sealed)).toMatchObject({ status: 'failed', error: '本文を復号できないため投稿していません。予約を入れ直してください。' });
     expect(s.row(fine)).toMatchObject({ status: 'posted' });
   });
