@@ -10,7 +10,8 @@ export type Posting =
   | { kind: 'retryable'; sent: boolean; error: unknown }
   | { kind: 'failed'; reason: string; error: unknown };
 
-type PostList = { order: string[]; posts: Record<string, MmPost & { delete_at?: number; edit_at?: number }> };
+type ListedPost = MmPost & { delete_at?: number; edit_at?: number; metadata?: { redacted_file_count?: number } };
+type PostList = { order: string[]; posts: Record<string, ListedPost> };
 
 // Not taking a claim or a lookup here: send_message uploads files between its lookup and its post, and the scheduler keys retries on its own row.
 export async function postOnce(mm: Mm, uid: string, s: PostSpec & { fileIds: string[] }, pendingPostId: string): Promise<Posting> {
@@ -20,7 +21,7 @@ export async function postOnce(mm: Mm, uid: string, s: PostSpec & { fileIds: str
     pending_post_id: pendingPostId,
   };
   try {
-    // Not in MmPost: only the create response is read for it, and Mattermost leaves it out when nothing was hidden.
+    // Not in MmPost: only this module reads it, and Mattermost leaves it out when nothing was hidden.
     const post = await mm.call<MmPost & { metadata?: { redacted_file_count?: number } }>(uid, 'POST', '/posts', body);
     return { kind: 'posted', postId: post.id, fileCount: post.file_ids?.length ?? 0, fileIds: post.file_ids ?? [], redactedFileCount: post.metadata?.redacted_file_count ?? 0 };
   } catch (e) {
@@ -47,7 +48,12 @@ export async function lookPosted(mm: Mm, uid: string, s: PostSpec & { fileCount:
   const r = await mm.call<PostList>(uid, 'GET', `/channels/${s.channelId}/posts?since=${since - 1}`);
   const mine = Object.values(r.posts).filter((p) => p.user_id === uid && (p.root_id || '') === (s.rootId || '') && p.create_at >= since);
   const same = mine.filter((p) => !p.delete_at && p.message === s.message);
-  const filesMatch = (p: MmPost) => (p.file_ids?.length ?? 0) === s.fileCount && (s.fileIds ?? []).every((id) => p.file_ids?.includes(id));
+  // Not giving up on a post whose files Mattermost hid (ABAC denies the user the download): it empties file_ids and counts the attached files, so only the count can be matched.
+  const filesMatch = (p: ListedPost) => {
+    const hidden = p.metadata?.redacted_file_count ?? 0;
+    if (hidden && !p.file_ids?.length) return hidden === s.fileCount;
+    return (p.file_ids?.length ?? 0) === s.fileCount && (s.fileIds ?? []).every((id) => p.file_ids?.includes(id));
+  };
   return {
     found: same.filter(filesMatch).map((p) => p.id),
     deleted: mine.filter((p) => p.delete_at).map((p) => p.id),
