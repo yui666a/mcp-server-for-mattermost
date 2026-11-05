@@ -1364,6 +1364,7 @@ describe('get_file', () => {
       expect(content()).toBe(shown);
       expect(out).toContain(encoding as string);
       expect(out).toContain('先頭の 2 文字だけを返しました');
+      expect(out).not.toContain('末尾に不完全な文字');
     });
 
     const GUESSED = '文字コードは中身から推定しました。文字化けしているなら、Shift_JIS、EUC-JP、Latin-1 など別の文字コードかもしれません。';
@@ -1383,6 +1384,7 @@ describe('get_file', () => {
       expect(content()).toBe(s);
       expect(out).toContain(`文字コード: ${encoding}`);
       expect(out).toContain(GUESSED);
+      expect(out).not.toContain('末尾に不完全な文字');
     });
 
     test.each([
@@ -1438,6 +1440,7 @@ describe('get_file', () => {
     test.each([
       ['a 500 with a Mattermost JSON error', mmError(500, 'api.file.get_file_info.app_error')],
       ['a 502', () => new Response('bad gateway', { status: 502 })],
+      ['a 503', () => new Response('unavailable', { status: 503 })],
       ['a 504', () => new Response('gateway timeout', { status: 504 })],
     ])('%s while fetching the content stays an error', async (_, route) => {
       routes = { [INFO]: textInfo('a.txt', 5), [FILE]: route };
