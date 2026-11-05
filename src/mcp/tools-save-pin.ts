@@ -1,7 +1,7 @@
 import type { McpServer, ToolCallback } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
 import { idArg } from './args.ts';
-import { ASK_ADMIN, POST_FORBIDDEN, RETRY, RETRY_SOON } from './format.ts';
+import { ASK_ADMIN, POST_FORBIDDEN, RETRY_SOON } from './format.ts';
 import type { Mm } from './resolve.ts';
 import { guarded, text, type ToolContext } from './server.ts';
 import { worded, type Wording } from './tools-send.ts';
@@ -45,7 +45,7 @@ const pinWording: Wording = {
     [400, 'api.post.patch_post.can_not_update_post_in_deleted.error', 'アーカイブ済みのチャンネルの投稿のピン留めは変えられません。'],
     [400, 'api.post.update_post.permissions_time_limit.app_error', 'このサーバーでは、投稿から時間が経った投稿のピン留めは変えられません（編集の期限の設定による）。'],
   ],
-  status: [[403, `この投稿のピン留めを変えられません（見られない投稿か、削除された投稿）。${RETRY}${ASK_ADMIN}`]],
+  status: [[403, `この投稿のピン留めを変えられません（投稿を確かめた直後に削除されたか、見る権限が無くなったか、Mattermost の一時的な障害）。削除されたなら、変えるものはありません。${RETRY_SOON}${ASK_ADMIN}`]],
 };
 
 async function setPinned(mm: Mm, uid: string, args: Args, pinned: boolean): Promise<CallToolResult> {
