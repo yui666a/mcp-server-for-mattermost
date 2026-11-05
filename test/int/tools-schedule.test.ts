@@ -141,6 +141,7 @@ describe('scheduled messages against the local Mattermost', () => {
     const r = await call('schedule_message', { channel: channel.id, message, at: inTwoMinutes(), files: [{ name: 'a.txt', content_text: 'hello' }] });
     expect(r.isError).toBe(true);
     expect(r.content[0].text).toContain('受けない引数です: files');
+    expect(r.content[0].text).toContain('今すぐ送るなら send_message の files を');
     expect(r.content[0].text).toContain('file_ids');
     expect((await call('list_scheduled_messages', {})).content[0].text).not.toContain(message);
   });
@@ -151,6 +152,7 @@ describe('scheduled messages against the local Mattermost', () => {
     const r = await call('update_scheduled_message', { id, message: `${TAG} changed`, file_ids: ['a'.repeat(26)] });
     expect(r.isError).toBe(true);
     expect(r.content[0].text).toContain('受けない引数です: file_ids');
+    expect(r.content[0].text).toContain('投稿先と添付は変えられません');
     expect(r.content[0].text).toContain('cancel_scheduled_message');
     expect(await rowOf(id)).toContain(message);
     expect((await call('cancel_scheduled_message', { id })).isError).toBeFalsy();
