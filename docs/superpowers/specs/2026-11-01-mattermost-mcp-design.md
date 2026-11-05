@@ -294,6 +294,7 @@ MCP サーバー自身は管理者トークンや Bot アカウントを持た�
     - ユーザーは `POST /users/usernames` で 1 回で引き、見つからない名前を並べてエラーにする
     - グループ DM は、自分を含むメンバーの ID を並べ替えて連結した sha1（Mattermost の `GetGroupNameFromUserIds` と同じ）を名前として引く。`POST /channels/group` は無ければ作るため、読み取りでは使わない
     - 出力の投稿先には、自分以外のメンバーを `@a, @b` と並べる
+- チャンネル ID で指定した DM とグループ DM も、出力の名前を `@ユーザー名` と `@a, @b`（自分以外を並べ替える）にそろえる。Mattermost は DM の表示名を空にし、グループ DM の表示名には自分を含む作成時の名前を並べるため。名前の取得（1 回）が Mattermost のエラーか障害（応答なし、中断、5xx）で失敗したら、Mattermost の表示名のまま続ける（再認可とレート制限は投げる）。出力のためだけの取得で、ツールそのものを失敗させないため。自分を含まない DM（管理者が他人の DM を読むなど）と、自分以外がいないグループ DM も、Mattermost の表示名のまま
 - チャンネルの指定のチーム名とチャンネル名は小文字に直して引く。Mattermost の名前は小文字だけで、大文字を含むと 400 で断られるため。エラー文には利用者が書いた形を出す
 - `@ユーザー名` の DM と `@a,b` のグループ DM が無いとき、書き込み系のツールのうち `send_message`、`save_draft`、`prepare_upload`、`schedule_message` だけが作る（`POST /channels/direct`、`POST /channels/group`）。読み取り系のツールと `mark_as_read` は作らない。利用者が開いていない DM を、読んだだけで残さないため
   - `prepare_upload` で作るのは、アップロードしたファイルが投稿先の `channel_id` に結び付くため
