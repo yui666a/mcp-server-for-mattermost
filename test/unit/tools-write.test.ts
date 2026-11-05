@@ -960,6 +960,7 @@ describe('a root_id in another channel than the DM or group DM it is sent to', (
       [`GET /teams/t1/channels/name/${CAROL}__u1`]: () => ({ id: DM, name: `${CAROL}__u1`, display_name: '', team_id: '', type: 'D' }),
       [`GET /teams/t1/channels/name/${GM_NAME}`]: () => ({ id: GM, name: GM_NAME, display_name: 'carol, dave, me', team_id: '', type: 'G' }),
       'GET /users/me/preferences/advanced_settings/name/sync_drafts': mmError(400, 'app.preference.get.app_error'),
+      'GET /users/u1/teams/t1/drafts': () => [],
       [`GET /posts/${ROOT}`]: () => ({ id: ROOT, channel_id: 'o'.repeat(26), root_id: '', user_id: 'u2', message: 'root', create_at: 1 }),
     };
     const r = await setup().call(tool, { channel, message: 'hi', root_id: ROOT });
