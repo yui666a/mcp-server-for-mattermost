@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto';
 import { describe, expect, onTestFinished, test } from 'vitest';
 import { MmError, RateLimited, Reauthorize, UpstreamUnavailable } from '../../src/mattermost/client.ts';
 import { InputError } from '../../src/mcp/format.ts';
-import { Ambiguous, ChannelFetchError, NoDirectChannel, resolveChannel, resolveUser, type Mm } from '../../src/mcp/resolve.ts';
+import { Ambiguous, ChannelFetchError, NoDirectChannel, resolveChannel, resolveUser, unformat, type Mm } from '../../src/mcp/resolve.ts';
 
 const ME = 'a'.repeat(26);
 const BOB = 'b'.repeat(26);
@@ -260,7 +260,7 @@ describe('names are looked up in lower case, which is all Mattermost allows', ()
     const { mm, calls } = fake(routes);
     expect(await resolveChannel(mm, ME, 'Only-A')).toMatchObject({ id: CH_A, teamName: 'team-a' });
     expect(calls).toContain(`GET /teams/${teams[0].id}/channels/name/only-a`);
-    await expect(resolveChannel(mm, ME, 'NoWhere')).rejects.toThrow(new InputError('チャンネル「NoWhere」が見つかりません。'));
+    await expect(resolveChannel(mm, ME, 'NoWhere')).rejects.toThrow(new InputError('チャンネル「NoWhere」が見つかりません。名前の誤りなら search_channels で確かめてください。参加していない非公開チャンネルとアーカイブ済みのチャンネルは名前では見つかりません（アーカイブ済みのチャンネルは書き込めませんが、読むだけなら利用者に ID を確かめて ID で指定できます）。参加しているはずなら、Mattermost の一時的な障害の可能性があります。少し待ってから再試行してください。続くなら、チャンネルから外されたか、サーバーの権限の設定で読む権限が外されている可能性があるので、管理者に確かめてください。'));
     const e = await resolveChannel(mm, ME, 'General-Dup').catch((x) => x);
     expect(e).toBeInstanceOf(Ambiguous);
     expect(e.message).toContain('「General-Dup」に当たるチャンネルが複数あります。');
@@ -353,8 +353,13 @@ describe('format characters before or after a spec are removed, as they slip in 
 
   test('an error shows the spec without them', async () => {
     const e = await resolveChannel(fake(routes).mm, ME, '\u200bnowhere').catch((x) => x);
-    expect(e.message).toBe('チャンネル「nowhere」が見つかりません。');
+    expect(e.message).toBe('チャンネル「nowhere」が見つかりません。名前の誤りなら search_channels で確かめてください。参加していない非公開チャンネルとアーカイブ済みのチャンネルは名前では見つかりません（アーカイブ済みのチャンネルは書き込めませんが、読むだけなら利用者に ID を確かめて ID で指定できます）。参加しているはずなら、Mattermost の一時的な障害の可能性があります。少し待ってから再試行してください。続くなら、チャンネルから外されたか、サーバーの権限の設定で読む権限が外されている可能性があるので、管理者に確かめてください。');
   });
+});
+
+test.each(['bad\nname', 'bad\u2028name'])('a name with a line break in its middle is named on one line in the error: %j', async (spec) => {
+  const e = await resolveChannel(fake(routes).mm, ME, spec).catch((x) => x);
+  expect(e.message).toBe('チャンネル名「bad name」は Mattermost の名前として使えない文字を含みます。');
 });
 
 test('every form of channel spec also returns the fetched channel as raw', async () => {
@@ -576,5 +581,31 @@ describe('@a,b group DM', () => {
     await expect(resolveChannel(refuse(400, 'api.channel.create_group.bad_user.app_error'), ME, '@bob,dave', { create: true }))
       .rejects.toThrow('グループ DM に加えられないユーザーが含まれています。');
     await expect(resolveChannel(refuse(500, 'x'), ME, '@bob,dave', { create: true })).rejects.toMatchObject({ status: 500 });
+  });
+});
+
+describe('unformat', () => {
+  test.each([
+    ['spaces and line breaks', ' \t\n@alice \n', '@alice'],
+    ['format characters (Cf) and BOM', '\u200b\ufeff@alice\u200d\u2060', '@alice'],
+    ['a Cf character outside the BMP (a surrogate pair)', '\u{E0001}@alice\u{E0001}\u{E007F}', '@alice'],
+    ['ideographic spaces', '\u3000town\u3000', 'town'],
+  ])('removes %s from both ends only', (_, input, want) => {
+    expect(unformat(input)).toBe(want);
+    expect(unformat(`a${input}b`)).toBe(`a${input}b`);
+  });
+
+  test('keeps a lone surrogate and an emoji at the end, and turns spaces only into an empty string', () => {
+    expect(unformat('a\uDC00')).toBe('a\uDC00');
+    expect(unformat(' \uD83D\uDE00 ')).toBe('\uD83D\uDE00');
+    expect(unformat(' \u200b ')).toBe('');
+  });
+
+  test('takes time linear in the length, even for a long run of spaces followed by other text', () => {
+    const long = `a${' '.repeat(200_000)}b${' '.repeat(200_000)}`;
+    const started = performance.now();
+    expect(unformat(long)).toBe(`a${' '.repeat(200_000)}b`);
+    // Not a tight limit: the quadratic regex took over ten seconds here, so a loaded machine still tells them apart.
+    expect(performance.now() - started).toBeLessThan(1000);
   });
 });

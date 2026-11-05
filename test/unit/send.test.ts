@@ -6,7 +6,7 @@ import type { MmPost } from '../../src/mcp/format.ts';
 import type { Mm } from '../../src/mcp/resolve.ts';
 import { checkRoot, sendMessage } from '../../src/mcp/tools-send.ts';
 import { INFLIGHT_GRACE, Store } from '../../src/store.ts';
-import { freezeCleanupClock, SLOW, SLOW_TEST } from './helpers.ts';
+import { freezeCleanupClock, freezeCleanupDeadline, SLOW, SLOW_TEST } from './helpers.ts';
 
 const UID = 'u'.repeat(26);
 const CH = 'c'.repeat(26);
@@ -71,9 +71,11 @@ function fakeMm(opts: FakeOpts = {}) {
         await opts.onUpload?.(n);
         const mode = opts.failUpload?.(n);
         if (mode === 'before') throw new RateLimited(5, false);
+        if (mode === 'relogin') throw new Reauthorize(false);
         uploads.push({ query: new URLSearchParams(path.split('?')[1]), type: (body as Blob).type, bytes: new Uint8Array(await (body as Blob).arrayBuffer()) });
         if (mode === 'reject') throw new MmError(400, 'api.file.upload_file.large_image_detailed.app_error', 'too big');
         if (mode === 'lost') throw new UpstreamUnavailable('Mattermost unreachable', true);
+        if (mode === 'rate429doubt') throw new RateLimited(5, false, true);
         return { file_infos: [{ id: `f${String(n).padStart(25, '0')}` }] };
       }
       if (method === 'POST' && p === '/posts') {
@@ -504,7 +506,10 @@ describe('send_message with files', () => {
   test.each([
     ['refused (4xx)', 'reject'],
     ['rate limited before sending', 'before'],
-  ] as const)('an upload %s drops the claim and does not post, so sending again uploads and posts', async (_, mode) => {
+    ['rate limited after a request of the call may have gone through', 'rate429doubt'],
+    ['whose response was lost', 'lost'],
+    ['that needs a re-login', 'relogin'],
+  ] as const)('an upload %s drops the claim and does not post, so sending again right away uploads and posts', async (_, mode) => {
     let first = true;
     const f = fakeMm({ failUpload: () => (first ? ((first = false), mode) : undefined) });
     const args = { channel: 'team-a/dup', message: 'up', files: [txt('a.txt', 'x')] };
@@ -514,13 +519,20 @@ describe('send_message with files', () => {
     expect(f.created).toHaveLength(1);
   });
 
-  test('a lost upload response keeps the claim, so an immediate resend is reported as in progress', async () => {
-    let first = true;
-    const f = fakeMm({ failUpload: () => (first ? ((first = false), 'lost') : undefined) });
+  test('a retry whose lookup finds nothing and whose upload then fails drops the claim, so sending again right away posts', async () => {
+    let post = 0;
+    let upload = 0;
+    const f = fakeMm({
+      failPost: () => (post++ === 0 ? 'lost' : undefined),
+      failUpload: () => (upload++ === 1 ? 'rate429doubt' : undefined),
+    });
     const args = { channel: 'team-a/dup', message: 'up', files: [txt('a.txt', 'x')] };
     await expect(f.send(args)).rejects.toBeInstanceOf(UpstreamUnavailable);
-    expect(textOf(await f.send(args))).toContain('処理中');
-    expect(f.created).toHaveLength(0);
+    f.advance(31_000);
+    await expect(f.send(args)).rejects.toBeInstanceOf(RateLimited);
+    expect(f.created).toHaveLength(1);
+    expect((await f.send(args)).isError).toBeFalsy();
+    expect(f.created).toHaveLength(2);
   });
 
   test('says so when Mattermost silently dropped some of the uploaded files from the post', async () => {
@@ -610,6 +622,21 @@ describe('send_message with file_ids from prepare_upload', () => {
     const r = await f.send({ channel: 'team-a/dup', message: 'hidden', file_ids: [F1, F2] });
     expect(textOf(r)).toContain('既にあったため');
     expect(f.created).toHaveLength(1);
+  });
+
+  test('a retry whose resend gets Mattermost\'s answer for the same pending_post_id counts the files that answer shows, which Mattermost does not hide', async () => {
+    let first = true;
+    const f = fakeMm({ keepFiles: (ids) => ids.slice(0, 1), redact: 1, failPost: () => (first ? ((first = false), 'after') : undefined) });
+    uploaded(f, [F1, F2]);
+    await expect(f.send({ channel: 'team-a/dup', message: 'hidden', file_ids: [F1, F2] })).rejects.toBeInstanceOf(UpstreamUnavailable);
+    f.advance(31_000);
+    const r = await f.send({ channel: 'team-a/dup', message: 'hidden', file_ids: [F1, F2] });
+    expect(textOf(r)).toContain('添付した 2 件のうち 1 件を Mattermost が外したため、投稿に付いていません。');
+    expect(textOf(r)).not.toContain('どれが外れたかは分かりません');
+    expect(f.store.uploadedFiles(UID, [F1, F2]).map((x) => x.postId)).toEqual([id(1), null]);
+    const sent = f.created as { pending_post_id?: string }[];
+    expect(sent).toHaveLength(2);
+    expect(sent[1].pending_post_id).toBe(sent[0].pending_post_id);
   });
 
   test('marks the kept file by identity, not by position, when Mattermost dropped the first one', async () => {
@@ -882,8 +909,7 @@ describe('a draft with the sent message is cleared after the post', () => {
 
   test('waiting for the Limiter stops at the deadline, logged as a timeout', async () => {
     const ac = new AbortController();
-    const realTimeout = AbortSignal.timeout.bind(AbortSignal);
-    vi.spyOn(AbortSignal, 'timeout').mockImplementation((ms) => (ms === 5000 ? ac.signal : realTimeout(ms)));
+    freezeCleanupDeadline(ac.signal);
     const f = fakeMm({ drafts: () => { ac.abort(new DOMException('timed out', 'TimeoutError')); throw new RateLimited(1, false); } });
     const r = await f.send({ channel: 'team-a/dup', message: 'hello' });
     expect(textOf(r)).toContain(FAILED);
@@ -922,8 +948,7 @@ describe('a draft with the sent message is cleared after the post', () => {
 
   test('a cleanup whose client cancels while it waits for the user\'s lock neither calls Mattermost nor logs a failure', async () => {
     // Not the real 5-second deadline: under load it could run out before the client cancels, and log a failure.
-    const realTimeout = AbortSignal.timeout.bind(AbortSignal);
-    vi.spyOn(AbortSignal, 'timeout').mockImplementation((ms) => (ms === 5000 ? new AbortController().signal : realTimeout(ms)));
+    freezeCleanupDeadline();
     let open!: () => void;
     const gate = new Promise<void>((r) => { open = r; });
     const holder = fakeMm({ drafts: async () => (await gate, []) });
