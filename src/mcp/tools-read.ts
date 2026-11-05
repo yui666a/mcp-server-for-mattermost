@@ -191,7 +191,11 @@ function channelError(e: unknown): never {
 }
 
 async function usernames(mm: Mm, uid: string, posts: MmPost[]): Promise<Map<string, string>> {
-  const ids = [...new Set(posts.flatMap(postUserIds))];
+  return usernamesOf(mm, uid, posts.flatMap(postUserIds));
+}
+
+export async function usernamesOf(mm: Mm, uid: string, all: string[]): Promise<Map<string, string>> {
+  const ids = [...new Set(all)];
   const out = new Map<string, string>();
   // In chunks, one after another: 1,000 ids are about 29KB of JSON, well inside Mattermost's MaximumPayloadSizeBytes (300,000 by default),
   // and sequential calls stay inside the per-user concurrency limit.
@@ -980,10 +984,8 @@ export function registerReadTools(server: McpServer, ctx: ToolContext): void {
         const ch = channels.get(id);
         return ch?.type === 'D' ? [other(ch)] : [];
       };
-      const userIds = [...new Set(shown.flatMap((r) => (r.kind === 'thread' ? [...postUserIds(r.th.post), ...dmOf(r.th.post.channel_id)] : dmOf(r.ch.id))))];
-      const users = userIds.length
-        ? new Map((await mm.call<UserRef[]>(uid, 'POST', '/users/ids', userIds)).map((u) => [u.id, u.username]))
-        : new Map<string, string>();
+      const userIds = shown.flatMap((r) => (r.kind === 'thread' ? [...postUserIds(r.th.post), ...dmOf(r.th.post.channel_id)] : dmOf(r.ch.id)));
+      const users = await usernamesOf(mm, uid, userIds);
       const where = (x: MmChannel) => {
         const label = x.type === 'D' ? `@${users.get(other(x)) ?? other(x)}` : x.display_name || x.name;
         const team = teamName.get(x.team_id);

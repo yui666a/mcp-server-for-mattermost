@@ -405,3 +405,16 @@ describe('follow_thread and unfollow_thread', () => {
     }
   });
 });
+
+describe('usernamesOf', () => {
+  test('looks up user ids 1,000 at a time, one call after another, without repeats', async () => {
+    const { usernamesOf } = await import('../../src/mcp/tools-read.ts');
+    const calls: string[][] = [];
+    const mm = { call: async (_u: string, _m: string, _p: string, body?: unknown) => { calls.push(body as string[]); return (body as string[]).map((id) => ({ id, username: `n${id}` })); } };
+    const ids = Array.from({ length: 1001 }, (_, i) => `u${i}`);
+    const names = await usernamesOf(mm as never, 'me', [...ids, 'u0']);
+    expect(calls.map((c) => c.length)).toEqual([1000, 1]);
+    expect(names.get('u1000')).toBe('nu1000');
+    expect(names.size).toBe(1001);
+  });
+});
