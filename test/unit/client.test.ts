@@ -248,6 +248,23 @@ test.each([500, 502, 503, 504])('%i stays UpstreamUnavailable', async (status) =
   expect(await failure(client.call('u1', 'GET', '/users/me'))).toBeInstanceOf(UpstreamUnavailable);
 });
 
+test('marks a 500 as a plain body only when it was read whole as text/plain and is not JSON', async () => {
+  store.putMmCred('u1', 'a1', 'r1');
+  const plain = (body: string, type: string) => () => new Response(body, { status: 500, headers: { 'content-type': type } });
+  for (const [route, want] of [
+    [plain("seeker can't seek\n", 'text/plain; charset=utf-8'), true],
+    [plain("seeker can't seek\n", 'Text/Plain'), true],
+    [() => Response.json({ id: '', message: 'Internal Server Error', status_code: 500 }, { status: 500 }), false],
+    [plain('<html>500</html>', 'text/html'), false],
+    [plain('{"id":"x"}', 'text/plain'), false],
+  ] as const) {
+    api = route;
+    expect(await failure(client.callBytes('u1', '/files/f'))).toMatchObject({ status: 500, plainBody: want });
+  }
+  api = () => mmError(503, 'x');
+  expect((await failure(client.call('u1', 'GET', '/users/me')) as UpstreamUnavailable).plainBody).toBeUndefined();
+});
+
 test('a 5xx UpstreamUnavailable carries its status, and the Mattermost id only for a 500 with a JSON error', async () => {
   store.putMmCred('u1', 'a1', 'r1');
   api = () => mmError(500, 'app.file_info.get.app_error');
