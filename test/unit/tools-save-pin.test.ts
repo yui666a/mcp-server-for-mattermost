@@ -55,7 +55,7 @@ const mmError = (status: number, id: string) => () => Response.json({ id, messag
 const post = (is_pinned = false) => ({ [`GET /posts/${POST}`]: () => ({ id: POST, channel_id: CH, is_pinned }), [`GET /channels/${CH}/members/me`]: () => ({ channel_id: CH, user_id: 'u1' }) });
 const FLAG = [{ user_id: 'u1', category: 'flagged_post', name: POST, value: 'true' }];
 const GONE = '投稿が見つかりません（削除されたか、存在しません）。';
-const HIDDEN = 'この投稿は見られません';
+const HIDDEN = 'この投稿は見られません（参加していない非公開チャンネルの投稿など）。参加しているはずなら、Mattermost の一時的な障害の可能性があります。少し待ってから再試行してください。続くなら、チャンネルから外されたか、サーバーの権限の設定で読む権限が外されている可能性があるので、管理者に確かめてください。';
 const ALL = ['save_post', 'unsave_post', 'pin_post', 'unpin_post'];
 const CHECKED = ['save_post', 'pin_post', 'unpin_post'];
 const WRITE: Record<string, string> = { save_post: 'PUT /users/u1/preferences', pin_post: `POST /posts/${POST}/pin`, unpin_post: `POST /posts/${POST}/unpin` };

@@ -2,7 +2,7 @@ import type { McpServer, ToolCallback } from '@modelcontextprotocol/sdk/server/m
 import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
 import { z } from 'zod';
 import { MmError, UpstreamUnavailable, type MmClient } from '../mattermost/client.ts';
-import { BAD_CURSOR, BODY_CUT_NOTE, BODY_MAX_CHARS, decodeCursor, encodeCursor, fileLine, formatPost, formatTime, graphemeCount, indented, InputError, localTime, oneLine, postTruncated, postUserIds, truncate, type MmFileInfo, type MmPost } from './format.ts';
+import { ASK_ADMIN, BAD_CURSOR, BODY_CUT_NOTE, BODY_MAX_CHARS, decodeCursor, encodeCursor, fileLine, formatPost, formatTime, graphemeCount, indented, InputError, localTime, oneLine, postTruncated, postUserIds, RETRY, RETRY_SOON, truncate, type MmFileInfo, type MmPost } from './format.ts';
 import { pageCursor, paginate } from './paging.ts';
 import { mentionsMe, mentionTerms, type MentionUser } from './mentions.ts';
 import { parsePostRef } from './permalink.ts';
@@ -189,13 +189,10 @@ export function channelLines(c: ChannelRef & { archived?: boolean }): string[] {
   ];
 }
 
-const RETRY = '参加しているはずなら、Mattermost の一時的な障害の可能性があります。少し待ってから再試行してください。';
-const ASK_ADMIN = '続くなら、チャンネルから外されたか、サーバーの権限の設定で読む権限が外されている可能性があるので、管理者に確かめてください。';
-
 // For a post fetched by id: get_post and read_thread word its 403 and 404 alike.
 function postError(e: unknown): never {
   if (e instanceof MmError && e.status === 403) throw new InputError(`この投稿を見る権限がありません（参加していない非公開チャンネルなど）。${RETRY}${ASK_ADMIN}`);
-  if (e instanceof MmError && e.status === 404) throw new InputError('投稿が見つかりません（削除されたか、存在しません）');
+  if (e instanceof MmError && e.status === 404) throw new InputError('投稿が見つかりません（削除されたか、存在しません）。');
   throw e;
 }
 
@@ -215,7 +212,7 @@ export function channelInline(c: ChannelRef & { archived?: boolean }): string {
 function channelError(e: unknown): never {
   // Not converting a missing team: /teams/name/{team}/channels/name/{channel} answers it with 404 too.
   if (e instanceof ChannelFetchError && e.id !== 'app.team.get_by_name.missing.app_error') {
-    if (e.status === 403) throw new InputError('このチャンネルを見る権限がありません（参加していない非公開チャンネルなど）。参加しているはずなら、Mattermost の一時的な障害の可能性があります。少し待ってから再試行してください。続くなら、チャンネルから外されたか、サーバーの権限の設定で読む権限が外されている可能性があるので、管理者に確かめてください。');
+    if (e.status === 403) throw new InputError(`このチャンネルを見る権限がありません（参加していない非公開チャンネルなど）。${RETRY}${ASK_ADMIN}`);
     if (e.status === 404) throw new InputError(`チャンネルが見つかりません（参加していない非公開チャンネルを名前で指定した場合も、Mattermost はこの結果を返します）。名前や ID の誤りなら search_channels で確かめてください。${RETRY}${ASK_ADMIN}`);
   }
   throw e;
@@ -744,7 +741,7 @@ export function registerReadTools(server: McpServer, ctx: ToolContext): void {
         const me = await mm.call<{ last_viewed_at: number }>(uid, 'GET', `/channels/${ch.id}/members/me`).catch((e) => {
           if (e instanceof MmError && e.status === 404) throw new InputError('このチャンネルに参加していないため、未読の位置がありません。from: "latest" で読んでください。');
           // Not saying the user has not joined on 403: Mattermost refuses a public channel the user has not joined with 403 before the membership lookup, and a passing failure answers 403 too.
-          if (e instanceof MmError && e.status === 403) throw new InputError(`このチャンネルの未読の位置を取得できませんでした（参加していないか、Mattermost の一時的な障害）。参加していないなら from: "latest" で読んでください。参加しているはずなら、少し待ってから再試行してください。${ASK_ADMIN}`);
+          if (e instanceof MmError && e.status === 403) throw new InputError(`このチャンネルの未読の位置を取得できませんでした（参加していないか、Mattermost の一時的な障害）。参加していないなら from: "latest" で読んでください。${RETRY_SOON}${ASK_ADMIN}`);
           throw e;
         });
         // Falling back to newest first rather than walking back to the first post: a channel never opened counts its whole history as unread, with no bound on the walk.
@@ -967,7 +964,7 @@ export function registerReadTools(server: McpServer, ctx: ToolContext): void {
       const q = new URLSearchParams({ in_channel: ch.id, active: 'true', page: String(page), per_page: String(per) });
       // Not rewording the 403 of /users alone: the user may leave the channel before /stats.
       const refused = (e: unknown): never => {
-        if (e instanceof MmError && e.status === 403) throw new InputError('このチャンネルのメンバーを見る権限がありません。参加していないチャンネルのメンバーは、公開チャンネルでも見られません。参加しているはずなら、Mattermost の一時的な障害の可能性があります。少し待ってから再試行してください。続くなら、チャンネルから外されたか、サーバーの権限の設定で読む権限が外されている可能性があるので、管理者に確かめてください。');
+        if (e instanceof MmError && e.status === 403) throw new InputError(`このチャンネルのメンバーを見る権限がありません。参加していないチャンネルのメンバーは、公開チャンネルでも見られません。${RETRY}${ASK_ADMIN}`);
         throw e;
       };
       const users = await mm.call<UserRef[]>(uid, 'GET', `/users?${q}`).catch(refused);
