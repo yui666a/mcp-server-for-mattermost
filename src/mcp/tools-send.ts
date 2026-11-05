@@ -139,6 +139,7 @@ export async function resolveTarget(mm: Mm, store: Store, uid: string, channel: 
 export const heldError = (h: HeldFile) =>
   new InputError(`file_id ${h.fileId} は予約（予約 ID: ${h.scheduledId}）の添付に使われています。投稿を試みる前の待機中の予約なら、cancel_scheduled_message で取り消すと使えます。同じファイルを別に送るときは、prepare_upload からアップロードし直してください。`);
 
+const OWNED_ELSEWHERE = '同じ本文の投稿がありますが、ほかの送信か予約のものとして記録されているため、この送信が投稿されたかは分かりません。read_channel などで確かめ、投稿されていなければ allow_duplicate: true で送り直してください。';
 const INFLIGHT = '同じ投稿を処理中です。少し待ってから read_channel などで投稿されたかを確かめてください。';
 
 export async function sendMessage(mm: Mm, store: Store, uid: string, baseUrl: string, args: Args, client?: AbortSignal): Promise<CallToolResult> {
@@ -186,7 +187,13 @@ export async function sendMessage(mm: Mm, store: Store, uid: string, baseUrl: st
   if (claim.kind === 'inflight') return text(INFLIGHT, true);
   if (claim.kind === 'retry') {
     // Not dropping the claim if this lookup fails: the earlier attempt's outcome is still unknown.
-    const [prev] = await findPosted(mm, uid, { ...spec, fileCount: attached, fileIds }, claim.createdAt);
+    const found = await findPosted(mm, uid, { ...spec, fileCount: attached, fileIds }, claim.createdAt);
+    // Not read before the lookup: a send that completed meanwhile would be missed.
+    const owned = new Set([...store.otherClaimPostIds(uid, claim.id), ...store.otherScheduledPostIds(uid, '')]);
+    const prev = found.find((p) => !owned.has(p));
+    // Not posting when every match is another record's: such a record may hold this send's own earlier post by a mistaken match of its own, and posting again would post it twice.
+    // Not dropping the claim either, for the same reason.
+    if (!prev && found.length) return text(OWNED_ELSEWHERE, true);
     if (prev) {
       store.completePost(claim.id, prev);
       store.markFilesPosted(uid, fileIds, prev);

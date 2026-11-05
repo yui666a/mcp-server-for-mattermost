@@ -188,6 +188,64 @@ test('a re-login that Mattermost only answered with 401 leaves no duplicate-guar
   expect(f.created).toHaveLength(1);
 });
 
+describe('a retry does not take a post another record owns for its own earlier post', () => {
+  const lost = async () => {
+    let first = true;
+    const f = fakeMm({ failPost: () => (first ? ((first = false), 'lost') : undefined) });
+    await expect(f.send({ channel: 'team-a/dup', message: 'hello' })).rejects.toBeInstanceOf(UpstreamUnavailable);
+    return f;
+  };
+  const sameText = (f: ReturnType<typeof fakeMm>, postId: string) => f.posts.push({ id: postId, user_id: UID, channel_id: CH, root_id: '', message: 'hello', create_at: 1_000_001 });
+  const ownedBySend = (f: ReturnType<typeof fakeMm>, postId: string) => {
+    const c = f.store.claimPost({ mmUserId: UID, channelId: CH, bodyHash: 'another send' });
+    if (c.kind !== 'new') throw new Error('claim not new');
+    f.store.completePost(c.id, postId);
+  };
+  const ownedBySchedule = (f: ReturnType<typeof fakeMm>, postId: string) => {
+    const sid = f.store.createScheduled({ mmUserId: UID, channelId: CH, message: 'hello', scheduledAt: 0 }, 0)!;
+    f.store.claimScheduled(sid, 1, 1);
+    f.store.settleScheduled(sid, 1, { status: 'posted', postId, fileIds: [] });
+  };
+
+  test('with another send\'s post first and its own after it, it returns its own and posts nothing', async () => {
+    const f = await lost();
+    sameText(f, id(7));
+    sameText(f, id(8));
+    ownedBySend(f, id(7));
+    f.advance(31_000);
+    const r = await f.send({ channel: 'team-a/dup', message: 'hello' });
+    expect(textOf(r)).toContain(`post_id: ${id(8)}`);
+    expect(f.created).toHaveLength(1);
+  });
+
+  test.each([
+    ['another send', ownedBySend],
+    ['a schedule', ownedBySchedule],
+  ])('when the only match is owned by %s, it posts nothing and says it cannot tell, pointing to allow_duplicate', async (_, own) => {
+    const f = await lost();
+    sameText(f, id(7));
+    own(f, id(7));
+    f.advance(31_000);
+    const r = await f.send({ channel: 'team-a/dup', message: 'hello' });
+    expect(r.isError).toBe(true);
+    expect(textOf(r)).toContain('この送信が投稿されたかは分かりません');
+    expect(textOf(r)).toContain('allow_duplicate: true');
+    expect(f.created).toHaveLength(1);
+    f.advance(31_000);
+    const again = await f.send({ channel: 'team-a/dup', message: 'hello' });
+    expect(textOf(again)).toContain('この送信が投稿されたかは分かりません');
+    expect(f.created).toHaveLength(1);
+  });
+
+  test('when nothing matches, it posts again with the same pending_post_id', async () => {
+    const f = await lost();
+    f.advance(31_000);
+    await f.send({ channel: 'team-a/dup', message: 'hello' });
+    expect(f.created).toHaveLength(2);
+    expect((f.created[1] as { pending_post_id: string }).pending_post_id).toBe((f.created[0] as { pending_post_id: string }).pending_post_id);
+  });
+});
+
 test('retry after a lost response does not double post', async () => {
   let first = true;
   const f = fakeMm({ failPost: () => (first ? ((first = false), 'after') : undefined) });
