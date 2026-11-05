@@ -3,7 +3,7 @@ import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
 import { z } from 'zod';
 import { randomToken, sha256 } from '../crypto.ts';
 import { log } from '../log.ts';
-import { MmError, RateLimited } from '../mattermost/client.ts';
+import { MmError, RateLimited, Reauthorize } from '../mattermost/client.ts';
 import { MAX_OPEN_UPLOAD_URLS, type HeldFile, type Store } from '../store.ts';
 import { InputError, type MmPost } from './format.ts';
 import { findPosted, postOnce } from './post.ts';
@@ -111,7 +111,7 @@ export const heldError = (h: HeldFile) =>
 
 const INFLIGHT = '同じ投稿を処理中です。少し待ってから read_channel などで投稿されたかを確かめてください。';
 
-export async function sendMessage(mm: Mm, store: Store, uid: string, baseUrl: string, args: Args): Promise<CallToolResult> {
+export async function sendMessage(mm: Mm, store: Store, uid: string, baseUrl: string, args: Args, client?: AbortSignal): Promise<CallToolResult> {
   const files = decodeFiles(args.files ?? []);
   const fileIds = args.file_ids ?? [];
   const ch = await resolveTarget(mm, store, uid, args.channel, args.root_id, fileIds);
@@ -124,7 +124,7 @@ export async function sendMessage(mm: Mm, store: Store, uid: string, baseUrl: st
   const where = `チャンネル: ${ch.displayName || ch.name}（channel_id: ${ch.id}）${rootId ? `、返信先 post_id: ${rootId}` : ''}`;
   // Not only after a fresh post: an earlier attempt's cleanup may have failed, and a resend that did not post can retry it.
   const done = async (postId: string, note: string) => {
-    const cleared = await clearSentDraft(mm, uid, ch, rootId ?? '', args.message);
+    const cleared = await clearSentDraft(mm, uid, ch, rootId ?? '', args.message, client);
     return text([note, ...(cleared ? [cleared] : []), `post_id: ${postId}`, where, `${baseUrl}/${ch.teamName}/pl/${postId}`].join('\n'));
   };
   const spec = { channelId: ch.id, message: args.message, rootId };
@@ -319,7 +319,7 @@ const draftSchema = {
 };
 type DraftArgs = { channel: string; message: string; root_id?: string; overwrite?: boolean };
 type Draft = {
-  channel_id: string; root_id: string; message: string; file_ids?: string[];
+  channel_id: string; root_id: string; message: string; type?: string; file_ids?: string[];
   priority?: { priority?: string; requested_ack?: boolean; persistent_notifications?: boolean };
 };
 const LEFT_BEHIND = 'この下書きと同じ本文を send_message で送ると、投稿の後にこの下書きを消します（画面で添付を付けた場合は消しません）。';
@@ -352,29 +352,69 @@ async function draftsOf(mm: Mm, uid: string, ch: Pick<ChannelRef, 'teamId'>): Pr
 
 const CLEANUP_MS = 5000;
 
+// Not kept on the server or ctx: app.ts builds a server per request, and a lock there would never be shared between two calls.
+// ponytail: one lock per user over all of their drafts; per-target locks if one user's drafts get busy.
+const draftLocks = new Map<string, Promise<void>>();
+
+// Not freeing the place in line when giving up: a later caller would then run alongside the earlier one still holding it.
+async function withDraftLock<T>(uid: string, fn: () => Promise<T>, giveUp?: AbortSignal): Promise<T> {
+  const prev = draftLocks.get(uid) ?? Promise.resolve();
+  let release!: () => void;
+  const tail = prev.then(() => new Promise<void>((r) => { release = r; }));
+  draftLocks.set(uid, tail);
+  try {
+    if (giveUp) {
+      // Not left to the race alone: with the lock free it settles on prev first, and fn would run for a request already given up.
+      giveUp.throwIfAborted();
+      const stop = new Promise<never>((_, reject) => {
+        giveUp.addEventListener('abort', () => reject(giveUp.reason), { once: true });
+      });
+      stop.catch(() => {});
+      await Promise.race([prev, stop]);
+    } else {
+      await prev;
+    }
+    return await fn();
+  } finally {
+    void prev.then(() => {
+      release();
+      if (draftLocks.get(uid) === tail) draftLocks.delete(uid);
+    });
+  }
+}
+
 // Not deleting only when the text still matches: Mattermost has no conditional delete, so an edit saved between the list and the DELETE is lost.
 // Not left running past the deadline: a late DELETE could remove a draft the user rewrote after reading that it was not cleared. A DELETE already sent still completes on Mattermost.
-async function clearSentDraft(mm: Mm, uid: string, ch: ChannelRef, rootId: string, message: string): Promise<string> {
+async function clearSentDraft(mm: Mm, uid: string, ch: ChannelRef, rootId: string, message: string, client?: AbortSignal): Promise<string> {
   const deadline = AbortSignal.timeout(CLEANUP_MS);
   const quick: Mm = { call: (u, m, p, b) => mm.call(u, m, p, b, deadline) };
   try {
-    const d = (await draftsOf(quick, uid, ch))?.find((x) => x.channel_id === ch.id && (x.root_id || '') === rootId && x.message === message);
-    if (!d) return '';
-    if (d.file_ids?.length) return '同じ本文の下書きがありますが、添付ファイルが付いているため消していません。そのまま送ると、同じ本文がもう一度投稿されます。';
-    // Not deleting with sync off: the webapp clears its stored draft on draft_deleted whatever the setting, wiping unsynced text kept only in the browser.
-    if (await syncDraftsOff(quick, uid)) return '同じ本文の下書きがありますが、下書きの同期を切っているため消していません。同期を入れ直すと画面に出るので、送らずに消してください。';
-    await quick.call(uid, 'DELETE', `/users/${uid}/channels/${ch.id}/drafts${rootId ? `/${rootId}` : ''}`);
-    const p = d.priority;
-    return [
-      // Not claiming the input box is empty: an open editor keeps its own copy until the user switches channel or thread.
-      `同じ本文の下書きを消しました。${rootId ? 'そのスレッド' : 'そのチャンネル'}を画面で開いている場合は、入力欄に本文が残っているので、送らずに消してください。`,
-      ...(p?.priority || p?.requested_ack || p?.persistent_notifications ? ['下書きに付いていた優先度は、この投稿には付いていません。'] : []),
-    ].join('\n');
+    return await withDraftLock(uid, () => clearLocked(quick, uid, ch, rootId, message), client ? AbortSignal.any([deadline, client]) : deadline);
   } catch (e) {
     if (e instanceof MmError && e.status === 501 && e.id === DISABLED[1]) return '';
-    log('draft_cleanup_failed', { mm_user_id: uid, name: (e as Error)?.name, ...(e instanceof MmError ? { status: e.status, id: e.id } : {}) });
+    // Not logged when the client gave up: the request was cancelled, not the cleanup broken.
+    if (client?.aborted) return '';
+    log('draft_cleanup_failed', { mm_user_id: uid, channel_id: ch.id, name: (e as Error)?.name, ...(e instanceof MmError ? { status: e.status, id: e.id } : {}) });
+    if (e instanceof Reauthorize) return '投稿の後で Mattermost への再ログインが必要になったため、同じ本文の下書きを確かめられませんでした。コネクタを再接続してください。下書きが残っていれば、そのまま送ると同じ投稿が 2 回になります。';
     return '同じ本文の下書きを確かめられなかったか、消せませんでした。下書きが残っていれば、そのまま送ると同じ投稿が 2 回になります。';
   }
+}
+
+async function clearLocked(quick: Mm, uid: string, ch: ChannelRef, rootId: string, message: string): Promise<string> {
+  const d = (await draftsOf(quick, uid, ch))?.find((x) => x.channel_id === ch.id && (x.root_id || '') === rootId && x.message === message);
+  if (!d) return '';
+  if (d.file_ids?.length) return '同じ本文の下書きがありますが、添付ファイルが付いているため消していません。そのまま送ると、同じ本文がもう一度投稿されます。';
+  // Not deleting with sync off: the webapp clears its stored draft on draft_deleted whatever the setting, wiping unsynced text kept only in the browser.
+  if (await syncDraftsOff(quick, uid)) return '同じ本文の下書きがありますが、下書きの同期を切っているため消していません。同期を入れ直すと画面に出るので、送らずに消してください。';
+  await quick.call(uid, 'DELETE', `/users/${uid}/channels/${ch.id}/drafts${rootId ? `/${rootId}` : ''}`);
+  const p = d.priority;
+  return [
+    // Not claiming the input box is empty: an open editor keeps its own copy until the user switches channel or thread.
+    `同じ本文の下書きを消しました。${rootId ? 'そのスレッド' : 'そのチャンネル'}を画面で開いている場合は、入力欄に本文が残っているので、送らずに消してください。`,
+    ...(p?.priority || p?.requested_ack || p?.persistent_notifications ? ['下書きに付いていた優先度は、この投稿には付いていません。'] : []),
+    // Not keeping the draft for it: sending it from the UI would post the same text twice, the same reason priority is not kept.
+    ...(d.type === 'burn_on_read' ? ['下書きに付いていた burn-on-read（読まれた後に消える設定）は、この投稿には付いていません。投稿は消えずに残ります。'] : []),
+  ].join('\n');
 }
 
 export async function saveDraft(mm: Mm, uid: string, args: DraftArgs): Promise<CallToolResult> {
@@ -383,21 +423,38 @@ export async function saveDraft(mm: Mm, uid: string, args: DraftArgs): Promise<C
     throw new InputError('下書きの同期を切っているため保存していません。保存しても画面に届かないか、書きかけの下書きを上書きするおそれがあります。「設定 > 詳細設定」で下書きの同期を入れてください。');
   }
   const rootId = args.root_id ?? '';
-  const listOf = async (c: Pick<ChannelRef, 'teamId'>) => {
-    const l = await worded(draftsOf(mm, uid, c), { id: [DISABLED] });
-    if (!l) throw new InputError('所属しているチームがないため、既存の下書きを確かめられません。');
-    return l;
-  };
   // Not listing only after resolving a DM it may create: with drafts disabled on the server the call then fails leaving it empty. A DM's drafts are listed on the first team, the same team as after resolving.
   // Not listing early with root_id: no DM is created then, and a wrong root_id is the mistake to report first.
-  // Not listing again after resolving: a draft the user saves in between is missed, the same race as between this list and the save, which Mattermost cannot close.
-  const early = args.channel.trim().startsWith('@') && !rootId ? await listOf({ teamId: '' }) : undefined;
+  // Not judging by this list: it is taken outside the lock, and a delete by send_message's cleanup in between would be missed, reporting as already saved a draft that is gone. The save lists again under the lock.
+  if (args.channel.trim().startsWith('@') && !rootId) await listDrafts(mm, uid, { teamId: '' });
   // Not creating the DM with root_id: a DM not opened yet holds no root post, and the call would fail right after leaving an empty DM.
   const ch = await resolveChannel(mm, uid, args.channel, { create: !rootId });
   // Checked here rather than left to Mattermost: it saves a draft on any root_id, and one on a reply never shows in any thread.
   if (rootId) await checkRoot(mm, uid, rootId, ch);
-  const list = early ?? await listOf(ch);
   const where = `チャンネル: ${ch.displayName || ch.name}（channel_id: ${ch.id}）${rootId ? `、返信先 post_id: ${rootId}` : ''}`;
+  // Not locking the resolving above: one call may take tens of seconds, and a send_message cleanup waiting behind it would always run out of time.
+  // Not leaving the list and the save unlocked: a save made between the cleanup's list and its DELETE would be the draft it deletes.
+  const same = await withDraftLock(uid, () => saveLocked(mm, uid, ch, rootId, args, where));
+  if (same) return same;
+  // Not claiming the input box for a reply: only channel drafts were checked in the webapp.
+  return text(rootId
+    ? ['下書きとして保存しました。送信は本人が行ってください。', where, LEFT_BEHIND].join('\n')
+    : [
+      'Mattermost の下書きとして保存しました。そのチャンネルの入力欄に入っています。送信は本人が行ってください。',
+      where,
+      '保存したときにそのチャンネルを開いていた場合は、チャンネルを開き直してから編集してください。開き直さずに書くと、この下書きは置き換わります。',
+      LEFT_BEHIND,
+    ].join('\n'));
+}
+
+async function listDrafts(mm: Mm, uid: string, ch: Pick<ChannelRef, 'teamId'>): Promise<Draft[]> {
+  const list = await worded(draftsOf(mm, uid, ch), { id: [DISABLED] });
+  if (!list) throw new InputError('所属しているチームがないため、既存の下書きを確かめられません。');
+  return list;
+}
+
+async function saveLocked(mm: Mm, uid: string, ch: ChannelRef, rootId: string, args: DraftArgs, where: string): Promise<CallToolResult | undefined> {
+  const list = await listDrafts(mm, uid, ch);
   const existing = list.find((d) => d.channel_id === ch.id && (d.root_id || '') === rootId);
   if (existing?.message === args.message) return text(`同じ下書きがあります。保存し直していません。\n${where}\n${LEFT_BEHIND}`);
   if (existing && !args.overwrite) {
@@ -412,15 +469,7 @@ export async function saveDraft(mm: Mm, uid: string, args: DraftArgs): Promise<C
     id: [DISABLED, [400, 'api.draft.create_draft.can_not_draft_to_deleted.error', 'アーカイブ済みのチャンネルには下書きを保存できません。']],
     status: [[403, 'このチャンネルに下書きを保存する権限がありません。']],
   });
-  // Not claiming the input box for a reply: only channel drafts were checked in the webapp.
-  return text(rootId
-    ? ['下書きとして保存しました。送信は本人が行ってください。', where, LEFT_BEHIND].join('\n')
-    : [
-      'Mattermost の下書きとして保存しました。そのチャンネルの入力欄に入っています。送信は本人が行ってください。',
-      where,
-      '保存したときにそのチャンネルを開いていた場合は、チャンネルを開き直してから編集してください。開き直さずに書くと、この下書きは置き換わります。',
-      LEFT_BEHIND,
-    ].join('\n'));
+  return undefined;
 }
 
 const prepareSchema = { channel: z.string().min(1).describe('投稿先。チャンネル ID、「チーム名/チャンネル名」、チャンネル名、@ユーザー名（DM）、@a,b（グループ DM）のどれか。DM とグループ DM は無ければ作る') };
@@ -498,7 +547,7 @@ export function registerSendTools(server: McpServer, ctx: ToolContext): void {
     annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false },
   }, guarded(ctx, 'send_message', async (args: Args, extra: { signal: AbortSignal }) => {
     const mm: Mm = { call: (u, m, p, b, s) => ctx.mm.call(u, m, p, b, s ? AbortSignal.any([extra.signal, s]) : extra.signal) };
-    return sendMessage(mm, ctx.store, ctx.mmUserId, ctx.cfg.mmBrowserUrl, args);
+    return sendMessage(mm, ctx.store, ctx.mmUserId, ctx.cfg.mmBrowserUrl, args, extra.signal);
   // Cast for the same reason as in tools-read.ts: the SDK's callback type does not resolve for this shape.
   }) as unknown as ToolCallback<typeof inputSchema>);
 }
