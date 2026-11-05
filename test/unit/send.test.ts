@@ -243,6 +243,11 @@ describe('a retry does not take a post another record owns for its own earlier p
   });
 });
 
+test('the output names the destination as 投稿先, the same label as scheduling and prepare_upload use', async () => {
+  const r = await fakeMm().send({ channel: 'team-a/dup', message: 'hello' });
+  expect(textOf(r)).toContain(`投稿先: Dup（channel_id: ${CH}）`);
+});
+
 test('retry after a lost response does not double post', async () => {
   let first = true;
   const f = fakeMm({ failPost: () => (first ? ((first = false), 'after') : undefined) });

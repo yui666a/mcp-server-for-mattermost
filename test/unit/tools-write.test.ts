@@ -496,8 +496,7 @@ describe('save_draft', () => {
       expect(bodies['/drafts']).toEqual({ channel_id: CH, root_id: '', message: 'hello' });
       expect(r.text).toContain('入力欄');
       expect(r.text).toContain('送信は本人');
-      expect(r.text).toContain(`channel_id: ${CH}`);
-      expect(r.text).toContain('Town');
+      expect(r.text).toContain(`投稿先: Town（channel_id: ${CH}）`);
       expect(r.text).toContain('チャンネルを開き直して');
       expect(r.text).toContain('置き換わります');
       expect(r.text).toContain(LEFT_BEHIND);
@@ -812,7 +811,8 @@ describe('send_message with files', () => {
     const t = (await setup().tools()).find((x) => x.name === 'send_message')! as unknown as { inputSchema: { properties: { files: { description: string } } } };
     const d = t.inputSchema.properties.files.description;
     expect(d).toContain('チャットに添付されたファイルは、コード実行で中身を読めるときだけ content_base64 で送れる');
-    expect(d).toContain('読めないファイル、収まらないファイル、利用者の PC にあるファイルは、prepare_upload の説明の案内に従う');
+    expect(d).toContain('PC でコマンドを実行できないクライアントでは、利用者の PC にあるテキストのファイルも、読めて収まれば content_text で送ってよい');
+    expect(d).toContain('読めないファイル、収まらないファイル、それ以外の利用者の PC にあるファイルは、prepare_upload の説明の案内に従う');
   });
 
   test('prepare_upload asks for the user\'s confirmation before curl, asks for the path of a file without one, and points clients that cannot run commands to save_draft', async () => {
