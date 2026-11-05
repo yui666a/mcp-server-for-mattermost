@@ -307,13 +307,13 @@ async function filterChannelIds(mm: Mm, userId: string, spec: string, written: s
     // No DM means no posts to exclude, so the condition is dropped rather than failing the search.
     if (e instanceof NoDirectChannel && exclude) return [];
     // Not the read tools' wording: a search leaves out archived channels, so an ID would find nothing there either.
-    const byName = `チャンネル「${spec}」が見つかりません。名前の誤りなら search_channels で確かめてください。参加していない非公開チャンネルとアーカイブ済みのチャンネルは名前では見つからず、アーカイブ済みのチャンネルは検索の対象外です（読むなら read_channel に ID を渡します）。${RETRY}${ASK_ADMIN}`;
+    const byName = `チャンネル「${spec}」が見つかりません。名前の誤りなら search_channels で確かめてください。参加していない非公開チャンネルとアーカイブ済みのチャンネルは名前では見つからず、アーカイブ済みのチャンネルは検索の対象外です（読むなら、利用者に ID を確かめて read_channel に渡します）。${RETRY}${ASK_ADMIN}`;
     if (e instanceof ChannelNotFound) throw new InputError(byName);
     if (e instanceof ChannelFetchError && e.id === 'app.team.get_by_name.missing.app_error') {
-      throw new InputError(`チャンネル「${spec}」のチームが見つかりません。チーム名の誤りなら、list_my_channels で参加しているチームを確かめてください。`);
+      throw new InputError(`チャンネル「${spec}」のチームが見つかりません。チーム名の誤りなら、list_my_channels で参加しているチームを確かめてください（チーム名はチャンネルの行の先頭に出ます）。`);
     }
-    // Told apart by the form of the spec, not by Mattermost's id: a 404 without an id, as a proxy may give, still gets a fitting message.
     if (e instanceof ChannelFetchError && e.status === 403) throw new InputError(`チャンネル「${spec}」を見る権限がありません（参加していない非公開チャンネルなど）。${RETRY}${ASK_ADMIN}`);
+    // Told apart by the form of the spec, not by Mattermost's id: a 404 without an id, as a proxy may give, still gets a fitting message.
     if (e instanceof ChannelFetchError && e.status === 404) {
       throw new InputError(spec.includes('/') ? byName : `チャンネル「${spec}」が見つかりません。ID の誤りなら search_channels で確かめてください。`);
     }
