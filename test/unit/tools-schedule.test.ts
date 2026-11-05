@@ -1,6 +1,8 @@
 import type { DatabaseSync } from 'node:sqlite';
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 import { MAX_PENDING_SCHEDULED } from '../../src/store.ts';
+import { CallAborted, MmError } from '../../src/mattermost/client.ts';
+import { listScheduledMessages } from '../../src/mcp/tools-schedule.ts';
 import { makeApp } from './helpers.ts';
 
 type Route = (req: Request) => unknown;
@@ -834,5 +836,51 @@ describe('arguments a tool does not take', () => {
     const body = await s.rpc('tools/call', { name: 'list_scheduled_messages', arguments: {}, _meta: { progressToken: 1 } });
     expect(body.result.isError ?? false).toBe(false);
     expect(body.result.content[0].text).toContain('予約はありません');
+  });
+});
+
+describe('list_scheduled_messages when the caller aborts', () => {
+  const FIRST = 'a'.repeat(26);
+  const DM = 'd'.repeat(26);
+  const LAST = 'z'.repeat(26);
+  const PARTNER = 'p'.repeat(26);
+  const TEAM = 't'.repeat(26);
+  const channel = (id: string) => (id === DM
+    ? { id: DM, name: `${PARTNER}__${UID}`, display_name: '', team_id: '', type: 'D' }
+    : { id, name: `n${id.slice(1)}`, display_name: 'Town', team_id: TEAM, type: 'O' });
+  // Rows in order: a posted one (whose permalink needs its team), one to a DM, and one more that must not be reached.
+  const rows = (s: ReturnType<typeof setup>) => {
+    const posted = s.store.createScheduled({ mmUserId: UID, channelId: FIRST, message: 'posted', scheduledAt: NOW + DAY }, NOW)!;
+    s.setRow(posted, "status = 'posted', post_id = ?", 'q'.repeat(26));
+    s.store.createScheduled({ mmUserId: UID, channelId: DM, message: 'dm', scheduledAt: NOW + 2 * DAY }, NOW);
+    s.store.createScheduled({ mmUserId: UID, channelId: LAST, message: 'last', scheduledAt: NOW + 3 * DAY }, NOW);
+  };
+  test.each([
+    ['fetching a channel', (p: string) => p === `/channels/${FIRST}`],
+    ['naming a team', (p: string) => p === `/teams/${TEAM}`],
+    ['naming a DM', (p: string) => p === `/users/${PARTNER}`],
+  ])('stops at %s rather than going on to the other rows', async (_, aborts) => {
+    const s = setup();
+    rows(s);
+    const asked: string[] = [];
+    const mm = { call: async <T>(_u: string, _m: string, p: string): Promise<T> => {
+      asked.push(p);
+      if (aborts(p)) throw new CallAborted('call aborted', true);
+      if (p.startsWith('/channels/')) return channel(p.split('/')[2]) as T;
+      if (p.startsWith('/teams/')) return { id: TEAM, name: 'team-a' } as T;
+      return { id: PARTNER, username: 'carol' } as T;
+    } };
+    await expect(listScheduledMessages(mm, s.store, UID, 'https://mm.example', {})).rejects.toBeInstanceOf(CallAborted);
+    expect(asked.some(aborts)).toBe(true);
+    expect(asked).not.toContain(`/channels/${LAST}`);
+  });
+
+  test('still lists the rows when a lookup fails for any other reason', async () => {
+    const s = setup();
+    rows(s);
+    const mm = { call: async (): Promise<never> => { throw new MmError(403, 'api.context.permissions.app_error', 'no'); } };
+    const r = await listScheduledMessages(mm, s.store, UID, 'https://mm.example', {});
+    expect(r.isError).toBeFalsy();
+    expect((r.content[0] as { text: string }).text).toContain('last');
   });
 });
