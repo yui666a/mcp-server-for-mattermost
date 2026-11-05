@@ -2,7 +2,7 @@ import type { McpServer, ToolCallback } from '@modelcontextprotocol/sdk/server/m
 import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
 import { z } from 'zod';
 import { MmError, UpstreamUnavailable, type MmClient } from '../mattermost/client.ts';
-import { BAD_CURSOR, decodeCursor, encodeCursor, fileLine, formatPost, formatTime, graphemeCount, indented, InputError, localTime, oneLine, postTruncated, postUserIds, truncate, type MmFileInfo, type MmPost } from './format.ts';
+import { BAD_CURSOR, BODY_CUT_NOTE, BODY_MAX_CHARS, decodeCursor, encodeCursor, fileLine, formatPost, formatTime, graphemeCount, indented, InputError, localTime, oneLine, postTruncated, postUserIds, truncate, type MmFileInfo, type MmPost } from './format.ts';
 import { pageCursor, paginate } from './paging.ts';
 import { mentionsMe, mentionTerms, type MentionUser } from './mentions.ts';
 import { parsePostRef } from './permalink.ts';
@@ -159,7 +159,7 @@ export function render({ lines, next, posts = [], notes = [] }: Page): string {
   return [
     ...lines,
     ...notes,
-    ...(posts.some(postTruncated) ? ['（本文かメッセージ添付を 4000 文字で切った投稿があります）'] : []),
+    ...(posts.some(postTruncated) ? [`（本文かメッセージ添付を ${BODY_MAX_CHARS} 文字で切った投稿があります）`] : []),
     next ? `next_cursor: ${encodeCursor(next)}` : '（続きはありません）',
   ].join('\n');
 }
@@ -239,13 +239,13 @@ function channelFilters(words: string[]): { at: number; span: number; value: str
   return found;
 }
 
-async function filterChannelIds(mm: Mm, userId: string, spec: string, exclude: boolean, notes: string[]): Promise<string[]> {
+async function filterChannelIds(mm: Mm, userId: string, spec: string, written: string, exclude: boolean, notes: string[]): Promise<string[]> {
   try {
     return [(await resolveChannel(mm, userId, spec)).id];
   } catch (e) {
     if (e instanceof Ambiguous) {
       const ids = [...new Set(e.candidates.map((c) => c.id))];
-      if (ids.length > 1 && !exclude) notes.push(`in:${spec} は複数のチームにあるため、すべてで探しました（${e.candidates.map((c) => c.team).join('、')}）。`);
+      if (ids.length > 1 && !exclude) notes.push(`${written} は複数のチームにあるため、すべてで探しました（${e.candidates.map((c) => c.team).join('、')}）。`);
       return ids;
     }
     // No DM means no posts to exclude, so the condition is dropped rather than failing the search.
@@ -268,12 +268,15 @@ export async function resolveInFilters(mm: Mm, userId: string, terms: string): P
   if (filters.length > MAX_CHANNEL_FILTERS) throw new InputError(`in: と channel: は 1 回の検索で ${MAX_CHANNEL_FILTERS} 個まで指定できます。`);
   const notes: string[] = [];
   const out = words.map((w) => [w]);
+  const written = (f: (typeof filters)[number]) => words.slice(f.at, f.at + f.span).join(' ');
+  // Trimmed here, not only in resolveChannel: a U+FEFF in front would otherwise hide a leading ~ or @ from the checks below.
+  const specOf = (f: (typeof filters)[number]) => f.value.trim().replace(/^~+/, '');
   for (const f of filters) {
     const next = words[f.at + f.span];
     // Not treating every 、 as a comma: 、 also starts search words such as 、議事録.
-    if (f.value.replace(/^~+/, '').startsWith('@') && /^[,，]|^、[A-Za-z0-9._,@、，-]*$/.test(next ?? '')) {
+    if (specOf(f).startsWith('@') && /^[,，]|^、[A-Za-z0-9._,@、，-]*$/.test(next ?? '')) {
       const fullWidth = /^[、，]/.test(next ?? '') ? '区切りは半角のカンマ（,）で書いてください。' : '';
-      throw new InputError(`in:${f.value} の後の「${next}」: 検索の in: では @a,b のようにカンマの前後に空白を入れずに書いてください。${fullWidth}`);
+      throw new InputError(`${written(f)} の後の「${next}」: 検索の条件では @a,b のようにカンマの前後に空白を入れずに書いてください。${fullWidth}`);
     }
   }
   // Kept for this search only, not across searches: a channel created or joined in between would stay unseen.
@@ -288,8 +291,8 @@ export async function resolveInFilters(mm: Mm, userId: string, terms: string): P
   };
   // Sequential rather than Promise.all: parallel lookups would exceed the per-user concurrency limit.
   for (const f of filters) {
-    const spec = f.value.replace(/^~+/, '');
-    const ids = await filterChannelIds(cached, userId, spec, f.exclude, notes);
+    const spec = specOf(f);
+    const ids = await filterChannelIds(cached, userId, spec, written(f), f.exclude, notes);
     out.splice(f.at, f.span, ids.map((id) => `${f.exclude ? '-' : ''}in:${id}`), ...(f.span === 2 ? [[]] : []));
   }
   const rewritten = out.flat().join(' ');
@@ -721,7 +724,7 @@ export function registerReadTools(server: McpServer, ctx: ToolContext): void {
       });
     });
 
-  tool('get_post', '1 件の投稿を読む。post は post_id か、パーマリンクの URL（…/<チーム名>/pl/<post_id>）。本文は各行を 2 文字字下げし、4000 文字を超える本文は切って出す（edit_message で書き換えるときは字下げを外し、切った投稿は出力を元に書き換えない）',
+  tool('get_post', `1 件の投稿を読む。post は post_id か、パーマリンクの URL（…/<チーム名>/pl/<post_id>）。本文は各行を 2 文字字下げし、${BODY_MAX_CHARS} 文字を超える本文は切って出す（edit_message で書き換えるときは字下げを外し、切った投稿は出力を元に書き換えない）`,
     { post: z.string().min(1) },
     async ({ post }, mm) => {
       const id = parsePostRef(post, base);
@@ -742,7 +745,7 @@ export function registerReadTools(server: McpServer, ctx: ToolContext): void {
         ...(p.root_id ? [`スレッド内の返信です。親 post_id: ${p.root_id}。read_thread でスレッド全体を読めます。`]
           : replies ? [`返信があります。read_thread に post_id: ${p.id} を渡すと、スレッド全体を読めます。`] : []),
         // Not noting cut message attachments again: formatPost already says where it cut them.
-        ...(truncate(p.message).truncated ? ['（本文を 4000 文字で切りました）'] : []),
+        ...(truncate(p.message).truncated ? [`（${BODY_CUT_NOTE}）`] : []),
       ].join('\n');
     });
 

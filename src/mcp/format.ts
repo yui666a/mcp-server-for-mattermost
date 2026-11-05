@@ -17,7 +17,11 @@ const segmenter = new Intl.Segmenter();
 
 export const graphemeCount = (s: string): number => [...segmenter.segment(s)].length;
 
-export function truncate(s: string, max = 4000): { text: string; truncated: boolean } {
+// Not written out in each tool description: the guidance quoting the note would fall behind when the limit changes.
+export const BODY_MAX_CHARS = 4000;
+export const BODY_CUT_NOTE = `本文を ${BODY_MAX_CHARS} 文字で切りました`;
+
+export function truncate(s: string, max = BODY_MAX_CHARS): { text: string; truncated: boolean } {
   let n = 0;
   for (const { index } of segmenter.segment(s)) {
     if (n++ === max) return { text: s.slice(0, index), truncated: true };
@@ -59,12 +63,12 @@ function attachmentLines(p: MmPost): string[] {
 }
 
 const REACTION_NAMES = 10;
-const REACTION_MAX_CHARS = 4000;
+const REACTION_MAX_CHARS = BODY_MAX_CHARS;
 const isRecord = (x: unknown): x is Record<string, unknown> => typeof x === 'object' && x !== null && !Array.isArray(x);
 const str = (x: unknown): string => (typeof x === 'string' ? x : typeof x === 'number' || typeof x === 'boolean' ? String(x) : '');
 const records = (x: unknown): Record<string, unknown>[] => (Array.isArray(x) ? x.filter(isRecord) : []);
 
-const lines = (s: string): string[] => s.split(LINE_BREAK);
+export const lines = (s: string): string[] => s.split(LINE_BREAK);
 
 // A value that may span lines, kept readable (a channel header holds Markdown tables and lists): its continuation lines are indented by 4.
 export const indented = (label: string, value: string): string[] => lines(`${label}: ${value}`).map((l, i) => (i ? `    ${l}` : l));
