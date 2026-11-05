@@ -111,7 +111,6 @@ export async function markAsRead(mm: Mm, uid: string, args: Args): Promise<CallT
       const p = await worded(mm.call<Post & { reply_count?: number }>(uid, 'GET', `/posts/${item.post_id}`), POST_WORDING);
       const root = p.root_id || p.id;
       label = `スレッド（親 post_id: ${root}）`;
-      // Not looking for the team the user has open: for a DM or group DM thread the team only tells clients which team's thread counts to update, and no API tells which one is open.
       const { team } = await threadTeam(mm, uid, p.channel_id, firstTeam);
       if (!team) throw new InputError('所属しているチームがないため、スレッドを既読にできません。');
       const state = await mm.call<ThreadState>(uid, 'GET', `/users/${uid}/teams/${team}/threads/${root}`).catch((e) => {
