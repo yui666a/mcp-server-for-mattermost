@@ -192,7 +192,7 @@ export async function sendMessage(mm: Mm, store: Store, uid: string, baseUrl: st
     // Not dropping the claim if this lookup fails: the earlier attempt's outcome is still unknown.
     const { found, sizeDiffers } = await lookPosted(mm, uid, { ...spec, fileCount: attached, fileIds, files: files.map((f) => f.bytes.length) }, claim.createdAt);
     // Not read before the lookup: a send that completed meanwhile would be missed.
-    const owned = new Set([...store.otherClaimPostIds(uid, claim.id), ...store.otherScheduledPostIds(uid, '')]);
+    const owned = new Set([...store.otherClaimPostIds(uid, claim.id), ...store.scheduledPostIds(uid)]);
     const prev = found.find((p) => !owned.has(p));
     // Not posting when every match is another record's: such a record may hold this send's own earlier post by a mistaken match of its own, and posting again would post it twice.
     // Not dropping the claim either, for the same reason.
