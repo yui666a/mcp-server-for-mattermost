@@ -217,11 +217,13 @@ export function channelInline(c: ChannelRef & { archived?: boolean }): string {
 // The 404 of looking a channel up by id: /channels/{id} gives it only for a channel that does not exist, whereas a 404 by name may also be a private or archived channel, or a passing failure.
 const BY_ID_404 = 'app.channel.get.existing.app_error';
 
+// Not the private-channel wording for team/channel: by name Mattermost answers 404 to a private channel the user is not in.
+const forbiddenExample = (spec: string) => (spec.includes('/') ? '参加していないチームのチャンネルや、見る権限の無い公開チャンネルなど' : '参加していない非公開チャンネルなど');
+
 export function channelError(e: unknown, spec: string): never {
   // Not converting a missing team: /teams/name/{team}/channels/name/{channel} answers it with 404 too.
   if (e instanceof ChannelFetchError && e.id !== 'app.team.get_by_name.missing.app_error') {
-    // Not the private-channel wording for team/channel: by name Mattermost answers 404 to a private channel the user is not in.
-    if (e.status === 403) throw new InputError(`このチャンネルを見る権限がありません（${spec.includes('/') ? '参加していないチームのチャンネルや、見る権限の無い公開チャンネルなど' : '参加していない非公開チャンネルなど'}）。${RETRY}${ASK_ADMIN}`);
+    if (e.status === 403) throw new InputError(`このチャンネルを見る権限がありません（${forbiddenExample(spec)}）。${RETRY}${ASK_ADMIN}`);
     // Not keying on the name lookup's ids: a 404 without an id, as a proxy may give, is better read as one by name, which guides to retrying.
     if (e.status === 404 && e.id !== BY_ID_404) throw new InputError(`チャンネルが見つかりません（参加していない非公開チャンネルとアーカイブ済みのチャンネルは、名前で指定すると Mattermost はこの結果を返します。アーカイブ済みなら、チャンネル ID を利用者に確かめて ID で指定すると読めます）。名前の誤りなら search_channels で確かめてください。${RETRY}${ASK_ADMIN}`);
     if (e.status === 404) throw new InputError('チャンネルが見つかりません。ID の誤りなら search_channels で確かめてください。');
@@ -315,8 +317,7 @@ async function filterChannelIds(mm: Mm, userId: string, spec: string, written: s
     if (e instanceof ChannelFetchError && e.id === 'app.team.get_by_name.missing.app_error') {
       throw new InputError(`チャンネル「${spec}」のチームが見つかりません。チーム名の誤りなら、list_my_channels で参加しているチームを確かめてください（チーム名はチャンネルの行の先頭に出ます）。`);
     }
-    // Not the private-channel wording for team/channel: by name Mattermost answers 404 to a private channel the user is not in.
-    if (e instanceof ChannelFetchError && e.status === 403) throw new InputError(`チャンネル「${spec}」を見る権限がありません（${spec.includes('/') ? '参加していないチームのチャンネルや、見る権限の無い公開チャンネルなど' : '参加していない非公開チャンネルなど'}）。${RETRY}${ASK_ADMIN}`);
+    if (e instanceof ChannelFetchError && e.status === 403) throw new InputError(`チャンネル「${spec}」を見る権限がありません（${forbiddenExample(spec)}）。${RETRY}${ASK_ADMIN}`);
     // Told apart by the form of the spec, not by Mattermost's id: a 404 without an id, as a proxy may give, still gets a fitting message.
     if (e instanceof ChannelFetchError && e.status === 404) {
       throw new InputError(spec.includes('/') ? byName : `チャンネル「${spec}」が見つかりません。ID の誤りなら search_channels で確かめてください。`);
