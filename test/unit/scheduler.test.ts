@@ -290,16 +290,12 @@ describe('a retry after an unknown outcome looks for the earlier post first', ()
     expect(s.row(id)).toMatchObject({ status: 'failed', error: UNKNOWN });
   });
 
-  test('posts again when no deleted post counts: another user\'s, another thread\'s, from before the first attempt, or one another schedule recorded', async () => {
+  test('posts again when no deleted post counts: another user\'s, another thread\'s, or from before the first attempt', async () => {
     const s = setup();
-    const owned = 'owned'.padEnd(26, 'x');
-    const other = s.make();
-    s.set(other, "status = 'posted', post_id = ?", owned);
     routes[`GET /channels/${CH}/posts`] = () => postList(
       deletedWithMessageEmptiedByMattermost('a'.repeat(26), { user_id: 'x'.repeat(26) }),
       deletedWithMessageEmptiedByMattermost('b'.repeat(26), { root_id: ROOT }),
       deletedWithMessageEmptiedByMattermost('c'.repeat(26), { create_at: NOW - 1 }),
-      deletedWithMessageEmptiedByMattermost(owned),
     );
     const id = attempted(s);
     await s.run(NOW + MIN);
@@ -318,21 +314,32 @@ describe('a retry after an unknown outcome looks for the earlier post first', ()
     expect(s.row(id)).toMatchObject({ status: 'failed', error: UNKNOWN });
   });
 
-  test('posts again when no edited post counts: another user\'s, another thread\'s, from before the first attempt, or one another schedule recorded', async () => {
+  test('posts again when no edited post counts: another user\'s, another thread\'s, or from before the first attempt', async () => {
     const s = setup();
-    const owned = 'owned'.padEnd(26, 'x');
-    const other = s.make();
-    s.set(other, "status = 'posted', post_id = ?", owned);
     routes[`GET /channels/${CH}/posts`] = () => postList(
       editedByUser('a'.repeat(26), { user_id: 'x'.repeat(26) }),
       editedByUser('b'.repeat(26), { root_id: ROOT }),
       editedByUser('c'.repeat(26), { create_at: NOW - 1 }),
-      editedByUser(owned),
     );
     const id = attempted(s);
     await s.run(NOW + MIN);
     expect(s.posts()).toHaveLength(1);
     expect(s.row(id)).toMatchObject({ status: 'posted' });
+  });
+
+  test.each([
+    ['deleted', (id: string) => deletedWithMessageEmptiedByMattermost(id)],
+    ['edited', (id: string) => editedByUser(id)],
+    ['with other files', (id: string) => mine(id, { file_ids: ['z'.repeat(26)] })],
+  ])('does not post again when a post another schedule recorded was %s since, which may be this schedule\'s own', async (_, post) => {
+    const s = setup();
+    const owned = 'owned'.padEnd(26, 'x');
+    s.set(s.make(), "status = 'posted', post_id = ?", owned);
+    routes[`GET /channels/${CH}/posts`] = () => postList(post(owned));
+    const id = attempted(s);
+    await s.run(NOW + MIN);
+    expect(s.posts()).toHaveLength(0);
+    expect(s.row(id)).toMatchObject({ status: 'failed', error: UNKNOWN });
   });
 
   test('does not take a post that another schedule with the same text already recorded, nor post again, and fails as maybe posted', async () => {
@@ -712,17 +719,13 @@ describe('a schedule with files', () => {
     expect(s.row(id)).toMatchObject({ status: 'failed', error: UNKNOWN });
   });
 
-  test('posts again when no post with other files counts: another user\'s, another thread\'s, from before the first attempt, or one another schedule recorded', async () => {
+  test('posts again when no post with other files counts: another user\'s, another thread\'s, or from before the first attempt', async () => {
     const s = setup();
-    const owned = 'owned'.padEnd(26, 'x');
-    const other = s.make();
-    s.set(other, "status = 'posted', post_id = ?", owned);
     const withFile = (id: string, over: object = {}) => mine(id, { file_ids: [F1], ...over });
     routes[`GET /channels/${CH}/posts`] = () => postList(
       withFile('a'.repeat(26), { user_id: 'x'.repeat(26) }),
       withFile('b'.repeat(26), { root_id: ROOT }),
       withFile('c'.repeat(26), { create_at: NOW - 1 }),
-      withFile(owned),
     );
     const id = attempted(s);
     await s.run(NOW + MIN);
