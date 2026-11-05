@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'vitest';
-import { mentionsMe, mentionTerms, type MentionUser } from '../../src/mcp/mentions.ts';
+import { mentionsMe, mentionTerms, stripCodeSpans, type MentionUser } from '../../src/mcp/mentions.ts';
 
 const alice: MentionUser = { username: 'alice', first_name: 'Alice', notify_props: { mention_keys: '', first_name: 'false' } };
 const withKeys = (keys: string, firstName = 'false'): MentionUser => ({ ...alice, notify_props: { mention_keys: keys, first_name: firstName } });
@@ -143,5 +143,32 @@ describe('mentionsMe', () => {
 
   test('@channel, @all and @here are not mentions of the user', () => {
     expect(mentionsMe('@channel @all @here', alice)).toBe(false);
+  });
+});
+
+describe('stripCodeSpans', () => {
+  // The regex it replaces, kept as the reference for what a code span is.
+  const reference = (text: string) => text.replace(/(?<!`)(`+)(?!`)[\s\S]*?(?<!`)\1(?!`)/g, ' ');
+
+  test('gives what the backreference regex gave, for many texts mixing runs of backticks, text and line breaks', () => {
+    let seed = 1;
+    const random = (n: number) => {
+      seed = (seed * 48271) % 2147483647;
+      return seed % n;
+    };
+    const parts = ['`', '``', '```', 'a', ' ', '\n', '@alice'];
+    for (let c = 0; c < 3000; c++) {
+      const text = Array.from({ length: random(30) }, () => parts[random(parts.length)]).join('');
+      expect(stripCodeSpans(text), JSON.stringify(text)).toBe(reference(text));
+    }
+  });
+
+  test('takes time linear in the length, even for runs of backticks of ever more lengths that never close', () => {
+    let text = '';
+    for (let i = 1; text.length < 2_000_000; i++) text += `${'`'.repeat(i)} `;
+    const started = performance.now();
+    expect(mentionsMe(`${text}@alice`, { username: 'alice' })).toBe(true);
+    // Not a tight limit: the backreference regex took several seconds here, so a loaded machine still tells them apart.
+    expect(performance.now() - started).toBeLessThan(1000);
   });
 });
