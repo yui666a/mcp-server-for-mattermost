@@ -389,6 +389,7 @@ test('a 429 from the stored credential after a lost save tells whether the check
     ['a redirect', () => new Response(null, { status: 302, headers: { location: 'https://evil.example/' } }), true],
     ['a refused connection', () => { throw new TypeError('fetch failed', { cause: Object.assign(new Error('refused'), { code: 'ECONNREFUSED' }) }); }, false],
     ['429', () => new Response(null, { status: 429, headers: { 'x-ratelimit-reset': '1' } }), false],
+    ['401', () => mmError(401, 'api.context.session_expired.app_error'), false],
   ];
   for (const [name, check, doubt] of cases) {
     store.putMmCred('u1', 'a1', 'r1');

@@ -49,7 +49,7 @@ function lastPost(mm: Mm, uid: string, id: string, reread: string): Promise<Post
 
 const itemError = (e: unknown): e is InputError | MmError => e instanceof InputError || e instanceof MmError;
 // Not taking a rate limit as carried out unless an earlier request of the call may have been: Mattermost refuses a 429 before its handler runs.
-const mayHaveRun = (e: unknown) => (e instanceof RateLimited ? e.doubt : (e as { sent?: boolean }).sent !== false);
+const mayHaveRun = (e: unknown) => (e instanceof RateLimited ? e.doubt : (e as { sent?: boolean } | undefined)?.sent !== false);
 
 class Interrupted extends Error {
   readonly line: string;
