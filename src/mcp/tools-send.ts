@@ -111,10 +111,12 @@ export function checkUnposted(store: Store, uid: string, fileIds: string[]): voi
 }
 
 // Not creating the DM with root_id or file_ids: a DM not opened yet holds neither, and the call would fail right after leaving an empty DM.
+export const createsDirect = (rootId: string | undefined, fileIds: string[]): boolean => !rootId && !fileIds.length;
+
 // Not reporting only the missing DM when file_ids are given: none of them can belong to a DM not opened yet, so the file is the real mistake.
 export async function resolveTarget(mm: Mm, store: Store, uid: string, channel: string, rootId: string | undefined, fileIds: string[]): Promise<ResolvedChannel> {
   try {
-    return await resolveChannel(mm, uid, channel, { create: !rootId && !fileIds.length });
+    return await resolveChannel(mm, uid, channel, { create: createsDirect(rootId, fileIds) });
   } catch (e) {
     if (e instanceof NoDirectChannel && fileIds.length) checkUploaded(store, uid, '', fileIds);
     throw e;
@@ -143,12 +145,14 @@ export async function sendMessage(mm: Mm, store: Store, uid: string, baseUrl: st
   const spec = { channelId: ch.id, message: args.message, rootId };
   const attached = files.length + fileIds.length;
   // Only the files the post kept: a dropped one may sit on another post, and one left unmarked would pass checkUnposted and be dropped again in silence.
-  const posted = (postId: string, kept: string[]) => {
-    const got = kept.length;
-    store.markFilesPosted(uid, fileIds.filter((id) => kept.includes(id)), postId);
+  // Not the response's file_ids when Mattermost hid them (ABAC denies the user the download): it empties them and counts the attached files instead, so which ones were dropped is unknown, and marking them all is the safe side.
+  const posted = (r: { postId: string; fileIds: string[]; redactedFileCount: number }) => {
+    const hidden = r.redactedFileCount > 0 && !r.fileIds.length;
+    const got = hidden ? r.redactedFileCount : r.fileIds.length;
+    store.markFilesPosted(uid, hidden ? fileIds : fileIds.filter((id) => r.fileIds.includes(id)), r.postId);
     if (!attached) return '投稿しました。';
     if (got === attached) return `投稿しました。ファイル ${attached} 件を添付しました。`;
-    return `投稿しました。ただし、添付した ${attached} 件のうち ${attached - got} 件を Mattermost が外したため、投稿に付いていません。`;
+    return `投稿しました。ただし、添付した ${attached} 件のうち ${attached - got} 件を Mattermost が外したため、投稿に付いていません${hidden ? '（ファイルをダウンロードする権限が無いため、どれが外れたかは分かりません）' : ''}。`;
   };
   const uploadAll = async () => {
     const ids: string[] = [];
@@ -160,7 +164,7 @@ export async function sendMessage(mm: Mm, store: Store, uid: string, baseUrl: st
     checkUnposted(store, uid, fileIds);
     const r = await postOnce(mm, uid, { ...spec, fileIds: await uploadAll() }, randomToken());
     if (r.kind !== 'posted') throw r.error;
-    return done(r.postId, posted(r.postId, r.fileIds));
+    return done(r.postId, posted(r));
   }
 
   const claim = store.claimPost({ mmUserId: uid, channelId: ch.id, rootId, bodyHash: bodyHash(args.message, files, fileIds) });
@@ -176,7 +180,7 @@ export async function sendMessage(mm: Mm, store: Store, uid: string, baseUrl: st
     }
   }
   let claimedAt = claim.claimedAt;
-  let postId: string, kept: string[];
+  let res: Parameters<typeof posted>[0];
   try {
     checkUnposted(store, uid, fileIds);
     const ids = await uploadAll();
@@ -186,14 +190,14 @@ export async function sendMessage(mm: Mm, store: Store, uid: string, baseUrl: st
     claimedAt = again;
     const r = await postOnce(mm, uid, { ...spec, fileIds: ids }, claim.pendingPostId);
     if (r.kind !== 'posted') throw r.error;
-    ({ postId, fileIds: kept } = r);
+    res = r;
   } catch (e) {
     // Not leaving out InputError: here it can only be a file refused before the post or an upload that Mattermost refused, so nothing was posted.
     if (e instanceof MmError || e instanceof InputError || e instanceof RateLimited || (e as { sent?: boolean })?.sent === false) store.dropPost(claim.id, claimedAt);
     throw e;
   }
-  store.completePost(claim.id, postId);
-  return done(postId, posted(postId, kept));
+  store.completePost(claim.id, res.postId);
+  return done(res.postId, posted(res));
 }
 
 export type Wording = { id?: [status: number, id: string, text: string][]; status?: [status: number, text: string][] };
