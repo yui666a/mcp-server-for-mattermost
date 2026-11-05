@@ -237,6 +237,14 @@ test('other 4xx is an MmError carrying the Mattermost id and message', async () 
   expect(e).toMatchObject({ status: 403, id: 'api.context.permissions.app_error', message: 'msg api.context.permissions.app_error', sent: true });
 });
 
+test('a 4xx whose body is not JSON, such as a proxy\'s HTML page, is an MmError with no message', async () => {
+  store.putMmCred('u1', 'a1', 'r1');
+  api = () => new Response('<html>403 Forbidden</html>', { status: 403, headers: { 'content-type': 'text/html' } });
+  const e = await failure(client.call('u1', 'GET', '/channels/c1'));
+  expect(e).toBeInstanceOf(MmError);
+  expect(e).toMatchObject({ status: 403, message: '' });
+});
+
 test('501 is an MmError carrying the Mattermost id, since a disabled feature does not pass on retry', async () => {
   store.putMmCred('u1', 'a1', 'r1');
   api = () => mmError(501, 'api.drafts.disabled.app_error');
