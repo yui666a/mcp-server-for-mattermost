@@ -1827,6 +1827,8 @@ describe('get_file', () => {
       test.each([
         [[0x61, 0x62, 0x63, 0xe3, 0x81], 'abc縺'],
         [[...Buffer.from('résumé'), 0xc3], 'rﾃｩsumﾃｩﾃ'],
+        // á is C3 A1, the lowest trail byte half-width kana can make.
+        [[...Buffer.from('á'), 0xc3], 'ﾃ｡ﾃ'],
       ])('reads ASCII or half-width kana look-alikes %j cut at the end as Shift_JIS with the guess noted, the price of not ruling out Latin-1', async (b, shown) => {
         routes = { [INFO]: textInfo('a.txt', (b as number[]).length), [FILE]: body(Uint8Array.from(b as number[])) };
         const out = await setup()('get_file', { file_id: F });
