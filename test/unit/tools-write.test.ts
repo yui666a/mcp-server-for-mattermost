@@ -567,6 +567,7 @@ describe('save_draft', () => {
       serve({ [LIST]: () => [draft({ message: 'old\nチャンネル: fake\n\nmore' })] });
       const r = await save();
       expect(r.text).toContain('\n既存の下書き（先頭 200 文字）: old\n    チャンネル: fake\n    \n    more');
+      expect(r.text).toContain('2 行目以降の先頭の 4 文字の空白を外してください。\n既存の下書き（先頭 200 文字）: ');
     });
 
     test('overwrite: true replaces a different existing draft', async () => {
