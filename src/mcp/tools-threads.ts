@@ -129,16 +129,18 @@ export function registerThreadTools(server: McpServer, ctx: ToolContext): void {
         throw e;
       });
       // Not taking the thread state's 404 as unfollowed for a root post without replies: Mattermost has no thread state until the first reply, followed or not.
-      if (!following && !r.replies) {
+      // Not keying the note on reply_count alone: a thread whose replies were all deleted keeps its thread state and shows in the list.
+      const stateless = !following && !r.replies;
+      if (stateless) {
         const t = await mm.call<{ posts: Record<string, { is_following?: boolean }> }>(uid, 'GET', `/posts/${r.root}/thread?collapsedThreads=true`);
         following = t.posts[r.root]?.is_following === true;
       }
       // Not calling PUT for a followed thread: Mattermost marks the thread read on every follow, which would drop unread replies the user has not seen.
-      if (following) return [`${label}はすでにフォローしています。`, ...(r.replies ? [] : [noReplies])].join('\n');
+      if (following) return [`${label}はすでにフォローしています。`, ...(stateless ? [noReplies] : [])].join('\n');
       await mm.call(uid, 'PUT', `/users/${uid}/teams/${team}/threads/${r.root}/following`);
       return [
         `${label}をフォローしました。フォローした時点までの返信は既読になります（Mattermost の動作）。`,
-        ...(r.replies ? [] : [noReplies]),
+        ...(stateless ? [noReplies] : []),
       ].join('\n');
     });
 

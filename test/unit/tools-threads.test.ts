@@ -258,11 +258,12 @@ describe('follow_thread and unfollow_thread', () => {
     for (const isFollowing of [undefined, false]) {
       routes = noReplies(isFollowing);
       hits = [];
+      urls = [];
       const r = await setup().call('follow_thread', { post_id: ROOT });
       expect(r.text).toBe(`スレッド（親 post_id: ${ROOT}）をフォローしました。フォローした時点までの返信は既読になります（Mattermost の動作）。\n返信がまだないため、最初の返信があるまで list_followed_threads には出ません。`);
       expect(writes(), String(isFollowing)).toEqual([`PUT /users/u1/teams/${T1}/threads/${ROOT}/following`]);
+      expect(urls, String(isFollowing)).toContain(`GET /posts/${ROOT}/thread?collapsedThreads=true`);
     }
-    expect(urls).toContain(`GET /posts/${ROOT}/thread?collapsedThreads=true`);
   });
 
   test('follow_thread leaves a followed root post without replies alone, telling it from the thread\'s is_following', async () => {
@@ -270,6 +271,13 @@ describe('follow_thread and unfollow_thread', () => {
     const r = await setup().call('follow_thread', { post_id: ROOT });
     expect(r.text).toBe(`スレッド（親 post_id: ${ROOT}）はすでにフォローしています。\n返信がまだないため、最初の返信があるまで list_followed_threads には出ません。`);
     expect(writes()).toEqual([]);
+  });
+
+  test('follow_thread does not say a followed thread whose replies were all deleted waits for its first reply', async () => {
+    routes = { ...noReplies(), [`GET /users/u1/teams/${T1}/threads/${ROOT}`]: () => ({ id: ROOT, unread_replies: 0 }) };
+    const r = await setup().call('follow_thread', { post_id: ROOT });
+    expect(r.text).toBe(`スレッド（親 post_id: ${ROOT}）はすでにフォローしています。`);
+    expect(hits).not.toContain(`GET /posts/${ROOT}/thread`);
   });
 
   test('follow_thread does not fetch the thread when it has replies', async () => {
