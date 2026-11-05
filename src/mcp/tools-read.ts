@@ -296,8 +296,9 @@ function channelFilters(words: string[]): { at: number; span: number; value: str
 }
 
 async function filterChannelIds(mm: Mm, userId: string, spec: string, written: string, exclude: boolean, notes: string[]): Promise<string[]> {
+  let ch;
   try {
-    return [(await resolveChannel(mm, userId, spec, { names: false })).id];
+    ch = await resolveChannel(mm, userId, spec, { names: false });
   } catch (e) {
     if (e instanceof Ambiguous) {
       const ids = [...new Set(e.candidates.map((c) => c.id))];
@@ -312,13 +313,18 @@ async function filterChannelIds(mm: Mm, userId: string, spec: string, written: s
     if (e instanceof ChannelFetchError && e.id === 'app.team.get_by_name.missing.app_error') {
       throw new InputError(`チャンネル「${spec}」のチームが見つかりません。チーム名の誤りなら、list_my_channels で参加しているチームを確かめてください（チーム名はチャンネルの行の先頭に出ます）。`);
     }
-    if (e instanceof ChannelFetchError && e.status === 403) throw new InputError(`チャンネル「${spec}」を見る権限がありません（参加していない非公開チャンネルなど）。${RETRY}${ASK_ADMIN}`);
+    // By name a private channel the user is not in answers 404, so a 403 there means a team the user is not in.
+    if (e instanceof ChannelFetchError && e.status === 403) throw new InputError(`チャンネル「${spec}」を見る権限がありません（${spec.includes('/') ? '参加していないチームのチャンネルなど' : '参加していない非公開チャンネルなど'}）。${RETRY}${ASK_ADMIN}`);
     // Told apart by the form of the spec, not by Mattermost's id: a 404 without an id, as a proxy may give, still gets a fitting message.
     if (e instanceof ChannelFetchError && e.status === 404) {
       throw new InputError(spec.includes('/') ? byName : `チャンネル「${spec}」が見つかりません。ID の誤りなら search_channels で確かめてください。`);
     }
     throw e;
   }
+  // Only an ID reaches an archived channel: lookups by name leave them out. An -in: of one is kept, as the search leaves it out anyway.
+  // Not searching with include_deleted_channels instead: the tool descriptions and the listing behind the channel lines assume archived channels stay out.
+  if (!exclude && (ch.raw as { delete_at?: number }).delete_at) throw new InputError(`チャンネル「${spec}」はアーカイブ済みで、検索の対象外です。読むなら read_channel に渡します。`);
+  return [ch.id];
 }
 
 // Not higher: with 10 teams the worst case of in: (1 + flags × (teams + 1) GETs, 221), the search, the 3 calls for its output and up to 50
