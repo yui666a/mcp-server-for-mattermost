@@ -358,7 +358,8 @@ describe('search_posts in: filters', () => {
       ['x in:@bob 、@carol', 'in:@bob の後の「、@carol」'],
       ['x in:@bob 、carol、dave', 'in:@bob の後の「、carol、dave」'],
       ['x in:@bob 、', 'in:@bob の後の「、」'],
-      ['x in:@bob ，議事録', 'in:@bob の後の「，議事録」'],
+      ['x in:@bob ，carol', 'in:@bob の後の「，carol」'],
+      ['x in:@bob ，', 'in:@bob の後の「，」'],
       ['x channel:~@bob 、carol', 'channel:~@bob の後の「、carol」'],
       ['x in:@bob 、carol，dave', 'in:@bob の後の「、carol，dave」'],
     ])('%j is a separator error that asks for a half-width comma', async (terms, message) => {
@@ -373,6 +374,17 @@ describe('search_posts in: filters', () => {
       routes = { ...withGroup(), [`GET /teams/${T1}/channels/name/${DM_NAME}`]: () => ch(DM, DM_NAME, '', 'D') };
       await setup()('search_posts', { terms: 'x in:@bob 、議事録' });
       expect(sent()).toBe(`x in:${DM} 、議事録`);
+    });
+
+    test('a search word after the DM that starts with ， is kept as a search word', async () => {
+      routes = { ...withGroup(), [`GET /teams/${T1}/channels/name/${DM_NAME}`]: () => ch(DM, DM_NAME, '', 'D') };
+      await setup()('search_posts', { terms: 'x in:@bob ，議事録' });
+      expect(sent()).toBe(`x in:${DM} ，議事録`);
+    });
+
+    test('in:@bob、 is refused for its separator', async () => {
+      routes = withGroup();
+      expect(await setup()('search_posts', { terms: 'x in:@bob、' }, true)).toContain('@a,b の区切りは半角のカンマ（,）で書いてください。');
     });
 
     test('in:@bob、carol is refused for its separator', async () => {
@@ -593,7 +605,7 @@ describe('get_post', () => {
 
   test('turns 403 from GET /posts/{id} into a permission message', async () => {
     routes = { ...base, [`GET /posts/${ROOT}`]: mmError(403) };
-    expect(await setup()('get_post', { post: ROOT }, true)).toBe('この投稿を見る権限がありません（参加していない非公開チャンネルなど）');
+    expect(await setup()('get_post', { post: ROOT }, true)).toBe('この投稿を見る権限がありません（参加していない非公開チャンネルなど）。参加しているはずなら、Mattermost の一時的な障害の可能性があります。少し待ってから再試行してください。');
   });
 
   test('turns 404 from GET /posts/{id} into a not-found message', async () => {
@@ -1785,7 +1797,7 @@ describe('get_file', () => {
       });
     });
 
-    describe('a whole file without Japanese but for an incomplete last character (UTF-8 is only a guess)', () => {
+    describe('a whole file cut at its last character, otherwise made only of what half-width kana Shift_JIS can pass for in UTF-8 (UTF-8 is only a guess)', () => {
       test.each([
         ['a.txt', [0x61, 0x62, 0x63, 0xc2], 'Shift_JIS', 'abcﾂ', false],
         ['a.txt', [0x61, 0x62, 0x63, 0xe8, 0xa0], 'Shift_JIS', 'abc陟', false],
@@ -1804,15 +1816,42 @@ describe('get_file', () => {
         ['a.txt', [...Buffer.from('abc,'), 0xc3, 0xbd, 0xc4], 'Shift_JIS', 'abc,ﾃｽﾄ', false],
         // Fixing a known wrong guess: Latin UTF-8 with a cut last character also reads whole as Shift_JIS.
         ['a.txt', [...Buffer.from('naïve caf'), 0xc3], 'Shift_JIS', 'naﾃｯve cafﾃ', false],
-        ['a.txt', [...Buffer.from('voilà'), 0xc3], 'UTF-8', 'voilà', true],
         ['a.md', [...Buffer.from('café'), 0xe2], 'UTF-8', 'café', true],
-      ])('reads %s %j, without Japanese and with a cut last character in UTF-8, as %s with the guess noted', async (name, b, encoding, shown, cut) => {
+      ])('reads %s %j, whose UTF-8 half-width kana Shift_JIS could also make, as %s with the guess noted', async (name, b, encoding, shown, cut) => {
         routes = { [INFO]: textInfo(name as string, (b as number[]).length), [FILE]: body(Uint8Array.from(b as number[])) };
         const out = await setup()('get_file', { file_id: F });
         expect(content()).toBe(shown);
         expect(out).toContain(`文字コード: ${encoding}`);
         expect(out).toContain(GUESSED);
         expect(out.includes('末尾に不完全な文字')).toBe(cut);
+      });
+
+      test.each([
+        // à is C3 A0: an A0 trail byte half-width kana Shift_JIS never has, so this cannot be it.
+        ['a.txt', [...Buffer.from('voilà'), 0xc3], 'voilà'],
+        ['a.txt', [...Buffer.from('deploy 🚀 done '), 0xe3, 0x81], 'deploy 🚀 done '],
+        ['a.txt', [...Buffer.from('Grüße'), 0xc3], 'Grüße'],
+        ['a.md', [...Buffer.from('ship it 🚀'), 0xe3], 'ship it 🚀'],
+      ])('keeps UTF-8 without a guess for %s %j, whose characters half-width kana Shift_JIS cannot make', async (name, b, shown) => {
+        routes = { [INFO]: textInfo(name as string, (b as number[]).length), [FILE]: body(Uint8Array.from(b as number[])) };
+        const out = await setup()('get_file', { file_id: F });
+        expect(content()).toBe(shown);
+        expect(out).toContain('文字コード: UTF-8');
+        expect(out).not.toContain('推定');
+        expect(out).toContain('末尾に不完全な文字');
+      });
+
+      test.each([
+        [[0x61, 0x62, 0x63, 0xe3, 0x81], 'abc縺'],
+        [[...Buffer.from('résumé'), 0xc3], 'rﾃｩsumﾃｩﾃ'],
+        // á is C3 A1, the lowest trail byte half-width kana can make.
+        [[...Buffer.from('á'), 0xc3], 'ﾃ｡ﾃ'],
+      ])('reads ASCII or half-width kana look-alikes %j cut at the end as Shift_JIS with the guess noted, the price of not ruling out Latin-1', async (b, shown) => {
+        routes = { [INFO]: textInfo('a.txt', (b as number[]).length), [FILE]: body(Uint8Array.from(b as number[])) };
+        const out = await setup()('get_file', { file_id: F });
+        expect(content()).toBe(shown);
+        expect(out).toContain('文字コード: Shift_JIS');
+        expect(out).toContain(GUESSED);
       });
 
       test('reads a file as not text when Node cannot make a Shift_JIS or EUC-JP decoder, instead of failing', async () => {
