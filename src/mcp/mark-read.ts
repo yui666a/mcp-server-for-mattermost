@@ -42,7 +42,7 @@ type Result = { line: string; ok: boolean };
 
 function lastPost(mm: Mm, uid: string, id: string, reread: string): Promise<Post> {
   return mm.call<Post>(uid, 'GET', `/posts/${id}`).catch((e) => {
-    if (missing(e)) throw new InputError(`last_post_id ${id} の投稿が見つかりません（削除されたか、見る権限がありません）。${reread} で読み直して、読んだ投稿のうち最も新しいものの post_id を渡してください。`);
+    if (missing(e)) throw new InputError(`last_post_id ${id} の投稿が見つかりません（削除されたか、見る権限がありません）。${reread} で読み直して、読んだ投稿のうち最も新しいものの post_id を渡してください。${(e as MmError).status === 403 ? 'この投稿のチャンネルに参加しているはずなら、Mattermost の一時的な障害の可能性があります。少し待ってから再試行してください。' : ''}`);
     throw e;
   });
 }
@@ -111,7 +111,7 @@ export async function markAsRead(mm: Mm, uid: string, args: Args): Promise<CallT
         seen.add(ch.id);
         const me = await mm.call<Member>(uid, 'GET', `/channels/${ch.id}/members/me`).catch((e) => {
           // Not saying a 403 means not joined: Mattermost also answers 403 when its permission check fails on a transient error.
-          if (e instanceof MmError && e.status === 403) throw new InputError('このチャンネルに参加しているかを確かめられませんでした（参加していないか、Mattermost の一時的な障害）。参加しているはずなら、少し待ってから再試行してください。');
+          if (e instanceof MmError && e.status === 403) throw new InputError('このチャンネルに参加しているかを確かめられませんでした（参加していないか、Mattermost の一時的な障害）。参加しているはずなら、少し待ってから再試行してください。続くなら、チャンネルから外されたか、サーバーの権限の設定で読む権限が外されている可能性があるので、管理者に確かめてください。');
           if (e instanceof MmError && e.status === 404) throw new InputError('このチャンネルに参加していません。');
           throw e;
         });
@@ -167,7 +167,7 @@ export async function markAsRead(mm: Mm, uid: string, args: Args): Promise<CallT
           if (!p.root_id && !p.reply_count) throw new InputError('このスレッドには返信が無いため、既読にするものがありません。');
           // Not pointing a thread of a channel the user has not joined to follow_thread: follow_thread refuses it. A public channel's posts are readable without joining, so the 404 alone does not tell.
           await mm.call(uid, 'GET', `/channels/${p.channel_id}/members/me`).catch((m) => {
-            if (m instanceof MmError && m.status === 403) throw new InputError('このスレッドのチャンネルに参加しているかを確かめられませんでした（参加していないか、Mattermost の一時的な障害）。参加していないなら、既読にするものはありません。参加しているはずなら、少し待ってから再試行してください。');
+            if (m instanceof MmError && m.status === 403) throw new InputError('このスレッドのチャンネルに参加しているかを確かめられませんでした（参加していないか、Mattermost の一時的な障害）。参加していないなら、既読にするものはありません。参加しているはずなら、少し待ってから再試行してください。続くなら、チャンネルから外されたか、サーバーの権限の設定で読む権限が外されている可能性があるので、管理者に確かめてください。');
             if (m instanceof MmError && m.status === 404) throw new InputError('このスレッドのチャンネルに参加していません。参加していないチャンネルのスレッドは未読に数えられないので、既読にするものがありません。');
             throw m;
           });
