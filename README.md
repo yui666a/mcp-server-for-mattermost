@@ -48,7 +48,7 @@ This project targets the other case:
 | `prepare_upload` | Issue a one-time URL for uploading local files (screenshots, PDFs, photos) with `curl` (creates the DM for `@username` or `@a,b` if it does not exist yet); for clients that can run commands on the user's machine, such as Claude Code and Codex CLI |
 | `add_reaction` / `remove_reaction` | Add or remove the user's own reaction |
 | `save_post` / `unsave_post` | Save (flag) a post in a joined channel, or remove it from the saved posts |
-| `pin_post` / `unpin_post` | Pin or unpin a post in a joined channel |
+| `pin_post` / `unpin_post` | Pin or unpin a post in a joined channel (unpinning also removes pins made by others) |
 | `edit_message` / `delete_message` | Edit or delete the user's own post |
 | `save_draft` | Save a Mattermost draft for the user to send from the UI (creates the DM for `@username` or `@a,b` if it does not exist yet); sending the same text with `send_message` clears it |
 | `schedule_message` | Schedule a post for a later time (1 minute to 30 days ahead), creating the DM for `@username` or `@a,b` if it does not exist yet, optionally with files uploaded through `prepare_upload` |
@@ -60,7 +60,7 @@ This project targets the other case:
 
 Times are in JST: a time for `schedule_message`, `set_status` (`dnd_until`), or `set_custom_status` (`until`) written without an offset (`YYYY-MM-DDTHH:mm[:ss[.sss]]`) is read as `+09:00`, so append `Z` or `+hh:mm` (`-hh:mm`) for another zone. Search dates (`on:`, `before:`, `after:`) are JST days, and output shows each time in both UTC and JST.
 
-Each post in the output of the read tools also shows its message attachments (the formatted content bots and webhooks post, which Mattermost's default database search does not cover), its reactions with who reacted, when it was edited, and whether it is a system message.
+Each post in the output of the read tools also shows its message attachments (the formatted content bots and webhooks post, which Mattermost's default database search does not cover), its reactions with who reacted (for the threads listed by `get_unreads` and `list_followed_threads`, usually only that there are reactions, since Mattermost's thread list does not return them; `get_post` shows them), when it was edited, and whether it is a system message.
 
 Read-only tools carry the MCP `readOnlyHint` annotation so clients can ask before writes.
 
