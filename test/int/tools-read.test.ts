@@ -1,4 +1,4 @@
-import { randomBytes } from 'node:crypto';
+import { createHash, randomBytes } from 'node:crypto';
 import { crc32, deflateSync } from 'node:zlib';
 import type request from 'supertest';
 import { afterAll, beforeAll, describe, expect, test, vi } from 'vitest';
@@ -232,6 +232,32 @@ describe('read tools against the local Mattermost', () => {
     const r = await call('alice', 'search_posts', { terms: `${term} -in:@${e.users.bob.username}` });
     expect(r.isError).toBeFalsy();
     expect(postIds(r)).not.toContain(id);
+  });
+
+  test('search_posts narrows to, or excludes, an existing group DM given as in:@a,b, and does not create a missing one', async () => {
+    const user = async (suffix: string) => {
+      const name = `g${suffix}${TAG}`;
+      const u = await mmApi<{ id: string }>(e.adminToken, 'POST', '/users', { username: name, email: `${name}@example.com`, password: 'Passw0rd!dev123' });
+      await mmApi(e.adminToken, 'POST', `/teams/${e.teams.a.id}/members`, { team_id: e.teams.a.id, user_id: u.id });
+      return { id: u.id, name };
+    };
+    const third = await user('gm');
+    const gm = await mmApi<{ id: string }>(aliceMm, 'POST', '/channels/group', [e.users.alice.id, e.users.bob.id, third.id]);
+    const term = `${TAG}gm`;
+    const id = (await mmApi<{ id: string }>(aliceMm, 'POST', '/posts', { channel_id: gm.id, message: term })).id;
+    // Written without alice and in another order and case: the spec is normalised as a channel spec is.
+    expect(postIds(await call('alice', 'search_posts', { terms: `${term} in:@${third.name},@${e.users.bob.username.toUpperCase()}` }))).toContain(id);
+    const x = await call('alice', 'search_posts', { terms: `${term} -in:@${e.users.bob.username},${third.name}` });
+    expect(x.isError).toBeFalsy();
+    expect(postIds(x)).not.toContain(id);
+
+    const fourth = await user('nogm');
+    const r = await call('alice', 'search_posts', { terms: `${term} in:@${e.users.bob.username},${fourth.name}` });
+    expect(r.isError).toBe(true);
+    expect(r.content[0].text).toContain('グループ DM はまだありません');
+    const name = createHash('sha1').update([e.users.alice.id, e.users.bob.id, fourth.id].sort().join('')).digest('hex');
+    const res = await fetch(`${e.mmUrl}/api/v4/teams/${e.teams.a.id}/channels/name/${name}`, { headers: { authorization: `Bearer ${aliceMm}` } });
+    expect(res.status).toBe(404);
   });
 
   test('search_posts interprets on: dates in JST', async () => {

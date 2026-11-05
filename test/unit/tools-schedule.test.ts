@@ -141,7 +141,7 @@ describe('schedule_message', () => {
   });
 
   test.each([
-    ['a root in another channel', { channel_id: CH2, root_id: '' }, `root_id ${ROOT} の投稿はチャンネル「town」にありません。`],
+    ['a root in another channel', { channel_id: CH2, root_id: '' }, `root_id ${ROOT} の投稿はチャンネル「Town」（channel_id: ${CH}）にありません。`],
     ['a reply', { channel_id: CH, root_id: 'x'.repeat(26) }, `root_id ${ROOT} は返信です。スレッドの親投稿の post_id を指定してください。`],
   ])('refuses %s as root_id and saves nothing', async (_, root, msg) => {
     routes[`GET /posts/${ROOT}`] = () => ({ id: ROOT, user_id: 'u9', message: 'm', create_at: 1, ...root });
@@ -282,19 +282,19 @@ describe('schedule_message with file_ids', () => {
     await s.schedule({ file_ids: [F2] });
   });
 
-  test('the list shows the files, a note on a posted schedule, and how to send the files again on a failed one', async () => {
+  test('the list shows the files, only the kept ones and a note naming the dropped ones on a posted schedule, and how to send the files again on a failed one', async () => {
     const s = setup();
     uploaded(s);
     const posted = await s.schedule({ file_ids: [F1], at: '2026-11-03T10:00' });
-    s.setRow(posted, "status = 'posted', post_id = ?, error = ?", POSTED, '添付した 1 件のうち 1 件を Mattermost が外したため、投稿に付いていません。');
+    s.setRow(posted, "status = 'posted', post_id = ?, file_ids = '[]', error = ?", POSTED, `添付した 1 件のうち 1 件（${F1}）を Mattermost が外したため、投稿に付いていません。`);
     const failed = await s.schedule({ file_ids: [F2], at: '2026-11-04T10:00' });
     s.setRow(failed, "status = 'failed', error = ?", 'nope');
     const plain = await s.schedule({ message: 'plain', at: '2026-11-05T10:00' });
     s.setRow(plain, "status = 'failed', error = ?", 'nope');
     const r = await s.call('list_scheduled_messages', {});
     const [p, f, n] = r.text.split('--- ').slice(1);
-    expect(p).toContain(`添付: ${F1}`);
-    expect(p).toContain('注意: 添付した 1 件のうち 1 件を Mattermost が外したため');
+    expect(p).not.toContain('添付: ');
+    expect(p).toContain(`注意: 添付した 1 件のうち 1 件（${F1}）を Mattermost が外したため`);
     expect(p).not.toContain('失敗の理由');
     expect(f).toContain(`添付: ${F2}`);
     expect(f).toContain('失敗の理由: nope ファイルを付けて送り直すときは、prepare_upload からアップロードし直してください。');
@@ -341,6 +341,33 @@ describe('list_scheduled_messages', () => {
       `投稿先: channel_id: ${GONE}`,
     ]);
     expect(hits).toEqual([`GET /channels/${CH}`, `GET /channels/${CH2}`, `GET /channels/${DM}`, 'GET /users/u5', `GET /channels/${GONE}`]);
+  });
+
+  test('names a group DM by the other members as schedule_message does, looking it up once, and by its display_name when the members cannot be listed', async () => {
+    const GM = 'n'.repeat(26);
+    const GM2 = 'o'.repeat(26);
+    const LONE = 'q'.repeat(26);
+    routes[`GET /channels/${GM}`] = () => ({ id: GM, name: 'h'.repeat(40), display_name: 'alice, carol, bob', team_id: '', type: 'G' });
+    routes[`GET /channels/${GM2}`] = () => ({ id: GM2, name: 'i'.repeat(40), display_name: 'alice, dave, erin', team_id: '', type: 'G' });
+    routes[`GET /channels/${LONE}`] = () => ({ id: LONE, name: 'j'.repeat(40), display_name: 'alice, frank, gina', team_id: '', type: 'G' });
+    const members: Record<string, unknown> = {
+      [GM]: [{ id: 'u7', username: 'carol' }, { id: 'u1', username: 'alice' }, { id: 'u5', username: 'bob' }],
+      [GM2]: Response.json({ id: 'api.context.permissions.app_error', message: 'm', status_code: 403 }, { status: 403 }),
+      [LONE]: [{ id: 'u1', username: 'alice' }],
+    };
+    routes['GET /users'] = (req) => members[new URL(req.url).searchParams.get('in_channel')!];
+    const s = setup();
+    let n = 0;
+    for (const channelId of [GM, GM, GM2, LONE]) s.store.createScheduled({ mmUserId: 'u1', channelId, message: 'x', scheduledAt: NOW + DAY + n++ * MIN }, NOW);
+    const r = await s.call('list_scheduled_messages', {});
+    expect(r.isError, r.text).toBe(false);
+    expect(r.text.match(/投稿先: .*/g)).toEqual([
+      `投稿先: @bob, @carol（channel_id: ${GM}）`,
+      `投稿先: @bob, @carol（channel_id: ${GM}）`,
+      `投稿先: alice, dave, erin（channel_id: ${GM2}）`,
+      `投稿先: alice, frank, gina（channel_id: ${LONE}）`,
+    ]);
+    expect(hits.filter((h) => h === 'GET /users')).toHaveLength(3);
   });
 
   test.each([
