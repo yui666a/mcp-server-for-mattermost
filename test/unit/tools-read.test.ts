@@ -258,9 +258,16 @@ describe('get_post', () => {
     expect(out).not.toContain('read_thread');
   });
 
-  test('notes that the message attachments were cut', async () => {
+  test('notes at the end that the message was cut', async () => {
+    routes = { ...base, [`GET /posts/${ROOT}`]: () => post({ id: ROOT, message: 'x'.repeat(4001) }) };
+    expect((await setup()('get_post', { post: ROOT })).split('\n').at(-1)).toBe('（本文を 4000 文字で切りました）');
+  });
+
+  test('notes cut message attachments only where they were cut, not again at the end', async () => {
     routes = { ...base, [`GET /posts/${ROOT}`]: () => post({ id: ROOT, message: '', props: { attachments: [{ text: 'x'.repeat(4001) }] } }) };
-    expect(await setup()('get_post', { post: ROOT })).toContain('（本文かメッセージ添付を 4000 文字で切りました）');
+    const out = await setup()('get_post', { post: ROOT });
+    expect(out.match(/切りました/g)).toHaveLength(1);
+    expect(out).toContain('\n（メッセージ添付をここで切りました。続きは Mattermost の画面で確認してください）\n');
   });
 
   test('accepts a bare post_id', async () => {
