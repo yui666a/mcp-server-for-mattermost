@@ -147,7 +147,7 @@ describe('mentionsMe', () => {
 });
 
 describe('stripCodeSpans', () => {
-  // The regex it replaces, kept as the reference for what a code span is.
+  // The regex it replaces, kept as the reference for what a code span is in a text without backslashes.
   const reference = (text: string) => text.replace(/(?<!`)(`+)(?!`)[\s\S]*?(?<!`)\1(?!`)/g, ' ');
 
   test('gives what the backreference regex gave, for many texts mixing runs of backticks, text and line breaks', () => {
@@ -161,6 +161,20 @@ describe('stripCodeSpans', () => {
       const text = Array.from({ length: random(30) }, () => parts[random(parts.length)]).join('');
       expect(stripCodeSpans(text), JSON.stringify(text)).toBe(reference(text));
     }
+  });
+
+  // Like the server's parser: a backslash escapes the first backtick of a run where a span would open, and is plain text where one closes.
+  test.each([
+    ['an escaped backtick does not open a span', '\\`code @alice`', true],
+    ['the run after an escaped backtick may still open one', '\\``@alice`', false],
+    ['an escaped backtick leaves the next run to open a span', '\\`x` @alice `y`', false],
+    ['an escaped backslash leaves the backtick to open a span', '\\\\`@alice`', false],
+    ['three backslashes escape the backtick again', 'x\\\\\\`@alice`', true],
+    ['a backslash before a closing run does not keep the span open', '`a\\`@alice', true],
+    ['backslashes right after a closed span are counted from there', '`x`\\`@alice`', true],
+    ['an escaped run of two still closes a span opened with two', '``@alice\\``', false],
+  ])('%s', (_, message, mentioned) => {
+    expect(mentionsMe(message, { username: 'alice' })).toBe(mentioned);
   });
 
   test('takes time linear in the length, even for runs of backticks of ever more lengths that never close', () => {
