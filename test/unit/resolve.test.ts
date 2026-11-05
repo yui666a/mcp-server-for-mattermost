@@ -142,6 +142,13 @@ describe('a channel named like an ID (26 lower-case letters and digits)', () => 
   });
 });
 
+test.each([
+  ['team-a/', 'チャンネル名が空です。'],
+  ['@', 'ユーザー名が空です。'],
+])('an empty name in %j says which name is empty', async (spec, message) => {
+  await expect(resolveChannel(fake(routes).mm, ME, spec)).rejects.toThrow(new InputError(message));
+});
+
 test('every form of channel spec also returns the fetched channel as raw', async () => {
   const { mm } = fake(routes);
   expect((await resolveChannel(mm, ME, CH_A)).raw).toBe(routes[`/channels/${CH_A}`]);
