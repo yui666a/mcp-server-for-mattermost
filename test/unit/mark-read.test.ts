@@ -463,15 +463,15 @@ describe('mark_as_read input and annotations', () => {
   });
 
   test.each([
-    ['channels', { channels: [{ channel: CH, last_post: LAST }] }, 'channels の要素に渡せるのは channel と last_post_id だけです。'],
-    ['threads', { threads: [{ post_id: ROOT, last_post: LAST }] }, 'threads の要素に渡せるのは post_id と last_post_id だけです。'],
-    ['a valid item next to one with an unknown key', { channels: [{ channel: CH2 }, { channel: CH, last_post: LAST }], threads: [{ post_id: ROOT }] }, 'channels の要素に渡せるのは channel と last_post_id だけです。'],
-  ])('refuses an item with an unknown key (%s) before marking anything read', async (_, args, keys) => {
+    ['channels', { channels: [{ channel: CH, last_post: LAST }] }, 'at channels[0]'],
+    ['threads', { threads: [{ post_id: ROOT, last_post: LAST }] }, 'at threads[0]'],
+    ['a valid item next to one with an unknown key', { channels: [{ channel: CH2 }, { channel: CH, last_post: LAST }], threads: [{ post_id: ROOT }] }, 'at channels[1]'],
+  ])('refuses an item with an unknown key (%s) before marking anything read', async (_, args, at) => {
     routes = base();
     const r = await setup().call(args);
     expect(r.isError).toBe(true);
     expect(r.text).toContain('受けない引数です: last_post。');
-    expect(r.text).toContain(keys);
+    expect(r.text).toContain(at);
     expect(hits).toEqual([]);
   });
 
