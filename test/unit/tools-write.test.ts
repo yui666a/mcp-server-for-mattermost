@@ -985,7 +985,7 @@ describe('a root_id in another channel than the DM or group DM it is sent to', (
   });
 });
 
-describe('save_draft and send_message\'s draft cleanup of one user run one at a time across requests', () => {
+describe('save_draft and send_message\'s draft cleanup for one draft target (user, channel, root_id) run one at a time across requests', () => {
   const CH = 'c'.repeat(26);
   const LIST = 'GET /users/u1/teams/t1/drafts';
   const DEL = `DELETE /users/u1/channels/${CH}/drafts`;
@@ -1037,6 +1037,24 @@ describe('save_draft and send_message\'s draft cleanup of one user run one at a 
     const saving = s.call('save_draft', { channel: CH, message: 'mine' });
     await vi.waitFor(() => expect(count(LIST)).toBe(1));
     const r = await s.call('send_message', { channel: CH, message: 'hello', root_id: ROOT });
+    expect(r.text).toContain('同じ本文の下書きを消しました');
+    open();
+    expect((await saving).isError).toBe(false);
+  });
+
+  test('a cleanup in one channel does not wait for a save_draft to another channel', async () => {
+    const CH2 = 'e'.repeat(26);
+    let open!: () => void;
+    const gate = new Promise<void>((r) => { open = r; });
+    serve(() => [draft('hello')]);
+    routes[`GET /channels/${CH2}`] = () => ({ id: CH2, name: 'other', display_name: 'Other', team_id: 't1', type: 'O' });
+    const list = routes[LIST];
+    let n = 0;
+    routes[LIST] = async (req) => (n++ === 0 ? (await gate, []) : list(req));
+    const s = setup();
+    const saving = s.call('save_draft', { channel: CH2, message: 'mine' });
+    await vi.waitFor(() => expect(count(LIST)).toBe(1));
+    const r = await s.call('send_message', { channel: CH, message: 'hello' });
     expect(r.text).toContain('同じ本文の下書きを消しました');
     open();
     expect((await saving).isError).toBe(false);
