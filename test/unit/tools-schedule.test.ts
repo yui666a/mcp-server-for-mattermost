@@ -247,6 +247,14 @@ describe('schedule_message', () => {
     expect(out).not.toContain('To\nwn');
   });
 
+  test('a schedule ID with a space or a zero-width character at its edges finds the schedule', async () => {
+    const s = setup();
+    const id = await s.schedule({ message: 'hello' });
+    const r = await s.call('cancel_scheduled_message', { id: `\u200b${id} ` });
+    expect(r.isError).toBe(false);
+    expect(r.text).toBe(`予約を取り消しました。\n予約 ID: ${id}`);
+  });
+
   test('neither the message nor the time goes to the log', async () => {
     const s = setup();
     const id = await s.schedule({ message: 'secret plan' });

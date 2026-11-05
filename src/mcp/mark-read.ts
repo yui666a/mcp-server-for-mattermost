@@ -2,9 +2,9 @@ import type { McpServer, ToolCallback } from '@modelcontextprotocol/sdk/server/m
 import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
 import { z } from 'zod';
 import { MmError, RateLimited } from '../mattermost/client.ts';
-import { strictArgs } from './args.ts';
-import { ASK_ADMIN, InputError, oneLine, RETRY_SOON, type MmPost } from './format.ts';
-import { myTeams, resolveChannel, unformat, type Mm } from './resolve.ts';
+import { idArg, strictArgs } from './args.ts';
+import { ASK_ADMIN, InputError, oneLine, RETRY_SOON, unformat, type MmPost } from './format.ts';
+import { myTeams, resolveChannel, type Mm } from './resolve.ts';
 import { log } from '../log.ts';
 import { failure, failureText, guarded, text, type ToolContext } from './server.ts';
 import { channelError, collapsedThreads } from './tools-read.ts';
@@ -12,7 +12,7 @@ import { POST_WORDING } from './tools-save-pin.ts';
 import { worded } from './tools-send.ts';
 import { missing, threadTeam } from './tools-threads.ts';
 
-const POST_ID = z.string().regex(/^[A-Za-z0-9]{26}$/);
+const POST_ID = idArg;
 const MAX_ITEMS = 20;
 const AFTER_PAGE = 200;
 
