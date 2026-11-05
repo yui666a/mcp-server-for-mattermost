@@ -7,9 +7,14 @@ export type MmTokens = { access: string; refresh: string };
 export class UpstreamUnavailable extends Error {
   name = 'UpstreamUnavailable';
   readonly sent: boolean;
-  constructor(message: string, sent = true) {
+  // Set only when Mattermost answered: the HTTP status, and for a 500 the id of its JSON error if it gave one.
+  readonly status?: number;
+  readonly id?: string;
+  constructor(message: string, sent = true, status?: number, id?: string) {
     super(message);
     this.sent = sent;
+    this.status = status;
+    this.id = id;
   }
 }
 

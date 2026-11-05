@@ -1382,6 +1382,99 @@ describe('get_file', () => {
       expect(content()).toBe(shown);
       expect(out).toContain(encoding as string);
       expect(out).toContain('先頭の 2 文字だけを返しました');
+      expect(out).not.toContain('末尾に不完全な文字');
+    });
+
+    const GUESSED = '文字コードは中身から推定しました。文字化けしているなら、Shift_JIS、EUC-JP、Latin-1 など別の文字コードかもしれません。';
+    // EUC-JP bytes written out: Node has no EUC-JP encoder.
+    const eucjp = (s: string) => Uint8Array.from(Buffer.from(
+      { 'あいう,在庫\n': 'a4a2a4a4a4a62cbadfb8cb0a', '漢字\n': 'b4c1bbfa0a', '漢字': 'b4c1bbfa', '在庫,漢字\n': 'badfb8cb2cb4c1bbfa0a' }[s]!, 'hex'));
+
+    test.each([
+      ['EUC-JP that Shift_JIS also reads, as half-width kana', 'あいう,在庫\n', 'EUC-JP'],
+      ['EUC-JP that Shift_JIS cannot read', '漢字\n', 'EUC-JP'],
+      ['EUC-JP without kana that Shift_JIS cannot read', '在庫,漢字\n', 'EUC-JP'],
+      ['EUC-JP without kana that Shift_JIS reads only by dropping its last byte', '漢字', 'EUC-JP'],
+    ])('reads %s, noting that the encoding is a guess', async (_, s, encoding) => {
+      const b = eucjp(s);
+      routes = { [INFO]: textInfo('a.csv', b.length), [FILE]: body(b) };
+      const out = await setup()('get_file', { file_id: F });
+      expect(content()).toBe(s);
+      expect(out).toContain(`文字コード: ${encoding}`);
+      expect(out).toContain(GUESSED);
+      expect(out).not.toContain('末尾に不完全な文字');
+    });
+
+    test.each([
+      ['half-width kana Shift_JIS', [0xb6, 0xcc, 0xde, 0xbc, 0xb7, 0xb6, 0xde, 0xb2, 0xbc, 0xac], 'Shift_JIS', 'ｶﾌﾞｼｷｶﾞｲｼｬ'],
+      // Fixing a known wrong guess: the ･ (0xA5) pairs with the next byte into an EUC-JP katakana.
+      ['half-width kana Shift_JIS with ･ in an even place', [0xd4, 0xcf, 0xc0, 0xde, 0xa5, 0xc0, 0xdb, 0xb3], 'EUC-JP', undefined],
+      ['Latin-1 °©½', [0xb0, 0xa9, 0xbd], 'Shift_JIS', 'ｰｩｽ'],
+      ['odd-length half-width kana Shift_JIS that EUC-JP reads only by dropping its last byte', [0xa4, 0xa2, 0xb1], 'Shift_JIS', '､｢ｱ'],
+      ['Latin-1 séance', [...Buffer.from('séance', 'latin1')], 'Shift_JIS', 's饌nce'],
+    ])('notes that the encoding is a guess for %s', async (_, b, encoding, shown) => {
+      routes = { [INFO]: textInfo('a.txt', b.length), [FILE]: body(Uint8Array.from(b)) };
+      const out = await setup()('get_file', { file_id: F });
+      expect(out).toContain(`文字コード: ${encoding}`);
+      expect(out).toContain(GUESSED);
+      if (shown) expect(content()).toBe(shown);
+    });
+
+    test('does not note a guess for UTF-8, and reads Latin-1 für that neither Shift_JIS nor EUC-JP accepts as not text', async () => {
+      routes = { [INFO]: textInfo('a.txt', 4), [FILE]: body(new Uint8Array(Buffer.from('abc\n'))) };
+      expect(await setup()('get_file', { file_id: F })).not.toContain('推定');
+      routes = { [INFO]: textInfo('a.txt', 3), [FILE]: body(Uint8Array.from(Buffer.from('für', 'latin1'))) };
+      expect(await setup()('get_file', { file_id: F })).toContain('テキストとして読めない形式');
+    });
+
+    const TAIL = 'ファイルの末尾に不完全な文字があったため、その部分を除きました。';
+    test.each([
+      ['UTF-8', 'a.md', [0x61, 0xe3], 'a'],
+      ['Shift_JIS', 'a.txt', [0x82, 0xa0, 0x82], 'あ'],
+    ])('drops an incomplete %s character at the end of a whole file and says so', async (encoding, name, b, shown) => {
+      routes = { [INFO]: textInfo(name as string, (b as number[]).length), [FILE]: body(Uint8Array.from(b as number[])) };
+      const out = await setup()('get_file', { file_id: F });
+      expect(content()).toBe(shown);
+      expect(out).toContain(`文字コード: ${encoding}`);
+      expect(out).toContain(TAIL);
+      if (encoding === 'Shift_JIS') expect(out).toContain(GUESSED);
+      expect(out).not.toContain('先頭の');
+    });
+
+    test('says nothing readable is left when the whole file is one incomplete character', async () => {
+      routes = { [INFO]: textInfo('a.md', 1), [FILE]: body(Uint8Array.from([0xe3])) };
+      const out = await setup()('get_file', { file_id: F });
+      expect(out).toContain('ファイルの末尾に不完全な文字があり、それを除くと読める中身がありません。');
+      expect(out).not.toContain('中身は空です');
+      expect(last.content).toHaveLength(1);
+    });
+
+    test('a plain-text 500 while fetching the content (a file missing from S3) returns the information with the reason', async () => {
+      routes = { [INFO]: textInfo('a.txt', 5), [FILE]: () => new Response("seeker can't seek\n", { status: 500, headers: { 'content-type': 'text/plain' } }) };
+      const out = await setup()('get_file', { file_id: F });
+      expect(out).toContain('a.txt');
+      expect(out).toContain('中身を取得できませんでした（HTTP 500）。保存先にファイルの実体が無いか、保存先の一時的な障害です。');
+      expect(last.content).toHaveLength(1);
+    });
+
+    test.each([
+      ['a 500 with a Mattermost JSON error', mmError(500, 'api.file.get_file_info.app_error')],
+      ['a 502', () => new Response('bad gateway', { status: 502 })],
+      ['a 503', () => new Response('unavailable', { status: 503 })],
+      ['a 504', () => new Response('gateway timeout', { status: 504 })],
+    ])('%s while fetching the content stays an error', async (_, route) => {
+      routes = { [INFO]: textInfo('a.txt', 5), [FILE]: route };
+      expect(await setup()('get_file', { file_id: F }, true)).toContain('再試行');
+    });
+
+    test('a plain-text 500 for an image preview stays an error', async () => {
+      routes = { [INFO]: info({ width: 200, height: 100 }), [PREVIEW]: () => new Response("seeker can't seek\n", { status: 500, headers: { 'content-type': 'text/plain' } }) };
+      expect(await setup()('get_file', { file_id: F }, true)).toContain('再試行');
+    });
+
+    test('says an ABAC policy denies the file when its information is refused', async () => {
+      routes = { [INFO]: mmError(403, 'api.file.get_file.abac_denied.app_error') };
+      expect(await setup()('get_file', { file_id: F }, true)).toBe('Mattermost のアクセス制御の方針（ABAC）により、このファイルを見られません');
     });
 
     test('does not read the same Shift_JIS bytes under another extension', async () => {
@@ -1659,19 +1752,35 @@ describe('read_channel with since and until', () => {
     corpus = Array.from({ length: count }, (_, n) => ({ id: id(n), user_id: 'u2', channel_id: CH, root_id: '', message: `m${n}`, create_at: at(n) }));
   };
   const iso = (n: number) => new Date(T0 + n * 1000).toISOString();
-  const byNewest = () => [...corpus].sort((a, b) => b.create_at - a.create_at || (a.id < b.id ? -1 : 1));
+  // Mattermost orders by create_at alone; posts of the same millisecond come by id descending here, as one order it may give.
+  const byTie = (a: P, b: P) => (a.id < b.id ? 1 : -1);
+  const byNewest = () => [...corpus].sort((a, b) => b.create_at - a.create_at || byTie(a, b));
+  const byOldest = () => [...corpus].sort((a, b) => a.create_at - b.create_at || byTie(a, b));
   const asList = (ps: P[]) => ({ order: ps.map((p) => p.id), posts: Object.fromEntries(ps.map((p) => [p.id, p])) });
-  // Like Mattermost: page/per_page by offset newest first, after= by create_at strictly later and oldest first, at most 200 per call.
+  // Like Mattermost: page/per_page by offset newest first, after= (before=) by create_at strictly later (earlier) oldest (newest) first,
+  // nothing when the cursor's post is gone, at most 200 per call.
   const postsRoute = (req: Request) => {
     const q = new URL(req.url).searchParams;
     const per = Math.min(Number(q.get('per_page')), 200);
+    const at = (pid: string) => corpus.find((p) => p.id === pid)?.create_at;
     const after = q.get('after');
+    const before = q.get('before');
     if (after) {
-      const t = corpus.find((p) => p.id === after)!.create_at;
-      return asList([...corpus].filter((p) => p.create_at > t).sort((a, b) => a.create_at - b.create_at).slice(0, per));
+      const t = at(after);
+      return asList(t === undefined ? [] : byOldest().filter((p) => p.create_at > t).slice(0, per));
+    }
+    if (before) {
+      const t = at(before);
+      return asList(t === undefined ? [] : byNewest().filter((p) => p.create_at < t).slice(0, per));
     }
     const k = Number(q.get('page') ?? 0);
     return asList(byNewest().slice(k * per, (k + 1) * per));
+  };
+  // Like Mattermost: the oldest post after last_viewed_at, then those strictly after it.
+  const unreadRoute = (viewed: number) => (req: Request) => {
+    const after = Number(new URL(req.url).searchParams.get('limit_after'));
+    const first = byOldest().find((p) => p.create_at > viewed);
+    return asList(first ? [first, ...byOldest().filter((p) => p.create_at > first.create_at).slice(0, after - 1)] : []);
   };
   const base = (): Record<string, Route> => ({
     [`GET /channels/${CH}`]: () => ({ id: CH, name: 'town', display_name: 'Town', team_id: TEAM, type: 'O' }),
@@ -1714,6 +1823,118 @@ describe('read_channel with since and until', () => {
     const out = await setup()('read_channel', { channel: CH, since: '2026-11-03T09:00:08' });
     expect(shownIds(out)).toEqual([id(8), id(9)]);
     expect(out).toContain('から 最新まで');
+  });
+
+  // Reads every page from the first call and returns the post ids in the order shown, with the last output.
+  const readAll = async (call: ReturnType<typeof setup>, args: Record<string, unknown>) => {
+    const seen: string[] = [];
+    let out = await call('read_channel', { channel: CH, ...args });
+    for (let i = 0; ; i++) {
+      seen.push(...shownIds(out));
+      const cursor = cursorIn(out);
+      if (!cursor || i > 50) return { seen, out };
+      out = await call('read_channel', { channel: CH, cursor });
+    }
+  };
+  const unreadBase = (viewed: number): Record<string, Route> => ({
+    ...base(),
+    'GET /config/client': () => ({ CollapsedThreads: 'always_on' }),
+    [`GET /channels/${CH}/members/me`]: () => ({ channel_id: CH, last_viewed_at: viewed }),
+    [`GET /users/u1/channels/${CH}/posts/unread`]: unreadRoute(viewed),
+  });
+  const secs = (...t: number[]) => (n: number) => T0 + t[n] * 1000;
+  const GONE = '続きを取りこぼしている可能性があります';
+
+  test('newest first, the posts of the millisecond at the end of a page move to the next page, so none drops out', async () => {
+    fill(10, secs(0, 1, 2, 3, 4, 5, 5, 5, 8, 9));
+    routes = base();
+    const { seen } = await readAll(setup(), { limit: 3 });
+    expect(seen).toEqual([9, 8, 7, 6, 5, 4, 3, 2, 1, 0].map(id));
+  });
+
+  test('from unread, the posts of the millisecond at the end of a page move to the next page, so none drops out', async () => {
+    fill(10, secs(0, 1, 2, 3, 4, 4, 4, 7, 8, 9));
+    routes = unreadBase(T0 + 1000);
+    const { seen } = await readAll(setup(), { from: 'unread', limit: 3 });
+    expect(seen).toEqual([2, 3, 4, 5, 6, 7, 8, 9].map(id));
+  });
+
+  test('in a range, the posts of the millisecond at the end of a page move to the next page, so none drops out', async () => {
+    fill(10, secs(0, 1, 2, 3, 3, 3, 6, 7, 8, 9));
+    routes = base();
+    const { seen } = await readAll(setup(), { since: iso(1), limit: 3 });
+    expect(seen).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9].map(id));
+  });
+
+  test('in a range starting before the first post, the oldest page leaves the posts of its newest millisecond to the read after it', async () => {
+    // Post 4, the newest of the oldest page by offset, shares its millisecond with post 5, which the offset puts on the page before.
+    fill(205, (n) => T0 + (n <= 5 ? Math.min(n, 4) : n) * 1000);
+    routes = base();
+    const { seen } = await readAll(setup(), { since: new Date(T0 - 60_000).toISOString(), limit: 100 });
+    expect(new Set(seen).size).toBe(205);
+    expect(seen.length).toBe(205);
+  });
+
+  test('in a range, when every post fetched within a call shares one millisecond, keeps them all and reads on from the last', async () => {
+    fill(6, secs(0, 1, 1, 1, 1, 5));
+    routes = base();
+    const { seen } = await readAll(setup(), { since: iso(1), limit: 2 });
+    expect(seen.slice(0, 2)).toEqual([id(1), id(2)]);
+    expect(seen).toContain(id(5));
+  });
+
+  test('when every post fetched shares one millisecond, still shows a full page and pages on from its last post', async () => {
+    fill(5, () => T0);
+    routes = base();
+    const call = setup();
+    const first = await call('read_channel', { channel: CH, limit: 2 });
+    expect(shownIds(first)).toEqual([id(4), id(3)]);
+    expect(JSON.parse(Buffer.from(cursorIn(first)!, 'base64url').toString())).toMatchObject({ before: id(3) });
+  });
+
+  test.each([
+    ['newest first', {}, 'cursor を渡さずに呼ぶと、最新から読み直せます', '投稿はありません。'],
+    ['from unread', { from: 'unread' }, '前のページの最後の投稿の時刻を since に渡すと', '投稿はありません。'],
+    ['in a range', { since: '2026-11-03T09:00:00' }, '前のページの最後の投稿の時刻を since に渡すと', 'この範囲に投稿はありません。'],
+  ])('%s, a later page with nothing left after a deleted post says posts may have been missed and how to read again', async (_, args, how, none) => {
+    fill(4);
+    routes = unreadBase(T0 - 1);
+    const call = setup();
+    const first = await call('read_channel', { channel: CH, limit: 2, ...args });
+    const last = shownIds(first).at(-1);
+    corpus = corpus.filter((p) => p.id !== last);
+    const out = await call('read_channel', { channel: CH, cursor: cursorIn(first) });
+    expect(out).toContain(none);
+    expect(out).toContain(GONE);
+    expect(out).toContain(how);
+    expect(out).not.toContain('until は前と同じ値');
+  });
+
+  test('a later range page with an until says to pass the same until again', async () => {
+    fill(4);
+    routes = base();
+    const call = setup();
+    const first = await call('read_channel', { channel: CH, since: iso(0), until: iso(10), limit: 2 });
+    corpus = corpus.filter((p) => p.id !== shownIds(first).at(-1));
+    const out = await call('read_channel', { channel: CH, cursor: cursorIn(first) });
+    expect(out).toContain(GONE);
+    expect(out).toContain('until は前と同じ値を渡してください');
+  });
+
+  test('a first page with no posts says only that there are none, also for a range over an empty channel', async () => {
+    corpus = [];
+    routes = base();
+    const call = setup();
+    const range = await call('read_channel', { channel: CH, since: iso(0) });
+    expect(range).toContain('この範囲に投稿はありません。');
+    expect(range).not.toContain(GONE);
+    const latest = await call('read_channel', { channel: CH });
+    expect(latest).toContain('投稿はありません。');
+    expect(latest).not.toContain(GONE);
+    routes = unreadBase(T0);
+    const unread = await call('read_channel', { channel: CH, from: 'unread' });
+    expect(unread).toContain('未読はありません。');
+    expect(unread).not.toContain(GONE);
   });
 
   test('every call asks Mattermost to skip fetching threads', async () => {
@@ -1790,7 +2011,7 @@ describe('read_channel with since and until', () => {
     hits = []; urls = [];
     const second = await call('read_channel', { channel: CH, since: iso(0), cursor: cursorIn(first) });
     expect(shownIds(second)).toEqual([id(5), id(6), id(7)]);
-    expect(Object.fromEntries(pages()[0])).toEqual({ after: id(4), per_page: '4', skipFetchThreads: 'true' });
+    expect(Object.fromEntries(pages()[0])).toEqual({ after: id(4), per_page: '5', skipFetchThreads: 'true' });
     expect(second).toContain('の前まで');
     expect(second).toContain('（続きはありません）');
   });
@@ -1815,7 +2036,7 @@ describe('read_channel with since and until', () => {
       const q = new URL(req.url).searchParams;
       if (q.has('after') && first) {
         first = false;
-        return asList(corpus.slice(10, 14));
+        return asList(corpus.slice(10, 15));
       }
       return postsRoute(req);
     };
