@@ -351,11 +351,17 @@ describe('follow_thread and unfollow_thread', () => {
     expect(hits).toEqual(['GET /config/client', `GET /posts/${REPLY}`, `GET /channels/${CH1}`, `DELETE /users/u1/teams/${T1}/threads/${ROOT}/following`]);
   });
 
-  test('both report a missing post and reject a malformed post_id', async () => {
-    routes = base();
+  test('both report a deleted post and a post they cannot see in the same words as save_post, and reject a malformed post_id', async () => {
+    const GONE = 'z'.repeat(26);
+    const HIDDEN = 'y'.repeat(26);
+    routes = {
+      ...base(),
+      [`GET /posts/${GONE}`]: () => Response.json({ id: 'app.post.get.app_error' }, { status: 404 }),
+      [`GET /posts/${HIDDEN}`]: () => Response.json({ id: 'api.context.permissions.app_error' }, { status: 403 }),
+    };
     for (const name of ['follow_thread', 'unfollow_thread']) {
-      const gone = await setup().call(name, { post_id: 'z'.repeat(26) });
-      expect(gone.text, name).toContain('投稿が見つかりません（削除されたか、見る権限がありません）。');
+      expect((await setup().call(name, { post_id: GONE })).text, name).toContain('投稿が見つかりません（削除されたか、存在しません）。');
+      expect((await setup().call(name, { post_id: HIDDEN })).text, name).toContain('この投稿は見られません（参加していない非公開チャンネルの投稿など）。');
       expect((await setup().call(name, { post_id: 'bad' })).isError, name).toBe(true);
     }
     expect(writes()).toEqual([]);
