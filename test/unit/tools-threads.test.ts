@@ -252,11 +252,12 @@ describe('follow_thread and unfollow_thread', () => {
 
   test('follow_thread refuses a thread in a channel the user has not joined, whether Mattermost answers 403 or 404', async () => {
     for (const status of [403, 404]) {
-      routes = { ...base(), [`GET /channels/${CH1}/members/me`]: () => Response.json({ id: 'app.channel.get_member.missing.app_error' }, { status }) };
+      routes = { ...base(), [`GET /channels/${CH1}/members/me`]: () => Response.json({ id: status === 403 ? 'api.context.permissions.app_error' : 'app.channel.get_member.missing.app_error' }, { status }) };
       hits = [];
       const r = await setup().call('follow_thread', { post_id: ROOT });
       expect(r.isError, String(status)).toBe(true);
-      expect(r.text).toContain('このチャンネルに参加していません');
+      expect(r.text).toContain(status === 404 ? 'このチャンネルに参加していません。' : 'このチャンネルに参加しているかを確かめられませんでした（参加していないか、Mattermost の一時的な障害）。');
+      expect(r.text).toContain('参加していないチャンネルのスレッドは、フォローしても一覧にも通知にも出ません。');
       expect(writes()).toEqual([]);
     }
   });
