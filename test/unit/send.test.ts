@@ -4,7 +4,7 @@ import { openDb } from '../../src/db.ts';
 import { CALL_DEADLINE_MS, MmError, RateLimited, Reauthorize, UpstreamUnavailable } from '../../src/mattermost/client.ts';
 import type { MmPost } from '../../src/mcp/format.ts';
 import type { Mm } from '../../src/mcp/resolve.ts';
-import { sendMessage } from '../../src/mcp/tools-send.ts';
+import { checkRoot, sendMessage } from '../../src/mcp/tools-send.ts';
 import { INFLIGHT_GRACE, Store } from '../../src/store.ts';
 
 // Not vitest's defaults (1 s for vi.waitFor, 5 s for a test): on a busy machine the awaited event can take seconds.
@@ -124,6 +124,11 @@ test('root_id in another channel is rejected', async () => {
   const f = fakeMm();
   await expect(f.send({ channel: 'team-a/dup', message: 'hi', root_id: id(0) })).rejects.toMatchObject({ name: 'InputError' });
   expect(f.created).toHaveLength(0);
+});
+
+test('a root_id in another channel names the channel with a line break in its display name on one line', async () => {
+  const mm: Mm = { call: (async () => ({ id: id(1), channel_id: OTHER, root_id: '', user_id: UID, message: 'm', create_at: 0 })) as Mm['call'] };
+  await expect(checkRoot(mm, UID, id(1), { id: CH, name: 'dup', displayName: 'D\nup' })).rejects.toThrow(`チャンネル「D up」（channel_id: ${CH}）にありません`);
 });
 
 describe('root_id', () => {

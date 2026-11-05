@@ -236,6 +236,15 @@ describe('schedule_message', () => {
     expect(r.text).toContain('待機中の予約が上限の 20 件に達しています');
   });
 
+  test('list_scheduled_messages keeps the destination\'s display name with a line break on one line', async () => {
+    const s = setup();
+    await s.schedule({ message: 'hello' });
+    routes[`GET /channels/${CH}`] = () => ({ id: CH, name: 'town', display_name: 'To\nwn', team_id: TEAM, type: 'O' });
+    const out = (await s.call('list_scheduled_messages', {})).text;
+    expect(out).toContain('To wn');
+    expect(out).not.toContain('To\nwn');
+  });
+
   test('neither the message nor the time goes to the log', async () => {
     const s = setup();
     const id = await s.schedule({ message: 'secret plan' });
