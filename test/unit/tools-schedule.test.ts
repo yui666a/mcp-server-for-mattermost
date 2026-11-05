@@ -1,5 +1,6 @@
 import type { DatabaseSync } from 'node:sqlite';
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
+import { MAX_PENDING_SCHEDULED } from '../../src/store.ts';
 import { makeApp } from './helpers.ts';
 
 type Route = (req: Request) => unknown;
@@ -107,14 +108,30 @@ describe('schedule_message', () => {
       expect(hits).toContain('POST /channels/direct');
     });
 
-    test.each([
-      ['root_id', { root_id: ROOT }],
-      ['file_ids', { file_ids: ['f'.repeat(26)] }],
-    ])('does not create the DM when %s is given, since the DM cannot hold it yet', async (_, args) => {
-      const r = await setup().call('schedule_message', { channel: '@carol', message: 'hello', at: '2026-11-03T10:00', ...args });
+    test('does not create the DM when root_id is given, since the DM cannot hold it yet', async () => {
+      const r = await setup().call('schedule_message', { channel: '@carol', message: 'hello', at: '2026-11-03T10:00', root_id: ROOT });
       expect(r.isError).toBe(true);
       expect(r.text).toContain('@carol との DM はまだありません');
       expect(hits).not.toContain('POST /channels/direct');
+    });
+
+    test('with file_ids uploaded for another channel, reports the file mistake rather than the missing DM, and does not create the DM', async () => {
+      const s = setup();
+      const f = 'f'.repeat(26);
+      s.store.recordUploadedFile({ mmUserId: 'u1', channelId: CH }, f);
+      const r = await s.call('schedule_message', { channel: '@carol', message: 'hello', at: '2026-11-03T10:00', file_ids: [f] });
+      expect(r.isError).toBe(true);
+      expect(r.text).toContain(`別のチャンネル（channel_id: ${CH}）`);
+      expect(hits).not.toContain('POST /channels/direct');
+    });
+
+    test('with the pending schedules at the limit, refuses before resolving the channel, so no DM is created', async () => {
+      const s = setup();
+      for (let i = 0; i < MAX_PENDING_SCHEDULED; i++) s.store.createScheduled({ mmUserId: 'u1', channelId: CH, message: `m${i}`, scheduledAt: NOW + DAY }, NOW);
+      const r = await s.call('schedule_message', { channel: '@carol', message: 'hello', at: '2026-11-03T10:00' });
+      expect(r.isError).toBe(true);
+      expect(r.text).toContain(`待機中の予約が上限の ${MAX_PENDING_SCHEDULED} 件に達しています`);
+      expect(hits).toEqual([]);
     });
 
     test('does not create the DM when the time is out of range', async () => {
