@@ -1896,6 +1896,19 @@ describe('list_saved_posts', () => {
   const offsets = () => asked('page');
   const NOTE = '新しい 1000 件だけ';
 
+  test('labels a saved post in an archived channel with that channel and builds the permalink from its team', async () => {
+    const OLD = 'g'.repeat(26);
+    const T2 = 'u'.repeat(26);
+    routes = { ...base(),
+      'GET /users/me/teams': () => [{ id: T, name: 'team-a' }, { id: T2, name: 'team-b' }],
+      'GET /users/me/channels': () => [{ id: OLD, name: 'old', display_name: 'Old', team_id: T2, type: 'O', delete_at: 5 }],
+      [FLAGGED]: byOffset([{ ...post('x'.repeat(26), 2), channel_id: OLD }]) };
+    const out = await setup()('list_saved_posts', {});
+    expect(urls).toContain('GET /users/me/channels?include_deleted=true');
+    expect(out).toContain(`チャンネル: Old（name: old、channel_id: ${OLD}）`);
+    expect(out).toContain(`https://mm.example/team-b/pl/${'x'.repeat(26)}`);
+  });
+
   test('lists the saved posts newest first (ties by post_id) with their channel and team', async () => {
     const [a, b, c] = [post('b'.repeat(26), 2000), post('a'.repeat(26), 2000), post('c'.repeat(26), 3000)];
     routes = { ...base(), [FLAGGED]: byOffset([a, b, c]) };
