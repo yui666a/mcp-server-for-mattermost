@@ -756,16 +756,21 @@ describe('send_message with files', () => {
     for (const s of ['secret-name', 'secret-text', 'secret-bytes', Buffer.from('secret-bytes').toString('base64')]) expect(logged).not.toContain(s);
   });
 
-  test('the tool names both ways to attach and says that a draft with the same message is cleared', async () => {
+  test('the tool names both ways to attach and says that a draft with the same message is cleared unless it has files', async () => {
     const t = (await setup().tools()).find((x) => x.name === 'send_message')!;
     expect(t.description).toContain('添付は files（中身を直接渡す）か file_ids（prepare_upload の結果）');
-    expect(t.description).toContain('同じ投稿先に本文の同じ下書きがあれば、投稿の後に消す');
+    expect(t.description).toContain('同じ投稿先に本文の同じ下書きがあれば、投稿の後に消す（添付の付いた下書きは消さない）');
   });
 
   test('files gives its two forms and limits, and sends files on the user\'s PC to prepare_upload only for clients that can run commands there', async () => {
     const t = (await setup().tools()).find((x) => x.name === 'send_message')! as unknown as { inputSchema: { properties: { files: { description: string } } } };
     const d = t.inputSchema.properties.files.description;
     for (const s of ['1〜5 件', '128KiB', 'content_text', 'content_base64', '利用者の PC にあるファイルは、PC でコマンドを実行できるクライアントなら prepare_upload を使う']) expect(d).toContain(s);
+  });
+
+  test('files allows content_base64 for a file attached to the chat only when code execution can read it', async () => {
+    const t = (await setup().tools()).find((x) => x.name === 'send_message')! as unknown as { inputSchema: { properties: { files: { description: string } } } };
+    expect(t.inputSchema.properties.files.description).toContain('チャットに添付されたファイルを content_base64 で送れるのは、コード実行で中身を読めるときだけ');
   });
 
   test('prepare_upload asks for the user\'s confirmation before curl, and points clients that cannot run commands to save_draft', async () => {
