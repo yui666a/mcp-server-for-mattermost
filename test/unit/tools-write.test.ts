@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto';
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
+import { MAX_OPEN_UPLOAD_URLS, type Store } from '../../src/store.ts';
 import { makeApp } from './helpers.ts';
 
 type Route = (req: Request) => unknown;
@@ -50,7 +51,7 @@ function setup() {
     return { isError: body.result.isError ?? false, text: body.result.content[0].text };
   };
   const tools = async (): Promise<{ name: string; description: string; annotations: Record<string, boolean> }[]> => (await rpc('tools/list', {})).result.tools;
-  return { call, tools };
+  return { call, tools, store: ctx.store };
 }
 
 const POST = 'p'.repeat(26);
@@ -810,6 +811,7 @@ describe('send_message with files', () => {
 
 describe('a DM not opened yet', () => {
   const CAROL = 'k'.repeat(26);
+  const OTHER_CH = 'c'.repeat(26);
   const NEW_DM = 'n'.repeat(26);
   const ROOT = 'r'.repeat(26);
   const FILE = 'f'.repeat(26);
@@ -842,14 +844,84 @@ describe('a DM not opened yet', () => {
 
   test.each([
     ['send_message', { message: 'hi', root_id: ROOT }],
-    ['send_message', { message: 'hi', file_ids: [FILE] }],
     ['save_draft', { message: 'hi', root_id: ROOT }],
-  ])('%s with %j does not create the DM, since the DM cannot hold that post or file yet', async (tool, args) => {
+  ])('%s with %j does not create the DM, since the DM cannot hold that post yet', async (tool, args) => {
     serve();
     const r = await setup().call(tool, { channel: '@carol', ...args });
     expect(r.isError).toBe(true);
     expect(r.text).toContain('@carol との DM はまだありません');
     expect(hits).not.toContain(CREATE);
+  });
+
+  test.each([
+    ['not uploaded through prepare_upload', [FILE], () => {}, 'prepare_upload の URL で 24 時間以内にアップロードしたファイルではありません'],
+    ['uploaded for another channel', [FILE], (st: Store) => st.recordUploadedFile({ mmUserId: 'u1', channelId: OTHER_CH }, FILE), `別のチャンネル（channel_id: ${OTHER_CH}）`],
+    ['given twice', [FILE, FILE], () => {}, '同じ file_id が重なっています'],
+  ])('send_message with file_ids %s reports the file mistake rather than the missing DM, and does not create the DM', async (_, file_ids, given, msg) => {
+    serve();
+    const s = setup();
+    given(s.store);
+    const r = await s.call('send_message', { channel: '@carol', message: 'hi', file_ids });
+    expect(r.isError).toBe(true);
+    expect(r.text).toContain(msg);
+    expect(r.text).not.toContain('DM はまだありません');
+    expect(hits).not.toContain(CREATE);
+  });
+
+  test('prepare_upload with every upload URL in use refuses before resolving the channel, so no DM is created', async () => {
+    serve();
+    const s = setup();
+    for (let i = 0; i < MAX_OPEN_UPLOAD_URLS; i++) s.store.createUploadUrl({ mmUserId: 'u1', channelId: OTHER_CH });
+    const r = await s.call('prepare_upload', { channel: '@carol' });
+    expect(r.isError).toBe(true);
+    expect(r.text).toContain(`使われていないアップロード URL が ${MAX_OPEN_UPLOAD_URLS} 件あります`);
+    expect(hits).toEqual([]);
+  });
+
+  test('prepare_upload does not count used URLs or other users\' URLs toward the limit', async () => {
+    serve();
+    const s = setup();
+    for (let i = 0; i < MAX_OPEN_UPLOAD_URLS - 1; i++) s.store.createUploadUrl({ mmUserId: 'u1', channelId: OTHER_CH });
+    s.store.takeUploadUrl(s.store.createUploadUrl({ mmUserId: 'u1', channelId: OTHER_CH })!);
+    s.store.createUploadUrl({ mmUserId: 'u2', channelId: OTHER_CH });
+    const r = await s.call('prepare_upload', { channel: '@carol' });
+    expect(r.text).toContain('アップロード用の URL を発行しました');
+  });
+
+  test.each([
+    ['@carol', CREATE],
+    ['  @carol ', CREATE],
+    ['@carol,dave', 'POST /channels/group'],
+  ])('save_draft to %j with drafts disabled on the server fails before resolving, so no DM is created', async (channel, create) => {
+    serve();
+    routes['GET /users/u1/teams/t1/drafts'] = mmError(501, 'api.drafts.disabled.app_error');
+    const r = await setup().call('save_draft', { channel, message: 'hi' });
+    expect(r.isError).toBe(true);
+    expect(r.text).toContain('このサーバーでは下書きの同期が無効です');
+    expect(hits).not.toContain(create);
+    expect(hits).not.toContain('POST /users/usernames');
+    expect(hits).not.toContain('GET /users/username/carol');
+  });
+
+  test('save_draft to a DM without any team refuses before resolving, so no DM is created', async () => {
+    serve();
+    routes['GET /users/me/teams'] = () => [];
+    const r = await setup().call('save_draft', { channel: '@carol', message: 'hi' });
+    expect(r.isError).toBe(true);
+    expect(r.text).toContain('所属しているチームがないため、既存の下書きを確かめられません');
+    expect(hits).not.toContain('GET /users/username/carol');
+    expect(hits).not.toContain(CREATE);
+  });
+
+  test('save_draft to a DM lists the drafts before resolving, and again just before saving', async () => {
+    serve();
+    const r = await setup().call('save_draft', { channel: '@carol', message: 'hi' });
+    expect(r.text).toContain('下書きとして保存しました');
+    const list = 'GET /users/u1/teams/t1/drafts';
+    expect(hits.filter((h) => h === list)).toHaveLength(2);
+    expect(hits.indexOf(list)).toBeLessThan(hits.indexOf(CREATE));
+    expect(hits.lastIndexOf(list)).toBeGreaterThan(hits.indexOf(CREATE));
+    expect(hits.lastIndexOf(list)).toBeLessThan(hits.indexOf('POST /drafts'));
   });
 
   test('send_message with files it cannot read does not create the DM', async () => {
@@ -896,5 +968,101 @@ describe('a root_id in another channel than the DM or group DM it is sent to', (
     const r = await setup().call(tool, { channel, message: 'hi', root_id: ROOT });
     expect(r.isError).toBe(true);
     expect(r.text).toBe(`root_id ${ROOT} の投稿はチャンネル「${label}」（channel_id: ${chId}）にありません。`);
+  });
+
+  test('save_draft to a DM with root_id reports a wrong root_id before drafts disabled on the server, as for a channel', async () => {
+    routes = {
+      'GET /users/me/teams': () => [{ id: 't1', name: 'team-a' }],
+      'GET /users/username/carol': () => ({ id: CAROL, username: 'carol', delete_at: 0 }),
+      [`GET /teams/t1/channels/name/${CAROL}__u1`]: () => ({ id: DM, name: `${CAROL}__u1`, display_name: '', team_id: '', type: 'D' }),
+      'GET /users/me/preferences/advanced_settings/name/sync_drafts': mmError(400, 'app.preference.get.app_error'),
+      'GET /users/u1/teams/t1/drafts': mmError(501, 'api.drafts.disabled.app_error'),
+      [`GET /posts/${ROOT}`]: () => ({ id: ROOT, channel_id: 'o'.repeat(26), root_id: '', user_id: 'u2', message: 'root', create_at: 1 }),
+    };
+    const r = await setup().call('save_draft', { channel: '@carol', message: 'hi', root_id: ROOT });
+    expect(r.text).toContain(`root_id ${ROOT} の投稿はチャンネル「@carol」`);
+    expect(hits).not.toContain('GET /users/u1/teams/t1/drafts');
+  });
+});
+
+describe('save_draft and send_message\'s draft cleanup of one user run one at a time across requests', () => {
+  const CH = 'c'.repeat(26);
+  const LIST = 'GET /users/u1/teams/t1/drafts';
+  const DEL = `DELETE /users/u1/channels/${CH}/drafts`;
+  const SAVE = 'POST /drafts';
+  const FAILED = '同じ本文の下書きを確かめられなかったか、消せませんでした';
+  const draft = (message: string) => ({ user_id: 'u1', channel_id: CH, root_id: '', message, create_at: 1, update_at: 1 });
+  const count = (h: string) => hits.filter((x) => x === h).length;
+  const tick = () => new Promise((r) => setTimeout(r, 20));
+  const serve = (list: () => unknown) => {
+    routes = {
+      [`GET /channels/${CH}`]: () => ({ id: CH, name: 'town', display_name: 'Town', team_id: 't1', type: 'O' }),
+      'GET /teams/t1': () => ({ id: 't1', name: 'team-a' }),
+      'GET /users/me/preferences/advanced_settings/name/sync_drafts': mmError(400, 'app.preference.get.app_error'),
+      [LIST]: list,
+      [DEL]: () => ({ status: 'OK' }),
+      [SAVE]: () => new Response('{}', { status: 201, headers: { 'content-type': 'application/json' } }),
+      'POST /posts': () => ({ id: POST, user_id: 'u1', channel_id: CH, root_id: '', message: 'hello', create_at: 1 }),
+    };
+  };
+
+  test('a draft saved while the cleanup is between its list and its DELETE is saved after the DELETE, so it is not the draft deleted', async () => {
+    let open!: () => void;
+    const gate = new Promise<void>((r) => { open = r; });
+    let n = 0;
+    serve(async () => (n++ === 0 ? (await gate, [draft('hello')]) : [draft('hello')]));
+    const s = setup();
+    const sending = s.call('send_message', { channel: CH, message: 'hello' });
+    await vi.waitFor(() => expect(count(LIST)).toBe(1));
+    const saving = s.call('save_draft', { channel: CH, message: 'newer', overwrite: true });
+    await vi.waitFor(() => expect(count('GET /teams/t1')).toBe(2));
+    await tick();
+    expect(count(LIST)).toBe(1);
+    open();
+    expect((await sending).text).toContain('同じ本文の下書きを消しました');
+    expect((await saving).isError).toBe(false);
+    expect(hits.indexOf(DEL)).toBeLessThan(hits.lastIndexOf(LIST));
+    expect(hits.lastIndexOf(LIST)).toBeLessThan(hits.indexOf(SAVE));
+  });
+
+  test('a save_draft that fails while holding the lock lets the cleanup behind it run', async () => {
+    let open!: () => void;
+    const gate = new Promise<void>((r) => { open = r; });
+    let n = 0;
+    serve(async () => (n++ === 0 ? (await gate, [draft('different')]) : [draft('hello')]));
+    const s = setup();
+    const saving = s.call('save_draft', { channel: CH, message: 'mine' });
+    await vi.waitFor(() => expect(count(LIST)).toBe(1));
+    const sending = s.call('send_message', { channel: CH, message: 'hello' });
+    await vi.waitFor(() => expect(count('POST /posts')).toBe(1));
+    open();
+    expect((await saving).text).toContain('本文の違う下書きがあります');
+    expect((await sending).text).toContain('同じ本文の下書きを消しました');
+    expect(count(DEL)).toBe(1);
+  });
+
+  test('a cleanup waiting past its deadline returns before the holder finishes, and never calls Mattermost when its turn comes', async () => {
+    const ac = new AbortController();
+    const timeout = AbortSignal.timeout.bind(AbortSignal);
+    vi.spyOn(AbortSignal, 'timeout').mockImplementation((ms) => (ms === 5000 ? ac.signal : timeout(ms)));
+    let open!: () => void;
+    const gate = new Promise<void>((r) => { open = r; });
+    serve(async () => (await gate, [draft('hello')]));
+    const s = setup();
+    const saving = s.call('save_draft', { channel: CH, message: 'mine', overwrite: true });
+    await vi.waitFor(() => expect(count(LIST)).toBe(1));
+    const sending = s.call('send_message', { channel: CH, message: 'hello' });
+    await vi.waitFor(() => expect(count('POST /posts')).toBe(1));
+    ac.abort(new DOMException('timed out', 'TimeoutError'));
+    const r = await sending;
+    expect(r.isError).toBe(false);
+    expect(r.text).toContain(FAILED);
+    const logged = vi.mocked(process.stdout.write).mock.calls.map((c) => JSON.parse(String(c[0])));
+    expect(logged).toContainEqual(expect.objectContaining({ event: 'draft_cleanup_failed', name: 'TimeoutError', channel_id: CH }));
+    open();
+    expect((await saving).isError).toBe(false);
+    await tick();
+    expect(count(LIST)).toBe(1);
+    expect(count(DEL)).toBe(0);
   });
 });

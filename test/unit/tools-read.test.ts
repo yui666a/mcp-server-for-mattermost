@@ -597,7 +597,7 @@ describe('get_channel', () => {
   });
 
   test('turns 404 from fetching the channel, by id or by team/name, into a not-found message', async () => {
-    routes = { ...base(), [`GET /channels/${C}`]: mmError(404) };
+    routes = { ...base(), 'GET /users/me/teams': () => [], [`GET /channels/${C}`]: mmError(404) };
     const call = setup();
     expect(await call('get_channel', { channel: C }, true)).toBe('チャンネルが見つかりません（参加していない非公開チャンネルを名前で指定した場合も、Mattermost はこの結果を返します）');
     routes['GET /teams/name/team-a/channels/name/nope'] = mmError(404, 'app.channel.get_by_name.missing.app_error');
@@ -843,7 +843,7 @@ describe('get_unreads', () => {
     const t1 = urls.filter((u) => u.includes(`/teams/${T1}/threads`));
     expect(t1).toHaveLength(4);
     expect(t1[1]).toBe(`GET /users/u1/teams/${T1}/threads?unread=true&per_page=50&before=t${String(49).padStart(25, '0')}`);
-    expect(out).toContain('team-a の未読スレッドは 200 件までしか取得していません（total_unread_threads: 321）');
+    expect(out).toContain('team-a の未読スレッドは、50 件ずつ 4 回の取得で打ち切りました。境目と同じ時刻のスレッドは取り直すので、取得した異なるスレッドは 200 件より少ないことがあります（total_unread_threads: 321）');
   });
 
   test('takes again the threads whose last reply is at the same millisecond as the last thread of a page, so none of them drops out', async () => {
@@ -877,7 +877,7 @@ describe('get_unreads', () => {
     const full = () => threadPage(Array.from({ length: 50 }, () => thread(`t${String(n++).padStart(25, '0')}`, OLD, 5000)), 321);
     routes = { ...base(), [`GET /users/u1/teams/${T1}/threads`]: full, [`GET /users/u1/teams/${T2}/threads`]: () => Response.json({ id: 'x', message: 'nope' }, { status: 403 }) };
     const out = await setup()('get_unreads', {});
-    expect(out).not.toContain('200 件までしか');
+    expect(out).not.toContain('の未読スレッドは、');
     expect(out).toContain('未読のあるチャンネル: 4 件、未読のスレッド: 取得できませんでした');
     expect(out).toContain('未読のスレッドを取得できませんでした');
   });
@@ -1270,7 +1270,7 @@ describe('get_mentions', () => {
       put({ create_at: at(22, 1) });
       routes = unreadBase('always_on', [member(C, at(22, 0), 0, 1)]);
       routes[`GET /users/u1/teams/${T}/threads`] = () => ({ total_unread_threads: 999, threads: Array.from({ length: 50 }, (_, i) => thread(`t${String(i).padStart(25, '0')}`, 0, 0)) });
-      expect(await setup()('get_mentions', { unread_only: true })).toContain('未読スレッドは 200 件までしか取得していません');
+      expect(await setup()('get_mentions', { unread_only: true })).toContain('未読スレッドは、50 件ずつ 4 回の取得で打ち切りました。');
     });
 
     test('when the threads API fails, the tool fails', async () => {
@@ -2009,7 +2009,10 @@ describe('list_saved_posts', () => {
     const at = Number(q.get('page'));
     return list(all.slice(at, at + Number(q.get('per_page'))));
   };
-  const byPage = (pages: ReturnType<typeof post>[][]) => (req: Request) => list(pages[Number(new URL(req.url).searchParams.get('page')) / 200] ?? []);
+  const inTurn = (pages: ReturnType<typeof post>[][]) => {
+    let n = 0;
+    return () => list(pages[n++] ?? []);
+  };
   const base = () => ({
     'GET /users/me/channels': () => [{ id: C, name: 'town', display_name: 'Town', team_id: T, type: 'O' }],
     'GET /users/me/teams': () => [{ id: T, name: 'team-a' }],
@@ -2017,7 +2020,8 @@ describe('list_saved_posts', () => {
   });
   const shownIds = (out: string) => [...out.matchAll(/^--- post_id: ([a-z0-9]{26})/gm)].map((m) => m[1]);
   const cursorIn = (out: string) => /next_cursor: (\S+)/.exec(out)?.[1];
-  const offsets = () => urls.filter((u) => u.startsWith(FLAGGED)).map((u) => Number(new URL(`http://x${u.slice(4)}`).searchParams.get('page')));
+  const asked = (key: string) => urls.filter((u) => u.startsWith(FLAGGED)).map((u) => Number(new URL(`http://x${u.slice(4)}`).searchParams.get(key)));
+  const offsets = () => asked('page');
   const NOTE = '新しい 1000 件だけ';
 
   test('lists the saved posts newest first (ties by post_id) with their channel and team', async () => {
@@ -2045,56 +2049,89 @@ describe('list_saved_posts', () => {
     expect(seen).toEqual(all.map((p) => p.id));
   });
 
-  test('sends row offsets 0, 200, 400, ... as page, 200 rows at a time, until an empty page', async () => {
+  test('reads limit + 21 rows first, then 200 rows at a time each starting 20 rows back, as row offsets in page, until an empty page', async () => {
     const all = Array.from({ length: 401 }, (_, i) => post(pid(i), 5000));
     routes = { ...base(), [FLAGGED]: byOffset(all) };
     await setup()('list_saved_posts', {});
-    expect(offsets()).toEqual([0, 200, 400, 600]);
-    expect(urls.filter((u) => u.startsWith(FLAGGED)).every((u) => u.includes('per_page=200'))).toBe(true);
+    expect(offsets()).toEqual([0, 21, 201, 381, 561]);
+    expect(asked('per_page')).toEqual([41, 200, 200, 200, 200]);
   });
 
-  test('stops reading once the page is filled and the last page reached older posts', async () => {
+  test('stops after the first read once it filled the page and reached older posts', async () => {
     routes = { ...base(), [FLAGGED]: byOffset(Array.from({ length: 450 }, (_, i) => post(pid(i), 10_000 - i))) };
     const out = await setup()('list_saved_posts', { limit: 20 });
     expect(offsets()).toEqual([0]);
+    expect(asked('per_page')).toEqual([41]);
     expect(shownIds(out)).toHaveLength(20);
     expect(cursorIn(out)).toBeDefined();
   });
 
-  test('reads on when the oldest post of the last page has the same time as the last one shown', async () => {
+  test('reads on when the oldest post of the last read has the same time as the last one shown', async () => {
     routes = { ...base(), [FLAGGED]: byOffset(Array.from({ length: 201 }, (_, i) => post(pid(i), 5000))) };
     await setup()('list_saved_posts', { limit: 2 });
-    expect(offsets()).toEqual([0, 200, 400]);
+    expect(offsets()).toEqual([0, 3, 183, 363]);
   });
 
   test('does not stop with exactly limit posts, as it cannot tell yet whether more follow', async () => {
     routes = { ...base(), [FLAGGED]: byOffset(Array.from({ length: 20 }, (_, i) => post(pid(i), 10_000 - i))) };
     const out = await setup()('list_saved_posts', { limit: 20 });
-    expect(offsets()).toEqual([0, 200]);
+    expect(offsets()).toEqual([0, 21]);
     expect(cursorIn(out)).toBeUndefined();
   });
 
-  test('does not stop at a short page, which permission filtering can cause, but at an empty one', async () => {
-    const p0 = Array.from({ length: 10 }, (_, i) => post(pid(i), 10_000 - i));
-    const p1 = Array.from({ length: 5 }, (_, i) => post(pid(100 + i), 5000 - i));
-    routes = { ...base(), [FLAGGED]: byPage([p0, p1]) };
+  test('does not stop at a short read, which permission filtering can cause, but at an empty one', async () => {
+    const all = Array.from({ length: 60 }, (_, i) => post(pid(i), 10_000 - i));
+    const hidden = new Set(all.slice(5, 41).map((p) => p.id));
+    routes = { ...base(), [FLAGGED]: (req: Request) => list(byOffset(all)(req).order.filter((id) => !hidden.has(id)).map((id) => all.find((p) => p.id === id)!)) };
     const out = await setup()('list_saved_posts', { limit: 20 });
-    expect(offsets()).toEqual([0, 200, 400]);
-    expect(shownIds(out)).toEqual([...p0, ...p1].map((p) => p.id));
+    expect(offsets()).toEqual([0, 21]);
+    expect(shownIds(out)).toEqual([...all.slice(0, 5), ...all.slice(41, 56)].map((p) => p.id));
   });
 
-  test('shows a post that comes on two pages once', async () => {
+  test('reads the first rows again 200 at a time when the small first read comes back empty, as all of its rows may be ones the user may not read', async () => {
+    const all = Array.from({ length: 60 }, (_, i) => post(pid(i), 10_000 - i));
+    routes = { ...base(), [FLAGGED]: (req: Request) => (new URL(req.url).searchParams.get('per_page') === '41' ? list([]) : byOffset(all)(req)) };
+    const out = await setup()('list_saved_posts', { limit: 20 });
+    expect(offsets()).toEqual([0, 0]);
+    expect(asked('per_page')).toEqual([41, 200]);
+    expect(shownIds(out)).toEqual(all.slice(0, 20).map((p) => p.id));
+  });
+
+  test('shows a post that comes in two reads once', async () => {
     const [a, b, c] = [post(pid(1), 3000), post(pid(2), 2000), post(pid(3), 1000)];
-    routes = { ...base(), [FLAGGED]: byPage([[a, b], [b, c]]) };
+    routes = { ...base(), [FLAGGED]: inTurn([[a, b], [b, c]]) };
     expect(shownIds(await setup()('list_saved_posts', {}))).toEqual([a.id, b.id, c.id]);
   });
 
-  test('reads at most 5 pages and then says only the newest 1000 were looked at, on pages with and without a cursor', async () => {
-    const pages = Array.from({ length: 6 }, (_, k) => Array.from({ length: 200 }, (_, i) => post(pid(k * 200 + i), 5000)));
-    routes = { ...base(), [FLAGGED]: byPage(pages) };
+  // For limit 1 the reads cover rows 0-21, 2-201 and 182-381, so rows 2-22 and 182-202 are 21 rows across the end of a read, 20 before it and 1 after.
+  // The first case needs the second read to start back at row 2, the second case needs the full 20 rows of overlap.
+  test.each([
+    ['the small first read', 2, 0],
+    ['a read of 200', 182, 1],
+  ])('misses no post of a group of 21 with the same time across the end of %s, though the next read orders the group the other way', async (_, before, descRead) => {
+    const all = [
+      ...Array.from({ length: before }, (_, i) => post(pid(i), 10_000 - i)),
+      ...Array.from({ length: 21 }, (_, i) => post(pid(1000 + i), 5000)),
+      ...Array.from({ length: 30 }, (_, i) => post(pid(2000 + i), 1000 - i)),
+    ];
+    // The read that ends inside the group puts its smallest post_id after the end; the next read puts it first, where that read starts.
+    let reads = 0;
+    routes = { ...base(), [FLAGGED]: (req: Request) => {
+      const desc = reads++ === descRead;
+      return byOffset([...all].sort((x, y) => y.create_at - x.create_at || (desc ? y.id.localeCompare(x.id) : x.id.localeCompare(y.id))))(req);
+    } };
+    const last = all[before - 1];
+    const out = await setup()('list_saved_posts', { cursor: Buffer.from(JSON.stringify({ create_at: last.create_at, id: last.id, per_page: 1 })).toString('base64url') });
+    expect(shownIds(out)).toEqual([pid(1000)]);
+  });
+
+  test('reads up to row 1000 and then says only the newest 1000 were looked at, on pages with and without a cursor', async () => {
+    const all = Array.from({ length: 1100 }, (_, i) => post(pid(i), 5000));
+    routes = { ...base(), [FLAGGED]: byOffset(all) };
     const call = setup();
     const first = await call('list_saved_posts', { limit: 50 });
-    expect(offsets()).toEqual([0, 200, 400, 600, 800]);
+    expect(offsets()).toEqual([0, 51, 231, 411, 591, 771, 951]);
+    expect(asked('per_page')).toEqual([71, 200, 200, 200, 200, 200, 49]);
     expect(first).toContain(NOTE);
     const cursor = cursorIn(first);
     expect(cursor).toBeDefined();
@@ -2105,12 +2142,11 @@ describe('list_saved_posts', () => {
     expect(cursorIn(end)).toBeUndefined();
   });
 
-  test('does not add the note when the fifth page is not empty but the stop condition holds', async () => {
-    const pages = [...Array.from({ length: 4 }, (_, k) => Array.from({ length: 200 }, (_, i) => post(pid(k * 200 + i), 5000))),
-      Array.from({ length: 200 }, (_, i) => post(pid(800 + i), 1000))];
-    routes = { ...base(), [FLAGGED]: byPage(pages) };
+  test('does not add the note when the last read before row 1000 is not empty and the stop condition holds', async () => {
+    const all = [...Array.from({ length: 975 }, (_, i) => post(pid(i), 5000)), ...Array.from({ length: 125 }, (_, i) => post(pid(975 + i), 1000 - i))];
+    routes = { ...base(), [FLAGGED]: byOffset(all) };
     const out = await setup()('list_saved_posts', { limit: 50 });
-    expect(offsets()).toEqual([0, 200, 400, 600, 800]);
+    expect(offsets()).toEqual([0, 51, 231, 411, 591, 771, 951]);
     expect(out).not.toContain(NOTE);
   });
 
@@ -2420,7 +2456,7 @@ describe('list_channel_members', () => {
   });
 
   test('words 403 and 404 from fetching the channel as get_channel does', async () => {
-    routes = { ...base(), [`GET /channels/${C}`]: mmError(403) };
+    routes = { ...base(), 'GET /users/me/teams': () => [], [`GET /channels/${C}`]: mmError(403) };
     const call = setup();
     expect(await call('list_channel_members', { channel: C }, true)).toBe('このチャンネルを見る権限がありません（参加していない非公開チャンネルなど）');
     routes[`GET /channels/${C}`] = mmError(404);

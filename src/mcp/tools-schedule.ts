@@ -2,11 +2,12 @@ import type { McpServer, ToolCallback } from '@modelcontextprotocol/sdk/server/m
 import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
 import { z } from 'zod';
 import { FileHeld, MAX_PENDING_SCHEDULED, type Scheduled, type ScheduledStatus, type Store } from '../store.ts';
+import { strictArgs } from './args.ts';
 import { encodeCursor, formatTime, InputError, truncate } from './format.ts';
-import { resolveChannel, teamNameOf, type Mm, type MmChannel, type UserRef } from './resolve.ts';
+import { teamNameOf, type Mm, type MmChannel, type UserRef } from './resolve.ts';
 import { guarded, text, type ToolContext } from './server.ts';
 import { cursorArg, cursorOf, limitArg, perPage } from './tools-read.ts';
-import { checkRoot, checkUnposted, checkUploaded, heldError, MAX_UPLOAD_FILES } from './tools-send.ts';
+import { checkRoot, checkUnposted, checkUploaded, heldError, MAX_UPLOAD_FILES, resolveTarget } from './tools-send.ts';
 import { parseWhen } from './when.ts';
 
 const MIN_AHEAD = 60_000;
@@ -27,10 +28,6 @@ function when(at: string): number {
   return ms;
 }
 
-// Not the SDK's default of dropping unknown keys: a dropped files or file_ids would schedule or keep a post without the attachment the caller meant.
-const strictArgs = <T extends z.ZodRawShape>(shape: T, hint: string) =>
-  z.strictObject(shape, { error: (iss) => iss.code === 'unrecognized_keys' ? `受けない引数です: ${iss.keys.join(', ')}。${hint}` : undefined });
-
 const scheduleShape = {
   channel: z.string().min(1).describe('チャンネル ID、「チーム名/チャンネル名」、チャンネル名、@ユーザー名（DM）、@a,b（グループ DM）のどれか。DM とグループ DM は無ければ作る'),
   message: MESSAGE,
@@ -39,14 +36,17 @@ const scheduleShape = {
   file_ids: z.array(z.string().regex(/^[A-Za-z0-9]{26}$/)).min(1).max(MAX_UPLOAD_FILES).optional()
     .describe('prepare_upload で、投稿先と同じチャンネルへ 24 時間以内にアップロードした file_id（1〜5 件）'),
 };
-const scheduleSchema = strictArgs(scheduleShape, '添付は prepare_upload でアップロードし、その file_id を file_ids に渡してください。');
+const scheduleSchema = strictArgs(scheduleShape, {
+  files: 'files は予約では使えません。今すぐ送るなら send_message の files を、予約するなら prepare_upload でアップロードし、その file_id を file_ids に渡してください。',
+});
 type ScheduleArgs = { channel: string; message: string; root_id?: string; at: string; file_ids?: string[] };
 
 export async function scheduleMessage(mm: Mm, store: Store, uid: string, args: ScheduleArgs): Promise<CallToolResult> {
   const at = when(args.at);
   const fileIds = args.file_ids ?? [];
-  // Not creating the DM with root_id or file_ids: a DM not opened yet holds neither, and the call would fail right after leaving an empty DM.
-  const ch = await resolveChannel(mm, uid, args.channel, { create: !args.root_id && !fileIds.length });
+  // Not left to createScheduled alone: resolving may create the DM first, and failing after that leaves it empty. A schedule added or put back to pending between the two checks still does.
+  if (store.pendingScheduledCount(uid) >= MAX_PENDING_SCHEDULED) throw new InputError(`待機中の予約が上限の ${MAX_PENDING_SCHEDULED} 件に達しています。不要な予約を cancel_scheduled_message で取り消してください。`);
+  const ch = await resolveTarget(mm, store, uid, args.channel, args.root_id, fileIds);
   if (args.root_id) await checkRoot(mm, uid, args.root_id, ch);
   checkUploaded(store, uid, ch.id, fileIds);
   checkUnposted(store, uid, fileIds);
@@ -140,8 +140,9 @@ async function row(s: Scheduled, where: string, teamOf: (channelId: string) => P
   return out;
 }
 
+const UNCHANGEABLE = '投稿先と添付は変えられません。cancel_scheduled_message で取り消して予約し直してください。';
 const updateSchema = strictArgs({ id: ID, message: MESSAGE.optional().describe('新しい本文（全体を置き換える）'), at: AT.optional() },
-  '変えられるのは本文（message）と予定時刻（at）だけです。投稿先や添付を変えるときは、cancel_scheduled_message で取り消して予約し直してください。');
+  { file_ids: UNCHANGEABLE, files: UNCHANGEABLE, channel: UNCHANGEABLE, root_id: UNCHANGEABLE });
 
 export function updateScheduledMessage(store: Store, uid: string, args: { id: string; message?: string; at?: string }): CallToolResult {
   if (args.message === undefined && args.at === undefined) throw new InputError('message か at のどちらかを指定してください。');
