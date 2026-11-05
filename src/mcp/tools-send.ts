@@ -363,20 +363,27 @@ async function draftsOf(mm: Mm, uid: string, ch: Pick<ChannelRef, 'teamId'>): Pr
 }
 
 const CLEANUP_MS = 5000;
+// ponytail: a guess at what one DELETE needs; a slow Mattermost can still be cut off mid-DELETE, and the lock then let go while it runs on.
+const DELETE_MARGIN_MS = 1000;
+
+class TooLateToDelete extends Error {
+  name = 'TimeoutError';
+}
 
 // Not kept on the server or ctx: app.ts builds a server per request, and a lock there would never be shared between two calls.
-// ponytail: one lock per user over all of their drafts; per-target locks if one user's drafts get busy.
+// Not one lock per user: the race is only between the list and the write of one draft, so sends to other channels or threads need not wait.
 const draftLocks = new Map<string, Promise<void>>();
 
 // Not freeing the place in line when giving up: a later caller would then run alongside the earlier one still holding it.
-async function withDraftLock<T>(uid: string, fn: () => Promise<T>, giveUp?: AbortSignal): Promise<T> {
-  const prev = draftLocks.get(uid) ?? Promise.resolve();
+async function withDraftLock<T>(uid: string, channelId: string, rootId: string, fn: () => Promise<T>, giveUp?: AbortSignal): Promise<T> {
+  const key = `${uid}\n${channelId}\n${rootId}`;
+  const prev = draftLocks.get(key) ?? Promise.resolve();
   let release!: () => void;
   const tail = prev.then(() => new Promise<void>((r) => { release = r; }));
-  draftLocks.set(uid, tail);
+  draftLocks.set(key, tail);
   try {
     if (giveUp) {
-      // Not left to the race alone: with the lock free it settles on prev first, and fn would run for a request already given up.
+      // Not left to the race alone: an already aborted signal fires no abort event, so stop would never settle and fn would run once prev does.
       giveUp.throwIfAborted();
       const stop = new Promise<never>((_, reject) => {
         giveUp.addEventListener('abort', () => reject(giveUp.reason), { once: true });
@@ -390,7 +397,7 @@ async function withDraftLock<T>(uid: string, fn: () => Promise<T>, giveUp?: Abor
   } finally {
     void prev.then(() => {
       release();
-      if (draftLocks.get(uid) === tail) draftLocks.delete(uid);
+      if (draftLocks.get(key) === tail) draftLocks.delete(key);
     });
   }
 }
@@ -399,25 +406,29 @@ async function withDraftLock<T>(uid: string, fn: () => Promise<T>, giveUp?: Abor
 // Not left running past the deadline: a late DELETE could remove a draft the user rewrote after reading that it was not cleared. A DELETE already sent still completes on Mattermost.
 async function clearSentDraft(mm: Mm, uid: string, ch: ChannelRef, rootId: string, message: string, client?: AbortSignal): Promise<string> {
   const deadline = AbortSignal.timeout(CLEANUP_MS);
+  // Not Date.now: the deadline runs on a timer, which a wall clock set back or forward would not match.
+  const until = performance.now() + CLEANUP_MS;
   const quick: Mm = { call: (u, m, p, b) => mm.call(u, m, p, b, deadline) };
   try {
-    return await withDraftLock(uid, () => clearLocked(quick, uid, ch, rootId, message), client ? AbortSignal.any([deadline, client]) : deadline);
+    return await withDraftLock(uid, ch.id, rootId, () => clearLocked(quick, uid, ch, rootId, message, until), client ? AbortSignal.any([deadline, client]) : deadline);
   } catch (e) {
     if (e instanceof MmError && e.status === 501 && e.id === DISABLED[1]) return '';
     // Not logged when the client gave up: the request was cancelled, not the cleanup broken.
     if (client?.aborted) return '';
-    log('draft_cleanup_failed', { mm_user_id: uid, channel_id: ch.id, name: (e as Error)?.name, ...(e instanceof MmError ? { status: e.status, id: e.id } : {}) });
+    log('draft_cleanup_failed', { mm_user_id: uid, channel_id: ch.id, name: (e as Error)?.name, ...(e instanceof TooLateToDelete ? { skipped: 'delete' } : {}), ...(e instanceof MmError ? { status: e.status, id: e.id } : {}) });
     if (e instanceof Reauthorize) return '投稿の後で Mattermost への再ログインが必要になったため、同じ本文の下書きを確かめられませんでした。コネクタを再接続してください。下書きが残っていれば、そのまま送ると同じ投稿が 2 回になります。';
     return '同じ本文の下書きを確かめられなかったか、消せませんでした。下書きが残っていれば、そのまま送ると同じ投稿が 2 回になります。';
   }
 }
 
-async function clearLocked(quick: Mm, uid: string, ch: ChannelRef, rootId: string, message: string): Promise<string> {
+async function clearLocked(quick: Mm, uid: string, ch: ChannelRef, rootId: string, message: string, until: number): Promise<string> {
   const d = (await draftsOf(quick, uid, ch))?.find((x) => x.channel_id === ch.id && (x.root_id || '') === rootId && x.message === message);
   if (!d) return '';
   if (d.file_ids?.length) return '同じ本文の下書きがありますが、添付ファイルが付いているため消していません。そのまま送ると、同じ本文がもう一度投稿されます。';
   // Not deleting with sync off: the webapp clears its stored draft on draft_deleted whatever the setting, wiping unsynced text kept only in the browser.
   if (await syncDraftsOff(quick, uid)) return '同じ本文の下書きがありますが、下書きの同期を切っているため消していません。同期を入れ直すと画面に出るので、送らずに消してください。';
+  // Not sending a DELETE the deadline may cut off: the lock would be let go while Mattermost still runs it, and a save behind could be the draft it deletes.
+  if (until - performance.now() < DELETE_MARGIN_MS) throw new TooLateToDelete('too little time left to delete the draft');
   await quick.call(uid, 'DELETE', `/users/${uid}/channels/${ch.id}/drafts${rootId ? `/${rootId}` : ''}`);
   const p = d.priority;
   return [
@@ -446,7 +457,7 @@ export async function saveDraft(mm: Mm, uid: string, args: DraftArgs): Promise<C
   const where = `チャンネル: ${ch.displayName || ch.name}（channel_id: ${ch.id}）${rootId ? `、返信先 post_id: ${rootId}` : ''}`;
   // Not locking the resolving above: one call may take tens of seconds, and a send_message cleanup waiting behind it would always run out of time.
   // Not leaving the list and the save unlocked: a save made between the cleanup's list and its DELETE would be the draft it deletes.
-  const same = await withDraftLock(uid, () => saveLocked(mm, uid, ch, rootId, args, where));
+  const same = await withDraftLock(uid, ch.id, rootId, () => saveLocked(mm, uid, ch, rootId, args, where));
   if (same) return same;
   // Not claiming the input box for a reply: only channel drafts were checked in the webapp.
   return text(rootId
