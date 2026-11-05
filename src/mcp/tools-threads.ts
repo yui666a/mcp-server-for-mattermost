@@ -43,7 +43,7 @@ export function registerThreadTools(server: McpServer, ctx: ToolContext): void {
       }) as unknown as ToolCallback<S>);
   }
 
-  tool('list_followed_threads', 'フォロー中のスレッドを、最終返信の新しい順に一覧する。全チームと DM、グループ DM が対象。アーカイブ済みのチャンネルのスレッドも含む（チャンネル名に「アーカイブ済み」と付ける）。返信がまだないルート投稿は、フォローしていても最初の返信まで出ない。スレッドの折りたたみ（CRT）が無効な利用者には使えない。読むだけで、既読にはしない',
+  tool('list_followed_threads', 'フォロー中のスレッドを、最終返信の新しい順に一覧する。全チームと DM、グループ DM が対象。アーカイブ済みのチャンネルのスレッドも含む（チャンネルの行の name の後に「アーカイブ済み」と出す）。返信がまだないルート投稿は、フォローしていても最初の返信まで出ない。スレッドの折りたたみ（CRT）が無効な利用者には使えない。読むだけで、既読にはしない',
     { limit: limitArg(20, 50), cursor: cursorArg }, { readOnlyHint: true },
     async ({ limit, cursor }, mm) => {
       const startedAt = Date.now();

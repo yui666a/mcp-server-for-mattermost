@@ -513,7 +513,7 @@ export function registerReadTools(server: McpServer, ctx: ToolContext): void {
       return render({ lines, posts: shown, next: more ? { page: page + 1, per_page: per } : undefined, notes: [...filtered.notes, ...capNote(all.length, 'これより古い一致')] });
     });
 
-  tool('list_saved_posts', '自分が保存した（フラグを付けた）投稿を新しい順に一覧する。参加しているチャンネルの投稿だけが対象で、アーカイブ済みのチャンネルの投稿も含む（チャンネル名に「アーカイブ済み」と付ける）',
+  tool('list_saved_posts', '自分が保存した（フラグを付けた）投稿を新しい順に一覧する。参加しているチャンネルの投稿だけが対象で、アーカイブ済みのチャンネルの投稿も含む（チャンネルの行の name の後に「アーカイブ済み」と出す）',
     { limit: limitArg(20, 50), cursor: cursorArg },
     async ({ limit, cursor }, mm) => {
       const c = cursorOf(z.object({ create_at: z.number().int(), id: z.string(), per_page: perPage(50), at: z.number().int().min(0).optional() }).strict(), cursor);
