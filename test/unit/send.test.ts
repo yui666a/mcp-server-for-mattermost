@@ -1,7 +1,7 @@
 import { randomBytes } from 'node:crypto';
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 import { openDb } from '../../src/db.ts';
-import { CALL_DEADLINE_MS, MmError, RateLimited, UpstreamUnavailable } from '../../src/mattermost/client.ts';
+import { CALL_DEADLINE_MS, MmError, RateLimited, Reauthorize, UpstreamUnavailable } from '../../src/mattermost/client.ts';
 import type { MmPost } from '../../src/mcp/format.ts';
 import type { Mm } from '../../src/mcp/resolve.ts';
 import { sendMessage } from '../../src/mcp/tools-send.ts';
@@ -20,7 +20,7 @@ type Upload = { query: URLSearchParams; type: string; bytes: Uint8Array };
 type FakeOpts = {
   failPost?: () => Mode; postDelay?: Promise<void>; failSearch?: () => boolean;
   onUpload?: (n: number) => Promise<void> | void; failUpload?: (n: number) => Mode; keepFiles?: (ids: string[]) => string[];
-  drafts?: (signal?: AbortSignal) => unknown; syncOff?: boolean; failDelete?: () => Error | undefined; teams?: { id: string; name: string }[];
+  drafts?: (signal?: AbortSignal) => unknown; syncOff?: boolean | (() => unknown); failDelete?: () => Error | undefined; teams?: { id: string; name: string }[];
 };
 
 function fakeMm(opts: FakeOpts = {}) {
@@ -39,6 +39,7 @@ function fakeMm(opts: FakeOpts = {}) {
       if (method === 'GET' && p === `/channels/${DM}`) return { id: DM, name: `${UID}__${OTHER}`, display_name: '', team_id: '', type: 'D' };
       if (method === 'GET' && /^\/users\/[^/]+\/teams\/[^/]+\/drafts$/.test(p)) return opts.drafts ? opts.drafts(signal) : [];
       if (method === 'GET' && p === '/users/me/preferences/advanced_settings/name/sync_drafts') {
+        if (typeof opts.syncOff === 'function') return opts.syncOff();
         if (opts.syncOff) return { value: 'false' };
         throw new MmError(400, 'app.preference.get.app_error', 'not found');
       }
@@ -96,7 +97,7 @@ function fakeMm(opts: FakeOpts = {}) {
       throw new Error(`unexpected ${method} ${path}`);
     }) as Mm['call'],
   };
-  const send = (args: Parameters<typeof sendMessage>[4]) => sendMessage(mm, store, UID, BASE, args);
+  const send = (args: Parameters<typeof sendMessage>[4], client?: AbortSignal) => sendMessage(mm, store, UID, BASE, args, client);
   return { send, store, created, uploads, posts, calls, advance: (ms: number) => { now += ms; } };
 }
 
@@ -576,6 +577,81 @@ describe('a draft with the sent message is cleared after the post', () => {
     const r = await f.send({ channel: 'team-a/dup', message: 'hello' });
     expect(deletes(f)).toHaveLength(1);
     expect(textOf(r)).toContain('下書きに付いていた優先度は、この投稿には付いていません。');
+  });
+
+  test('a matching burn-on-read draft is deleted and the output says the post was sent without it', async () => {
+    const f = fakeMm({ drafts: () => [draft({ type: 'burn_on_read' })] });
+    const r = await f.send({ channel: 'team-a/dup', message: 'hello' });
+    expect(deletes(f)).toHaveLength(1);
+    expect(textOf(r)).toContain('下書きに付いていた burn-on-read（読まれた後に消える設定）は、この投稿には付いていません。投稿は消えずに残ります。');
+  });
+
+  test('a draft without a type adds no burn-on-read note', async () => {
+    const f = fakeMm({ drafts: () => [draft({ type: '' })] });
+    expect(textOf(await f.send({ channel: 'team-a/dup', message: 'hello' }))).not.toContain('burn-on-read');
+  });
+
+  test('a channel draft with the same message is kept when the message is sent to a thread in that channel', async () => {
+    const f = fakeMm({ drafts: () => [draft()] });
+    f.posts.push({ id: ROOT, user_id: UID, channel_id: CH, root_id: '', message: 'root', create_at: 0 });
+    const r = await f.send({ channel: 'team-a/dup', message: 'hello', root_id: ROOT });
+    expect(deletes(f)).toEqual([]);
+    expect(textOf(r)).not.toContain('下書き');
+  });
+
+  test('when reading the sync setting fails, the post still succeeds and the output says the draft may be left', async () => {
+    const f = fakeMm({ drafts: () => [draft()], syncOff: () => { throw new MmError(500, 'app.preference.get.app_error', 'x'); } });
+    const r = await f.send({ channel: 'team-a/dup', message: 'hello' });
+    expect(deletes(f)).toEqual([]);
+    expect(textOf(r)).toContain(FAILED);
+  });
+
+  test('a re-login needed during the cleanup is named in the output and logged with the channel', async () => {
+    const f = fakeMm({ drafts: () => { throw new Reauthorize(true); } });
+    const r = await f.send({ channel: 'team-a/dup', message: 'hello' });
+    expect(r.isError).toBeFalsy();
+    expect(textOf(r)).toContain('投稿の後で Mattermost への再ログインが必要になったため、同じ本文の下書きを確かめられませんでした。コネクタを再接続してください。');
+    expect(logged.map((l) => JSON.parse(l))).toEqual([expect.objectContaining({ event: 'draft_cleanup_failed', name: 'Reauthorize', channel_id: CH })]);
+  });
+
+  test('a cleanup failure is logged with the channel_id', async () => {
+    const f = fakeMm({ drafts: () => [draft()], failDelete: () => new MmError(500, 'app.draft.delete.app_error', 'x') });
+    await f.send({ channel: 'team-a/dup', message: 'hello' });
+    expect(logged.map((l) => JSON.parse(l))).toEqual([expect.objectContaining({ event: 'draft_cleanup_failed', channel_id: CH, status: 500 })]);
+  });
+
+  test('a cleanup cut short by the client cancelling the request is not logged as a failure', async () => {
+    const client = new AbortController();
+    const f = fakeMm({ drafts: () => { client.abort(); throw new UpstreamUnavailable('call aborted', true); } });
+    await f.send({ channel: 'team-a/dup', message: 'hello' }, client.signal);
+    expect(logged).toEqual([]);
+  });
+
+  test('a cleanup whose client cancels while it waits for the user\'s lock neither calls Mattermost nor logs a failure', async () => {
+    let open!: () => void;
+    const gate = new Promise<void>((r) => { open = r; });
+    const holder = fakeMm({ drafts: async () => (await gate, []) });
+    const holding = holder.send({ channel: 'team-a/dup', message: 'first' });
+    await vi.waitFor(() => expect(paths(holder)).toContain(`GET ${LIST}`));
+    const client = new AbortController();
+    const f = fakeMm({ drafts: () => [draft()] });
+    const sending = f.send({ channel: 'team-a/dup', message: 'hello' }, client.signal);
+    await vi.waitFor(() => expect(f.created).toHaveLength(1));
+    client.abort();
+    expect((await sending).isError).toBeFalsy();
+    open();
+    await holding;
+    expect(paths(f).filter((c) => c.endsWith('/drafts'))).toEqual([]);
+    expect(logged).toEqual([]);
+  });
+
+  test('a cleanup whose client has already cancelled does not call Mattermost even with the lock free', async () => {
+    const client = new AbortController();
+    client.abort();
+    const f = fakeMm({ drafts: () => [draft()] });
+    await f.send({ channel: 'team-a/dup', message: 'hello' }, client.signal);
+    expect(paths(f).filter((c) => c.endsWith('/drafts'))).toEqual([]);
+    expect(logged).toEqual([]);
   });
 
   test('an empty priority on the draft does not add the priority note', async () => {

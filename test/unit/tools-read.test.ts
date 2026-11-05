@@ -597,7 +597,7 @@ describe('get_channel', () => {
   });
 
   test('turns 404 from fetching the channel, by id or by team/name, into a not-found message', async () => {
-    routes = { ...base(), [`GET /channels/${C}`]: mmError(404) };
+    routes = { ...base(), 'GET /users/me/teams': () => [], [`GET /channels/${C}`]: mmError(404) };
     const call = setup();
     expect(await call('get_channel', { channel: C }, true)).toBe('チャンネルが見つかりません（参加していない非公開チャンネルを名前で指定した場合も、Mattermost はこの結果を返します）');
     routes['GET /teams/name/team-a/channels/name/nope'] = mmError(404, 'app.channel.get_by_name.missing.app_error');
@@ -843,7 +843,7 @@ describe('get_unreads', () => {
     const t1 = urls.filter((u) => u.includes(`/teams/${T1}/threads`));
     expect(t1).toHaveLength(4);
     expect(t1[1]).toBe(`GET /users/u1/teams/${T1}/threads?unread=true&per_page=50&before=t${String(49).padStart(25, '0')}`);
-    expect(out).toContain('team-a の未読スレッドは 200 件までしか取得していません（total_unread_threads: 321）');
+    expect(out).toContain('team-a の未読スレッドは、50 件ずつ 4 回の取得で打ち切りました。境目と同じ時刻のスレッドは取り直すので、取得した異なるスレッドは 200 件より少ないことがあります（total_unread_threads: 321）');
   });
 
   test('takes again the threads whose last reply is at the same millisecond as the last thread of a page, so none of them drops out', async () => {
@@ -877,7 +877,7 @@ describe('get_unreads', () => {
     const full = () => threadPage(Array.from({ length: 50 }, () => thread(`t${String(n++).padStart(25, '0')}`, OLD, 5000)), 321);
     routes = { ...base(), [`GET /users/u1/teams/${T1}/threads`]: full, [`GET /users/u1/teams/${T2}/threads`]: () => Response.json({ id: 'x', message: 'nope' }, { status: 403 }) };
     const out = await setup()('get_unreads', {});
-    expect(out).not.toContain('200 件までしか');
+    expect(out).not.toContain('の未読スレッドは、');
     expect(out).toContain('未読のあるチャンネル: 4 件、未読のスレッド: 取得できませんでした');
     expect(out).toContain('未読のスレッドを取得できませんでした');
   });
@@ -1270,7 +1270,7 @@ describe('get_mentions', () => {
       put({ create_at: at(22, 1) });
       routes = unreadBase('always_on', [member(C, at(22, 0), 0, 1)]);
       routes[`GET /users/u1/teams/${T}/threads`] = () => ({ total_unread_threads: 999, threads: Array.from({ length: 50 }, (_, i) => thread(`t${String(i).padStart(25, '0')}`, 0, 0)) });
-      expect(await setup()('get_mentions', { unread_only: true })).toContain('未読スレッドは 200 件までしか取得していません');
+      expect(await setup()('get_mentions', { unread_only: true })).toContain('未読スレッドは、50 件ずつ 4 回の取得で打ち切りました。');
     });
 
     test('when the threads API fails, the tool fails', async () => {
@@ -2328,7 +2328,7 @@ describe('list_channel_members', () => {
   });
 
   test('words 403 and 404 from fetching the channel as get_channel does', async () => {
-    routes = { ...base(), [`GET /channels/${C}`]: mmError(403) };
+    routes = { ...base(), 'GET /users/me/teams': () => [], [`GET /channels/${C}`]: mmError(403) };
     const call = setup();
     expect(await call('list_channel_members', { channel: C }, true)).toBe('このチャンネルを見る権限がありません（参加していない非公開チャンネルなど）');
     routes[`GET /channels/${C}`] = mmError(404);
