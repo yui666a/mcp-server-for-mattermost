@@ -157,7 +157,7 @@ describe('save_post and unsave_post agree with list_saved_posts', () => {
   test('a post of a private channel alice cannot see, and a post that does not exist, are refused', async () => {
     const hidden = await call('save_post', { post_id: await bobPost(secret.id) });
     expect(hidden.isError).toBe(true);
-    expect(hidden.content[0].text).toBe('この投稿は見られません（参加していない非公開チャンネルの投稿など）。参加しているはずなら、Mattermost の一時的な障害の可能性があります。少し待ってから再試行してください。続くなら、チャンネルから外されたか、サーバーの権限の設定で読む権限が外されている可能性があるので、管理者に確かめてください。');
+    expect(hidden.content[0].text).toBe('この投稿を見る権限がありません（参加していない非公開チャンネルなど）。参加しているはずなら、Mattermost の一時的な障害の可能性があります。少し待ってから再試行してください。続くなら、チャンネルから外されたか、サーバーの権限の設定で読む権限が外されている可能性があるので、管理者に確かめてください。');
     const missing = await call('save_post', { post_id: 'a'.repeat(26) });
     expect(missing.isError).toBe(true);
     expect(missing.content[0].text).toBe('投稿が見つかりません（削除されたか、存在しません）。');

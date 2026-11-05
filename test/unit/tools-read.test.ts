@@ -2,8 +2,6 @@ import { createHash } from 'node:crypto';
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 import { BODY_CUT_NOTE } from '../../src/mcp/format.ts';
 import { makeApp } from './helpers.ts';
-// After helpers.ts: loading tools-read.ts first enters the import cycle through its dependants before perPage is defined.
-import { splitWords } from '../../src/mcp/tools-read.ts';
 
 type Route = (req: Request) => unknown;
 let routes: Record<string, Route>;
@@ -184,10 +182,16 @@ describe('search_posts in: filters', () => {
   });
 
   // Not only through search_posts: the MCP body cap (1MB) keeps the terms under about 500,000 words, which a worker thread's larger stack can spread without a RangeError.
-  test('splits 2,000,000 words before a quote', () => {
-    const words = splitWords(`${'w '.repeat(2_000_000)}"a b"`);
+  // Imported here rather than at the top: a static import that sorts before helpers.ts enters src/mcp's import cycle before perPage is defined.
+  // This still relies on helpers.ts having loaded server.ts already; the cycle itself is left to the src side.
+  test.each([
+    { where: 'before', text: (w: string) => `${w}"a b"`, at: -1 },
+    { where: 'after', text: (w: string) => `"a b" ${w}`, at: 0 },
+  ])('splits 2,000,000 words $where a quote', async ({ text, at }) => {
+    const { splitWords } = await import('../../src/mcp/tools-read.ts');
+    const words = splitWords(text('w '.repeat(2_000_000)));
     expect(words).toHaveLength(2_000_001);
-    expect(words.at(-1)).toBe('"a b"');
+    expect(words.at(at)).toBe('"a b"');
   });
 
   test('searches terms with 200,000 words before a quote, replacing in: end to end', async () => {
@@ -1023,6 +1027,13 @@ describe('get_channel', () => {
   test('turns 403 from fetching the channel into a permission message', async () => {
     routes = { ...base(), [`GET /channels/${C}`]: mmError(403) };
     expect(await setup()('get_channel', { channel: C }, true)).toBe('このチャンネルを見る権限がありません（参加していない非公開チャンネルなど）。参加しているはずなら、Mattermost の一時的な障害の可能性があります。少し待ってから再試行してください。続くなら、チャンネルから外されたか、サーバーの権限の設定で読む権限が外されている可能性があるので、管理者に確かめてください。');
+  });
+
+  test('words a 403 by team/channel as a channel of a team not joined or a public channel not visible, not a private channel', async () => {
+    routes = { ...base(), 'GET /teams/name/team-a/channels/name/town': mmError(403) };
+    const out = await setup()('get_channel', { channel: 'team-a/town' }, true);
+    expect(out).toContain('このチャンネルを見る権限がありません（参加していないチームのチャンネルや、見る権限の無い公開チャンネルなど）。');
+    expect(out).not.toContain('非公開チャンネル');
   });
 
   test('on 403 from fetching the pinned posts, still gives the channel and says only the pinned posts could not be read', async () => {
@@ -2275,6 +2286,15 @@ describe('get_file', () => {
     expect(out).toContain('a.svg');
   });
 
+  test('when a plugin refuses the preview, returns the information and says the plugin refused it, not that permission is missing', async () => {
+    routes = { [INFO]: info({ name: 'p.png', width: 200, height: 100 }), [PREVIEW]: mmError(403, 'api.file.get_file_preview.rejected_by_plugin') };
+    const out = await setup()('get_file', { file_id: F });
+    expect(image()).toBeUndefined();
+    expect(out).toContain('p.png');
+    expect(out).toContain('Mattermost がプレビューの取得を拒否しました（プラグインによる制限）。');
+    expect(out).not.toContain('見る権限がありません');
+  });
+
   test('when the preview bytes are of no known image format, returns only the information', async () => {
     routes = { [INFO]: info({ width: 200, height: 100 }), [PREVIEW]: preview(bytes([1, 2, 3, 4])) };
     const out = await setup()('get_file', { file_id: F });
@@ -2314,7 +2334,7 @@ describe('get_file', () => {
 
   test('says the caller may not see the file on a 403', async () => {
     routes = { [INFO]: mmError(403, 'api.context.permissions.app_error') };
-    expect(await setup()('get_file', { file_id: F }, true)).toBe('このファイルを見る権限がありません');
+    expect(await setup()('get_file', { file_id: F }, true)).toBe('このファイルを見る権限がありません（参加していないチャンネルのファイルなど）。参加しているはずなら、Mattermost の一時的な障害の可能性があります。少し待ってから再試行してください。続くなら、チャンネルから外されたか、サーバーの権限の設定で読む権限が外されている可能性があるので、管理者に確かめてください。');
   });
 
   test('says the file is not found on a 404', async () => {

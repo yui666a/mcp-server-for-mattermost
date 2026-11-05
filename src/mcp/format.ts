@@ -16,6 +16,7 @@ export const RETRY = '参加しているはずなら、Mattermost の一時的�
 // RETRY for a message that has already named the passing failure as a cause.
 export const RETRY_SOON = '参加しているはずなら、少し待ってから再試行してください。';
 export const ASK_ADMIN = '続くなら、チャンネルから外されたか、サーバーの権限の設定で読む権限が外されている可能性があるので、管理者に確かめてください。';
+export const POST_FORBIDDEN = `この投稿を見る権限がありません（参加していない非公開チャンネルなど）。${RETRY}${ASK_ADMIN}`;
 export const BAD_CURSOR = 'cursor が不正です。前回の出力の next_cursor をそのまま渡してください。';
 const JST_MS = 9 * 3600_000;
 const segmenter = new Intl.Segmenter();
