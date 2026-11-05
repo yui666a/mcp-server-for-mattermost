@@ -21,6 +21,9 @@ export class UpstreamUnavailable extends Error {
   }
 }
 
+// A subclass rather than a flag: every handler of UpstreamUnavailable keeps treating it as one, and only code that would carry on after it (giving up on a label) needs to tell it apart.
+export class CallAborted extends UpstreamUnavailable {}
+
 const TIMEOUT_MS = 20_000;
 const RELOGIN = [
   { status: 404, id: 'api.oauth.get_access_token.refresh_token.app_error' },

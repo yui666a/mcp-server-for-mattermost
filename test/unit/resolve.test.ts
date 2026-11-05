@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 import { describe, expect, onTestFinished, test } from 'vitest';
-import { MmError, RateLimited, Reauthorize, UpstreamUnavailable } from '../../src/mattermost/client.ts';
+import { CallAborted, MmError, RateLimited, Reauthorize, UpstreamUnavailable } from '../../src/mattermost/client.ts';
 import { InputError } from '../../src/mcp/format.ts';
 import { Ambiguous, ChannelFetchError, NoDirectChannel, resolveChannel, resolveUser, type Mm } from '../../src/mcp/resolve.ts';
 
@@ -227,6 +227,7 @@ describe('a DM or group DM given by its channel ID is named as when given as @us
   test.each([
     ['a rate limit', () => new RateLimited(5, false)],
     ['a reauthorization', () => new Reauthorize(false)],
+    ['the caller aborting', () => new CallAborted('call aborted', true)],
   ])('%s while looking the users up is not swallowed', async (_name, error) => {
     const base = fake(routes).mm;
     const mm: Mm = { call: async <T>(u: string, m: string, p: string) => {
