@@ -6,7 +6,7 @@ import { idArg, strictArgs } from './args.ts';
 import { ASK_ADMIN, InputError, oneLine, RETRY_SOON, unformat, type MmPost } from './format.ts';
 import { myTeams, resolveChannel, type Mm } from './resolve.ts';
 import { log } from '../log.ts';
-import { failure, failureText, guarded, text, type ToolContext } from './server.ts';
+import { failure, failureText, guarded, text, type ToolContext } from './tool.ts';
 import { channelError, collapsedThreads } from './tools-read.ts';
 import { POST_WORDING } from './tools-save-pin.ts';
 import { worded } from './tools-send.ts';

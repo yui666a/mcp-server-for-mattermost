@@ -5,7 +5,7 @@ import { FileHeld, MAX_PENDING_SCHEDULED, type Scheduled, type ScheduledStatus, 
 import { idArg, strictArgs } from './args.ts';
 import { encodeCursor, formatTime, indented, InputError, oneLine, truncate, unformat } from './format.ts';
 import { dmLabel, type Mm, type MmChannel, teamNameOf } from './resolve.ts';
-import { guarded, text, type ToolContext } from './server.ts';
+import { guarded, text, type ToolContext } from './tool.ts';
 import { cursorArg, cursorOf, limitArg, perPage } from './tools-read.ts';
 import { checkRoot, checkUnposted, checkUploaded, heldError, MAX_FILES_BYTES, MAX_UPLOAD_FILES, mayCreateDirect, resolveTarget } from './tools-send.ts';
 import { parseWhen } from './when.ts';
