@@ -1024,7 +1024,8 @@ describe('get_unreads', () => {
     const full = () => threadPage(Array.from({ length: 50 }, () => thread(`t${String(n++).padStart(25, '0')}`, OLD, 5000)), 321);
     routes = { ...base(), [`GET /users/u1/teams/${T1}/threads`]: full, [`GET /users/u1/teams/${T2}/threads`]: () => Response.json({ id: 'x', message: 'nope' }, { status: 403 }) };
     const out = await setup()('get_unreads', {});
-    expect(out).not.toContain('の未読スレッドは、');
+    // Not matching the note's wording: in this output total_unread_threads appears only in the cap note, the marker the test "...for at most 4 pages..." also checks.
+    expect(out).not.toContain('total_unread_threads');
     expect(out).toContain('未読のあるチャンネル: 4 件、未読のスレッド: 取得できませんでした');
     expect(out).toContain('未読のスレッドを取得できませんでした');
   });
