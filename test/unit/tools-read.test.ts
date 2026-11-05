@@ -130,6 +130,7 @@ describe('search_posts in: filters', () => {
     ['x -channel:only-a', `x -in:${CX}`],
     ['"a  b" in:only-a', `"a  b" in:${CX}`],
     ['x -"in:town" in:only-a', `x -"in:town" in:${CX}`],
+    ['abc"in:town" in:only-a', `abc "in:town" in:${CX}`],
   ])('sends %j to Mattermost as %j', async (terms, expected) => {
     routes = base();
     await setup()('search_posts', { terms });
@@ -184,6 +185,7 @@ describe('search_posts in: filters', () => {
     ['a  "b in:only-a" c'],
     ['from: in:only-a x'],
     ['x in:'],
+    ['  a  b '],
   ])('passes %j through unchanged', async (terms) => {
     routes = base();
     await setup()('search_posts', { terms });
@@ -254,6 +256,8 @@ describe('search_posts in: filters', () => {
     routes = base();
     await setup()('search_posts', { terms: 'x -in:@bob' });
     expect(sent()).toBe('x');
+    await setup()('search_posts', { terms: 'x -in: @bob y' });
+    expect(sent()).toBe('x y');
     expect(hits).not.toContain('POST /channels/direct');
   });
 
@@ -307,12 +311,37 @@ describe('search_posts in: filters', () => {
       ['x in:@bob , carol', 'in:@bob の後の「,」'],
       ['x in: @bob ,carol', 'in: @bob の後の「,carol」'],
       ['x channel:~@bob ,carol', 'channel:~@bob の後の「,carol」'],
-      ['x in:@bob 、carol', 'in:@bob の後の「、carol」'],
     ])('%j is an input error without searching', async (terms, message) => {
       routes = withGroup();
       const out = await setup()('search_posts', { terms }, true);
       expect(out).toContain(message);
       expect(hits).not.toContain('POST /posts/search');
+    });
+
+    test.each([
+      ['x in:@bob 、carol', 'in:@bob の後の「、carol」'],
+      ['x in:@bob 、@carol', 'in:@bob の後の「、@carol」'],
+      ['x in:@bob 、carol、dave', 'in:@bob の後の「、carol、dave」'],
+      ['x in:@bob 、', 'in:@bob の後の「、」'],
+      ['x in:@bob ，議事録', 'in:@bob の後の「，議事録」'],
+      ['x in:@bob 、carol，dave', 'in:@bob の後の「、carol，dave」'],
+    ])('%j is a separator error that asks for a half-width comma', async (terms, message) => {
+      routes = withGroup();
+      const out = await setup()('search_posts', { terms }, true);
+      expect(out).toContain(message);
+      expect(out).toContain('区切りは半角のカンマ（,）で書いてください。');
+      expect(hits).not.toContain('POST /posts/search');
+    });
+
+    test('a search word after the DM that starts with 、 is kept as a search word', async () => {
+      routes = { ...withGroup(), [`GET /teams/${T1}/channels/name/${DM_NAME}`]: () => ch(DM, DM_NAME, '', 'D') };
+      await setup()('search_posts', { terms: 'x in:@bob 、議事録' });
+      expect(sent()).toBe(`x in:${DM} 、議事録`);
+    });
+
+    test('in:@bob、carol is refused for its separator', async () => {
+      routes = withGroup();
+      expect(await setup()('search_posts', { terms: 'x in:@bob、carol' }, true)).toContain('@a,b の区切りは半角のカンマ（,）で書いてください。');
     });
 
     test('the space check runs before any lookup', async () => {
@@ -331,6 +360,11 @@ describe('search_posts in: filters', () => {
     routes = { ...base(), 'GET /users/username/bob': () => Response.json({ id: 'api.context.permissions.app_error' }, { status: 403 }) };
     expect(await setup()('search_posts', { terms: 'x in:@bob' }, true)).toContain('ユーザー「@bob」が見つかりません。');
     expect(hits).not.toContain('POST /posts/search');
+  });
+
+  test('a 403 from the teams lookup for in:@user is not reported as a missing user', async () => {
+    routes = { ...base(), 'GET /users/me/teams': () => Response.json({ id: 'api.context.permissions.app_error' }, { status: 403 }) };
+    expect(await setup()('search_posts', { terms: 'x in:@bob' }, true)).not.toContain('ユーザー「@bob」が見つかりません。');
   });
 
   describe('within one search', () => {
@@ -669,7 +703,7 @@ describe('get_channel', () => {
   test('when /stats is refused (a public channel the user has not joined), says the member count is unavailable and returns the rest', async () => {
     routes = { ...base(), [`GET /channels/${C}/stats`]: mmError(403) };
     const out = await setup()('get_channel', { channel: C });
-    expect(out).toContain('メンバー数: 参加していないため取得できません');
+    expect(out).toContain('メンバー数: 取得できません（参加していないか、一時的な障害）');
     expect(out).toContain('目的: 雑談用');
     expect(pinIds(out)).toEqual([P1.id, P2.id, P3.id]);
   });
@@ -736,7 +770,7 @@ describe('get_channel', () => {
       'GET /teams/name/no-team/channels/name/town': mmError(404, 'app.team.get_by_name.missing.app_error'),
     };
     const call = setup();
-    expect(await call('get_channel', { channel: '@nobody' }, true)).toContain('Mattermost がエラーを返しました（404）');
+    expect(await call('get_channel', { channel: '@nobody' }, true)).toBe('ユーザー「@nobody」が見つかりません。');
     expect(await call('get_channel', { channel: 'no-team/town' }, true)).toContain('Mattermost がエラーを返しました（404）');
   });
 });
@@ -957,6 +991,46 @@ describe('get_unreads', () => {
     expect(out).not.toContain(ARCHIVED);
     expect(order(out).slice(-2)).toEqual([TH1, TH_DM]);
     expect(out).toContain('未読のあるチャンネル: 4 件、未読のスレッド: 2 件');
+    expect(out).not.toContain('取り切れませんでした');
+  });
+
+  describe('when fewer threads come back than total_unread_threads', () => {
+    const h = (k: number) => thread(`h${String(k).padStart(25, '0')}`, OLD, 9000 - k);
+    const span = (from: number, to: number) => Array.from({ length: to - from }, (_, k) => h(from + k));
+    // Pages in the order given, whatever before= says: each call stands for what Mattermost answered after something changed in between.
+    const pages = (...ps: [unknown[], number][]) => {
+      let k = 0;
+      return () => threadPage(...(ps[k++] ?? [[], 0]));
+    };
+    const run = async (...ps: [unknown[], number][]) => {
+      routes = { ...base(), [`GET /users/u1/teams/${T1}/threads`]: pages(...ps), [`GET /users/u1/teams/${T2}/threads`]: () => threadPage([]) };
+      return setup()('get_unreads', { limit: 100 });
+    };
+    const SHORT = 'の未読スレッドを total_unread_threads:';
+
+    test('a later page with nothing, as when the thread paged from is deleted, says the threads were not all taken, against the largest total', async () => {
+      const out = await run([span(0, 50), 60], [[], 59]);
+      expect(out).toContain('team-a の未読スレッドを total_unread_threads: 60 に対して取り切れませんでした。');
+      // The last total alone would match the 50 taken here: the deleted thread no longer counts.
+      expect(await run([span(0, 50), 51], [[], 50])).toContain(SHORT);
+    });
+
+    test('counts each thread once, so pages repeating the threads at their edge do not make up the total', async () => {
+      const out = await run([span(0, 50), 100], [span(49, 99), 100], [[], 100]);
+      expect(out).toContain(SHORT);
+    });
+
+    test('a short page that skipped threads, as when a reply of the thread paged from is deleted, says so too', async () => {
+      const out = await run([span(0, 50), 70], [span(50, 60), 70]);
+      expect(out).toContain(SHORT);
+    });
+
+    test('says nothing when every thread was taken, also when the 4th page is full', async () => {
+      expect(await run([span(0, 50), 80], [span(50, 80), 80])).not.toContain(SHORT);
+      const full = await run([span(0, 50), 200], [span(50, 100), 200], [span(100, 150), 200], [span(150, 200), 200]);
+      expect(full).not.toContain(SHORT);
+      expect(full).not.toContain('打ち切りました');
+    });
   });
 
   test('follows a team\'s unread threads with before= for at most 4 pages, then says it stopped and gives total_unread_threads', async () => {
@@ -1498,15 +1572,27 @@ describe('get_file', () => {
       expect(out).toContain('Shift_JIS');
     });
 
-    test.each([
-      ['UTF-8', 'a.txt', [...Buffer.from('aあ'), 0xe3, 0x81], 'aあ'],
-      ['Shift_JIS', 'a.csv', [0x61, 0x82, 0xa0, 0x82], 'aあ'],
-    ])('drops a %s character cut at the end of the fetched bytes and notes the cut', async (encoding, name, b, shown) => {
-      routes = { [INFO]: textInfo(name as string, 1_000_000), [FILE]: body(Uint8Array.from(b as number[])) };
+    // 40,000 bytes, the most fetched: a file that fills them may go on, so a character cut at their end is the fetch's, not the file's.
+    const FAMILY = '👨‍👩‍👧';
+    test('drops a UTF-8 character cut at the end of the fetched bytes without calling it incomplete', async () => {
+      const head = `${FAMILY.repeat(2222)}aa`;
+      const b = Uint8Array.from([...Buffer.from(head), 0xe3, 0x81]);
+      expect(b.length).toBe(40_000);
+      routes = { [INFO]: textInfo('a.txt', 1_000_000), [FILE]: body(b) };
       const out = await setup()('get_file', { file_id: F });
-      expect(content()).toBe(shown);
-      expect(out).toContain(encoding as string);
-      expect(out).toContain('先頭の 2 文字だけを返しました');
+      expect(content()).toBe(head);
+      expect(out).toContain('UTF-8');
+      expect(out).toContain('先頭の 2224 文字だけを返しました（ファイル全体は 1000000 バイト）');
+      expect(out).not.toContain('末尾に不完全な文字');
+    });
+
+    test('drops a Shift_JIS character cut at the end of the fetched bytes without calling it incomplete', async () => {
+      const b = Uint8Array.from([0x61, ...Array.from({ length: 19_999 }, () => [0x82, 0xa0]).flat(), 0x82]);
+      expect(b.length).toBe(40_000);
+      routes = { [INFO]: textInfo('a.csv', 1_000_000), [FILE]: body(b) };
+      const out = await setup()('get_file', { file_id: F });
+      expect(out).toContain('文字コード: Shift_JIS');
+      expect(out).toContain('先頭の 10000 文字だけを返しました');
       expect(out).not.toContain('末尾に不完全な文字');
     });
 
@@ -1566,6 +1652,69 @@ describe('get_file', () => {
       expect(out).not.toContain('先頭の');
     });
 
+    describe('whether the whole file was fetched', () => {
+      test.each([[1_000_000, 'larger'], [3, 'smaller']])('takes fewer bytes than the most fetched as the whole file whatever its size says (%i, %s)', async (size) => {
+        routes = { [INFO]: textInfo('a.md', size as number), [FILE]: body(Uint8Array.from([0x61, 0x62, 0xe3, 0x81])) };
+        const out = await setup()('get_file', { file_id: F });
+        expect(content()).toBe('ab');
+        expect(out).toContain('ファイルの末尾に不完全な文字があったため');
+        expect(out).not.toContain('先頭の');
+      });
+
+      test('at exactly the most fetched, takes the file as whole only when its size matches, and says "at least" when the size is smaller', async () => {
+        const b = new Uint8Array(Buffer.from('a'.repeat(40_000)));
+        routes = { [INFO]: textInfo('a.md', 40_000), [FILE]: body(b) };
+        expect(await setup()('get_file', { file_id: F })).toContain('先頭の 10000 文字だけを返しました（ファイル全体は 40000 バイト）');
+        routes = { [INFO]: textInfo('a.md', 100), [FILE]: body(b) };
+        expect(await setup()('get_file', { file_id: F })).toContain('先頭の 10000 文字だけを返しました（ファイル全体は少なくとも 40000 バイト）');
+      });
+
+      test('writes the bytes fetched, not the size it says, as the size of a whole file cut to 10,000 characters', async () => {
+        routes = { [INFO]: textInfo('a.md', 1_000_000), [FILE]: body(new Uint8Array(Buffer.from('a'.repeat(10_001)))) };
+        expect(await setup()('get_file', { file_id: F })).toContain('先頭の 10000 文字だけを返しました（ファイル全体は 10001 バイト）');
+      });
+
+      test('keeps UTF-8, with neither note, for ASCII ending in a UTF-8 lead byte when the fetch may have stopped there', async () => {
+        const b = Uint8Array.from([...Buffer.from('a'.repeat(39_999)), 0xe3]);
+        routes = { [INFO]: textInfo('a.log', 1_000_000), [FILE]: body(b) };
+        const out = await setup()('get_file', { file_id: F });
+        expect(out).toContain('文字コード: UTF-8');
+        expect(out).not.toContain('推定');
+        expect(out).not.toContain('末尾に不完全な文字');
+      });
+    });
+
+    describe('a whole file that is ASCII but for an incomplete last character (UTF-8 is only a guess)', () => {
+      test.each([
+        ['a.txt', [0x61, 0x62, 0x63, 0xc2], 'Shift_JIS', 'abcﾂ', false],
+        ['a.txt', [0x61, 0x62, 0x63, 0xe8, 0xa0], 'Shift_JIS', 'abc陟', false],
+        ['a.csv', [...Buffer.from('café', 'latin1')], 'UTF-8', 'caf', true],
+        ['a.md', [0x61, 0x62, 0x63, 0xc2], 'UTF-8', 'abc', true],
+      ])('reads %s %j as %s, noting the guess', async (name, b, encoding, shown, cut) => {
+        routes = { [INFO]: textInfo(name as string, (b as number[]).length), [FILE]: body(Uint8Array.from(b as number[])) };
+        const out = await setup()('get_file', { file_id: F });
+        expect(content()).toBe(shown);
+        expect(out).toContain(`文字コード: ${encoding}`);
+        expect(out).toContain(GUESSED);
+        expect(out.includes('末尾に不完全な文字')).toBe(cut);
+      });
+
+      test('keeps UTF-8 without a guess when the text has other non-ASCII characters', async () => {
+        routes = { [INFO]: textInfo('a.txt', 5), [FILE]: body(Uint8Array.from([...Buffer.from('あ'), 0xe3, 0x81])) };
+        const out = await setup()('get_file', { file_id: F });
+        expect(content()).toBe('あ');
+        expect(out).toContain('文字コード: UTF-8');
+        expect(out).not.toContain('推定');
+      });
+    });
+
+    test('says the file may be missing or unreadable in the store for a 404 from its reader', async () => {
+      routes = { [INFO]: textInfo('a.txt', 5), [FILE]: mmError(404, 'api.file.file_reader.app_error') };
+      const out = await setup()('get_file', { file_id: F });
+      expect(out).toContain('中身を取得できませんでした（HTTP 404）。保存先にファイルの実体が無いか、保存先から読めません。');
+      expect(last.content).toHaveLength(1);
+    });
+
     test('says nothing readable is left when the whole file is one incomplete character', async () => {
       routes = { [INFO]: textInfo('a.md', 1), [FILE]: body(Uint8Array.from([0xe3])) };
       const out = await setup()('get_file', { file_id: F });
@@ -1584,6 +1733,8 @@ describe('get_file', () => {
 
     test.each([
       ['a 500 with a Mattermost JSON error', mmError(500, 'api.file.get_file_info.app_error')],
+      ['a 500 with an empty id (hardened mode)', mmError(500, '')],
+      ['a 500 in HTML from a proxy', () => new Response('<html>500</html>', { status: 500, headers: { 'content-type': 'text/html' } })],
       ['a 502', () => new Response('bad gateway', { status: 502 })],
       ['a 503', () => new Response('unavailable', { status: 503 })],
       ['a 504', () => new Response('gateway timeout', { status: 504 })],
@@ -1630,17 +1781,18 @@ describe('get_file', () => {
       expect(out).toContain('先頭の 10000 文字だけを返しました（ファイル全体は 10001 バイト）');
     });
 
-    test('notes the cut when the file is larger than the bytes fetched, counting the characters returned', async () => {
-      const head = '👨‍👩‍👧'.repeat(2);
+    test('notes the cut when the file fills the bytes fetched and is larger, counting the characters returned', async () => {
+      const head = `${'👨‍👩‍👧'.repeat(2222)}abcd`;
+      expect(Buffer.byteLength(head)).toBe(40_000);
       routes = { [INFO]: textInfo('a.log', 1_000_000), [FILE]: body(new Uint8Array(Buffer.from(head))) };
       const out = await setup()('get_file', { file_id: F });
       expect(content()).toBe(head);
-      expect(out).toContain('先頭の 2 文字だけを返しました（ファイル全体は 1000000 バイト）');
+      expect(out).toContain('先頭の 2226 文字だけを返しました（ファイル全体は 1000000 バイト）');
     });
 
     test.each([
       [mmError(403, 'api.file.get_file.rejected_by_plugin'), 'Mattermost が中身のダウンロードを拒否しました（プラグインによる制限）'],
-      [mmError(404, 'api.file.file_reader.app_error'), '中身を取得できませんでした（HTTP 404）'],
+      [mmError(404, 'api.file.file_reader.app_error'), '中身を取得できませんでした（HTTP 404）。保存先にファイルの実体が無いか、保存先から読めません。'],
     ])('when fetching the content fails with a 4xx, still returns the information with the reason', async (route, reason) => {
       routes = { [INFO]: textInfo('a.txt', 5), [FILE]: route };
       const out = await setup()('get_file', { file_id: F });
@@ -1805,6 +1957,13 @@ describe('read_channel', () => {
     expect(out).toContain('（続きはありません）');
   });
 
+  test('with nothing unread, does not read again even if Mattermost names a post before', async () => {
+    routes = { ...base(), [`GET /users/u1/channels/${CH}/posts/unread`]: () => ({ order: [], posts: {}, prev_post_id: id(1) }) };
+    const out = await setup()('read_channel', { channel: CH, from: 'unread' });
+    expect(out).toContain('未読はありません。');
+    expect(hits).not.toContain(`GET /channels/${CH}/posts`);
+  });
+
   test('when no read position is recorded, says so and reads newest first with a newest-first cursor', async () => {
     routes = { ...base('always_on', 0), [`GET /channels/${CH}/posts`]: () => list([1, 2, 3]) };
     const out = await setup()('read_channel', { channel: CH, from: 'unread', limit: 2 });
@@ -1850,6 +2009,49 @@ describe('read_channel', () => {
     routes = { ...base(), [`GET /users/u1/channels/${CH}/posts/unread`]: () => ({ order: [id(9), id(8)], posts: { [id(9)]: same(9), [id(8)]: same(8) } }) };
     const out = await setup()('read_channel', { channel: CH, from: 'unread' });
     expect(shownIds(out)).toEqual([id(8), id(9)]);
+  });
+
+  describe('the first unread page', () => {
+    // Post 1 is read; posts 2 and 3 share the first unread millisecond.
+    const corpus = [p(1), p(2, { create_at: 1010 }), p(3, { create_at: 1010 }), p(4, { create_at: 1020 }), p(5, { create_at: 1030 })];
+    // Like Mattermost: posts/unread reads strictly after the first unread post, so post 3 is left out, and names the post before it.
+    const unread = (prev: string) => () => ({ order: [id(5), id(4), id(2)], posts: Object.fromEntries(corpus.map((x) => [x.id, x])), prev_post_id: prev });
+    // Like Mattermost: after= by create_at strictly later, the oldest per_page, listed newest first.
+    const after = (req: Request) => {
+      const q = new URL(req.url).searchParams;
+      const t = corpus.find((x) => x.id === q.get('after'))?.create_at;
+      const got = t === undefined ? [] : corpus.filter((x) => x.create_at > t).slice(0, Number(q.get('per_page'))).reverse();
+      return { order: got.map((x) => x.id), posts: Object.fromEntries(got.map((x) => [x.id, x])) };
+    };
+
+    test.each([['always_on', 'true'], ['disabled', 'false']])('with CRT %s, reads again after the post before the first unread one, so posts of its millisecond are not left out', async (crt, collapsed) => {
+      routes = { ...base(crt), [`GET /users/u1/channels/${CH}/posts/unread`]: unread(id(1)), [`GET /channels/${CH}/posts`]: after };
+      const out = await setup()('read_channel', { channel: CH, from: 'unread', limit: 4 });
+      expect(shownIds(out)).toEqual([id(2), id(3), id(4), id(5)]);
+      expect(Object.fromEntries(query(`GET /channels/${CH}/posts`))).toEqual({ after: id(1), per_page: '5', collapsedThreads: collapsed, skipFetchThreads: 'true' });
+      expect(out).toContain('（続きはありません）');
+    });
+
+    test('gives a cursor after the last post shown when more posts follow', async () => {
+      routes = { ...base(), [`GET /users/u1/channels/${CH}/posts/unread`]: unread(id(1)), [`GET /channels/${CH}/posts`]: after };
+      const out = await setup()('read_channel', { channel: CH, from: 'unread', limit: 3 });
+      expect(shownIds(out)).toEqual([id(2), id(3), id(4)]);
+      expect(JSON.parse(Buffer.from(cursorIn(out)!, 'base64url').toString())).toMatchObject({ channel_id: CH, after: id(4), crt: true });
+    });
+
+    test('keeps Mattermost\'s page when there is no post before the first unread one', async () => {
+      routes = { ...base(), [`GET /users/u1/channels/${CH}/posts/unread`]: unread(''), [`GET /channels/${CH}/posts`]: after };
+      const out = await setup()('read_channel', { channel: CH, from: 'unread', limit: 4 });
+      expect(shownIds(out)).toEqual([id(2), id(4), id(5)]);
+      expect(hits).not.toContain(`GET /channels/${CH}/posts`);
+    });
+
+    test('keeps Mattermost\'s page when the post before is gone by the second call', async () => {
+      routes = { ...base(), [`GET /users/u1/channels/${CH}/posts/unread`]: unread(id(9)), [`GET /channels/${CH}/posts`]: after };
+      const out = await setup()('read_channel', { channel: CH, from: 'unread', limit: 4 });
+      expect(shownIds(out)).toEqual([id(2), id(4), id(5)]);
+      expect(out).not.toContain('未読はありません');
+    });
   });
 
   test('rejects an unread cursor issued for another channel', async () => {
@@ -1902,10 +2104,12 @@ describe('read_channel with since and until', () => {
     return asList(byNewest().slice(k * per, (k + 1) * per));
   };
   // Like Mattermost: the oldest post after last_viewed_at, then those strictly after it.
+  // Like Mattermost: the oldest post after last_viewed_at, then those strictly after it, naming the newest post before it.
   const unreadRoute = (viewed: number) => (req: Request) => {
     const after = Number(new URL(req.url).searchParams.get('limit_after'));
     const first = byOldest().find((p) => p.create_at > viewed);
-    return asList(first ? [first, ...byOldest().filter((p) => p.create_at > first.create_at).slice(0, after - 1)] : []);
+    const prev = first ? byNewest().find((p) => p.create_at < first.create_at)?.id ?? '' : '';
+    return { ...asList(first ? [first, ...byOldest().filter((p) => p.create_at > first.create_at).slice(0, after - 1)] : []), prev_post_id: prev };
   };
   const base = (): Record<string, Route> => ({
     [`GET /channels/${CH}`]: () => ({ id: CH, name: 'town', display_name: 'Town', team_id: TEAM, type: 'O' }),
@@ -2242,6 +2446,20 @@ describe('list_saved_posts', () => {
   const offsets = () => asked('page');
   const NOTE = '新しい 1000 件だけ';
 
+  test('labels a saved post in an archived channel with that channel and builds the permalink from its team', async () => {
+    const OLD = 'g'.repeat(26);
+    const T2 = 'u'.repeat(26);
+    routes = { ...base(),
+      'GET /users/me/teams': () => [{ id: T, name: 'team-a' }, { id: T2, name: 'team-b' }],
+      // Mattermost lists an archived channel only when include_deleted is true.
+      'GET /users/me/channels': (req) => (new URL(req.url).searchParams.get('include_deleted') === 'true' ? [{ id: OLD, name: 'old', display_name: 'Old', team_id: T2, type: 'O', delete_at: 5 }] : []),
+      [FLAGGED]: byOffset([{ ...post('x'.repeat(26), 2), channel_id: OLD }]) };
+    const out = await setup()('list_saved_posts', {});
+    expect(urls).toContain('GET /users/me/channels?include_deleted=true');
+    expect(out).toContain(`チャンネル: Old（name: old、channel_id: ${OLD}）`);
+    expect(out).toContain(`https://mm.example/team-b/pl/${'x'.repeat(26)}`);
+  });
+
   test('lists the saved posts newest first (ties by post_id) with their channel and team', async () => {
     const [a, b, c] = [post('b'.repeat(26), 2000), post('a'.repeat(26), 2000), post('c'.repeat(26), 3000)];
     routes = { ...base(), [FLAGGED]: byOffset([a, b, c]) };
@@ -2348,8 +2566,8 @@ describe('list_saved_posts', () => {
     routes = { ...base(), [FLAGGED]: byOffset(all) };
     const call = setup();
     const first = await call('list_saved_posts', { limit: 50 });
-    expect(offsets()).toEqual([0, 51, 231, 411, 591, 771, 951]);
-    expect(asked('per_page')).toEqual([71, 200, 200, 200, 200, 200, 49]);
+    expect(offsets()).toEqual([0, 51, 231, 411, 591, 771, 951, 1000]);
+    expect(asked('per_page')).toEqual([71, 200, 200, 200, 200, 200, 49, 20]);
     expect(first).toContain(NOTE);
     const cursor = cursorIn(first);
     expect(cursor).toBeDefined();
@@ -2358,6 +2576,100 @@ describe('list_saved_posts', () => {
     expect(end).toContain(NOTE);
     expect(end).not.toContain('保存した投稿はありません。');
     expect(cursorIn(end)).toBeUndefined();
+  });
+
+  test('does not add the note when nothing comes after row 1000, though it read up to there', async () => {
+    routes = { ...base(), [FLAGGED]: byOffset(Array.from({ length: 990 }, (_, i) => post(pid(i), 5000))) };
+    const out = await setup()('list_saved_posts', { limit: 50 });
+    expect(offsets()).toEqual([0, 51, 231, 411, 591, 771, 951, 1000]);
+    expect(out).not.toContain(NOTE);
+  });
+
+  describe('a cursor carries the row of the last post shown, and the next page starts reading 20 rows before it', () => {
+    const desc = (n: number, from = 0) => Array.from({ length: n }, (_, i) => post(pid(from + i), 100_000 - from - i));
+    const cursorAt = (p: { id: string; create_at: number }, at: number, per = 50) => Buffer.from(JSON.stringify({ create_at: p.create_at, id: p.id, per_page: per, at })).toString('base64url');
+    const atIn = (out: string) => JSON.parse(Buffer.from(cursorIn(out)!, 'base64url').toString()).at;
+
+    test('reads limit + 41 rows from there once, and gives the next cursor the row of its last post', async () => {
+      const all = desc(300);
+      routes = { ...base(), [FLAGGED]: byOffset(all) };
+      const call = setup();
+      const first = await call('list_saved_posts', { limit: 50 });
+      expect(atIn(first)).toBe(49);
+      urls.length = 0;
+      const second = await call('list_saved_posts', { cursor: cursorIn(first) });
+      expect(offsets()).toEqual([29]);
+      expect(asked('per_page')).toEqual([91]);
+      expect(shownIds(second)).toEqual(all.slice(50, 100).map((p) => p.id));
+      expect(atIn(second)).toBe(99);
+    });
+
+    test('pages through every post once, in order, with the row in each cursor', async () => {
+      const all = desc(300);
+      routes = { ...base(), [FLAGGED]: byOffset(all) };
+      const call = setup();
+      const seen: string[] = [];
+      let cursor: string | undefined;
+      do {
+        const out = await call('list_saved_posts', cursor ? { cursor } : { limit: 50 });
+        seen.push(...shownIds(out));
+        cursor = cursorIn(out);
+      } while (cursor);
+      expect(seen).toEqual(all.map((p) => p.id));
+    });
+
+    test('keeps the read when posts saved since put newer posts at its start', async () => {
+      const all = desc(300, 100);
+      routes = { ...base(), [FLAGGED]: byOffset([...desc(30), ...all]) };
+      const out = await setup()('list_saved_posts', { cursor: cursorAt(all[49], 49) });
+      expect(offsets()[0]).toBe(29);
+      expect(shownIds(out)).toEqual(all.slice(50, 100).map((p) => p.id));
+    });
+
+    test.each([
+      ['posts unsaved since moved older posts to its start', 30, desc(270, 30), 49],
+      ['it starts inside a group of the same time as the last post shown', 0, [...desc(10), ...Array.from({ length: 290 }, (_, i) => post(pid(500 + i), 5000))], 49],
+      ['the row is past the last saved post', 0, desc(300), 500],
+    ] as const)('reads again from row 0 when %s', async (_, gone, list, at) => {
+      routes = { ...base(), [FLAGGED]: byOffset([...list]) };
+      const last = gone ? desc(50)[49] : list[49];
+      const out = await setup()('list_saved_posts', { cursor: cursorAt(last, at) });
+      expect(offsets().slice(0, 2)).toEqual([at - 20, 0]);
+      const want = [...list].sort((x, y) => y.create_at - x.create_at || x.id.localeCompare(y.id)).filter((p) => p.create_at < last.create_at || (p.create_at === last.create_at && p.id > last.id)).slice(0, 50);
+      expect(shownIds(out)).toEqual(want.map((p) => p.id));
+    });
+
+    test('reads on from there when the row is far before the last post shown', async () => {
+      const all = desc(300);
+      routes = { ...base(), [FLAGGED]: byOffset(all) };
+      const out = await setup()('list_saved_posts', { cursor: cursorAt(all[149], 25) });
+      expect(offsets()).toEqual([5, 76]);
+      expect(shownIds(out)).toEqual(all.slice(150, 200).map((p) => p.id));
+    });
+
+    test.each([
+      [10, 'row 0, as from the start', 0, 71],
+      [20, 'row 0, as from the start', 0, 71],
+      [21, 'row 1', 1, 91],
+      [1000, 'row 0, as the row is past the 1000 it reads', 0, 71],
+    ])('with the row at %i, reads from %s', async (at, _, from, size) => {
+      const all = desc(1100);
+      routes = { ...base(), [FLAGGED]: byOffset(all) };
+      await setup()('list_saved_posts', { cursor: cursorAt(all[Math.min(at, 999)], at) });
+      expect(offsets()[0]).toBe(from);
+      expect(asked('per_page')[0]).toBe(size);
+    });
+
+    test('near row 1000, reads only up to row 1000 and shows nothing after it', async () => {
+      const all = desc(1100);
+      routes = { ...base(), [FLAGGED]: byOffset(all) };
+      const out = await setup()('list_saved_posts', { cursor: cursorAt(all[990], 990) });
+      expect(offsets()).toEqual([970, 1000]);
+      expect(asked('per_page')).toEqual([30, 20]);
+      expect(shownIds(out)).toEqual(all.slice(991, 1000).map((p) => p.id));
+      expect(out).toContain(NOTE);
+      expect(cursorIn(out)).toBeUndefined();
+    });
   });
 
   test('does not add the note when the last read before row 1000 is not empty and the stop condition holds', async () => {
@@ -2547,29 +2859,10 @@ describe('search_files', () => {
     expect(out).toBe('cursor が不正です。前回の出力の next_cursor をそのまま渡してください。');
   });
 
-  describe('in: filters (resolveInFilters)', () => {
-    test('passes terms without in: or channel: untouched, without looking anything up', async () => {
-      expect(await terms('  a  "b c"  from:bob ')).toBe('  a  "b c"  from:bob ');
-      expect(hits.filter((h) => h.includes('/channels/name/') || h.startsWith('GET /channels/'))).toEqual([]);
-    });
-
+  // Not repeating the rules of in: here: search_posts covers them, and both tools share resolveInFilters.
+  describe('in: filters', () => {
     test('replaces a channel name with its channel_id, in place', async () => {
       expect(await terms('report in:town ext:pdf')).toBe(`report in:${A} ext:pdf`);
-    });
-
-    test('reads -in:, channel:, IN:, a value after "in: ", and a leading ~ the way Mattermost does', async () => {
-      expect(await terms('x -in:town')).toBe(`x -in:${A}`);
-      expect(await terms('x channel:town')).toBe(`x in:${A}`);
-      expect(await terms('x -channel:town')).toBe(`x -in:${A}`);
-      expect(await terms('x IN:town')).toBe(`x in:${A}`);
-      expect(await terms('x in: town')).toBe(`x in:${A}`);
-      expect(await terms('x in:~town')).toBe(`x in:${A}`);
-    });
-
-    test('resolves team/channel and a visible channel_id', async () => {
-      expect(await terms('x in:team-b/dup')).toBe(`x in:${B}`);
-      expect(await terms(`x in:${B}`)).toBe(`x in:${B}`);
-      expect(hits).toContain(`GET /channels/${B}`);
     });
 
     test('a name in several teams searches all of them and says so; -in: excludes all of them', async () => {
@@ -2581,26 +2874,12 @@ describe('search_files', () => {
       expect(await terms('x -in:dup')).toBe(`x -in:${A} -in:${B}`);
     });
 
-    test('a DM found by name in every team counts once, without the note', async () => {
-      routes = base();
-      const out = await setup()('search_files', { terms: 'x in:u1__u2' });
-      expect(sent()).toBe(`x in:${DM}`);
-      expect(out).not.toContain('複数のチーム');
-    });
-
-    test('resolves @user to the existing DM without creating one', async () => {
-      expect(await terms('x in:@bob')).toBe(`x in:${DM}`);
-      expect(hits).not.toContain('POST /channels/direct');
-    });
-
-    test('without a DM, in:@user fails and -in:@user (also as two words) drops the condition', async () => {
+    test('without a DM, in:@user fails and -in:@user drops the condition', async () => {
       routes = base();
       const call = setup();
       expect(await call('search_files', { terms: 'x in:@carol' }, true)).toBe('@carol との DM はまだありません。');
       expect(onlyAsked()).toBe(true);
       await call('search_files', { terms: 'x -in:@carol y' });
-      expect(sent()).toBe('x y');
-      await call('search_files', { terms: 'x -in: @carol y' });
       expect(sent()).toBe('x y');
       expect(hits).not.toContain('POST /channels/direct');
     });
@@ -2609,19 +2888,6 @@ describe('search_files', () => {
       routes = base();
       expect(await setup()('search_files', { terms: '-in:@carol' }, true)).toBe('検索語か条件を 1 つ以上指定してください。');
       expect(onlyAsked()).toBe(true);
-    });
-
-    test('replaces a group DM with its channel_id, as for any other channel', async () => {
-      const GM = 'm'.repeat(26);
-      const name = createHash('sha1').update(['u1', 'u2', 'u3'].sort().join('')).digest('hex');
-      routes = {
-        ...base(),
-        'POST /users/usernames': () => [{ id: 'u2', username: 'bob' }, { id: 'u3', username: 'carol' }],
-        [`GET /teams/${TA}/channels/name/${name}`]: () => ({ id: GM, name, display_name: '', team_id: '', type: 'G' }),
-      };
-      await setup()('search_files', { terms: 'x in: @bob,carol in:town' });
-      expect(sent()).toBe(`x in:${GM} in:${A}`);
-      expect(hits).not.toContain('POST /channels/group');
     });
 
     test('says a channel is not found, for a name, a channel_id or team/channel answered with 403 or 404, without searching for the terms', async () => {
@@ -2635,26 +2901,6 @@ describe('search_files', () => {
       expect(onlyAsked()).toBe(true);
     });
 
-    test('says a user is not found for in:@user of nobody', async () => {
-      routes = { ...base(), 'GET /users/username/nobody': mmError(404, 'app.user.missing_account.const') };
-      expect(await setup()('search_files', { terms: 'x in:@nobody' }, true)).toBe('ユーザー「@nobody」が見つかりません。');
-    });
-
-    test('leaves quoted words alone, but not after an unclosed quote', async () => {
-      expect(await terms('"in:town" x')).toBe('"in:town" x');
-      expect(await terms('-"in:town" x')).toBe('-"in:town" x');
-      expect(await terms('abc"in:town" in:town')).toBe(`abc "in:town" in:${A}`);
-      expect(await terms('"a in:town')).toBe(`"a in:${A}`);
-    });
-
-    test('does not treat a word taken as another flag\'s value as a flag, and keeps a trailing in: as it is', async () => {
-      expect(await terms('from: in:town x')).toBe('from: in:town x');
-      expect(await terms('x in:')).toBe('x in:');
-    });
-
-    test('splits words on the spaces Go splits on, full-width space included', async () => {
-      expect(await terms('x　in:town')).toBe(`x in:${A}`);
-    });
   });
 });
 
@@ -2716,14 +2962,14 @@ describe('list_channel_members', () => {
   test('says members of a channel the user has not joined cannot be seen, without asking for the count', async () => {
     routes = { ...base(), 'GET /users': mmError(403, 'api.context.permissions.app_error') };
     const out = await setup()('list_channel_members', { channel: C }, true);
-    expect(out).toBe('参加していないチャンネルのメンバーは見られません（公開チャンネルでも同じです）。');
+    expect(out).toBe('このチャンネルのメンバーを見る権限がありません。参加していないチャンネルのメンバーは、公開チャンネルでも見られません。参加しているはずなら、Mattermost の一時的な障害の可能性があります。少し待ってから再試行してください。');
     expect(hits).not.toContain(`GET /channels/${C}/stats`);
   });
 
   test('says the same when the user leaves the channel between reading the members and the count, and passes other errors of the count through', async () => {
     routes = { ...base(), [`GET /channels/${C}/stats`]: mmError(403, 'api.context.permissions.app_error') };
     const call = setup();
-    expect(await call('list_channel_members', { channel: C }, true)).toBe('参加していないチャンネルのメンバーは見られません（公開チャンネルでも同じです）。');
+    expect(await call('list_channel_members', { channel: C }, true)).toBe('このチャンネルのメンバーを見る権限がありません。参加していないチャンネルのメンバーは、公開チャンネルでも見られません。参加しているはずなら、Mattermost の一時的な障害の可能性があります。少し待ってから再試行してください。');
     routes[`GET /channels/${C}/stats`] = mmError(404);
     expect(await call('list_channel_members', { channel: C }, true)).toContain('Mattermost がエラーを返しました（404）');
   });

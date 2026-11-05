@@ -46,7 +46,7 @@ function decodeFiles(files: FileArg[]): Upload[] {
     return { name: f.name, bytes };
   });
   const total = out.reduce((n, f) => n + f.bytes.length, 0);
-  if (total > MAX_FILES_BYTES) throw new InputError(`添付ファイルの中身の合計が ${total} バイトで、上限の ${MAX_FILES_BYTES} バイト（128KiB）を超えています。この大きさのファイルは files では送れないので、prepare_upload の説明の案内に従ってください。`);
+  if (total > MAX_FILES_BYTES) throw new InputError(`添付ファイルの中身の合計が ${total} バイトで、上限の ${MAX_FILES_BYTES} バイト（128KiB）を超えています。合計がこの大きさになる添付は files では送れないので、prepare_upload の説明の案内に従ってください。`);
   return out;
 }
 
@@ -64,12 +64,26 @@ export async function uploadFile(mm: Mm, uid: string, channelId: string, name: s
     {
       id: [
         [400, 'api.file.upload_file.large_image_detailed.app_error', `ファイル「${name}」は画像の画素数が大きすぎるため添付できません。`],
-        [413, 'api.file.upload_file.too_large_detailed.app_error', `ファイル「${name}」は大きすぎるため添付できません。`],
-        [403, 'api.file.attachments.disabled.app_error', 'このサーバーではファイルの添付が無効です。'],
+        [413, 'api.file.upload_file.too_large_detailed.app_error', tooLarge(name)],
+        [403, 'api.file.attachments.disabled.app_error', ATTACHMENTS_OFF],
       ],
     },
   );
   return r.file_infos[0].id;
+}
+
+const ATTACHMENTS_OFF = 'このサーバーではファイルの添付が無効です。';
+const tooLarge = (name: string) => `ファイル「${name}」は大きすぎるため添付できません。`;
+
+// Not left to the upload alone when the DM may be created first: a refused upload would leave the new DM empty, and Mattermost cannot delete a DM.
+// Not checking the image size in pixels, permissions, restricted DMs or plugins: the client config does not tell them, so those refusals can still leave an empty DM.
+async function checkFilesAccepted(mm: Mm, uid: string, files: Upload[]): Promise<void> {
+  const c = await mm.call<{ EnableFileAttachments?: string; MaxFileSize?: string }>(uid, 'GET', '/config/client?format=old');
+  if (c.EnableFileAttachments === 'false') throw new InputError(ATTACHMENTS_OFF);
+  // Not validated with Number(): it reads "" as 0, which would refuse every file.
+  if (!/^\d+$/.test(c.MaxFileSize ?? '')) return;
+  const big = files.find((f) => f.bytes.length > Number(c.MaxFileSize));
+  if (big) throw new InputError(tooLarge(big.name));
 }
 
 const upload = (mm: Mm, uid: string, channelId: string, f: Upload) =>
@@ -114,6 +128,7 @@ const INFLIGHT = '同じ投稿を処理中です。少し待ってから read_ch
 export async function sendMessage(mm: Mm, store: Store, uid: string, baseUrl: string, args: Args, client?: AbortSignal): Promise<CallToolResult> {
   const files = decodeFiles(args.files ?? []);
   const fileIds = args.file_ids ?? [];
+  if (files.length && args.channel.trim().startsWith('@') && !args.root_id && !fileIds.length) await checkFilesAccepted(mm, uid, files);
   const ch = await resolveTarget(mm, store, uid, args.channel, args.root_id, fileIds);
   checkUploaded(store, uid, ch.id, fileIds);
   const rootId = args.root_id;
@@ -312,7 +327,7 @@ const draftSchema = {
   // Not counting code points: zod counts UTF-16 units, which can only be stricter than Mattermost's limit.
   message: z.string().min(1).max(MAX_MESSAGE),
   root_id: POST_ID.optional().describe('返信の下書きにするときの、スレッドの親投稿の post_id'),
-  overwrite: z.boolean().optional().describe('同じ投稿先に本文の違う下書きがあるときに、上書きするなら true。元の本文に加えて添付ファイルと優先度も失われ、取り消せない'),
+  overwrite: z.boolean().optional().describe('同じ投稿先に本文の違う下書きがあるときに、上書きするなら true。元の本文に加えて添付ファイル、優先度、burn-on-read（読まれた後に消える設定）も失われ、取り消せない'),
 };
 type DraftArgs = { channel: string; message: string; root_id?: string; overwrite?: boolean };
 type Draft = {
@@ -468,7 +483,7 @@ async function saveLocked(mm: Mm, uid: string, ch: ChannelRef, rootId: string, a
   if (existing && !args.overwrite) {
     const head = [...existing.message].slice(0, 200).join('');
     throw new InputError([
-      '同じ投稿先に、本文の違う下書きがあります。上書きしていません。上書きするときは overwrite: true を付けてください（添付ファイルと優先度も失われます）。',
+      '同じ投稿先に、本文の違う下書きがあります。上書きしていません。上書きするときは overwrite: true を付けてください（添付ファイル、優先度、burn-on-read も失われます）。',
       where,
       `既存の下書き（先頭 200 文字）: ${head}`,
     ].join('\n'));
@@ -485,12 +500,12 @@ type PrepareArgs = { channel: string };
 const MiB = 1024 * 1024;
 
 export async function prepareUpload(mm: Mm, store: Store, uid: string, publicUrl: string, maxBytes: number, args: PrepareArgs): Promise<CallToolResult> {
-  const full = new InputError(`使われていないアップロード URL が ${MAX_OPEN_UPLOAD_URLS} 件あります。それを使うか、10 分の期限が切れるのを待ってください。`);
+  const full = () => new InputError(`使われていないアップロード URL が ${MAX_OPEN_UPLOAD_URLS} 件あります。それを使うか、10 分の期限が切れるのを待ってください。`);
   // Not left to createUploadUrl alone: resolving may create the DM first, and failing after that leaves it empty. A URL issued or released between the two checks still does.
-  if (store.openUploadUrlCount(uid) >= MAX_OPEN_UPLOAD_URLS) throw full;
+  if (store.openUploadUrlCount(uid) >= MAX_OPEN_UPLOAD_URLS) throw full();
   const ch = await resolveChannel(mm, uid, args.channel, { create: true });
   const token = store.createUploadUrl({ mmUserId: uid, channelId: ch.id });
-  if (!token) throw full;
+  if (!token) throw full();
   const limit = maxBytes % MiB ? `${maxBytes} バイト` : `${maxBytes / MiB}MiB`;
   return text([
     `アップロード用の URL を発行しました。10 分間、1 回だけ使えます（1 回で ${MAX_UPLOAD_FILES} 件まで、送る本文は multipart の枠を含めて ${limit} まで）。`,
@@ -542,7 +557,7 @@ export function registerSendTools(server: McpServer, ctx: ToolContext): void {
   ) as unknown as ToolCallback<typeof draftSchema>);
 
   server.registerTool('prepare_upload', {
-    description: '利用者の PC にあるファイル（スクリーンショット、PDF など）を添付するための、使い捨てのアップロード URL と curl のコマンドを返す。PC でコマンドを実行できるクライアント（Claude Code、Codex CLI など）向けで、パスの分からないファイル（Claude Code に貼り付けた画像など）は利用者にパスを聞き、無ければ下の save_draft の案内に従う。curl を実行する前に、送るファイルのパスと投稿先を利用者に示して確認を取ること。PC でコマンドを実行できないクライアント（claude.ai など）では、save_draft で本文を下書きにし、ファイルは Mattermost の画面から添付するよう案内する',
+    description: '利用者の PC にあるファイル（スクリーンショット、PDF など）を添付するための、使い捨てのアップロード URL と curl のコマンドを返す。PC でコマンドを実行できるクライアント（Claude Code、Codex CLI など）向けで、パスの分からないファイル（Claude Code に貼り付けた画像など）は利用者にパスを聞き、無ければ末尾の案内に従う。curl を実行する前に、送るファイルのパスと投稿先を利用者に示して確認を取ること。PC でコマンドを実行できないクライアント（claude.ai など）とパスの無いファイルでは、save_draft で本文を下書きにし、ファイルは Mattermost の画面から添付するよう案内する',
     inputSchema: prepareSchema,
     annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false },
   }, guarded(ctx, 'prepare_upload', async (args: PrepareArgs, extra: { signal: AbortSignal }) =>

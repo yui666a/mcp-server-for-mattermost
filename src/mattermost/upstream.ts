@@ -10,11 +10,14 @@ export class UpstreamUnavailable extends Error {
   // Set only when Mattermost answered: the HTTP status, and for a 500 the id of its JSON error if it gave one.
   readonly status?: number;
   readonly id?: string;
-  constructor(message: string, sent = true, status?: number, id?: string) {
+  // True only for a 500 whose body was read whole as text/plain and is not JSON, as net/http's Error writes it.
+  readonly plainBody?: boolean;
+  constructor(message: string, sent = true, status?: number, id?: string, plainBody?: boolean) {
     super(message);
     this.sent = sent;
     this.status = status;
     this.id = id;
+    this.plainBody = plainBody;
   }
 }
 

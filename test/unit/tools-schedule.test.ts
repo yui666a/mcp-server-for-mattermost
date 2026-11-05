@@ -104,7 +104,7 @@ describe('schedule_message', () => {
     test('creates the DM when scheduling, so the destination is fixed to its channel_id', async () => {
       const r = await setup().call('schedule_message', { channel: '@carol', message: 'hello', at: '2026-11-03T10:00' });
       expect(r.isError).toBe(false);
-      expect(r.text).toContain(`チャンネル: @carol（channel_id: ${NEW_DM}）`);
+      expect(r.text).toContain(`投稿先: @carol（channel_id: ${NEW_DM}）`);
       expect(hits).toContain('POST /channels/direct');
     });
 
@@ -125,13 +125,34 @@ describe('schedule_message', () => {
       expect(hits).not.toContain('POST /channels/direct');
     });
 
-    test('with the pending schedules at the limit, refuses before resolving the channel, so no DM is created', async () => {
+    test.each(['@carol', ' @carol'])('with the pending schedules at the limit, refuses %j before resolving the channel, so no DM is created', async (channel) => {
       const s = setup();
       for (let i = 0; i < MAX_PENDING_SCHEDULED; i++) s.store.createScheduled({ mmUserId: 'u1', channelId: CH, message: `m${i}`, scheduledAt: NOW + DAY }, NOW);
-      const r = await s.call('schedule_message', { channel: '@carol', message: 'hello', at: '2026-11-03T10:00' });
+      const r = await s.call('schedule_message', { channel, message: 'hello', at: '2026-11-03T10:00' });
       expect(r.isError).toBe(true);
       expect(r.text).toContain(`待機中の予約が上限の ${MAX_PENDING_SCHEDULED} 件に達しています`);
       expect(hits).toEqual([]);
+    });
+
+    test.each([
+      ['a channel name that does not exist', { channel: 'nowhere' }, 'チャンネル「nowhere」が見つかりません'],
+      ['a file_id that was not uploaded', { channel: CH, file_ids: ['z'.repeat(26)] }, 'z'.repeat(26)],
+      ['a root_id that does not exist', { channel: CH, root_id: 'q'.repeat(26) }, `root_id ${'q'.repeat(26)} の投稿が見つかりません`],
+    ])('with the pending schedules at the limit, %s is reported before the limit', async (_, args, error) => {
+      const s = setup();
+      for (let i = 0; i < MAX_PENDING_SCHEDULED; i++) s.store.createScheduled({ mmUserId: 'u1', channelId: CH, message: `m${i}`, scheduledAt: NOW + DAY }, NOW);
+      const r = await s.call('schedule_message', { message: 'hello', at: '2026-11-03T10:00', ...args });
+      expect(r.isError).toBe(true);
+      expect(r.text).toContain(error);
+      expect(r.text).not.toContain('上限');
+    });
+
+    test('with the pending schedules at the limit, a valid channel gets the limit error', async () => {
+      const s = setup();
+      for (let i = 0; i < MAX_PENDING_SCHEDULED; i++) s.store.createScheduled({ mmUserId: 'u1', channelId: CH, message: `m${i}`, scheduledAt: NOW + DAY }, NOW);
+      const r = await s.call('schedule_message', { channel: CH, message: 'hello', at: '2026-11-03T10:00' });
+      expect(r.isError).toBe(true);
+      expect(r.text).toBe(`待機中の予約が上限の ${MAX_PENDING_SCHEDULED} 件に達しています。不要な予約を cancel_scheduled_message で取り消してください。`);
     });
 
     test('does not create the DM when the time is out of range', async () => {
@@ -146,7 +167,7 @@ describe('schedule_message', () => {
     const r = await s.call('schedule_message', { channel: CH, message: 'hello', root_id: ROOT, at: '2026-11-03T10:00' });
     expect(r.isError).toBe(false);
     expect(r.text).toMatch(/予約 ID: [A-Za-z0-9_-]{43}/);
-    expect(r.text).toContain(`チャンネル: Town（channel_id: ${CH}）、返信先 post_id: ${ROOT}`);
+    expect(r.text).toContain(`投稿先: Town（channel_id: ${CH}）、返信先 post_id: ${ROOT}`);
     expect(r.text).toContain('2026-11-03T01:00:00Z | 2026-11-03T10:00:00+09:00');
     expect(r.text).toContain('list_scheduled_messages で確かめられます');
     expect(hits.filter((h) => h.startsWith('POST'))).toEqual([]);
@@ -360,7 +381,7 @@ describe('list_scheduled_messages', () => {
     expect(hits).toEqual([`GET /channels/${CH}`, `GET /channels/${CH2}`, `GET /channels/${DM}`, 'GET /users/u5', `GET /channels/${GONE}`]);
   });
 
-  test('names a group DM by the other members as schedule_message does, looking it up once, and by its display_name when the members cannot be listed', async () => {
+  test('names a group DM by the other members as schedule_message does, deactivated ones included, looking it up once, and by its display_name when the members cannot be listed', async () => {
     const GM = 'n'.repeat(26);
     const GM2 = 'o'.repeat(26);
     const LONE = 'q'.repeat(26);
@@ -368,11 +389,16 @@ describe('list_scheduled_messages', () => {
     routes[`GET /channels/${GM2}`] = () => ({ id: GM2, name: 'i'.repeat(40), display_name: 'alice, dave, erin', team_id: '', type: 'G' });
     routes[`GET /channels/${LONE}`] = () => ({ id: LONE, name: 'j'.repeat(40), display_name: 'alice, frank, gina', team_id: '', type: 'G' });
     const members: Record<string, unknown> = {
-      [GM]: [{ id: 'u7', username: 'carol' }, { id: 'u1', username: 'alice' }, { id: 'u5', username: 'bob' }],
+      [GM]: [{ id: 'u7', username: 'carol' }, { id: 'u1', username: 'alice' }, { id: 'u5', username: 'bob', delete_at: NOW - DAY }],
       [GM2]: Response.json({ id: 'api.context.permissions.app_error', message: 'm', status_code: 403 }, { status: 403 }),
       [LONE]: [{ id: 'u1', username: 'alice' }],
     };
-    routes['GET /users'] = (req) => members[new URL(req.url).searchParams.get('in_channel')!];
+    const queries: { keys: string[]; perPage: string | null }[] = [];
+    routes['GET /users'] = (req) => {
+      const q = new URL(req.url).searchParams;
+      queries.push({ keys: [...q.keys()].sort(), perPage: q.get('per_page') });
+      return members[q.get('in_channel')!];
+    };
     const s = setup();
     let n = 0;
     for (const channelId of [GM, GM, GM2, LONE]) s.store.createScheduled({ mmUserId: 'u1', channelId, message: 'x', scheduledAt: NOW + DAY + n++ * MIN }, NOW);
@@ -385,6 +411,7 @@ describe('list_scheduled_messages', () => {
       `投稿先: alice, frank, gina（channel_id: ${LONE}）`,
     ]);
     expect(hits.filter((h) => h === 'GET /users')).toHaveLength(3);
+    expect(queries).toEqual(Array(3).fill({ keys: ['in_channel', 'per_page'], perPage: '200' }));
   });
 
   test.each([
