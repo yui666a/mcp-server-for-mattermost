@@ -398,11 +398,13 @@ describe('mark_as_read for threads', () => {
     ...o,
   });
 
-  test.each([403, 404])('does not point to follow_thread for a thread in a channel the user has not joined (members/me answers %i)', async (status) => {
-    routes = unfollowed({ [`GET /channels/${CH}/members/me`]: mmError(status, 'app.channel.get_member.missing.app_error') });
-    const r = await setup().call({ threads: [{ post_id: ROOT }] });
-    expect(r.text).toContain('このスレッドのチャンネルに参加していません。参加していないチャンネルのスレッドは未読に数えられないので、既読にするものがありません。');
-    expect(r.text).not.toContain('follow_thread');
+  test.each([[403, 'api.context.permissions.app_error'], [404, 'app.channel.get_member.missing.app_error']] as const)('does not point to follow_thread for a thread in a channel the user has not joined (members/me answers %i)', async (status, errorId) => {
+    routes = unfollowed({ [`GET /channels/${CH}/members/me`]: mmError(status, errorId) });
+    for (const postId of [ROOT, id(5)]) {
+      const r = await setup().call({ threads: [{ post_id: postId }] });
+      expect(r.text, postId).toContain('このスレッドのチャンネルに参加していません。参加していないチャンネルのスレッドは未読に数えられないので、既読にするものがありません。');
+      expect(r.text, postId).not.toContain('follow_thread');
+    }
   });
 
   test('checks the membership only when the thread has no state and replies', async () => {
