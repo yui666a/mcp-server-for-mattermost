@@ -35,6 +35,7 @@ const NAME = /^[A-Za-z0-9._-]+$/;
 
 // Checked rather than only encodeURIComponent'ed: "." and ".." survive encoding and fetch would normalise them into another endpoint.
 function plain(name: string, what: string): string {
+  if (!name) throw new InputError(`${what}が空です。`);
   if (!NAME.test(name) || name === '.' || name === '..') throw new InputError(`${what}「${name}」は Mattermost の名前として使えない文字を含みます。`);
   return name;
 }
@@ -125,7 +126,7 @@ const TOO_MANY = 'グループ DM に指定できるのは、自分以外に 7 �
 
 async function resolveGroup(mm: Mm, userId: string, spec: string, teams: MmTeam[], create?: boolean): Promise<ResolvedChannel> {
   const parts = spec.slice(1).split(',').map((p) => p.trim().replace(/^@/, ''));
-  if (parts.some((p) => !p)) throw new InputError('グループ DM の指定に空の名前があります。@a,b の形で、カンマの間にユーザー名を書いてください。');
+  if (parts.some((p) => !p)) throw new InputError('グループ DM の指定に空の名前があります。@a,b の形で、カンマの間にユーザー名を書いてください（カンマの前後に空白を入れない）。');
   const names = [...new Set(parts.map((p) => plain(p, 'ユーザー名').toLowerCase()))];
   // Bounded before the lookup only by the names given: whether one of them is the caller is known after it, and the caller's own name may make 8.
   if (names.length < 2) throw new InputError(ONE_OTHER);
