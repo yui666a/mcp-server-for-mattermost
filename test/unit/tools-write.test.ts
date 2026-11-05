@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
+import { MAX_OPEN_UPLOAD_URLS, type Store } from '../../src/store.ts';
 import { makeApp } from './helpers.ts';
 
 type Route = (req: Request) => unknown;
@@ -49,7 +50,7 @@ function setup() {
     return { isError: body.result.isError ?? false, text: body.result.content[0].text };
   };
   const tools = async (): Promise<{ name: string; description: string; annotations: Record<string, boolean> }[]> => (await rpc('tools/list', {})).result.tools;
-  return { call, tools };
+  return { call, tools, store: ctx.store };
 }
 
 const POST = 'p'.repeat(26);
@@ -803,6 +804,7 @@ describe('send_message with files', () => {
 
 describe('a DM not opened yet', () => {
   const CAROL = 'k'.repeat(26);
+  const OTHER_CH = 'c'.repeat(26);
   const NEW_DM = 'n'.repeat(26);
   const ROOT = 'r'.repeat(26);
   const FILE = 'f'.repeat(26);
@@ -835,14 +837,82 @@ describe('a DM not opened yet', () => {
 
   test.each([
     ['send_message', { message: 'hi', root_id: ROOT }],
-    ['send_message', { message: 'hi', file_ids: [FILE] }],
     ['save_draft', { message: 'hi', root_id: ROOT }],
-  ])('%s with %j does not create the DM, since the DM cannot hold that post or file yet', async (tool, args) => {
+  ])('%s with %j does not create the DM, since the DM cannot hold that post yet', async (tool, args) => {
     serve();
     const r = await setup().call(tool, { channel: '@carol', ...args });
     expect(r.isError).toBe(true);
     expect(r.text).toContain('@carol との DM はまだありません');
     expect(hits).not.toContain(CREATE);
+  });
+
+  test.each([
+    ['not uploaded through prepare_upload', [FILE], () => {}, 'prepare_upload の URL で 24 時間以内にアップロードしたファイルではありません'],
+    ['uploaded for another channel', [FILE], (st: Store) => st.recordUploadedFile({ mmUserId: 'u1', channelId: OTHER_CH }, FILE), `別のチャンネル（channel_id: ${OTHER_CH}）`],
+    ['given twice', [FILE, FILE], () => {}, '同じ file_id が重なっています'],
+  ])('send_message with file_ids %s reports the file mistake rather than the missing DM, and does not create the DM', async (_, file_ids, given, msg) => {
+    serve();
+    const s = setup();
+    given(s.store);
+    const r = await s.call('send_message', { channel: '@carol', message: 'hi', file_ids });
+    expect(r.isError).toBe(true);
+    expect(r.text).toContain(msg);
+    expect(r.text).not.toContain('DM はまだありません');
+    expect(hits).not.toContain(CREATE);
+  });
+
+  test('prepare_upload with every upload URL in use refuses before resolving the channel, so no DM is created', async () => {
+    serve();
+    const s = setup();
+    for (let i = 0; i < MAX_OPEN_UPLOAD_URLS; i++) s.store.createUploadUrl({ mmUserId: 'u1', channelId: OTHER_CH });
+    const r = await s.call('prepare_upload', { channel: '@carol' });
+    expect(r.isError).toBe(true);
+    expect(r.text).toContain(`使われていないアップロード URL が ${MAX_OPEN_UPLOAD_URLS} 件あります`);
+    expect(hits).toEqual([]);
+  });
+
+  test('prepare_upload does not count used URLs or other users\' URLs toward the limit', async () => {
+    serve();
+    const s = setup();
+    for (let i = 0; i < MAX_OPEN_UPLOAD_URLS - 1; i++) s.store.createUploadUrl({ mmUserId: 'u1', channelId: OTHER_CH });
+    s.store.takeUploadUrl(s.store.createUploadUrl({ mmUserId: 'u1', channelId: OTHER_CH })!);
+    s.store.createUploadUrl({ mmUserId: 'u2', channelId: OTHER_CH });
+    const r = await s.call('prepare_upload', { channel: '@carol' });
+    expect(r.text).toContain('アップロード用の URL を発行しました');
+  });
+
+  test.each([
+    ['@carol', CREATE],
+    ['  @carol ', CREATE],
+    ['@carol,dave', 'POST /channels/group'],
+  ])('save_draft to %j with drafts disabled on the server fails before resolving, so no DM is created', async (channel, create) => {
+    serve();
+    routes['GET /users/u1/teams/t1/drafts'] = mmError(501, 'api.drafts.disabled.app_error');
+    const r = await setup().call('save_draft', { channel, message: 'hi' });
+    expect(r.isError).toBe(true);
+    expect(r.text).toContain('このサーバーでは下書きの同期が無効です');
+    expect(hits).not.toContain(create);
+    expect(hits).not.toContain('POST /users/usernames');
+    expect(hits).not.toContain('GET /users/username/carol');
+  });
+
+  test('save_draft to a DM without any team refuses before resolving, so no DM is created', async () => {
+    serve();
+    routes['GET /users/me/teams'] = () => [];
+    const r = await setup().call('save_draft', { channel: '@carol', message: 'hi' });
+    expect(r.isError).toBe(true);
+    expect(r.text).toContain('所属しているチームがないため、既存の下書きを確かめられません');
+    expect(hits).not.toContain('GET /users/username/carol');
+    expect(hits).not.toContain(CREATE);
+  });
+
+  test('save_draft to a DM lists the drafts once, before resolving', async () => {
+    serve();
+    const r = await setup().call('save_draft', { channel: '@carol', message: 'hi' });
+    expect(r.text).toContain('下書きとして保存しました');
+    const list = 'GET /users/u1/teams/t1/drafts';
+    expect(hits.filter((h) => h === list)).toHaveLength(1);
+    expect(hits.indexOf(list)).toBeLessThan(hits.indexOf(CREATE));
   });
 
   test('send_message with files it cannot read does not create the DM', async () => {
