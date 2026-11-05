@@ -453,20 +453,33 @@ export function registerReadTools(server: McpServer, ctx: ToolContext): void {
   tool('list_saved_posts', '自分が保存した（フラグを付けた）投稿を新しい順に一覧する。参加しているチャンネルの投稿だけが対象で、アーカイブ済みのチャンネルの投稿も含む',
     { limit: limitArg(20, 50), cursor: cursorArg },
     async ({ limit, cursor }, mm) => {
-      const c = cursorOf(z.object({ create_at: z.number().int(), id: z.string(), per_page: perPage(50) }).strict(), cursor);
+      const c = cursorOf(z.object({ create_at: z.number().int(), id: z.string(), per_page: perPage(50), at: z.number().int().min(0).optional() }).strict(), cursor);
       const per = c?.per_page ?? limit ?? 20;
       const older = (p: MmPost) => !c || p.create_at < c.create_at || (p.create_at === c.create_at && p.id > c.id);
       const found = new Map<string, MmPost>();
+      const row = new Map<string, number>();
       let rest: MmPost[] = [];
       let capped = false;
-      // Not putting Mattermost's offset in the cursor: saving or unsaving between pages would shift it.
       // Not reading 200 rows from the start: the first page is the common call, and Mattermost adds metadata to every row it returns.
       let at = 0;
       let size = Math.min(SAVED_PAGE, per + SAVED_OVERLAP + 1);
+      // Not sending a page number: Mattermost uses page as the row offset.
+      const read = async (from: number, n: number) => {
+        const r = await mm.call<PostList>(uid, 'GET', `/users/${uid}/posts/flagged?page=${from}&per_page=${n}`);
+        return r.order.map((id) => r.posts[id]).filter(Boolean);
+      };
+      // Not trusting the cursor's row: saving or unsaving between pages shifts it, and Mattermost drops and reorders posts after counting.
+      // The read is kept only when a post in it is strictly newer than the cursor; the rows before it are then newer still, as Mattermost orders by create_at.
+      let ahead: MmPost[] | undefined;
+      const start = (c?.at ?? 0) - SAVED_OVERLAP;
+      if (c && start > 0 && start < SAVED_SCAN - SAVED_OVERLAP) {
+        const n = Math.min(SAVED_PAGE, per + 2 * SAVED_OVERLAP + 1, SAVED_SCAN - start);
+        const got = await read(start, n);
+        if (got.some((p) => p.create_at > c.create_at)) [ahead, at, size] = [got, start, n];
+      }
       for (;;) {
-        // Not sending a page number: Mattermost uses page as the row offset.
-        const r = await mm.call<PostList>(uid, 'GET', `/users/${uid}/posts/flagged?page=${at}&per_page=${size}`);
-        const got = r.order.map((id) => r.posts[id]).filter(Boolean);
+        const got = ahead ?? await read(at, size);
+        ahead = undefined;
         // Not stopping at a short page: Mattermost drops posts the user may not read after counting the page.
         // Not taking an empty first read as the end: the first read is small, and all of its rows may be ones the user may not read.
         if (!got.length && at === 0 && size < SAVED_PAGE) {
@@ -474,7 +487,10 @@ export function registerReadTools(server: McpServer, ctx: ToolContext): void {
           continue;
         }
         if (!got.length) break;
-        for (const p of got) found.set(p.id, p);
+        got.forEach((p, i) => {
+          found.set(p.id, p);
+          row.set(p.id, at + i);
+        });
         rest = [...found.values()].filter(older).sort(newestFirst);
         if (rest.length > per && Math.min(...got.map((p) => p.create_at)) < rest[per - 1].create_at) break;
         // Not starting where the last read ended: Mattermost orders only by create_at, so posts of the same time can swap places between reads and one at the boundary would come in neither.
@@ -486,11 +502,13 @@ export function registerReadTools(server: McpServer, ctx: ToolContext): void {
         }
         size = Math.min(SAVED_PAGE, SAVED_SCAN - at);
       }
+      // Not more than SAVED_OVERLAP rows past the limit: if all of them are posts the user may not read, the note is left out, which takes that many in a row.
+      if (capped) capped = (await read(SAVED_SCAN, SAVED_OVERLAP)).length > 0;
       const shown = rest.slice(0, per);
       const last = shown.at(-1);
       const lines = ['保存した投稿（新しい順）', ...(shown.length ? await withChannels(mm, shown) : c ? [] : ['保存した投稿はありません。'])];
       const notes = capped ? [`（保存した投稿のうち新しい ${SAVED_SCAN} 件だけを見ています）`] : [];
-      return render({ lines, posts: shown, notes, next: rest.length > per && last ? { create_at: last.create_at, id: last.id, per_page: per } : undefined });
+      return render({ lines, posts: shown, notes, next: rest.length > per && last ? { create_at: last.create_at, id: last.id, per_page: per, at: row.get(last.id) } : undefined });
     });
 
   tool('search_files', 'ファイルを名前で探す（サーバーが中身を抽出していれば中身にも当たる）。参加しているチャンネル、DM、グループ DM のファイルが対象で、参加していない公開チャンネルとアーカイブ済みのチャンネルのファイルは出ない。Mattermost の検索構文（from:、in:、ext:、before:、after:、on: など）を使え、日付は日本時間（JST）で解釈する。in: にはチャンネル ID、「チーム名/チャンネル名」、チャンネル名、@ユーザー名（DM）、@a,b（グループ DM。カンマの前後に空白を入れない）を渡せる。同じ名前が複数のチームにあれば、すべてで探す。見つからなければエラー（見る権限の無い非公開チャンネルも見つからない扱い）。DM は作らない。名前は語の単位で当たり、日本語の名前は名前全体か先頭からの前方一致（例: 2026年10月*）でしか当たらない。新しい順。file_id は get_file に、post_id は get_post に渡せる',

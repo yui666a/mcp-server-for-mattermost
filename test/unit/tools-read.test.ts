@@ -2549,8 +2549,8 @@ describe('list_saved_posts', () => {
     routes = { ...base(), [FLAGGED]: byOffset(all) };
     const call = setup();
     const first = await call('list_saved_posts', { limit: 50 });
-    expect(offsets()).toEqual([0, 51, 231, 411, 591, 771, 951]);
-    expect(asked('per_page')).toEqual([71, 200, 200, 200, 200, 200, 49]);
+    expect(offsets()).toEqual([0, 51, 231, 411, 591, 771, 951, 1000]);
+    expect(asked('per_page')).toEqual([71, 200, 200, 200, 200, 200, 49, 20]);
     expect(first).toContain(NOTE);
     const cursor = cursorIn(first);
     expect(cursor).toBeDefined();
@@ -2559,6 +2559,100 @@ describe('list_saved_posts', () => {
     expect(end).toContain(NOTE);
     expect(end).not.toContain('保存した投稿はありません。');
     expect(cursorIn(end)).toBeUndefined();
+  });
+
+  test('does not add the note when nothing comes after row 1000, though it read up to there', async () => {
+    routes = { ...base(), [FLAGGED]: byOffset(Array.from({ length: 990 }, (_, i) => post(pid(i), 5000))) };
+    const out = await setup()('list_saved_posts', { limit: 50 });
+    expect(offsets()).toEqual([0, 51, 231, 411, 591, 771, 951, 1000]);
+    expect(out).not.toContain(NOTE);
+  });
+
+  describe('a cursor carries the row of the last post shown, and the next page starts reading 20 rows before it', () => {
+    const desc = (n: number, from = 0) => Array.from({ length: n }, (_, i) => post(pid(from + i), 100_000 - from - i));
+    const cursorAt = (p: { id: string; create_at: number }, at: number, per = 50) => Buffer.from(JSON.stringify({ create_at: p.create_at, id: p.id, per_page: per, at })).toString('base64url');
+    const atIn = (out: string) => JSON.parse(Buffer.from(cursorIn(out)!, 'base64url').toString()).at;
+
+    test('reads limit + 41 rows from there once, and gives the next cursor the row of its last post', async () => {
+      const all = desc(300);
+      routes = { ...base(), [FLAGGED]: byOffset(all) };
+      const call = setup();
+      const first = await call('list_saved_posts', { limit: 50 });
+      expect(atIn(first)).toBe(49);
+      urls.length = 0;
+      const second = await call('list_saved_posts', { cursor: cursorIn(first) });
+      expect(offsets()).toEqual([29]);
+      expect(asked('per_page')).toEqual([91]);
+      expect(shownIds(second)).toEqual(all.slice(50, 100).map((p) => p.id));
+      expect(atIn(second)).toBe(99);
+    });
+
+    test('pages through every post once, in order, with the row in each cursor', async () => {
+      const all = desc(300);
+      routes = { ...base(), [FLAGGED]: byOffset(all) };
+      const call = setup();
+      const seen: string[] = [];
+      let cursor: string | undefined;
+      do {
+        const out = await call('list_saved_posts', cursor ? { cursor } : { limit: 50 });
+        seen.push(...shownIds(out));
+        cursor = cursorIn(out);
+      } while (cursor);
+      expect(seen).toEqual(all.map((p) => p.id));
+    });
+
+    test('keeps the read when posts saved since put newer posts at its start', async () => {
+      const all = desc(300, 100);
+      routes = { ...base(), [FLAGGED]: byOffset([...desc(30), ...all]) };
+      const out = await setup()('list_saved_posts', { cursor: cursorAt(all[49], 49) });
+      expect(offsets()[0]).toBe(29);
+      expect(shownIds(out)).toEqual(all.slice(50, 100).map((p) => p.id));
+    });
+
+    test.each([
+      ['posts unsaved since moved older posts to its start', 30, desc(270, 30), 49],
+      ['it starts inside a group of the same time as the last post shown', 0, [...desc(10), ...Array.from({ length: 290 }, (_, i) => post(pid(500 + i), 5000))], 49],
+      ['the row is past the last saved post', 0, desc(300), 500],
+    ] as const)('reads again from row 0 when %s', async (_, gone, list, at) => {
+      routes = { ...base(), [FLAGGED]: byOffset([...list]) };
+      const last = gone ? desc(50)[49] : list[49];
+      const out = await setup()('list_saved_posts', { cursor: cursorAt(last, at) });
+      expect(offsets().slice(0, 2)).toEqual([at - 20, 0]);
+      const want = [...list].sort((x, y) => y.create_at - x.create_at || x.id.localeCompare(y.id)).filter((p) => p.create_at < last.create_at || (p.create_at === last.create_at && p.id > last.id)).slice(0, 50);
+      expect(shownIds(out)).toEqual(want.map((p) => p.id));
+    });
+
+    test('reads on from there when the row is far before the last post shown', async () => {
+      const all = desc(300);
+      routes = { ...base(), [FLAGGED]: byOffset(all) };
+      const out = await setup()('list_saved_posts', { cursor: cursorAt(all[149], 25) });
+      expect(offsets()).toEqual([5, 76]);
+      expect(shownIds(out)).toEqual(all.slice(150, 200).map((p) => p.id));
+    });
+
+    test.each([
+      [10, 'row 0, as from the start', 0, 71],
+      [20, 'row 0, as from the start', 0, 71],
+      [21, 'row 1', 1, 91],
+      [1000, 'row 0, as the row is past the 1000 it reads', 0, 71],
+    ])('with the row at %i, reads from %s', async (at, _, from, size) => {
+      const all = desc(1100);
+      routes = { ...base(), [FLAGGED]: byOffset(all) };
+      await setup()('list_saved_posts', { cursor: cursorAt(all[Math.min(at, 999)], at) });
+      expect(offsets()[0]).toBe(from);
+      expect(asked('per_page')[0]).toBe(size);
+    });
+
+    test('near row 1000, reads only up to row 1000 and shows nothing after it', async () => {
+      const all = desc(1100);
+      routes = { ...base(), [FLAGGED]: byOffset(all) };
+      const out = await setup()('list_saved_posts', { cursor: cursorAt(all[990], 990) });
+      expect(offsets()).toEqual([970, 1000]);
+      expect(asked('per_page')).toEqual([30, 20]);
+      expect(shownIds(out)).toEqual(all.slice(991, 1000).map((p) => p.id));
+      expect(out).toContain(NOTE);
+      expect(cursorIn(out)).toBeUndefined();
+    });
   });
 
   test('does not add the note when the last read before row 1000 is not empty and the stop condition holds', async () => {
