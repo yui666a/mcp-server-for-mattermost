@@ -1230,7 +1230,8 @@ describe('get_unreads', () => {
       'POST /users/ids': () => [{ id: 'u1', username: 'alice' }, { id: 'u2', username: 'bob' }].filter((u) => (bodies['/users/ids'] as string[]).includes(u.id)),
     };
     const out = await setup()('get_unreads', {});
-    expect(out).toContain(`チャンネル: channel_id: ${DM}、name: u1__u2、表示名: @bob`);
+    // The team before the channel on the joined line, so the display name comes last.
+    expect(out).toContain(`チーム: なし（DM またはグループ DM） | チャンネル: channel_id: ${DM}、name: u1__u2、表示名: @bob`);
   });
 
   test('names the users who reacted to a thread root when the threads API gives the reactions', async () => {

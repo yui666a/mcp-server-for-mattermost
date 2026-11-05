@@ -186,7 +186,7 @@ export function channelLines(c: ChannelRef): string[] {
   ];
 }
 
-// The team before the channel when the two share a line: the display name, written by users, must come last, or a name ending in "| チーム: …（team_id: …）" comes before the real team.
+// Not the channel first on a shared line: the display name, written by users, would then sit before the real team, and a name ending in "| チーム: …（team_id: …）" would be read first.
 export function channelInline(c: ChannelRef): string {
   const [channel, team] = channelLines(c);
   return `${team} | ${channel}`;
