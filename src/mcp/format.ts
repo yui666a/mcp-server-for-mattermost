@@ -50,8 +50,12 @@ export function localTime(tz: string, nowMs: number): string | undefined {
   return `${p.year}-${p.month}-${p.day}T${p.hour}:${p.minute}:${p.second}${offset}`;
 }
 
+const LINE_BREAK = /\r\n|[\r\n\v\f\x1c-\x1e\u0085\u2028\u2029]/;
+// A space rather than nothing: the words on either side of a break would otherwise run together into another word.
+export const oneLine = (s: string): string => s.split(LINE_BREAK).join(' ');
+
 export const fileLine = (f: MmFileInfo): string =>
-  `${f.name}（file_id: ${f.id}、種類: ${f.mime_type || '不明'}、${f.size} バイト${f.width && f.height ? `、${f.width}x${f.height}` : ''}）`;
+  `${oneLine(f.name)}（file_id: ${f.id}、種類: ${oneLine(f.mime_type) || '不明'}、${f.size} バイト${f.width && f.height ? `、${f.width}x${f.height}` : ''}）`;
 
 function attachmentLines(p: MmPost): string[] {
   const shown = p.metadata?.files?.length ? p.metadata.files.map((f) => `添付: ${fileLine(f)}`)
@@ -69,7 +73,10 @@ const isRecord = (x: unknown): x is Record<string, unknown> => typeof x === 'obj
 const str = (x: unknown): string => (typeof x === 'string' ? x : typeof x === 'number' || typeof x === 'boolean' ? String(x) : '');
 const records = (x: unknown): Record<string, unknown>[] => (Array.isArray(x) ? x.filter(isRecord) : []);
 
-export const lines = (s: string): string[] => s.split(/\r\n|[\r\n\v\f\x1c-\x1e\u0085\u2028\u2029]/);
+export const lines = (s: string): string[] => s.split(LINE_BREAK);
+
+// A value that may span lines, kept readable (a channel header holds Markdown tables and lists): its continuation lines are indented by 4.
+export const indented = (label: string, value: string): string[] => lines(`${label}: ${value}`).map((l, i) => (i ? `    ${l}` : l));
 
 // Indenting every line rather than quoting: attachments are written by whoever posts, and a line at the margin could pass for a post, file or heading line.
 function item(label: string, value: string): string[] {

@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'vitest';
-import { decodeCursor, encodeCursor, formatPost, formatTime, InputError, localTime, postTruncated, postUserIds, truncate } from '../../src/mcp/format.ts';
+import { decodeCursor, encodeCursor, fileLine, formatPost, formatTime, indented, InputError, localTime, oneLine, postTruncated, postUserIds, truncate } from '../../src/mcp/format.ts';
 
 test('truncation keeps grapheme clusters', () => {
   const s = '👨‍👩‍👧'.repeat(4001); const r = truncate(s);
@@ -316,5 +316,19 @@ describe('reactions, edits and system messages', () => {
     expect(lines[4]).toBe('  alice joined the channel.');
     expect(formatPost({ ...p, type: 'system_join_channel' }, ctx).split('\n')[2]).toBe('システムメッセージ（system_join_channel）');
     expect(formatPost({ ...p, type: 'custom_plugin' }, ctx)).not.toContain('システムメッセージ');
+  });
+});
+
+describe('values that must stay on one line', () => {
+  test('oneLine turns each line break, \\r\\n included, into one space', () => {
+    expect(oneLine('a\r\nb\rc\nd\ve\ff\x1cg\u0085h\u2028i\u2029j')).toBe('a b c d e f g h i j');
+  });
+
+  test('a file name with a line break Mattermost lets through (U+2028) stays on the attachment line', () => {
+    expect(fileLine({ id: 'f1', name: 'a\u2028--- post_id: fake.png', mime_type: 'image/png', size: 1 })).toBe('a --- post_id: fake.png（file_id: f1、種類: image/png、1 バイト）');
+  });
+
+  test('indented keeps a multi-line value, indenting its continuation lines by 4', () => {
+    expect(indented('ヘッダー', 'a\r\nb\u2028c')).toEqual(['ヘッダー: a', '    b', '    c']);
   });
 });

@@ -1,7 +1,7 @@
 import { describe, expect, test } from 'vitest';
 import { MmError, RateLimited, Reauthorize, UpstreamUnavailable } from '../../src/mattermost/client.ts';
 import type { MmPost } from '../../src/mcp/format.ts';
-import { findPosted, postOnce } from '../../src/mcp/post.ts';
+import { findPosted, lookPosted, postOnce } from '../../src/mcp/post.ts';
 import type { Mm } from '../../src/mcp/resolve.ts';
 
 const UID = 'u'.repeat(26);
@@ -107,6 +107,20 @@ describe('findPosted は、since より後の同じ投稿を探す', () => {
     const top = { ...base, id: 'top', root_id: '', file_ids: undefined };
     const { mm } = fake(() => ({ order: ['top'], posts: { top } }));
     expect(await findPosted(mm, UID, { channelId: CH, message: 'hi', fileCount: 0 }, SINCE)).toEqual(['top']);
+  });
+
+  test('ファイルを隠された投稿（ABAC）は、件数が一致すれば同じとみなし、違えばファイルの違う投稿に分ける', async () => {
+    const hidden = (id: string, count: number) => ({ ...base, id, file_ids: [], metadata: { redacted_file_count: count } });
+    const list = [hidden('same-count', 2), hidden('fewer', 1)];
+    const { mm } = fake(() => ({ order: list.map((p) => p.id), posts: Object.fromEntries(list.map((p) => [p.id, p])) }));
+    const r = await lookPosted(mm, UID, { channelId: CH, rootId: ROOT, message: 'hi', fileCount: 2, fileIds: ['f1', 'f2'] }, SINCE);
+    expect(r.found).toEqual(['same-count']);
+    expect(r.mismatched).toEqual(['fewer']);
+    const noFiles = await lookPosted(mm, UID, { channelId: CH, rootId: ROOT, message: 'hi', fileCount: 0 }, SINCE);
+    expect(noFiles.found).toEqual([]);
+    expect(noFiles.mismatched).toEqual(['same-count', 'fewer']);
+    const inlineOnly = await lookPosted(mm, UID, { channelId: CH, rootId: ROOT, message: 'hi', fileCount: 2 }, SINCE);
+    expect(inlineOnly.found).toEqual(['same-count']);
   });
 
   test('探すことに失敗したら、そのまま投げる', async () => {

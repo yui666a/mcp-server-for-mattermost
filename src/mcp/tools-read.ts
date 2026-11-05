@@ -2,7 +2,7 @@ import type { McpServer, ToolCallback } from '@modelcontextprotocol/sdk/server/m
 import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
 import { z } from 'zod';
 import { MmError, UpstreamUnavailable, type MmClient } from '../mattermost/client.ts';
-import { BAD_CURSOR, BODY_CUT_NOTE, BODY_MAX_CHARS, decodeCursor, encodeCursor, fileLine, formatPost, formatTime, graphemeCount, InputError, localTime, postTruncated, postUserIds, truncate, type MmFileInfo, type MmPost } from './format.ts';
+import { BAD_CURSOR, BODY_CUT_NOTE, BODY_MAX_CHARS, decodeCursor, encodeCursor, fileLine, formatPost, formatTime, graphemeCount, indented, InputError, localTime, oneLine, postTruncated, postUserIds, truncate, type MmFileInfo, type MmPost } from './format.ts';
 import { pageCursor, paginate } from './paging.ts';
 import { mentionsMe, mentionTerms, type MentionUser } from './mentions.ts';
 import { parsePostRef } from './permalink.ts';
@@ -166,7 +166,7 @@ export function render({ lines, next, posts = [], notes = [] }: Page): string {
 
 export function channelLines(c: ChannelRef): string[] {
   return [
-    `チャンネル: ${c.displayName || c.name}（name: ${c.name}、channel_id: ${c.id}）`,
+    `チャンネル: ${oneLine(c.displayName) || c.name}（name: ${c.name}、channel_id: ${c.id}）`,
     c.teamId ? `チーム: ${c.teamName}（team_id: ${c.teamId}）` : 'チーム: なし（DM またはグループ DM）',
   ];
 }
@@ -804,8 +804,9 @@ export function registerReadTools(server: McpServer, ctx: ToolContext): void {
       const { shown, next } = listed(all, c, limit ?? 20);
       const lines = [`チャンネルの検索: ${query}`, ...shown.map((x) => {
         const team = teamName.get(x.team_id);
-        const where = team ? `${team}/${x.name}` : (x.label ?? x.display_name ?? x.name);
-        return `- ${where}（表示名: ${x.display_name || x.label || x.name}、種類: ${kind[x.type] ?? x.type}、channel_id: ${x.id}${team ? `、team_id: ${x.team_id}` : ''}）`;
+        const shown = oneLine(x.display_name ?? '');
+        const where = team ? `${team}/${x.name}` : (x.label ?? (x.display_name === undefined ? x.name : shown));
+        return `- ${where}（表示名: ${shown || x.label || x.name}、種類: ${kind[x.type] ?? x.type}、channel_id: ${x.id}${team ? `、team_id: ${x.team_id}` : ''}）`;
       })];
       if (!shown.length) lines.push('一致するチャンネルはありません。');
       return render({ lines, next, notes: capNote(capped, 'ほかの公開チャンネル') });
@@ -837,7 +838,7 @@ export function registerReadTools(server: McpServer, ctx: ToolContext): void {
       const kind: Record<string, string> = { O: '公開', P: '非公開', D: 'DM', G: 'グループ DM' };
       const line = (x: (typeof shown)[number]) => {
         const team = teamName.get(x.team_id);
-        const label = x.type === 'D' ? `@${partners.get(other(x)) ?? other(x)}` : x.display_name || x.name;
+        const label = x.type === 'D' ? `@${partners.get(other(x)) ?? other(x)}` : oneLine(x.display_name) || x.name;
         const where = team ? `${team}/${x.name}` : x.type === 'D' || x.type === 'G' ? label : x.name;
         return `- ${where}（表示名: ${label}、種類: ${kind[x.type] ?? x.type}、channel_id: ${x.id}${x.team_id ? `、team_id: ${x.team_id}` : ''}、最終投稿: ${x.last_post_at ? formatTime(x.last_post_at) : '投稿なし'}）`;
       };
@@ -869,8 +870,8 @@ export function registerReadTools(server: McpServer, ctx: ToolContext): void {
         });
         lines.push(
           `種類: ${kind[ch.raw.type] ?? ch.raw.type}`,
-          `目的: ${ch.raw.purpose || 'なし'}`,
-          `ヘッダー: ${ch.raw.header || 'なし'}`,
+          ...indented('目的', ch.raw.purpose || 'なし'),
+          ...indented('ヘッダー', ch.raw.header || 'なし'),
           `メンバー数: ${stats ? stats.member_count : '取得できません（参加していないか、一時的な障害）'}`,
         );
       }
@@ -1090,7 +1091,7 @@ export function registerReadTools(server: McpServer, ctx: ToolContext): void {
       const { shown, next } = listed(all, c, limit ?? 20);
       const lines = [`ユーザーの検索: ${query}`, ...shown.map((u) => {
         const name = [u.first_name, u.last_name].filter(Boolean).join(' ');
-        return `- @${u.username}（${[name && `名前: ${name}`, u.nickname && `ニックネーム: ${u.nickname}`, `user_id: ${u.id}`].filter(Boolean).join('、')}）`;
+        return `- @${u.username}（${[name && `名前: ${oneLine(name)}`, u.nickname && `ニックネーム: ${oneLine(u.nickname)}`, `user_id: ${u.id}`].filter(Boolean).join('、')}）`;
       })];
       if (!shown.length) lines.push('一致するユーザーはいません。');
       return render({ lines, next, notes: capNote(all.length, 'ほかのユーザー') });
@@ -1104,10 +1105,10 @@ export function registerReadTools(server: McpServer, ctx: ToolContext): void {
       return [
         `username: @${u.username}`,
         `user_id: ${u.id}`,
-        ...(name ? [`名前: ${name}`] : []),
-        ...(u.nickname ? [`ニックネーム: ${u.nickname}`] : []),
-        ...(u.position ? [`役職: ${u.position}`] : []),
-        ...(u.email ? [`メール: ${u.email}`] : []),
+        ...(name ? [`名前: ${oneLine(name)}`] : []),
+        ...(u.nickname ? [`ニックネーム: ${oneLine(u.nickname)}`] : []),
+        ...(u.position ? [`役職: ${oneLine(u.position)}`] : []),
+        ...(u.email ? [`メール: ${oneLine(u.email)}`] : []),
         ...(u.is_bot ? ['Bot アカウント'] : []),
         ...(u.delete_at ? ['無効化されたアカウント'] : []),
         ...timeZoneLines(u.timezone),
