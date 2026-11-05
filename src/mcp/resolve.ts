@@ -57,7 +57,8 @@ export async function resolveUser(mm: Mm, userId: string, spec: string): Promise
   const s = spec.trim();
   // Lowered rather than passed as typed: Mattermost user names are lower case only, and it answers 400 to any upper case letter.
   if (s.startsWith('@')) return mm.call<UserRef>(userId, 'GET', `/users/username/${plain(s.slice(1), 'ユーザー名').toLowerCase()}`);
-  if (ID.test(s)) return mm.call<UserRef>(userId, 'GET', `/users/${s}`);
+  // Lowered rather than passed as typed: Mattermost IDs are lower case only, so an upper case ID would only find nothing.
+  if (ID.test(s)) return mm.call<UserRef>(userId, 'GET', `/users/${s.toLowerCase()}`);
   throw new InputError('ユーザーはユーザー ID か @ユーザー名 で指定してください。');
 }
 
@@ -78,7 +79,7 @@ const refusalWorded = (who: string, table = CREATE_REFUSED) => (e: unknown): nev
 };
 
 // Not creating unless asked: a read must not leave behind a DM the user never opened.
-export async function resolveChannel(mm: Mm, userId: string, spec: string, opts: { create?: boolean } = {}): Promise<ResolvedChannel> {
+export async function resolveChannel(mm: Mm, userId: string, spec: string, opts: { create?: boolean; names?: boolean } = {}): Promise<ResolvedChannel> {
   const s = spec.trim();
   if (ID.test(s)) {
     const c = await fetchChannel(mm, userId, `/channels/${s}`).catch(async (e) => {
@@ -102,6 +103,8 @@ export async function resolveChannel(mm: Mm, userId: string, spec: string, opts:
         `同じ文字列を名前に持つチャンネルはあります。そのチャンネルを指すときだけ、${found.map((f) => `「${f.teamName}/${lower}」（${oneLine(f.displayName)}）`).join('か')}の形で指定してください。`,
       ].join(''));
     });
+    // Not looked up when only the ID is wanted (in: in a search): a lookup the output does not use could still fail on a rate limit.
+    if (opts.names === false) return ref(c, '');
     const r = ref(c, await teamNameOf(mm, userId, c.team_id));
     const label = await dmLabel(mm, userId, c);
     return label ? { ...r, displayName: label } : r;
