@@ -181,6 +181,18 @@ describe('search_posts in: filters', () => {
     expect(sent()).toBe(expected);
   });
 
+  test.each([
+    [`x in:${AR}`, `x in:${AR}`, true],
+    [`x in:${AR} in:only-a`, `x in:${AR} in:${CX}`, true],
+    ['x in:only-a', `x in:${CX}`, false],
+    [`x -in:${AR}`, `x -in:${AR}`, false],
+  ])('searches %j as %j, with archived channels included: %s', async (terms, expected, archived) => {
+    routes = base();
+    await setup()('search_posts', { terms });
+    expect(sent()).toBe(expected);
+    expect((bodies['/posts/search'] as { include_deleted_channels: boolean }).include_deleted_channels).toBe(archived);
+  });
+
   test('searches terms with 200,000 words before a quote', async () => {
     routes = base();
     const terms = `${'w '.repeat(200_000)}"a b" in:only-a`;
@@ -529,9 +541,7 @@ describe('search_posts in: filters', () => {
     [`x in:${PV}`, `チャンネル「${PV}」を見る権限がありません（参加していない非公開チャンネルなど）。`],
     ['x in:team-a/private', 'チャンネル「team-a/private」が見つかりません。名前の誤りなら search_channels で確かめてください。'],
     ['x in:team-c/town', 'チャンネル「team-c/town」を見る権限がありません（参加していないチームのチャンネルや、見る権限の無い公開チャンネルなど）。'],
-    [`x in:${AR}`, `チャンネル「${AR}」はアーカイブ済みで、検索の対象外です。読むなら read_channel に渡します。`],
-    [`x in:${AR} in:only-a`, `チャンネル「${AR}」はアーカイブ済みで、検索の対象外です。読むなら read_channel に渡します。`],
-    ['x in:nowhere', 'チャンネル「nowhere」が見つかりません。名前の誤りなら search_channels で確かめてください。参加していない非公開チャンネルとアーカイブ済みのチャンネルは名前では見つからず、アーカイブ済みのチャンネルは検索の対象外です（読むなら、利用者に ID を確かめて read_channel に渡します）。'],
+    ['x in:nowhere', 'チャンネル「nowhere」が見つかりません。名前の誤りなら search_channels で確かめてください。参加していない非公開チャンネルとアーカイブ済みのチャンネルは名前では見つかりません（アーカイブ済みのチャンネルは、参加していたなら、利用者に ID を確かめて in: に ID で指定すれば検索できます）。'],
     ['x in:@ghost', 'ユーザー「@ghost」が見つかりません。'],
     ['x -in:@ghost', 'ユーザー「@ghost」が見つかりません。'],
   ])('%j is an input error without searching', async (terms, message) => {
@@ -3398,7 +3408,7 @@ describe('search_files', () => {
 
   test('on a server with file search on, an in: that cannot be resolved is reported after one "*" request', async () => {
     routes = base();
-    expect(await setup()('search_files', { terms: 'x in:nowhere' }, true)).toBe('チャンネル「nowhere」が見つかりません。名前の誤りなら search_channels で確かめてください。参加していない非公開チャンネルとアーカイブ済みのチャンネルは名前では見つからず、アーカイブ済みのチャンネルは検索の対象外です（読むなら、利用者に ID を確かめて read_channel に渡します）。参加しているはずなら、Mattermost の一時的な障害の可能性があります。少し待ってから再試行してください。続くなら、チャンネルから外されたか、サーバーの権限の設定で読む権限が外されている可能性があるので、管理者に確かめてください。');
+    expect(await setup()('search_files', { terms: 'x in:nowhere' }, true)).toBe('チャンネル「nowhere」が見つかりません。名前の誤りなら search_channels で確かめてください。参加していない非公開チャンネルとアーカイブ済みのチャンネルは名前では見つかりません（アーカイブ済みのチャンネルは、参加していたなら、利用者に ID を確かめて in: に ID で指定すれば検索できます）。参加しているはずなら、Mattermost の一時的な障害の可能性があります。少し待ってから再試行してください。続くなら、チャンネルから外されたか、サーバーの権限の設定で読む権限が外されている可能性があるので、管理者に確かめてください。');
     expect(searched).toEqual(['*']);
   });
 
@@ -3413,7 +3423,7 @@ describe('search_files', () => {
       searched.push((bodies['/files/search'] as { terms: string }).terms);
       return mmError(500)();
     } };
-    expect(await setup()('search_files', { terms: 'x in:nowhere' }, true)).toBe('チャンネル「nowhere」が見つかりません。名前の誤りなら search_channels で確かめてください。参加していない非公開チャンネルとアーカイブ済みのチャンネルは名前では見つからず、アーカイブ済みのチャンネルは検索の対象外です（読むなら、利用者に ID を確かめて read_channel に渡します）。参加しているはずなら、Mattermost の一時的な障害の可能性があります。少し待ってから再試行してください。続くなら、チャンネルから外されたか、サーバーの権限の設定で読む権限が外されている可能性があるので、管理者に確かめてください。');
+    expect(await setup()('search_files', { terms: 'x in:nowhere' }, true)).toBe('チャンネル「nowhere」が見つかりません。名前の誤りなら search_channels で確かめてください。参加していない非公開チャンネルとアーカイブ済みのチャンネルは名前では見つかりません（アーカイブ済みのチャンネルは、参加していたなら、利用者に ID を確かめて in: に ID で指定すれば検索できます）。参加しているはずなら、Mattermost の一時的な障害の可能性があります。少し待ってから再試行してください。続くなら、チャンネルから外されたか、サーバーの権限の設定で読む権限が外されている可能性があるので、管理者に確かめてください。');
     expect(searched).toEqual(['*']);
   });
 
@@ -3454,20 +3464,29 @@ describe('search_files', () => {
       expect(onlyAsked()).toBe(true);
     });
 
-    test('says a channel is not found or archived, for a name, a channel_id or team/channel answered with 403 or 404 or an archived channel_id, each in its own words, without searching for the terms', async () => {
-      routes = { ...base(), [`GET /channels/${B}`]: mmError(403), 'GET /teams/name/team-b/channels/name/dup': mmError(404), [`GET /channels/${'a'.repeat(26)}`]: () => ({ id: 'a'.repeat(26), name: 'old', display_name: 'old', team_id: 't'.repeat(26), type: 'O', delete_at: 1 }) };
+    test('says a channel is not found, for a name, a channel_id or team/channel answered with 403 or 404, each in its own words, without searching for the terms', async () => {
+      routes = { ...base(), [`GET /channels/${B}`]: mmError(403), 'GET /teams/name/team-b/channels/name/dup': mmError(404) };
       const call = setup();
-      expect(await call('search_files', { terms: 'x in:nowhere' }, true)).toBe('チャンネル「nowhere」が見つかりません。名前の誤りなら search_channels で確かめてください。参加していない非公開チャンネルとアーカイブ済みのチャンネルは名前では見つからず、アーカイブ済みのチャンネルは検索の対象外です（読むなら、利用者に ID を確かめて read_channel に渡します）。参加しているはずなら、Mattermost の一時的な障害の可能性があります。少し待ってから再試行してください。続くなら、チャンネルから外されたか、サーバーの権限の設定で読む権限が外されている可能性があるので、管理者に確かめてください。');
+      expect(await call('search_files', { terms: 'x in:nowhere' }, true)).toBe('チャンネル「nowhere」が見つかりません。名前の誤りなら search_channels で確かめてください。参加していない非公開チャンネルとアーカイブ済みのチャンネルは名前では見つかりません（アーカイブ済みのチャンネルは、参加していたなら、利用者に ID を確かめて in: に ID で指定すれば検索できます）。参加しているはずなら、Mattermost の一時的な障害の可能性があります。少し待ってから再試行してください。続くなら、チャンネルから外されたか、サーバーの権限の設定で読む権限が外されている可能性があるので、管理者に確かめてください。');
       expect(await call('search_files', { terms: `x -in:${B}` }, true)).toBe(`チャンネル「${B}」を見る権限がありません（参加していない非公開チャンネルなど）。参加しているはずなら、Mattermost の一時的な障害の可能性があります。少し待ってから再試行してください。続くなら、チャンネルから外されたか、サーバーの権限の設定で読む権限が外されている可能性があるので、管理者に確かめてください。`);
-      expect(await call('search_files', { terms: 'x in:team-b/dup' }, true)).toBe('チャンネル「team-b/dup」が見つかりません。名前の誤りなら search_channels で確かめてください。参加していない非公開チャンネルとアーカイブ済みのチャンネルは名前では見つからず、アーカイブ済みのチャンネルは検索の対象外です（読むなら、利用者に ID を確かめて read_channel に渡します）。参加しているはずなら、Mattermost の一時的な障害の可能性があります。少し待ってから再試行してください。続くなら、チャンネルから外されたか、サーバーの権限の設定で読む権限が外されている可能性があるので、管理者に確かめてください。');
+      expect(await call('search_files', { terms: 'x in:team-b/dup' }, true)).toBe('チャンネル「team-b/dup」が見つかりません。名前の誤りなら search_channels で確かめてください。参加していない非公開チャンネルとアーカイブ済みのチャンネルは名前では見つかりません（アーカイブ済みのチャンネルは、参加していたなら、利用者に ID を確かめて in: に ID で指定すれば検索できます）。参加しているはずなら、Mattermost の一時的な障害の可能性があります。少し待ってから再試行してください。続くなら、チャンネルから外されたか、サーバーの権限の設定で読む権限が外されている可能性があるので、管理者に確かめてください。');
       routes[`GET /channels/${B}`] = mmError(404, 'app.channel.get.existing.app_error');
       expect(await call('search_files', { terms: `x in:${B}` }, true)).toBe(`チャンネル「${B}」が見つかりません。ID の誤りなら search_channels で確かめてください。`);
       routes['GET /teams/name/team-b/channels/name/dup'] = mmError(404, 'app.team.get_by_name.missing.app_error');
-      const asked = searched.length;
-      expect(await call('search_files', { terms: `x in:${'a'.repeat(26)}` }, true)).toBe(`チャンネル「${'a'.repeat(26)}」はアーカイブ済みで、検索の対象外です。読むなら read_channel に渡します。`);
-      expect(searched.slice(asked)).toEqual(['*']);
       expect(await call('search_files', { terms: 'x in:team-b/dup' }, true)).toBe('チャンネル「team-b/dup」のチームが見つかりません。チーム名の誤りなら、list_my_channels で参加しているチームを確かめてください（チーム名はチャンネルの行の先頭に出ます）。');
       expect(onlyAsked()).toBe(true);
+    });
+
+    test('searches an archived channel named by its ID in in: with archived channels included, and marks its channel line', async () => {
+      const OLD = 'o'.repeat(26);
+      routes = {
+        ...base(),
+        [`GET /channels/${OLD}`]: () => ({ id: OLD, name: 'old', display_name: 'Old', team_id: TA, type: 'O', delete_at: 1 }),
+        'POST /files/search': () => found([file(F1, { channel_id: OLD })]),
+      };
+      const out = await setup()('search_files', { terms: `x in:${OLD}` });
+      expect(bodies['/files/search']).toMatchObject({ terms: `x in:${OLD}`, include_deleted_channels: true });
+      expect(out).toContain(`チャンネル: channel_id: ${OLD}、name: old、アーカイブ済み`);
     });
   });
 });
