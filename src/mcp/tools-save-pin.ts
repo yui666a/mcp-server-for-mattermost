@@ -1,7 +1,7 @@
 import type { McpServer, ToolCallback } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
 import { z } from 'zod';
-import { ASK_ADMIN, RETRY, RETRY_SOON } from './format.ts';
+import { ASK_ADMIN, POST_FORBIDDEN, RETRY, RETRY_SOON } from './format.ts';
 import type { Mm } from './resolve.ts';
 import { guarded, text, type ToolContext } from './server.ts';
 import { worded, type Wording } from './tools-send.ts';
@@ -11,9 +11,8 @@ const schema = { post_id: POST_ID.describe('投稿の post_id') };
 type Args = { post_id: string };
 
 const GONE = '投稿が見つかりません（削除されたか、存在しません）。';
-const HIDDEN = `この投稿は見られません（参加していない非公開チャンネルの投稿など）。${RETRY}${ASK_ADMIN}`;
 const PERMISSION = 'api.context.permissions.app_error';
-export const POST_WORDING: Wording = { id: [[404, 'app.post.get.app_error', GONE]], status: [[403, HIDDEN]] };
+export const POST_WORDING: Wording = { id: [[404, 'app.post.get.app_error', GONE]], status: [[403, POST_FORBIDDEN]] };
 
 // Not leaving the membership to Mattermost: it saves and pins posts of public channels the user has not joined,
 // and such a saved post never shows in list_saved_posts.
@@ -29,7 +28,7 @@ async function readPost(mm: Mm, uid: string, postId: string, notMember: string):
 async function savePost(mm: Mm, uid: string, args: Args): Promise<CallToolResult> {
   await readPost(mm, uid, args.post_id, '参加していないチャンネルの投稿は保存できません。');
   await worded(mm.call(uid, 'PUT', `/users/${uid}/preferences`, [{ user_id: uid, category: 'flagged_post', name: args.post_id, value: 'true' }]), {
-    id: [[400, 'api.context.invalid_body_param.app_error', GONE], [403, PERMISSION, HIDDEN]],
+    id: [[400, 'api.context.invalid_body_param.app_error', GONE], [403, PERMISSION, POST_FORBIDDEN]],
   });
   return text(`投稿を保存しました。list_saved_posts で一覧できます。\npost_id: ${args.post_id}`);
 }
@@ -46,7 +45,7 @@ const pinWording: Wording = {
     [400, 'api.post.patch_post.can_not_update_post_in_deleted.error', 'アーカイブ済みのチャンネルの投稿のピン留めは変えられません。'],
     [400, 'api.post.update_post.permissions_time_limit.app_error', 'このサーバーでは、投稿から時間が経った投稿のピン留めは変えられません（編集の期限の設定による）。'],
   ],
-  status: [[403, 'この投稿のピン留めを変えられません（見られない投稿か、削除された投稿）。']],
+  status: [[403, `この投稿のピン留めを変えられません（見られない投稿か、削除された投稿）。${RETRY}${ASK_ADMIN}`]],
 };
 
 async function setPinned(mm: Mm, uid: string, args: Args, pinned: boolean): Promise<CallToolResult> {

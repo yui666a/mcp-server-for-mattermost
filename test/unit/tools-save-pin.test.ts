@@ -55,7 +55,7 @@ const mmError = (status: number, id: string) => () => Response.json({ id, messag
 const post = (is_pinned = false) => ({ [`GET /posts/${POST}`]: () => ({ id: POST, channel_id: CH, is_pinned }), [`GET /channels/${CH}/members/me`]: () => ({ channel_id: CH, user_id: 'u1' }) });
 const FLAG = [{ user_id: 'u1', category: 'flagged_post', name: POST, value: 'true' }];
 const GONE = '投稿が見つかりません（削除されたか、存在しません）。';
-const HIDDEN = 'この投稿は見られません（参加していない非公開チャンネルの投稿など）。参加しているはずなら、Mattermost の一時的な障害の可能性があります。少し待ってから再試行してください。続くなら、チャンネルから外されたか、サーバーの権限の設定で読む権限が外されている可能性があるので、管理者に確かめてください。';
+const FORBIDDEN = 'この投稿を見る権限がありません（参加していない非公開チャンネルなど）。参加しているはずなら、Mattermost の一時的な障害の可能性があります。少し待ってから再試行してください。続くなら、チャンネルから外されたか、サーバーの権限の設定で読む権限が外されている可能性があるので、管理者に確かめてください。';
 const ALL = ['save_post', 'unsave_post', 'pin_post', 'unpin_post'];
 const CHECKED = ['save_post', 'pin_post', 'unpin_post'];
 const WRITE: Record<string, string> = { save_post: 'PUT /users/u1/preferences', pin_post: `POST /posts/${POST}/pin`, unpin_post: `POST /posts/${POST}/unpin` };
@@ -85,7 +85,7 @@ describe('save_post', () => {
 
   test.each([
     [400, 'api.context.invalid_body_param.app_error', GONE],
-    [403, 'api.context.permissions.app_error', HIDDEN],
+    [403, 'api.context.permissions.app_error', FORBIDDEN],
   ])('words a %i %s from the save', async (status, id, want) => {
     routes = { ...post(), 'PUT /users/u1/preferences': mmError(status, id) };
     const r = await setup().call('save_post', { post_id: POST });
@@ -121,7 +121,7 @@ describe('pin_post and unpin_post', () => {
     [name, 400, 'api.post.update_post.system_message.app_error', 'システムメッセージはピン留めできません。'],
     [name, 400, 'api.post.patch_post.can_not_update_post_in_deleted.error', 'アーカイブ済みのチャンネルの投稿のピン留めは変えられません。'],
     [name, 400, 'api.post.update_post.permissions_time_limit.app_error', '投稿から時間が経った投稿のピン留めは変えられません'],
-    [name, 403, 'api.context.permissions.app_error', 'この投稿のピン留めを変えられません（見られない投稿か、削除された投稿）。'],
+    [name, 403, 'api.context.permissions.app_error', 'この投稿のピン留めを変えられません（見られない投稿か、削除された投稿）。参加しているはずなら、Mattermost の一時的な障害の可能性があります。少し待ってから再試行してください。続くなら、チャンネルから外されたか、サーバーの権限の設定で読む権限が外されている可能性があるので、管理者に確かめてください。'],
   ] as const))('%s words a %i %s', async (name, status, id, want) => {
     routes = { ...post(), [WRITE[name]]: mmError(status, id) };
     const r = await setup().call(name, { post_id: POST });
@@ -137,7 +137,7 @@ describe('pin_post and unpin_post', () => {
 });
 
 describe('the checks before save_post, pin_post and unpin_post', () => {
-  test.each(CHECKED.flatMap((name) => [[name, 404, 'app.post.get.app_error', GONE], [name, 403, 'api.context.permissions.app_error', HIDDEN]] as const))(
+  test.each(CHECKED.flatMap((name) => [[name, 404, 'app.post.get.app_error', GONE], [name, 403, 'api.context.permissions.app_error', FORBIDDEN]] as const))(
     '%s stops at a %i %s from reading the post', async (name, status, id, want) => {
       routes = { [`GET /posts/${POST}`]: mmError(status, id) };
       const r = await setup().call(name, { post_id: POST });
