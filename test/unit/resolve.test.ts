@@ -105,6 +105,13 @@ describe('a missing ID that is the name of a channel (26 lower-case letters and 
     expect(calls).toContain(`GET /teams/${teams[0].id}/channels/name/${NAME}`);
   });
 
+  test('puts the display name of a candidate on one line, as anyone who creates the channel can write line breaks in it', async () => {
+    const { mm } = fake({ ...routes, [`/teams/${teams[0].id}/channels/name/${NAME}`]: { ...named, display_name: 'a\nb\u2028c' } });
+    const e = await resolveChannel(mm, ME, NAME).catch((x) => x);
+    expect(e.message).toContain(`「team-a/${NAME}」（a b c）`);
+    expect(e.message).not.toMatch(/[\n\u2028]/);
+  });
+
   test('names every team that has that name', async () => {
     const { mm } = fake({ ...routes, [`/teams/${teams[0].id}/channels/name/${NAME}`]: named, [`/teams/${teams[1].id}/channels/name/${NAME}`]: ch('g'.repeat(26), NAME, teams[1].id) });
     await expect(resolveChannel(mm, ME, NAME)).rejects.toThrow(`「team-a/${NAME}」（${NAME.toUpperCase()}）か「team-b/${NAME}」（${NAME.toUpperCase()}）の形で指定してください。`);
