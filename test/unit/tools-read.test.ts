@@ -2227,12 +2227,46 @@ describe('read_channel with since and until', () => {
     expect(seen.length).toBe(205);
   });
 
-  test('in a range, when every post fetched within a call shares one millisecond, keeps them all and reads on from the last', async () => {
-    fill(6, secs(0, 1, 1, 1, 1, 5));
+  test('in a range, shows every post of a millisecond that one fetch took whole', async () => {
+    fill(5, secs(0, 1, 1, 1, 5));
     routes = base();
-    const { seen } = await readAll(setup(), { since: iso(1), limit: 2 });
-    expect(seen.slice(0, 2)).toEqual([id(1), id(2)]);
-    expect(seen).toContain(id(5));
+    const { seen } = await readAll(setup(), { since: iso(1), limit: 3 });
+    expect(seen).toEqual([1, 2, 3, 4].map(id));
+  });
+
+  test('in a range, fetches once within a call when no millisecond is shared', async () => {
+    fill(10);
+    routes = base();
+    await setup()('read_channel', { channel: CH, since: iso(1), limit: 3 });
+    const reads = pages().filter((q) => q.has('after'));
+    expect(reads).toHaveLength(1);
+    expect(reads[0].get('per_page')).toBe('4');
+  });
+
+  test('in a range starting before the first post of a 201-post channel, the oldest page of one post starts the read and nothing drops out', async () => {
+    fill(201);
+    routes = base();
+    const { seen } = await readAll(setup(), { since: new Date(T0 - 60_000).toISOString(), limit: 100 });
+    expect(seen[0]).toBe(id(0));
+    expect(new Set(seen).size).toBe(201);
+  });
+
+  test('when the start drifts before since and the page ends inside a millisecond, reading on keeps the rest of that millisecond', async () => {
+    // Posts 18 to 22 are in range; 19, 20 and 21 share a millisecond that the first page of 4 cuts.
+    fill(23, (n) => T0 + (n < 18 ? n : [20, 21, 21, 21, 25][n - 18]) * 1000);
+    routes = base();
+    let first = true;
+    routes[`GET /channels/${CH}/posts`] = (req) => {
+      const q = new URL(req.url).searchParams;
+      if (q.has('after') && first) {
+        first = false;
+        // A post deleted during the search shifts the pages: the after= read starts at post 16, before since.
+        return asList(byOldest().filter((p) => p.create_at >= T0 + 16_000).slice(0, Number(q.get('per_page'))));
+      }
+      return postsRoute(req);
+    };
+    const { seen } = await readAll(setup(), { since: iso(20), limit: 3 });
+    expect(seen).toEqual([18, 19, 20, 21, 22].map(id));
   });
 
   test('when every post fetched shares one millisecond, still shows a full page and pages on from its last post', async () => {
@@ -2259,6 +2293,7 @@ describe('read_channel with since and until', () => {
     expect(out).toContain(none);
     expect(out).toContain(GONE);
     expect(out).toContain(how);
+    expect(out).toContain('limit を大きくして読み直すと抜けにくくなります）');
     expect(out).not.toContain('until は前と同じ値');
   });
 
@@ -2363,7 +2398,7 @@ describe('read_channel with since and until', () => {
     hits = []; urls = [];
     const second = await call('read_channel', { channel: CH, since: iso(0), cursor: cursorIn(first) });
     expect(shownIds(second)).toEqual([id(5), id(6), id(7)]);
-    expect(Object.fromEntries(pages()[0])).toEqual({ after: id(4), per_page: '5', skipFetchThreads: 'true' });
+    expect(Object.fromEntries(pages()[0])).toEqual({ after: id(4), per_page: '4', skipFetchThreads: 'true' });
     expect(second).toContain('の前まで');
     expect(second).toContain('（続きはありません）');
   });
@@ -2388,7 +2423,7 @@ describe('read_channel with since and until', () => {
       const q = new URL(req.url).searchParams;
       if (q.has('after') && first) {
         first = false;
-        return asList(corpus.slice(10, 15));
+        return asList(corpus.slice(10, 10 + Number(q.get('per_page'))));
       }
       return postsRoute(req);
     };
@@ -2828,6 +2863,12 @@ describe('search_files', () => {
     routes = { ...base(), 'POST /files/search': mmError(501, 'store.sql_file_info.search.disabled') };
     const out = await setup()('search_files', { terms: 'x' }, true);
     expect(out).toBe('この Mattermost ではファイルの検索が無効になっています（システムコンソールの設定）。ファイル名を含む投稿は search_posts で探せます。');
+  });
+
+  test('lists the user\'s channels with archived ones included, as for posts', async () => {
+    routes = base();
+    await setup()('search_files', { terms: 'fff' });
+    expect(urls).toContain('GET /users/me/channels?include_deleted=true');
   });
 
   test('rejects a search_posts cursor, which has the same page and per_page', async () => {
