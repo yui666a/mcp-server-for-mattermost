@@ -501,11 +501,13 @@ describe('a schedule with files', () => {
 
   test('a post whose files Mattermost hid but counted fewer notes how many were dropped, and still keeps them all', async () => {
     const s = setup();
-    uploaded(s);
+    const marks = uploaded(s);
     routes['POST /posts'] = () => ({ id: 'p'.repeat(26), file_ids: [], metadata: { redacted_file_count: 1 } });
     const id = s.make({ fileIds: [F1, F2] });
     await s.run();
     expect(s.row(id).error).toBe('添付した 2 件のうち 1 件を Mattermost が外したため、投稿に付いていません（ファイルをダウンロードする権限が無いため、どれが外れたかは分かりません）。');
+    expect(s.store.listScheduled(UID, { limit: 10 }).find((r) => r.id === id)?.fileIds).toEqual([F1, F2]);
+    expect(marks()).toEqual(['p'.repeat(26), 'p'.repeat(26)]);
     expect(s.store.heldScheduledFiles(UID, [F1, F2])).toHaveLength(2);
   });
 
