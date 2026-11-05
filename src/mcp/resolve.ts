@@ -102,7 +102,8 @@ export async function resolveChannel(mm: Mm, userId: string, spec: string, opts:
     const c = await fetchChannel(mm, userId, `/teams/name/${team}/channels/name/${plain(s.slice(slash + 1), 'チャンネル名').toLowerCase()}`);
     return ref(c, team);
   }
-  if (s.startsWith('@') && /[、，]/.test(s)) throw new InputError('@a,b の区切りは半角のカンマ（,）で書いてください。読点（、）や全角のカンマ（，）は使えません。');
+  // Only when every part could be a user name: @bob、議事録 is a missing space before a search word, not a separator.
+  if (s.startsWith('@') && /[、，]/.test(s) && s.slice(1).split(/[,、，]/).every((p) => NAME.test(p.trim().replace(/^@/, '')))) throw new InputError('@a,b の区切りは半角のカンマ（,）で書いてください。読点（、）や全角のカンマ（，）は使えません。');
   if (!s.startsWith('@')) plain(s, 'チャンネル名');
   const teams = await myTeams(mm, userId);
   if (s.startsWith('@') && s.includes(',')) return resolveGroup(mm, userId, s, teams, opts.create);

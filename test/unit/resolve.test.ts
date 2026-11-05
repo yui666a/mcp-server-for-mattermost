@@ -192,6 +192,10 @@ describe('@user that cannot be looked up', () => {
   });
 });
 
+test('a 、 before a word that cannot be a user name is left to the name check, not called a separator', async () => {
+  await expect(resolveChannel(fake(routes).mm, ME, '@bob、議事録')).rejects.toThrow('使えない文字を含みます');
+});
+
 test.each(['@bob、carol', '@bob，carol', '@a,b、c'])('%j is refused for its separator before any request', async (spec) => {
   const { mm, calls } = fake(routes);
   await expect(resolveChannel(mm, ME, spec)).rejects.toThrow(new InputError('@a,b の区切りは半角のカンマ（,）で書いてください。読点（、）や全角のカンマ（，）は使えません。'));

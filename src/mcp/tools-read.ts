@@ -247,7 +247,7 @@ async function filterChannelIds(mm: Mm, userId: string, spec: string, exclude: b
   }
 }
 
-// Not higher: with 10 teams the worst case (1 + names × teams GETs) already takes 201 of the 300 requests a user may send per minute,
+// Not higher: with 10 teams the worst case (1 + flags × (teams + 1) GETs) already takes 221 of the 300 requests a user may send per minute,
 // before anything else the user sends in that minute.
 const MAX_CHANNEL_FILTERS = 20;
 
@@ -263,7 +263,7 @@ export async function resolveInFilters(mm: Mm, userId: string, terms: string): P
   for (const f of filters) {
     const next = words[f.at + f.span];
     // Not treating every 、 as a comma: 、 also starts search words such as 、議事録.
-    if (f.value.replace(/^~+/, '').startsWith('@') && /^[,，]|^、[A-Za-z0-9._,@、-]*$/.test(next ?? '')) {
+    if (f.value.replace(/^~+/, '').startsWith('@') && /^[,，]|^、[A-Za-z0-9._,@、，-]*$/.test(next ?? '')) {
       const fullWidth = /^[、，]/.test(next ?? '') ? '区切りは半角のカンマ（,）で書いてください。' : '';
       throw new InputError(`in:${f.value} の後の「${next}」: 検索の in: では @a,b のようにカンマの前後に空白を入れずに書いてください。${fullWidth}`);
     }

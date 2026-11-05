@@ -303,6 +303,7 @@ describe('search_posts in: filters', () => {
       ['x in:@bob 、carol、dave', 'in:@bob の後の「、carol、dave」'],
       ['x in:@bob 、', 'in:@bob の後の「、」'],
       ['x in:@bob ，議事録', 'in:@bob の後の「，議事録」'],
+      ['x in:@bob 、carol，dave', 'in:@bob の後の「、carol，dave」'],
     ])('%j is a separator error that asks for a half-width comma', async (terms, message) => {
       routes = withGroup();
       const out = await setup()('search_posts', { terms }, true);
