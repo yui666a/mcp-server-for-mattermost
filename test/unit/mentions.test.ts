@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'vitest';
-import { mentionsMe, mentionTerms, type MentionUser } from '../../src/mcp/mentions.ts';
+import { mentionsMe, mentionTerms, stripCodeSpans, type MentionUser } from '../../src/mcp/mentions.ts';
 
 const alice: MentionUser = { username: 'alice', first_name: 'Alice', notify_props: { mention_keys: '', first_name: 'false' } };
 const withKeys = (keys: string, firstName = 'false'): MentionUser => ({ ...alice, notify_props: { mention_keys: keys, first_name: firstName } });
@@ -72,6 +72,22 @@ describe('mentionsMe', () => {
     expect(mentionsMe(message, alice)).toBe(false);
   });
 
+  test('a word ending in several marks still counts once the marks are dropped, and a longer prefix does not', () => {
+    const u = { username: 'alice', notify_props: { mention_keys: 'bar-baz' } };
+    expect(mentionsMe('@alice.-:_', u)).toBe(true);
+    expect(mentionsMe('bar-baz..', u)).toBe(true);
+    expect(mentionsMe('@alicex.', u)).toBe(false);
+  });
+
+  test('takes time linear in the length, even for a word ending in a long run of marks', () => {
+    const u = { username: 'alice' };
+    const started = performance.now();
+    expect(mentionsMe(`@alice${'.'.repeat(200_000)}`, u)).toBe(true);
+    expect(mentionsMe(`a${'_:'.repeat(100_000)}`, u)).toBe(false);
+    // Not a tight limit: dropping one mark at a time took about eight seconds here, so a loaded machine still tells them apart.
+    expect(performance.now() - started).toBeLessThan(1000);
+  });
+
   test('an indented line continuing a paragraph or a list item is still text, not code', () => {
     expect(mentionsMe('para\n    @alice', alice)).toBe(true);
     expect(mentionsMe('- item\n\n    @alice', alice)).toBe(true);
@@ -127,5 +143,32 @@ describe('mentionsMe', () => {
 
   test('@channel, @all and @here are not mentions of the user', () => {
     expect(mentionsMe('@channel @all @here', alice)).toBe(false);
+  });
+});
+
+describe('stripCodeSpans', () => {
+  // The regex it replaces, kept as the reference for what a code span is.
+  const reference = (text: string) => text.replace(/(?<!`)(`+)(?!`)[\s\S]*?(?<!`)\1(?!`)/g, ' ');
+
+  test('gives what the backreference regex gave, for many texts mixing runs of backticks, text and line breaks', () => {
+    let seed = 1;
+    const random = (n: number) => {
+      seed = (seed * 48271) % 2147483647;
+      return seed % n;
+    };
+    const parts = ['`', '``', '```', 'a', ' ', '\n', '@alice'];
+    for (let c = 0; c < 3000; c++) {
+      const text = Array.from({ length: random(30) }, () => parts[random(parts.length)]).join('');
+      expect(stripCodeSpans(text), JSON.stringify(text)).toBe(reference(text));
+    }
+  });
+
+  test('takes time linear in the length, even for runs of backticks of ever more lengths that never close', () => {
+    let text = '';
+    for (let i = 1; text.length < 2_000_000; i++) text += `${'`'.repeat(i)} `;
+    const started = performance.now();
+    expect(mentionsMe(`${text}@alice`, { username: 'alice' })).toBe(true);
+    // Not a tight limit: the backreference regex took several seconds here, so a loaded machine still tells them apart.
+    expect(performance.now() - started).toBeLessThan(1000);
   });
 });

@@ -1,10 +1,24 @@
 import { createHash } from 'node:crypto';
 import { MmError, UpstreamUnavailable, type MmClient } from '../mattermost/client.ts';
-import { InputError, oneLine } from './format.ts';
+import { ASK_ADMIN, InputError, oneLine, RETRY } from './format.ts';
 
 // Format characters (Unicode Cf: zero-width, direction marks, soft hyphen) too, not only what trim drops: they slip in with a copy, and no
 // channel, team or user name or ID can have them, as those are ASCII only.
-export const unformat = (s: string) => s.replace(/^[\s\p{Cf}]+|[\s\p{Cf}]+$/gu, '');
+const EDGE = /^[\s\p{Cf}]$/u;
+// Not one regex with [\s\p{Cf}]+$: it restarts at every position of a long run of spaces followed by other text, taking time quadratic in the length, and arguments have no length limit.
+export const unformat = (s: string) => {
+  const t = s.replace(/^[\s\p{Cf}]+/u, '');
+  let end = t.length;
+  while (end > 0) {
+    // Not one UTF-16 unit at a time: some Cf characters (tags, U+E0001 and up) are surrogate pairs.
+    const lo = t.charCodeAt(end - 1);
+    const hi = t.charCodeAt(end - 2);
+    const start = end >= 2 && lo >= 0xdc00 && lo <= 0xdfff && hi >= 0xd800 && hi <= 0xdbff ? end - 2 : end - 1;
+    if (!EDGE.test(t.slice(start, end))) break;
+    end = start;
+  }
+  return t.slice(0, end);
+};
 export type Mm = Pick<MmClient, 'call'>;
 export type ChannelRef = { id: string; name: string; displayName: string; teamId: string; teamName: string };
 export type UserRef = {
@@ -15,7 +29,7 @@ export type MmChannel = { id: string; name: string; display_name: string; team_i
 export type MmChannelFull = MmChannel & { purpose: string; header: string };
 export type ResolvedChannel = ChannelRef & { raw: MmChannelFull };
 
-// A subclass rather than converting to a message here: the other tools keep the generic Mattermost error, and only get_channel words it.
+// A subclass rather than converting to a message here: the other tools keep the generic Mattermost error, and only callers that word a channel lookup's 403 and 404 themselves convert it.
 export class ChannelFetchError extends MmError {}
 export class NoDirectChannel extends InputError {}
 export type MmTeam = { id: string; name: string; display_name?: string };
@@ -33,13 +47,20 @@ export class Ambiguous extends InputError {
   }
 }
 
+// A subclass so that a search can say it in its own words: it leaves out archived channels, which the read tools can still read by ID.
+export class ChannelNotFound extends InputError {
+  constructor(spec: string) {
+    super(`チャンネル「${spec}」が見つかりません。名前の誤りなら search_channels で確かめてください。参加していない非公開チャンネルとアーカイブ済みのチャンネルは名前では見つかりません（アーカイブ済みのチャンネルは書き込めませんが、読むだけなら利用者に ID を確かめて ID で指定できます）。${RETRY}${ASK_ADMIN}`);
+  }
+}
+
 const ID = /^[A-Za-z0-9]{26}$/;
 const NAME = /^[A-Za-z0-9._-]+$/;
 
 // Checked rather than only encodeURIComponent'ed: "." and ".." survive encoding and fetch would normalise them into another endpoint.
 function plain(name: string, what: string): string {
   if (!name) throw new InputError(`${what}が空です。`);
-  if (!NAME.test(name) || name === '.' || name === '..') throw new InputError(`${what}「${name}」は Mattermost の名前として使えない文字を含みます。`);
+  if (!NAME.test(name) || name === '.' || name === '..') throw new InputError(`${what}「${oneLine(name)}」は Mattermost の名前として使えない文字を含みます。`);
   return name;
 }
 const missing = (e: unknown) => e instanceof MmError && (e.status === 403 || e.status === 404);
@@ -139,7 +160,7 @@ export async function resolveChannel(mm: Mm, userId: string, spec: string, opts:
   }
   const found = await byName(mm, userId, s.toLowerCase(), teams);
   if (found.length > 1) throw new Ambiguous(s, found.map((c) => ({ team: c.teamName, name: c.name, id: c.id })));
-  if (!found.length) throw new InputError(`チャンネル「${s}」が見つかりません。名前の誤りなら search_channels で確かめてください。参加していない非公開チャンネルとアーカイブ済みのチャンネルは名前では見つかりません（アーカイブ済みなら、チャンネル ID を利用者に確かめて ID で指定すると読めます）。参加している非公開チャンネルなら、Mattermost の一時的な障害や権限の設定でもこうなります。少し待ってから再試行し、続くなら管理者に確かめてください。`);
+  if (!found.length) throw new ChannelNotFound(s);
   return found[0];
 }
 
