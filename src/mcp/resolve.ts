@@ -117,7 +117,9 @@ export async function resolveChannel(mm: Mm, userId: string, spec: string, opts:
       // Not used in place of the ID: a user ID or post ID mistaken for a channel would send to whoever named a channel after it.
       throw new InputError([
         `チャンネル ID「${s}」のチャンネルはありません。ユーザー ID や投稿 ID を渡したのなら、チャンネルの指定ではありません。`,
-        `同じ文字列を名前に持つチャンネルはあります。そのチャンネルを指すときだけ、${found.map((f) => `「${f.teamName}/${lower}」（${oneLine(f.displayName)}）`).join('か')}の形で指定してください。`,
+        `同じ文字列を名前に持つチャンネルはあります。そのチャンネルを指すときだけ、${found.map((f) => `「${f.teamName}/${lower}」`).join('か')}の形で指定してください。`,
+        // Not "- " at the head: mark_read puts this message in one item of its list, where such a line would read as another item.
+        ...found.map((f) => `\n    「${f.teamName}/${lower}」の表示名: ${oneLine(f.displayName || f.name)}`),
       ].join(''));
     });
     // Not looked up when only the ID is wanted (in: in a search): a lookup the output does not use could still fail on a rate limit.
