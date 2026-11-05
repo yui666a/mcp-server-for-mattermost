@@ -52,18 +52,11 @@ describe('followed threads against the local Mattermost', () => {
     if (!root_id) roots.push(id);
     return id;
   };
-  // All pages, so a busy shared alice cannot push this test's threads off the first page.
+  // Not paging through alice's whole list: the shared server keeps every thread other runs left her following, and paging them all would hit the per-user rate limit. This run's threads have the newest replies, so they are on the first page if followed.
   const followed = async () => {
-    const ids: string[] = [];
-    let r = await call('list_followed_threads', { limit: 50 });
-    for (let i = 0; ; i++) {
-      expect(r.isError, r.content[0].text).toBeFalsy();
-      ids.push(...postIds(r));
-      const cursor = /next_cursor: (\S+)/.exec(r.content[0].text)?.[1];
-      if (!cursor) return ids;
-      if (i === 20) throw new Error('list_followed_threads still had a next page after 20 pages');
-      r = await call('list_followed_threads', { cursor });
-    }
+    const r = await call('list_followed_threads', { limit: 50 });
+    expect(r.isError, r.content[0].text).toBeFalsy();
+    return postIds(r);
   };
   const stateOf = (root: string) => mmApi<ThreadState>(aliceMm, 'GET', `/users/${e.users.alice.id}/teams/${team}/threads/${root}`);
   const unfollowAll = () => Promise.allSettled(roots.flatMap((root) => [
