@@ -239,12 +239,16 @@ describe('search_posts in: filters', () => {
     routes = base();
     await setup()('search_posts', { terms: 'x in:\ufeff~only-a\ufeff' });
     expect(sent()).toBe(`x in:${CX}`);
+    await setup()('search_posts', { terms: 'x in:only-a\u200b' });
+    expect(sent()).toBe(`x in:${CX}`);
     expect(await setup()('search_posts', { terms: 'x in:\ufeff@bob ,carol' }, true)).toContain('の後の「,carol」');
   });
 
   test.each([
     ['x in:~\ufeff@bob ,carol', '「,carol」', false],
     ['x in:~\u200b@bob ,carol', '「,carol」', false],
+    ['x in:\u200c~@bob ,carol', '「,carol」', false],
+    ['x in:~\u200d\u200e@bob ,carol', '「,carol」', false],
     ['x in:@bob \u2060，carol', '「\u2060，carol」', true],
     ['x in:@bob \ufeff，carol', '「\ufeff，carol」', true],
   ])('a U+FEFF or zero-width character after ~ or before the next word does not hide a misplaced comma in %j', async (terms, word, fullWidth) => {
