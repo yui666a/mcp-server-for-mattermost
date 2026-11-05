@@ -556,6 +556,18 @@ describe('a schedule with files', () => {
     expect(s.store.heldScheduledFiles(UID, [F1, F2])).toHaveLength(2);
   });
 
+  test('a response that counts hidden files but still lists file_ids is read by its file_ids', async () => {
+    const s = setup();
+    const marks = uploaded(s);
+    routes['POST /posts'] = () => ({ id: 'p'.repeat(26), file_ids: [F2], metadata: { redacted_file_count: 2 } });
+    const id = s.make({ fileIds: [F1, F2] });
+    await s.run();
+    expect(s.row(id)).toMatchObject({ status: 'posted', error: `添付した 2 件のうち 1 件（${F1}）を Mattermost が外したため、投稿に付いていません。` });
+    expect(marks()).toEqual([null, 'p'.repeat(26)]);
+    expect(s.store.listScheduled(UID, { limit: 10 }).find((r) => r.id === id)?.fileIds).toEqual([F2]);
+    expect(s.store.heldScheduledFiles(UID, [F1, F2])).toEqual([{ fileId: F2, scheduledId: id }]);
+  });
+
   const fileIdsOf = (s: ReturnType<typeof setup>, id: string) => s.store.listScheduled(UID, { limit: 10 }).find((r) => r.id === id)?.fileIds;
 
   test('a first attempt that Mattermost refuses fails, forgets the attempt, and lets its files go', async () => {
