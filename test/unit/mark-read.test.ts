@@ -196,10 +196,17 @@ describe('mark_as_read for channels', () => {
     expect(r.text).toContain('read_channel の from: "unread" で最後まで読んでから、読んだ中で最も新しい投稿を渡してください。');
   });
 
-  test.each([[403, 'api.context.permissions.app_error'], [404, 'app.channel.get_member.missing.app_error']])('says the user has not joined the channel when members/me answers %i', async (status, mmId) => {
-    routes = { ...base(), [`GET /channels/${CH}/members/me`]: mmError(status, mmId) };
+  test('says the user has not joined the channel when members/me answers 404', async () => {
+    routes = { ...base(), [`GET /channels/${CH}/members/me`]: mmError(404, 'app.channel.get_member.missing.app_error') };
     const r = await setup().call({ channels: [{ channel: CH }] });
     expect(r.text).toContain('このチャンネルに参加していません。');
+  });
+
+  test('does not say the user has not joined when members/me answers 403, which a transient failure also gives', async () => {
+    routes = { ...base(), [`GET /channels/${CH}/members/me`]: mmError(403, 'api.context.permissions.app_error') };
+    const r = await setup().call({ channels: [{ channel: CH }] });
+    expect(r.text).toContain('このチャンネルに参加しているかを確かめられませんでした（参加していないか、Mattermost の一時的な障害）。参加しているはずなら、少し待ってから再試行してください。');
+    expect(r.text).not.toContain('参加していません');
   });
 
   test('with CRT off, counts replies and checks for replies after last_post_id', async () => {
@@ -501,7 +508,9 @@ describe('mark_as_read for threads', () => {
     routes = unfollowed({ [`GET /channels/${CH}/members/me`]: mmError(status, errorId) });
     for (const postId of [ROOT, id(5)]) {
       const r = await setup().call({ threads: [{ post_id: postId }] });
-      expect(r.text, postId).toContain('このスレッドのチャンネルに参加していません。参加していないチャンネルのスレッドは未読に数えられないので、既読にするものがありません。');
+      expect(r.text, postId).toContain(status === 404
+        ? 'このスレッドのチャンネルに参加していません。参加していないチャンネルのスレッドは未読に数えられないので、既読にするものがありません。'
+        : 'このスレッドのチャンネルに参加しているかを確かめられませんでした（参加していないか、Mattermost の一時的な障害）。参加していないなら、既読にするものはありません。参加しているはずなら、少し待ってから再試行してください。');
       expect(r.text, postId).not.toContain('follow_thread');
     }
   });
