@@ -24,9 +24,12 @@ export function makeApp(env: Record<string, string> = {}, fetchImpl: typeof fetc
 export const SLOW = { timeout: 10_000 };
 export const SLOW_TEST = 30_000;
 
+// Not bound inside a function: vitest returns the same spy when spyOn is called on a spy, and binding that spy would make it call itself.
 const realTimeout = AbortSignal.timeout.bind(AbortSignal);
+export const freezeCleanupDeadline = (signal?: AbortSignal) =>
+  vi.spyOn(AbortSignal, 'timeout').mockImplementation((ms) => (ms === 5000 ? signal ?? new AbortController().signal : realTimeout(ms)));
 // Not left to the real clock: under load the cleanup's 5-second deadline and its 1-second margin before DELETE would run out while a test holds the lock or waits.
 export const freezeCleanupClock = () => {
-  vi.spyOn(AbortSignal, 'timeout').mockImplementation((ms) => (ms === 5000 ? new AbortController().signal : realTimeout(ms)));
+  freezeCleanupDeadline();
   vi.spyOn(performance, 'now').mockReturnValue(0);
 };

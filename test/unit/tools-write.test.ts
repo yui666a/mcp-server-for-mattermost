@@ -2,10 +2,7 @@ import { createHash } from 'node:crypto';
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 import { BODY_CUT_NOTE } from '../../src/mcp/format.ts';
 import { MAX_OPEN_UPLOAD_URLS, type Store } from '../../src/store.ts';
-import { freezeCleanupClock, makeApp, SLOW, SLOW_TEST } from './helpers.ts';
-
-// Not bound inside a test: vitest returns the same spy when spyOn is called on a spy, and binding that spy would make it call itself.
-const realTimeout = AbortSignal.timeout.bind(AbortSignal);
+import { freezeCleanupClock, freezeCleanupDeadline, makeApp, SLOW, SLOW_TEST } from './helpers.ts';
 
 type Route = (req: Request) => unknown;
 let routes: Record<string, Route>;
@@ -238,13 +235,11 @@ describe('edit_message and delete_message', () => {
   const edit = (s: ReturnType<typeof setup>, over: Record<string, unknown> = {}) => s.call('edit_message', { post_id: POST, message: 'new', ...over });
   const del = (s: ReturnType<typeof setup>) => s.call('delete_message', { post_id: POST });
 
-  test('edit_message and delete_message keep the channel\'s display name with a line break on one line', async () => {
+  test.each([['edit_message', edit], ['delete_message', del]] as const)('%s keeps the channel\'s display name with a line break on one line', async (_, run) => {
     serve(mine(), { [`GET /channels/${CH}`]: () => ({ id: CH, name: 'town', display_name: 'To\nwn', team_id: 't1', type: 'O' }) });
-    const s = setup();
-    for (const r of [await edit(s), await del(s)]) {
-      expect(r.isError).toBe(false);
-      expect(r.text).toContain(`チャンネル: channel_id: ${CH}、表示名: To wn`);
-    }
+    const r = await run(setup());
+    expect(r.isError).toBe(false);
+    expect(r.text).toContain(`チャンネル: channel_id: ${CH}、表示名: To wn`);
   });
 
   describe('only the caller\'s own posts are edited or deleted', () => {
@@ -717,6 +712,34 @@ describe('save_draft', () => {
   });
 });
 
+describe('the destination line of send_message and prepare_upload', () => {
+  const CH = 'c'.repeat(26);
+  const serve = (displayName: string) => {
+    routes = {
+      [`GET /channels/${CH}`]: () => ({ id: CH, name: 'town', display_name: displayName, team_id: 't1', type: 'O' }),
+      'GET /teams/t1': () => ({ id: 't1', name: 'team-a' }),
+      'POST /posts': () => ({ id: POST, user_id: 'u1', channel_id: CH, root_id: '', message: 'm', create_at: 1 }),
+      'GET /users/u1/teams/t1/drafts': () => null,
+    };
+  };
+
+  test.each([
+    ['send_message', { channel: CH, message: 'm' }],
+    ['prepare_upload', { channel: CH }],
+  ])('%s keeps the destination\'s display name with a line break on one line', async (name, args) => {
+    serve('To\nwn');
+    const r = await setup().call(name, args);
+    expect(r.isError).toBe(false);
+    expect(r.text).toContain(`投稿先: channel_id: ${CH}、表示名: To wn`);
+  });
+
+  test('send_message puts the real channel_id before a display name written as a fake one', async () => {
+    serve('x（channel_id: fake）');
+    const r = await setup().call('send_message', { channel: CH, message: 'm' });
+    expect(r.text).toContain(`投稿先: channel_id: ${CH}、表示名: x（channel_id: fake）`);
+  });
+});
+
 describe('send_message with files', () => {
   const CH = 'c'.repeat(26);
   const UPLOAD = 'POST /files';
@@ -733,20 +756,6 @@ describe('send_message with files', () => {
   };
   const send = (files: unknown, over: Record<string, unknown> = {}) => setup().call('send_message', { channel: CH, message: 'm', files, ...over });
   const KiB128 = 128 * 1024;
-
-  test('send_message and prepare_upload keep the destination\'s display name with a line break on one line', async () => {
-    serve({ [`GET /channels/${CH}`]: () => ({ id: CH, name: 'town', display_name: 'To\nwn', team_id: 't1', type: 'O' }) });
-    for (const r of [await setup().call('send_message', { channel: CH, message: 'm' }), await setup().call('prepare_upload', { channel: CH })]) {
-      expect(r.isError).toBe(false);
-      expect(r.text).toContain(`投稿先: channel_id: ${CH}、表示名: To wn`);
-    }
-  });
-
-  test('send_message puts the real channel_id before a display name written as a fake one', async () => {
-    serve({ [`GET /channels/${CH}`]: () => ({ id: CH, name: 'town', display_name: 'x（channel_id: fake）', team_id: 't1', type: 'O' }) });
-    const r = await setup().call('send_message', { channel: CH, message: 'm' });
-    expect(r.text).toContain(`投稿先: channel_id: ${CH}、表示名: x（channel_id: fake）`);
-  });
 
   test('sends content_text as its UTF-8 bytes and content_base64 as the decoded bytes, each as an octet-stream named by filename', async () => {
     serve();
@@ -877,7 +886,7 @@ describe('send_message with files', () => {
 
   test('the draft cleanup\'s 5-second deadline reaches the Mattermost requests, and running past it leaves the post a success', async () => {
     const ac = new AbortController();
-    vi.spyOn(AbortSignal, 'timeout').mockImplementation((ms) => (ms === 5000 ? ac.signal : realTimeout(ms)));
+    freezeCleanupDeadline(ac.signal);
     serve({
       'GET /users/u1/teams/t1/drafts': (req) => new Promise((_, reject) => req.signal.addEventListener('abort', () => reject(req.signal.reason))),
     });
@@ -1314,7 +1323,7 @@ describe('save_draft and send_message\'s draft cleanup for one draft target (use
 
   test('a cleanup waiting past its deadline returns before the holder finishes, and never calls Mattermost when its turn comes', async () => {
     const ac = new AbortController();
-    vi.spyOn(AbortSignal, 'timeout').mockImplementation((ms) => (ms === 5000 ? ac.signal : realTimeout(ms)));
+    freezeCleanupDeadline(ac.signal);
     let open!: () => void;
     const gate = new Promise<void>((r) => { open = r; gates.push(r); });
     serve(async () => (await gate, [draft('hello')]));
