@@ -150,8 +150,9 @@ describe('send_message against the local Mattermost', () => {
     const names = ['ga', 'gb'].map((p) => `${p}${TAG}`);
     const ids: string[] = [];
     for (const name of names) {
-      ids.push((await mmApi<{ id: string }>(e.adminToken, 'POST', '/users', { username: name, email: `${name}@example.com`, password: 'Passw0rd!dev123' })).id);
-      made.push(ids.at(-1)!);
+      const { id } = await mmApi<{ id: string }>(e.adminToken, 'POST', '/users', { username: name, email: `${name}@example.com`, password: 'Passw0rd!dev123' });
+      ids.push(id);
+      made.push(id);
     }
     const spec = `@${names[1]},${names[0]}`;
     const gmName = createHash('sha1').update([e.users.alice.id, ...ids].sort().join('')).digest('hex');
