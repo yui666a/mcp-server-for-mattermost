@@ -5,7 +5,7 @@ import { MmError } from '../mattermost/client.ts';
 import { ASK_ADMIN, formatPost, formatTime, InputError, postUserIds, RETRY_SOON, type MmPost } from './format.ts';
 import { pageCursor, paginate } from './paging.ts';
 import { myTeams, type Mm, type MmChannel } from './resolve.ts';
-import { guarded, text, type ToolContext } from './server.ts';
+import { guarded, text, type ToolContext } from './tool.ts';
 import { POST_WORDING } from './tools-save-pin.ts';
 import { worded } from './tools-send.ts';
 import { channelInline, collapsedThreads, cursorArg, cursorOf, dmPartner, limitArg, perPage, render, usernamesOf } from './tools-read.ts';

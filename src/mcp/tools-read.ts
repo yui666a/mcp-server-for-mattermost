@@ -7,7 +7,7 @@ import { pageCursor, paginate } from './paging.ts';
 import { mentionsMe, mentionTerms, type MentionUser } from './mentions.ts';
 import { parsePostRef } from './permalink.ts';
 import { Ambiguous, ChannelFetchError, ChannelNotFound, myTeams, NoDirectChannel, resolveChannel, resolveUser, teamNameOf, unformat, type ChannelRef, type Mm, type MmChannel, type MmTeam, type ResolvedChannel, type UserRef } from './resolve.ts';
-import { guarded, text, type ToolContext } from './server.ts';
+import { guarded, text, type ToolContext } from './tool.ts';
 import { worded, type Wording } from './tools-send.ts';
 import { parseWhen } from './when.ts';
 
