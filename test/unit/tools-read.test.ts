@@ -1667,7 +1667,7 @@ describe('get_file', () => {
       });
     });
 
-    describe('a whole file that is ASCII but for an incomplete last character (UTF-8 is only a guess)', () => {
+    describe('a whole file without Japanese but for an incomplete last character (UTF-8 is only a guess)', () => {
       test.each([
         ['a.txt', [0x61, 0x62, 0x63, 0xc2], 'Shift_JIS', 'abcﾂ', false],
         ['a.txt', [0x61, 0x62, 0x63, 0xe8, 0xa0], 'Shift_JIS', 'abc陟', false],
