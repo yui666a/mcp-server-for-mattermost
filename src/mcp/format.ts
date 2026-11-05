@@ -15,6 +15,8 @@ export const BAD_CURSOR = 'cursor が不正です。前回の出力の next_curs
 const JST_MS = 9 * 3600_000;
 const segmenter = new Intl.Segmenter();
 
+export const graphemeCount = (s: string): number => [...segmenter.segment(s)].length;
+
 export function truncate(s: string, max = 4000): { text: string; truncated: boolean } {
   let n = 0;
   for (const { index } of segmenter.segment(s)) {
@@ -59,7 +61,6 @@ const str = (x: unknown): string => (typeof x === 'string' ? x : typeof x === 'n
 const records = (x: unknown): Record<string, unknown>[] => (Array.isArray(x) ? x.filter(isRecord) : []);
 
 const lines = (s: string): string[] => s.split(/\r\n|[\r\n\v\f\x1c-\x1e\u0085\u2028\u2029]/);
-const width = (s: string): number => [...segmenter.segment(s)].length;
 
 // Indenting every line rather than quoting: attachments are written by whoever posts, and a line at the margin could pass for a post, file or heading line.
 function item(label: string, value: string): string[] {
@@ -110,11 +111,11 @@ function reactionLines(p: MmPost, usernames: Map<string, string>): string[] {
   const each = by.map(({ emoji, shown, total }) =>
     `:${emoji}: ${total}（${shown.map(name).join('、')}${total > shown.length ? `、ほか ${total - shown.length} 人` : ''}）`);
   const head = 'リアクション: ';
-  let n = width(head) + width(each[0]);
+  let n = graphemeCount(head) + graphemeCount(each[0]);
   let k = 1;
-  while (k < each.length && (n += 1 + width(each[k])) <= REACTION_MAX_CHARS) k++;
+  while (k < each.length && (n += 1 + graphemeCount(each[k])) <= REACTION_MAX_CHARS) k++;
   const left = by.slice(k);
-  const rest = left.length ? `、ほか ${left.length} 種類（${left.reduce((m, r) => m + r.total, 0)} 人）` : '';
+  const rest = left.length ? `、ほか ${left.length} 種類（リアクション ${left.reduce((m, r) => m + r.total, 0)} 件）` : '';
   return [`${head}${each.slice(0, k).join('、')}${rest}`];
 }
 

@@ -275,6 +275,18 @@ describe('edit_message and delete_message', () => {
   });
 
   describe('edit_message', () => {
+    test('get_post says its message is indented by 2 and cut beyond 4000 characters, and how to rewrite it', async () => {
+      const d = (await setup().tools()).find((x) => x.name === 'get_post')!.description;
+      for (const s of ['2 文字字下げ', '4000 文字を超える本文は切って出す', '字下げを外し', '出力を元に書き換えない']) expect(d).toContain(s);
+    });
+
+    test('the message argument says to reread the post with get_post, drop the 2-space indent, and not rewrite a cut post from the output', async () => {
+      const t = (await setup().tools()).find((x) => x.name === 'edit_message')! as unknown as { description: string; inputSchema: { properties: { message: { description: string } } } };
+      const d = t.inputSchema.properties.message.description;
+      for (const s of ['先に get_post で読み直す', '2 文字字下げ', '先頭の 2 文字の空白を外す', '本文を 4000 文字で切りました', '出力を元に書き換えない']) expect(d).toContain(s);
+      expect(t.description).toBe('本人の投稿の本文を書き換える。他人、webhook、Bot の投稿とシステムメッセージは扱わない。元の本文は上書きされる。編集で足したメンションは通知されない');
+    });
+
     test('replaces only the message through the patch API and reports the post_id, channel and permalink', async () => {
       serve(mine({ is_pinned: true }));
       const r = await edit(setup());
@@ -648,7 +660,7 @@ describe('save_draft', () => {
     const t = list.find((x) => x.name === 'save_draft')!;
     expect(t.annotations).toMatchObject({ readOnlyHint: false, destructiveHint: true, idempotentHint: true });
     expect(t.description).toContain('この下書きと同じ本文を send_message で送ると、投稿の後に下書きを消す');
-    expect(t.description).toContain('画面で添付を付けた下書きは消さない');
+    expect(t.description).toContain('添付の付いた下書きは消さない');
     const d = t.inputSchema.properties.overwrite.description!;
     expect(d).toContain('添付');
     expect(d).toContain('優先度');
@@ -715,10 +727,11 @@ describe('send_message with files', () => {
     expect(hits).toEqual([]);
   });
 
-  test('the size limit is told in the refusal', async () => {
+  test('the refusal tells the size limit and where to go instead', async () => {
     serve();
     const r = await send([{ name: 'a.txt', content_text: 'a'.repeat(KiB128 + 1) }]);
     expect(r.text).toContain('128KiB');
+    expect(r.text).toContain('prepare_upload の説明の案内に従ってください');
   });
 
   test.each([
@@ -770,21 +783,24 @@ describe('send_message with files', () => {
     expect(t.description).toContain('同じ投稿先に本文の同じ下書きがあれば、投稿の後に消す（添付の付いた下書きは消さない）');
   });
 
-  test('files gives its two forms and limits, and sends files on the user\'s PC to prepare_upload only for clients that can run commands there', async () => {
+  test('files gives its two forms and limits, and takes only files whose content can be read and fits', async () => {
     const t = (await setup().tools()).find((x) => x.name === 'send_message')! as unknown as { inputSchema: { properties: { files: { description: string } } } };
     const d = t.inputSchema.properties.files.description;
-    for (const s of ['1〜5 件', '128KiB', 'content_text', 'content_base64', '利用者の PC にあるファイルは、PC でコマンドを実行できるクライアントなら prepare_upload を使う']) expect(d).toContain(s);
+    for (const s of ['1〜5 件', '128KiB', 'content_text', 'content_base64', '中身を読めて合計 128KiB に収まるファイルだけを渡す']) expect(d).toContain(s);
   });
 
   test('files allows content_base64 for a file attached to the chat only when code execution can read it', async () => {
     const t = (await setup().tools()).find((x) => x.name === 'send_message')! as unknown as { inputSchema: { properties: { files: { description: string } } } };
-    expect(t.inputSchema.properties.files.description).toContain('チャットに添付されたファイルを content_base64 で送れるのは、コード実行で中身を読めるときだけ');
+    const d = t.inputSchema.properties.files.description;
+    expect(d).toContain('チャットに添付されたファイルは、コード実行で中身を読めるときだけ content_base64 で送れる');
+    expect(d).toContain('読めないファイル、収まらないファイル、利用者の PC にあるファイルは、prepare_upload の説明の案内に従う');
   });
 
-  test('prepare_upload asks for the user\'s confirmation before curl, and points clients that cannot run commands to save_draft', async () => {
+  test('prepare_upload asks for the user\'s confirmation before curl, asks for the path of a file without one, and points clients that cannot run commands to save_draft', async () => {
     const t = (await setup().tools()).find((x) => x.name === 'prepare_upload')!;
     expect(t.description).toContain('curl を実行する前に、送るファイルのパスと投稿先を利用者に示して確認を取ること');
     expect(t.description).toContain('save_draft で本文を下書きにし、ファイルは Mattermost の画面から添付するよう案内する');
+    expect(t.description).toContain('パスの分からないファイル（Claude Code に貼り付けた画像など）は利用者にパスを聞き、無ければ下の save_draft の案内に従う');
   });
 
   test('file_ids of send_message takes files uploaded to the same channel within 24 hours', async () => {
