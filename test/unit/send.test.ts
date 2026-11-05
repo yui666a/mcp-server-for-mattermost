@@ -128,7 +128,7 @@ test('root_id in another channel is rejected', async () => {
 
 test('a root_id in another channel names the channel with a line break in its display name on one line', async () => {
   const mm: Mm = { call: (async () => ({ id: id(1), channel_id: OTHER, root_id: '', user_id: UID, message: 'm', create_at: 0 })) as Mm['call'] };
-  await expect(checkRoot(mm, UID, id(1), { id: CH, name: 'dup', displayName: 'D\nup' })).rejects.toThrow(`チャンネル「D up」（channel_id: ${CH}）にありません`);
+  await expect(checkRoot(mm, UID, id(1), { id: CH, name: 'dup', displayName: 'D\nup' })).rejects.toThrow(`チャンネル（channel_id: ${CH}、表示名: D up）にありません`);
 });
 
 describe('root_id', () => {
@@ -164,7 +164,7 @@ describe('root_id', () => {
   test('a root_id in another channel than a DM given by its channel_id names the DM by the other user, as when given as @user', async () => {
     const f = fakeMm();
     await expect(f.send({ channel: DM, message: 'hi', root_id: id(0) })).rejects.toMatchObject({
-      message: `root_id ${id(0)} の投稿はチャンネル「@olive」（channel_id: ${DM}）にありません。`,
+      message: `root_id ${id(0)} の投稿はチャンネル（channel_id: ${DM}、表示名: @olive）にありません。`,
     });
     expect(f.created).toHaveLength(0);
   });
@@ -173,7 +173,7 @@ describe('root_id', () => {
     const f = withRoots();
     f.posts.push({ id: id(6), user_id: UID, channel_id: OTHER, root_id: id(0), message: 'reply elsewhere', create_at: 0 });
     await expect(f.send({ channel: 'team-a/dup', message: 'hi', root_id: id(6) })).rejects.toMatchObject({
-      message: `root_id ${id(6)} の投稿はチャンネル「Dup」（channel_id: ${CH}）にありません。`,
+      message: `root_id ${id(6)} の投稿はチャンネル（channel_id: ${CH}、表示名: Dup）にありません。`,
     });
     expect(f.created).toHaveLength(0);
   });
@@ -303,7 +303,7 @@ describe('a retry does not take a post another record owns for its own earlier p
 
 test('the output names the destination as 投稿先, the same label as scheduling and prepare_upload use', async () => {
   const r = await fakeMm().send({ channel: 'team-a/dup', message: 'hello' });
-  expect(textOf(r)).toContain(`投稿先: Dup（channel_id: ${CH}）`);
+  expect(textOf(r)).toContain(`投稿先: channel_id: ${CH}、表示名: Dup`);
 });
 
 test('retry after a lost response does not double post', async () => {
