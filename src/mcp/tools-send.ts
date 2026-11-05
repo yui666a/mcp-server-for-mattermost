@@ -5,7 +5,7 @@ import { randomToken, sha256 } from '../crypto.ts';
 import { log } from '../log.ts';
 import { MmError, RateLimited, Reauthorize } from '../mattermost/client.ts';
 import { MAX_OPEN_UPLOAD_URLS, type HeldFile, type Store } from '../store.ts';
-import { BODY_CUT_NOTE, InputError, type MmPost } from './format.ts';
+import { BODY_CUT_NOTE, InputError, oneLine, type MmPost } from './format.ts';
 import { findPosted, postOnce } from './post.ts';
 import { myTeams, NoDirectChannel, resolveChannel, teamNameOf, type ChannelRef, type Mm, type MmChannel, type ResolvedChannel } from './resolve.ts';
 import { guarded, text, type ToolContext } from './server.ts';
@@ -135,7 +135,7 @@ export async function sendMessage(mm: Mm, store: Store, uid: string, baseUrl: st
   checkUploaded(store, uid, ch.id, fileIds);
   const rootId = args.root_id;
   if (rootId) await checkRoot(mm, uid, rootId, ch);
-  const where = `チャンネル: ${ch.displayName || ch.name}（channel_id: ${ch.id}）${rootId ? `、返信先 post_id: ${rootId}` : ''}`;
+  const where = `チャンネル: ${oneLine(ch.displayName || ch.name)}（channel_id: ${ch.id}）${rootId ? `、返信先 post_id: ${rootId}` : ''}`;
   // Not only after a fresh post: an earlier attempt's cleanup may have failed, and a resend that did not post can retry it.
   const done = async (postId: string, note: string) => {
     const cleared = await clearSentDraft(mm, uid, ch, rootId ?? '', args.message, client);
@@ -284,7 +284,7 @@ async function ownPost(mm: Mm, store: Store, uid: string, postId: string): Promi
 // Looked up before the write rather than after: once DELETE has succeeded, a failing lookup would report an irreversible success as an error.
 async function whereOf(mm: Mm, uid: string, post: OwnPost): Promise<Where> {
   const ch = await mm.call<MmChannel>(uid, 'GET', `/channels/${post.channel_id}`);
-  return { line: `チャンネル: ${ch.display_name || ch.name}（channel_id: ${ch.id}）`, teamName: await teamNameOf(mm, uid, ch.team_id) };
+  return { line: `チャンネル: ${oneLine(ch.display_name || ch.name)}（channel_id: ${ch.id}）`, teamName: await teamNameOf(mm, uid, ch.team_id) };
 }
 
 const editSchema = {
@@ -355,7 +355,7 @@ export async function checkRoot(mm: Mm, uid: string, rootId: string, ch: { id: s
   const root = await worded(mm.call<MmPost>(uid, 'GET', `/posts/${rootId}`), {
     status: [[404, `root_id ${rootId} の投稿が見つかりません。`], [403, `root_id ${rootId} の投稿を見られません。`]],
   });
-  if (root.channel_id !== ch.id) throw new InputError(`root_id ${rootId} の投稿はチャンネル「${ch.displayName || ch.name}」（channel_id: ${ch.id}）にありません。`);
+  if (root.channel_id !== ch.id) throw new InputError(`root_id ${rootId} の投稿はチャンネル「${oneLine(ch.displayName || ch.name)}」（channel_id: ${ch.id}）にありません。`);
   if (root.root_id) throw new InputError(`root_id ${rootId} は返信です。スレッドの親投稿の post_id を指定してください。`);
 }
 
@@ -458,7 +458,7 @@ export async function saveDraft(mm: Mm, uid: string, args: DraftArgs): Promise<C
   const ch = await resolveChannel(mm, uid, args.channel, { create: !rootId });
   // Checked here rather than left to Mattermost: it saves a draft on any root_id, and one on a reply never shows in any thread.
   if (rootId) await checkRoot(mm, uid, rootId, ch);
-  const where = `チャンネル: ${ch.displayName || ch.name}（channel_id: ${ch.id}）${rootId ? `、返信先 post_id: ${rootId}` : ''}`;
+  const where = `チャンネル: ${oneLine(ch.displayName || ch.name)}（channel_id: ${ch.id}）${rootId ? `、返信先 post_id: ${rootId}` : ''}`;
   // Not locking the resolving above: one call may take tens of seconds, and a send_message cleanup waiting behind it would always run out of time.
   // Not leaving the list and the save unlocked: a save made between the cleanup's list and its DELETE would be the draft it deletes.
   const same = await withDraftLock(uid, ch.id, rootId, () => saveLocked(mm, uid, ch, rootId, args, where));
@@ -513,7 +513,7 @@ export async function prepareUpload(mm: Mm, store: Store, uid: string, publicUrl
   const limit = maxBytes % MiB ? `${maxBytes} バイト` : `${maxBytes / MiB}MiB`;
   return text([
     `アップロード用の URL を発行しました。10 分間、1 回だけ使えます（1 回で ${MAX_UPLOAD_FILES} 件まで、送る本文は multipart の枠を含めて ${limit} まで）。`,
-    `投稿先: ${ch.displayName || ch.name}（channel_id: ${ch.id}）`,
+    `投稿先: ${oneLine(ch.displayName || ch.name)}（channel_id: ${ch.id}）`,
     '実行する前に、送るファイルのパスと投稿先を利用者に示して、確認を取ってください。',
     '',
     `curl -sS -F 'file=@<ファイルのパス>' ${publicUrl}/mcp/upload/${token}`,
