@@ -254,7 +254,7 @@ const SEARCH_FLAGS = ['from', 'channel', 'in', 'before', 'after', 'on', 'ext'];
 const fields = (s: string) => s.split(SEARCH_SPACE).filter(Boolean);
 
 // Ported from Mattermost's model.splitWords, so that a quoted "in:x" stays a search word as the server reads it.
-function splitWords(text: string): string[] {
+export function splitWords(text: string): string[] {
   const words: string[] = [];
   let quoted = false;
   let start = 0;
@@ -1079,7 +1079,7 @@ export function registerReadTools(server: McpServer, ctx: ToolContext): void {
       const line = (r: (typeof rows)[number]): string => {
         if (r.kind === 'channel') {
           const w = where(r.ch);
-          return `- ${w.path}（channel_id: ${r.ch.id}${r.ch.team_id ? `、team_id: ${r.ch.team_id}` : ''}、表示名: ${w.label}）未読: ${r.count}、メンション: ${r.mentions}、${crt.on ? '最終のルート投稿' : '最終投稿'}: ${formatTime(r.updatedAt)}`;
+          return `- ${w.path}（channel_id: ${r.ch.id}${r.ch.team_id ? `、team_id: ${r.ch.team_id}` : ''}）未読: ${r.count}、メンション: ${r.mentions}、${crt.on ? '最終のルート投稿' : '最終投稿'}: ${formatTime(r.updatedAt)}、表示名: ${w.label}`;
         }
         const ch = channels.get(r.th.post.channel_id);
         const team = ch && teamName.get(ch.team_id);
@@ -1145,7 +1145,8 @@ export function registerReadTools(server: McpServer, ctx: ToolContext): void {
         };
         // Not taking a read position of 0 as the floor: a channel never viewed or a thread first mentioned in a reply has 0, though nothing in it predates the channel or the root post.
         const floors = [...[...chans].map(([id, at]) => at || created.get(id)!), ...[...threads.values()].map((t) => Math.max(t.last_viewed_at, t.post.create_at))];
-        unreadAfter = ` after:${prevDay(jstDay(Math.min(...floors)))}`;
+        // Not Math.min(...floors): the floors grow with the channels and threads, and spreading them as arguments throws a RangeError past a limit.
+        unreadAfter = ` after:${prevDay(jstDay(floors.reduce((a, b) => Math.min(a, b))))}`;
       }
       let before = c?.before;
       let last = c?.last;
