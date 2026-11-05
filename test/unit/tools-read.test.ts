@@ -178,6 +178,13 @@ describe('search_posts in: filters', () => {
     expect(sent()).toBe(expected);
   });
 
+  test('searches terms with 200,000 words before a quote', async () => {
+    routes = base();
+    const terms = `${'w '.repeat(200_000)}"a b" in:only-a`;
+    expect(await setup()('search_posts', { terms })).not.toContain('エラー');
+    expect(sent()).toBe(`${'w '.repeat(200_000)}"a b" in:${CX}`);
+  });
+
   test('in:@ with the caller\'s own name uses the DM with oneself, without creating one', async () => {
     const SELF = 'u1__u1';
     routes = { ...base(), 'GET /users/username/me': () => ({ id: 'u1', username: 'me' }), [`GET /teams/${T1}/channels/name/${SELF}`]: () => ch(pad('self'), SELF, '', 'D') };
