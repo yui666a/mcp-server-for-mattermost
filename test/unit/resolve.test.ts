@@ -90,18 +90,23 @@ describe('a channel named like an ID (26 lower-case letters and digits)', () => 
 
   test('is looked up by name when no channel has that ID', async () => {
     const { mm, calls } = fake({ ...routes, [`/teams/${teams[0].id}/channels/name/${NAME}`]: named });
-    expect(await resolveChannel(mm, ME, NAME)).toMatchObject({ id: named.id, name: NAME, teamName: 'team-a' });
+    expect(await resolveChannel(mm, ME, NAME)).toMatchObject({ id: named.id, name: NAME, teamName: 'team-a', raw: named });
     expect(calls).toEqual([`GET /channels/${NAME}`, 'GET /users/me/teams', `GET /teams/${teams[0].id}/channels/name/${NAME}`, `GET /teams/${teams[1].id}/channels/name/${NAME}`]);
   });
 
   test('keeps the 404 of the ID when no channel has that name either', async () => {
-    await expect(resolveChannel(fake(routes).mm, ME, NAME)).rejects.toBeInstanceOf(ChannelFetchError);
-    await expect(resolveChannel(fake(routes).mm, ME, NAME)).rejects.toMatchObject({ status: 404 });
+    const { mm, calls } = fake(routes);
+    const e = await resolveChannel(mm, ME, NAME).catch((x) => x);
+    expect(e).toBeInstanceOf(ChannelFetchError);
+    expect(e.status).toBe(404);
+    expect(calls).toContain(`GET /teams/${teams[0].id}/channels/name/${NAME}`);
   });
 
   test('is ambiguous when two teams have that name', async () => {
     const { mm } = fake({ ...routes, [`/teams/${teams[0].id}/channels/name/${NAME}`]: named, [`/teams/${teams[1].id}/channels/name/${NAME}`]: ch('g'.repeat(26), NAME, teams[1].id) });
-    await expect(resolveChannel(mm, ME, NAME)).rejects.toBeInstanceOf(Ambiguous);
+    const e = await resolveChannel(mm, ME, NAME).catch((x) => x);
+    expect(e).toBeInstanceOf(Ambiguous);
+    expect(e.candidates).toEqual([{ team: 'team-a', name: NAME, id: 'f'.repeat(26) }, { team: 'team-b', name: NAME, id: 'g'.repeat(26) }]);
   });
 
   test('is not looked up by name after a 403, which means the ID exists', async () => {
