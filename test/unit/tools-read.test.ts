@@ -1524,6 +1524,15 @@ describe('get_mentions', () => {
       expect(await setup()('get_mentions', { unread_only: true })).toContain('未読スレッドは、50 件ずつ 4 回の取得で打ち切りました。');
     });
 
+    test('notes when a team\'s unread threads were not all taken', async () => {
+      put({ create_at: at(22, 1) });
+      routes = unreadBase('always_on', [member(C, at(22, 0), 0, 1)]);
+      // A full first page, then nothing: as when the thread paged from is deleted in between.
+      let k = 0;
+      routes[`GET /users/u1/teams/${T}/threads`] = () => ({ total_unread_threads: 60, threads: k++ ? [] : Array.from({ length: 50 }, (_, i) => thread(`t${String(i).padStart(25, '0')}`, 0, 0)) });
+      expect(await setup()('get_mentions', { unread_only: true })).toContain('未読スレッドを total_unread_threads: 60 に対して取り切れませんでした。');
+    });
+
     test('when the threads API fails, the tool fails', async () => {
       routes = unreadBase('always_on', [member(C, at(22, 0), 0, 1)]);
       routes[`GET /users/u1/teams/${T}/threads`] = () => Response.json({ id: 'x', message: 'm', status_code: 403 }, { status: 403 });
@@ -2699,6 +2708,16 @@ describe('list_saved_posts', () => {
       expect(asked('per_page')).toEqual([91]);
       expect(shownIds(second)).toEqual(all.slice(50, 100).map((p) => p.id));
       expect(atIn(second)).toBe(99);
+    });
+
+    test('reads from row 0, as from the start, with a cursor that has no row', async () => {
+      const all = desc(300);
+      routes = { ...base(), [FLAGGED]: byOffset(all) };
+      const old = Buffer.from(JSON.stringify({ create_at: all[49].create_at, id: all[49].id, per_page: 50 })).toString('base64url');
+      const out = await setup()('list_saved_posts', { cursor: old });
+      expect(offsets()).toEqual([0, 51]);
+      expect(asked('per_page')).toEqual([71, 200]);
+      expect(shownIds(out)).toEqual(all.slice(50, 100).map((p) => p.id));
     });
 
     test('pages through every post once, in order, with the row in each cursor', async () => {
