@@ -181,11 +181,9 @@ export function render({ lines, next, posts = [], notes = [] }: Page): string {
 }
 
 // Not writing an unknown partner as @<user_id>: it would be taken for a username and passed to tools that look users up by name.
-const dmPartner = (username: string | undefined, userId: string) => (username ? `@${username}` : `ユーザー名不明（user_id: ${userId}）`);
+export const dmPartner = (username: string | undefined, userId: string) => (username ? `@${username}` : `ユーザー名不明（user_id: ${userId}）`);
 
 // archived is a field rather than words added to the display name: a display name written as "（アーカイブ済み）" would otherwise pass for one.
-const resolvedLines = (ch: ResolvedChannel) => channelLines({ ...ch, archived: !!(ch.raw as ResolvedChannel['raw'] & { delete_at?: number }).delete_at });
-
 export function channelLines(c: ChannelRef & { archived?: boolean }): string[] {
   return [
     // Not the display name first: a name written as "（name: …、channel_id: …）" would then come before the real id.
@@ -193,6 +191,8 @@ export function channelLines(c: ChannelRef & { archived?: boolean }): string[] {
     c.teamId ? `チーム: ${c.teamName}（team_id: ${c.teamId}）` : 'チーム: なし（DM またはグループ DM）',
   ];
 }
+
+const resolvedLines = (ch: ResolvedChannel) => channelLines({ ...ch, archived: !!(ch.raw as ResolvedChannel['raw'] & { delete_at?: number }).delete_at });
 
 const RETRY = '参加しているはずなら、Mattermost の一時的な障害の可能性があります。少し待ってから再試行してください。';
 const ASK_ADMIN = '続くなら、チャンネルから外されたか、サーバーの権限の設定で読む権限が外されている可能性があるので、管理者に確かめてください。';
@@ -791,6 +791,7 @@ export function registerReadTools(server: McpServer, ctx: ToolContext): void {
       const q = new URLSearchParams({ perPage: String(per + 1), direction: 'down', ...(c ? { fromPost: c.from_post, fromCreateAt: String(c.from_create_at) } : {}) });
       const r = await mm.call<PostList>(uid, 'GET', `/posts/${rootId}/thread?${q}`).catch((e) => {
         if (e instanceof MmError && e.status === 403) throw new InputError(`このスレッドを見る権限がありません。${RETRY}${ASK_ADMIN}`);
+        if (e instanceof MmError && e.status === 404) throw new InputError('このスレッドが見つかりません（取得の合間に削除されたなど）。');
         throw e;
       });
       const replies = r.order.map((id) => r.posts[id]).filter((x) => x && x.id !== rootId)
