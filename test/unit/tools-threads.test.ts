@@ -155,10 +155,19 @@ describe('list_followed_threads', () => {
   test('says a short page under a larger total holds follows of threads whose root post is gone, not that it stopped', async () => {
     routes = { ...base(), [`GET /users/u1/teams/${T1}/threads`]: () => page([thread(TH1, CH1, 5000)], 3) };
     const out = (await setup().call('list_followed_threads', {})).text;
-    expect(out).toContain('（team-a と DM、グループ DM の total: 3 には、根の投稿がデータ保持ポリシーで消えて一覧に出せないスレッドが 2 件含まれます）');
+    expect(out).toContain('（team-a と DM、グループ DM の total: 3 のうち 2 件は一覧に出せません。データ保持ポリシーで根の投稿が消えたスレッドのフォロー（unfollow_thread でも外せません）か、取得の合間に増えたフォローです）');
     expect(out).not.toContain('だけを取得しています');
     routes[`GET /users/u1/teams/${T2}/threads`] = () => page([], 4);
-    expect((await setup().call('list_followed_threads', {})).text).toContain('（team-b の total: 4 には、根の投稿がデータ保持ポリシーで消えて一覧に出せないスレッドが 4 件含まれます）');
+    expect((await setup().call('list_followed_threads', {})).text).toContain('（team-b の total: 4 のうち 4 件は一覧に出せません。');
+    const many = (n: number) => Array.from({ length: n }, (_, i) => thread(`f${String(i).padStart(25, '0')}`, CH2, 9000 - i));
+    routes[`GET /users/u1/teams/${T2}/threads`] = () => page(many(199), 250);
+    const short = (await setup().call('list_followed_threads', {})).text;
+    expect(short).toContain('（team-b の total: 250 のうち 51 件は一覧に出せません。');
+    expect(short).not.toContain('だけを取得しています');
+    routes[`GET /users/u1/teams/${T2}/threads`] = () => page(many(200), 200);
+    const exact = (await setup().call('list_followed_threads', {})).text;
+    expect(exact).not.toContain('team-b の total');
+    expect(exact).not.toContain('team-b のフォロー中のスレッドは');
   });
 
   test('looks up more than 1,000 users in calls of at most 1,000 ids, and names the users of every call', async () => {
