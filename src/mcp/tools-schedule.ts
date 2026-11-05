@@ -61,7 +61,7 @@ export async function scheduleMessage(mm: Mm, store: Store, uid: string, args: S
   return text([
     '予約しました。',
     `予約 ID: ${id}`,
-    `投稿先: チャンネル: ${ch.displayName || ch.name}（channel_id: ${ch.id}）${args.root_id ? `、返信先 post_id: ${args.root_id}` : ''}`,
+    `投稿先: ${ch.displayName || ch.name}（channel_id: ${ch.id}）${args.root_id ? `、返信先 post_id: ${args.root_id}` : ''}`,
     `予定時刻: ${formatTime(at)}`,
     ...(fileIds.length ? [`添付: ${fileIds.join(', ')}`] : []),
     '結果は list_scheduled_messages で確かめられます。',

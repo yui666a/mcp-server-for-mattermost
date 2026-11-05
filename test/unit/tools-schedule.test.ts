@@ -104,7 +104,7 @@ describe('schedule_message', () => {
     test('creates the DM when scheduling, so the destination is fixed to its channel_id', async () => {
       const r = await setup().call('schedule_message', { channel: '@carol', message: 'hello', at: '2026-11-03T10:00' });
       expect(r.isError).toBe(false);
-      expect(r.text).toContain(`チャンネル: @carol（channel_id: ${NEW_DM}）`);
+      expect(r.text).toContain(`投稿先: @carol（channel_id: ${NEW_DM}）`);
       expect(hits).toContain('POST /channels/direct');
     });
 
@@ -146,7 +146,7 @@ describe('schedule_message', () => {
     const r = await s.call('schedule_message', { channel: CH, message: 'hello', root_id: ROOT, at: '2026-11-03T10:00' });
     expect(r.isError).toBe(false);
     expect(r.text).toMatch(/予約 ID: [A-Za-z0-9_-]{43}/);
-    expect(r.text).toContain(`チャンネル: Town（channel_id: ${CH}）、返信先 post_id: ${ROOT}`);
+    expect(r.text).toContain(`投稿先: Town（channel_id: ${CH}）、返信先 post_id: ${ROOT}`);
     expect(r.text).toContain('2026-11-03T01:00:00Z | 2026-11-03T10:00:00+09:00');
     expect(r.text).toContain('list_scheduled_messages で確かめられます');
     expect(hits.filter((h) => h.startsWith('POST'))).toEqual([]);
