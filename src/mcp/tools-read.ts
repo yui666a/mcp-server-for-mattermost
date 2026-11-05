@@ -445,8 +445,9 @@ export function registerReadTools(server: McpServer, ctx: ToolContext): void {
     // Not the default listing unless archived is false: it leaves out archived channels the user is still in, where saved posts can sit.
     const listed = await mm.call<(MmChannel & { delete_at?: number })[]>(uid, 'GET', archived ? '/users/me/channels?include_deleted=true' : '/users/me/channels');
     const channels = new Map(listed.map((x) => [x.id, x]));
-    // Looked up one by one only for channels the listing lacks (archived after the search, say): not always listing archived channels,
-    // and not falling back to the first team, which would give a permalink of another team to a user in several.
+    // Not listing archived channels always for the few a search finds after they were archived; one by one, not in parallel, for the
+    // per-user concurrency limit. Not the first team on errors other than 403 and 404: a user in several teams would get another team's
+    // permalink without notice.
     for (const id of new Set(ids)) {
       if (channels.has(id)) continue;
       const ch = await mm.call<MmChannel & { delete_at?: number }>(uid, 'GET', `/channels/${id}`).catch((e) => {
@@ -466,6 +467,7 @@ export function registerReadTools(server: McpServer, ctx: ToolContext): void {
       return { where, team: team ?? teams[0]?.name ?? '' };
     };
   }
+
   async function withChannels(mm: Mm, shown: MmPost[], archived = false): Promise<string[]> {
     // Not always listing archived channels: the post searches leave their posts out, and a user can be in many of them.
     const placeOf = await places(mm, shown.map((p) => p.channel_id), archived);
