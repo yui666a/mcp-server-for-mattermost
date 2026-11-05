@@ -50,6 +50,19 @@ async function upload(token: string, channelId: string, filename: string, body: 
 const nextCursor = (r: Result) => /next_cursor: (\S+)/.exec(r.content[0].text)?.[1];
 const postIds = (r: Result) => [...r.content[0].text.matchAll(/^--- post_id: ([a-z0-9]{26})/gm)].map((m) => m[1]);
 
+// Not stopping at the first failed deactivation: every user made has to go, and the test's own failure must not be replaced by the cleanup's.
+async function withUsers(run: (made: string[]) => Promise<void>): Promise<void> {
+  const made: string[] = [];
+  let ok = false;
+  try {
+    await run(made);
+    ok = true;
+  } finally {
+    const failed = (await Promise.allSettled(made.map((id) => mmApi(e.adminToken, 'DELETE', `/users/${id}`)))).find((r) => r.status === 'rejected');
+    if (ok && failed) throw failed.reason;
+  }
+}
+
 describe('read tools against the local Mattermost', () => {
   let req: ReturnType<typeof request>;
   let limiter: Limiter;
@@ -211,30 +224,31 @@ describe('read tools against the local Mattermost', () => {
     expect(note).toContain('team-b');
   });
 
-  test('search_posts does not create a DM for in:@user or -in:@user', async () => {
-    const dmMissing = async (other: string) => {
-      const name = [e.users.alice.id, other].sort().join('__');
-      const res = await fetch(`${e.mmUrl}/api/v4/teams/${e.teams.a.id}/channels/name/${name}`, { headers: { authorization: `Bearer ${aliceMm}` } });
-      return res.status === 404;
-    };
-    const stranger = async (suffix: string) => {
-      const name = `g${suffix}${TAG}`;
-      const u = await mmApi<{ id: string }>(e.adminToken, 'POST', '/users', { username: name, email: `${name}@example.com`, password: 'Passw0rd!dev123' });
-      await mmApi(e.adminToken, 'POST', `/teams/${e.teams.a.id}/members`, { team_id: e.teams.a.id, user_id: u.id });
-      return { id: u.id, name };
-    };
+  test('search_posts does not create a DM for in:@user or -in:@user', () => withUsers(async (made) => {
+      const dmMissing = async (other: string) => {
+        const name = [e.users.alice.id, other].sort().join('__');
+        const res = await fetch(`${e.mmUrl}/api/v4/teams/${e.teams.a.id}/channels/name/${name}`, { headers: { authorization: `Bearer ${aliceMm}` } });
+        return res.status === 404;
+      };
+      const stranger = async (suffix: string) => {
+        const name = `g${suffix}${TAG}`;
+        const u = await mmApi<{ id: string }>(e.adminToken, 'POST', '/users', { username: name, email: `${name}@example.com`, password: 'Passw0rd!dev123' });
+        made.push(u.id);
+        await mmApi(e.adminToken, 'POST', `/teams/${e.teams.a.id}/members`, { team_id: e.teams.a.id, user_id: u.id });
+        return { id: u.id, name };
+      };
 
-    const one = await stranger('in');
-    const r = await call('alice', 'search_posts', { terms: `${TAG} in:@${one.name}` });
-    expect(await dmMissing(one.id)).toBe(true);
-    expect(r.isError).toBe(true);
-    expect(r.content[0].text).toContain(`@${one.name} との DM はまだありません`);
+      const one = await stranger('in');
+      const r = await call('alice', 'search_posts', { terms: `${TAG} in:@${one.name}` });
+      expect(await dmMissing(one.id)).toBe(true);
+      expect(r.isError).toBe(true);
+      expect(r.content[0].text).toContain(`@${one.name} との DM はまだありません`);
 
-    const two = await stranger('ex');
-    const x = await call('alice', 'search_posts', { terms: `${TAG} -in:@${two.name}` });
-    expect(await dmMissing(two.id)).toBe(true);
-    expect(x.isError).toBeFalsy();
-  });
+      const two = await stranger('ex');
+      const x = await call('alice', 'search_posts', { terms: `${TAG} -in:@${two.name}` });
+      expect(await dmMissing(two.id)).toBe(true);
+      expect(x.isError).toBeFalsy();
+  }));
 
   test('search_posts narrows to, or excludes, an existing DM given as in:@user', async () => {
     const dm = await mmApi<{ id: string }>(aliceMm, 'POST', '/channels/direct', [e.users.alice.id, e.users.bob.id]);
@@ -246,31 +260,32 @@ describe('read tools against the local Mattermost', () => {
     expect(postIds(r)).not.toContain(id);
   });
 
-  test('search_posts narrows to, or excludes, an existing group DM given as in:@a,b, and does not create a missing one', async () => {
-    const user = async (suffix: string) => {
-      const name = `g${suffix}${TAG}`;
-      const u = await mmApi<{ id: string }>(e.adminToken, 'POST', '/users', { username: name, email: `${name}@example.com`, password: 'Passw0rd!dev123' });
-      await mmApi(e.adminToken, 'POST', `/teams/${e.teams.a.id}/members`, { team_id: e.teams.a.id, user_id: u.id });
-      return { id: u.id, name };
-    };
-    const third = await user('gm');
-    const gm = await mmApi<{ id: string }>(aliceMm, 'POST', '/channels/group', [e.users.alice.id, e.users.bob.id, third.id]);
-    const term = `${TAG}gm`;
-    const id = (await mmApi<{ id: string }>(aliceMm, 'POST', '/posts', { channel_id: gm.id, message: term })).id;
-    // Written without alice and in another order and case: the spec is normalised as a channel spec is.
-    expect(postIds(await call('alice', 'search_posts', { terms: `${term} in:@${third.name},@${e.users.bob.username.toUpperCase()}` }))).toContain(id);
-    const x = await call('alice', 'search_posts', { terms: `${term} -in:@${e.users.bob.username},${third.name}` });
-    expect(x.isError).toBeFalsy();
-    expect(postIds(x)).not.toContain(id);
+  test('search_posts narrows to, or excludes, an existing group DM given as in:@a,b, and does not create a missing one', () => withUsers(async (made) => {
+      const user = async (suffix: string) => {
+        const name = `g${suffix}${TAG}`;
+        const u = await mmApi<{ id: string }>(e.adminToken, 'POST', '/users', { username: name, email: `${name}@example.com`, password: 'Passw0rd!dev123' });
+        made.push(u.id);
+        await mmApi(e.adminToken, 'POST', `/teams/${e.teams.a.id}/members`, { team_id: e.teams.a.id, user_id: u.id });
+        return { id: u.id, name };
+      };
+      const third = await user('gm');
+      const gm = await mmApi<{ id: string }>(aliceMm, 'POST', '/channels/group', [e.users.alice.id, e.users.bob.id, third.id]);
+      const term = `${TAG}gm`;
+      const id = (await mmApi<{ id: string }>(aliceMm, 'POST', '/posts', { channel_id: gm.id, message: term })).id;
+      // Written without alice and in another order and case: the spec is normalised as a channel spec is.
+      expect(postIds(await call('alice', 'search_posts', { terms: `${term} in:@${third.name},@${e.users.bob.username.toUpperCase()}` }))).toContain(id);
+      const x = await call('alice', 'search_posts', { terms: `${term} -in:@${e.users.bob.username},${third.name}` });
+      expect(x.isError).toBeFalsy();
+      expect(postIds(x)).not.toContain(id);
 
-    const fourth = await user('nogm');
-    const r = await call('alice', 'search_posts', { terms: `${term} in:@${e.users.bob.username},${fourth.name}` });
-    expect(r.isError).toBe(true);
-    expect(r.content[0].text).toContain('グループ DM はまだありません');
-    const name = createHash('sha1').update([e.users.alice.id, e.users.bob.id, fourth.id].sort().join('')).digest('hex');
-    const res = await fetch(`${e.mmUrl}/api/v4/teams/${e.teams.a.id}/channels/name/${name}`, { headers: { authorization: `Bearer ${aliceMm}` } });
-    expect(res.status).toBe(404);
-  });
+      const fourth = await user('nogm');
+      const r = await call('alice', 'search_posts', { terms: `${term} in:@${e.users.bob.username},${fourth.name}` });
+      expect(r.isError).toBe(true);
+      expect(r.content[0].text).toContain('グループ DM はまだありません');
+      const name = createHash('sha1').update([e.users.alice.id, e.users.bob.id, fourth.id].sort().join('')).digest('hex');
+      const res = await fetch(`${e.mmUrl}/api/v4/teams/${e.teams.a.id}/channels/name/${name}`, { headers: { authorization: `Bearer ${aliceMm}` } });
+      expect(res.status).toBe(404);
+  }));
 
   test('search_posts interprets on: dates in JST', async () => {
     const term = `${TAG}tz`;
@@ -368,9 +383,9 @@ describe('read tools against the local Mattermost', () => {
 
     test('lists alice\'s public, private, DM and group DM channels, but not an archived one', async () => {
       const { text } = await listAll({ limit: 200 });
-      expect(lineOf(text, pub.id)).toContain(`${e.teams.a.name}/t7-pub-${TAG}（channel_id: ${pub.id}、team_id: ${e.teams.a.id}、種類: 公開、最終投稿: `);
+      expect(lineOf(text, pub.id)).toMatch(new RegExp(`${e.teams.a.name}/t7-pub-${TAG}（channel_id: ${pub.id}、team_id: ${e.teams.a.id}、種類: 公開、最終投稿: [^、]+、表示名: t7-pub ${TAG}）`));
       expect(lineOf(text, priv.id)).toContain('種類: 非公開');
-      expect(lineOf(text, dm.id)).toContain(`@${e.users.bob.username}（channel_id: ${dm.id}、種類: DM、最終投稿: `);
+      expect(lineOf(text, dm.id)).toMatch(new RegExp(`@${e.users.bob.username}（channel_id: ${dm.id}、種類: DM、最終投稿: [^、]+、表示名: @${e.users.bob.username}）`));
       expect(lineOf(text, gm.id)).toContain('種類: グループ DM');
       expect(text).not.toContain(archived.id);
     });
