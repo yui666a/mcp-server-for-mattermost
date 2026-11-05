@@ -119,7 +119,7 @@ export async function markAsRead(mm: Mm, uid: string, args: Args): Promise<CallT
       const state = await mm.call<ThreadState>(uid, 'GET', `/users/${uid}/teams/${team}/threads/${root}`).catch((e) => {
         if (!(e instanceof MmError && e.status === 404)) throw e;
         // Not pointing a root post without replies to follow_thread: Mattermost has no thread state for it until the first reply, followed or not.
-        if (!p.root_id && !p.reply_count) throw new InputError('このスレッドには返信がまだ無いため、既読にするものがありません。');
+        if (!p.root_id && !p.reply_count) throw new InputError('このスレッドには返信が無いため、既読にするものがありません。');
         throw new InputError('このスレッドはフォローしていないため、既読の状態がありません（フォローしていないスレッドの返信は未読に数えられません）。フォローするなら follow_thread を使ってください（フォローした時点までの返信が既読になります）。');
       });
       let at = state.last_reply_at;
