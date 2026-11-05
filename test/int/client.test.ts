@@ -6,7 +6,7 @@ import { openDb } from '../../src/db.ts';
 import { MmClient, Reauthorize } from '../../src/mattermost/client.ts';
 import { Limiter } from '../../src/mattermost/limiter.ts';
 import { Store } from '../../src/store.ts';
-import { mmAuthorizeCode, requireMm, mmDeauthorize, mmLoginCookie, type Cred } from './helpers.ts';
+import { mmAuthorizeCode, requireMm, mmDeauthorize, mmLoginCookie, withUsers, type Cred } from './helpers.ts';
 
 const e = await requireMm();
 
@@ -75,17 +75,19 @@ describe('MmClient against the local Mattermost', () => {
     expect(store.getMmCred(e.users.alice.id)).toBeUndefined();
   });
 
-  test('deactivated user leads to Reauthorize and revoked grants', async () => {
+  // In withUsers though the test deactivates the user itself: a failure before that would leave an active user on the shared Mattermost.
+  test('deactivated user leads to Reauthorize and revoked grants', () => withUsers(async (made) => {
     const name = `tmp${Date.now().toString(36)}`;
     const created = await adminApi('POST', '/users', { username: name, email: `${name}@example.com`, password: e.users.alice.password });
     expect(created.status).toBe(201);
     const user: Cred = { id: (await created.json()).id, username: name, password: e.users.alice.password };
+    made.push(user.id);
     const { pair } = await loginAs(user);
     expect((await adminApi('DELETE', `/users/${user.id}`)).status).toBe(200);
     await expect(client.call(user.id, 'GET', '/users/me')).rejects.toBeInstanceOf(Reauthorize);
     expect(store.verifyAccess(pair.accessToken)).toBeUndefined();
     expect(store.getMmCred(user.id)).toBeUndefined();
-  });
+  }));
 
   test('expired Mattermost access token is refreshed transparently', async () => {
     // Revoking the session would also delete OAuthAccessData (the refresh token), so the session is expired in the DB instead.
