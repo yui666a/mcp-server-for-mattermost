@@ -60,7 +60,7 @@ export async function lookPosted(mm: Mm, uid: string, s: Spec, since: number): P
     return (p.file_ids?.length ?? 0) === s.fileCount && (s.fileIds ?? []).every((id) => p.file_ids?.includes(id));
   };
   // Not comparing names: Mattermost tidies file names and plugins may rename them, so the earlier attempt's own files could look different.
-  // Not comparing when the file infos are missing or short (hidden by ABAC, or not fetched): only the count is known then.
+  // Not comparing when the file infos are missing or their count differs from the post's file_ids (hidden by ABAC, or not fetched): only the count is known then.
   const sizesMatch = (p: ListedPost) => {
     const infos = p.metadata?.files;
     if (!s.files?.length || !infos || infos.length !== (p.file_ids?.length ?? 0)) return true;

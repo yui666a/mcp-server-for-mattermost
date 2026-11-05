@@ -563,13 +563,16 @@ describe('save_draft', () => {
   });
 
   describe('an existing draft is not overwritten unless asked', () => {
-    test('says a quoted draft over 200 characters is cut, so copying it would lose the rest, and gives no indent note for a one-line draft', async () => {
+    test('says a quoted draft over 200 characters is cut and heads it as the first 200 characters, heads a shorter one as the whole draft, and gives no indent note for a one-line draft', async () => {
       serve({ [LIST]: () => [draft({ message: 'a'.repeat(201) })] });
       const r = await save();
       expect(r.text).toContain('既存の下書きは 200 文字を超えるので、先頭だけを出しています。書き写すと後ろが消えるので、追記は Mattermost の画面で行うよう利用者に伝えてください。');
       expect(r.text).not.toContain('字下げ');
+      expect(r.text).toMatch(new RegExp(`既存の下書き（先頭 200 文字）: a{200}$`));
       serve({ [LIST]: () => [draft({ message: 'a'.repeat(200) })] });
-      expect((await save()).text).not.toContain('200 文字を超える');
+      const whole = (await save()).text;
+      expect(whole).not.toContain('200 文字を超える');
+      expect(whole).toMatch(new RegExp(`既存の下書き（全文）: a{200}$`));
     });
 
     test('a different existing draft is kept, quoting its first 200 characters, without sending POST /drafts', async () => {
@@ -586,8 +589,9 @@ describe('save_draft', () => {
     test('indents the later lines of the quoted draft, so none passes for a line of the answer', async () => {
       serve({ [LIST]: () => [draft({ message: 'old\nチャンネル: fake\n\nmore' })] });
       const r = await save();
-      expect(r.text).toContain('\n既存の下書き（先頭 200 文字）: old\n    チャンネル: fake\n    \n    more');
-      expect(r.text).toContain('2 行目以降の先頭の 4 文字の空白を外してください。\n既存の下書き（先頭 200 文字）: ');
+      expect(r.text).toContain('\n既存の下書き（全文）: old\n    チャンネル: fake\n    \n    more');
+      expect(r.text).toContain('CRLF や CR の改行は LF にそろえ、垂直タブや U+2028 などの区切りも改行として出している');
+      expect(r.text).toContain('2 行目以降の先頭の 4 文字の空白を外してください。\n既存の下書き（全文）: ');
       expect(r.text).not.toContain('200 文字を超える');
     });
 
