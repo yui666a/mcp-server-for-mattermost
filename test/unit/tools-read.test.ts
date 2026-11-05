@@ -1016,6 +1016,13 @@ describe('get_channel', () => {
     expect(await setup()('get_channel', { channel: C }, true)).toBe('このチャンネルを見る権限がありません（参加していない非公開チャンネルなど）。参加しているはずなら、Mattermost の一時的な障害の可能性があります。少し待ってから再試行してください。続くなら、チャンネルから外されたか、サーバーの権限の設定で読む権限が外されている可能性があるので、管理者に確かめてください。');
   });
 
+  test('words a 403 by team/channel as a channel of a team not joined or a public channel not visible, not a private channel', async () => {
+    routes = { ...base(), 'GET /teams/name/team-a/channels/name/town': mmError(403) };
+    const out = await setup()('get_channel', { channel: 'team-a/town' }, true);
+    expect(out).toContain('このチャンネルを見る権限がありません（参加していないチームのチャンネルや、見る権限の無い公開チャンネルなど）。');
+    expect(out).not.toContain('非公開チャンネル');
+  });
+
   test('on 403 from fetching the pinned posts, still gives the channel and says only the pinned posts could not be read', async () => {
     routes = { ...base(), [`GET /channels/${C}/pinned`]: mmError(403) };
     const call = setup();
