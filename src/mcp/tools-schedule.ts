@@ -145,7 +145,9 @@ async function row(s: Scheduled, where: string, teamOf: (channelId: string) => P
   if (s.fileIds.length) out.push(`添付: ${s.fileIds.join(', ')}`);
   // Not saving the re-upload hint with the reason: rows fail on several paths (the tick, the late sweep, invalidate-scheduled), and this covers them all.
   // Not at the margin: a reason can quote Mattermost's error text, whose later lines could pass for a field of the list.
-  if (s.error) out.push(...(s.status === 'posted' ? indented('注意', s.error) : indented('失敗の理由', `${s.error}${s.fileIds.length ? ' ファイルを付けて送り直すときは、prepare_upload からアップロードし直してください。' : ''}`)));
+  if (s.error) out.push(...indented(s.status === 'posted' ? '注意' : '失敗の理由', s.error));
+  // Not on the reason's last line: a multi-line reason would make the hint read as part of the quoted error.
+  if (s.error && s.status !== 'posted' && s.fileIds.length) out.push('ファイルを付けて送り直すときは、prepare_upload からアップロードし直してください。');
   if (s.postId) {
     out.push(`post_id: ${s.postId}`);
     const team = s.status === 'posted' ? await teamOf(s.channelId) : undefined;
