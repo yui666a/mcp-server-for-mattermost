@@ -243,6 +243,15 @@ describe('edit_message and delete_message', () => {
   const edit = (s: ReturnType<typeof setup>, over: Record<string, unknown> = {}) => s.call('edit_message', { post_id: POST, message: 'new', ...over });
   const del = (s: ReturnType<typeof setup>) => s.call('delete_message', { post_id: POST });
 
+  test('edit_message and delete_message keep the channel\'s display name with a line break on one line', async () => {
+    serve(mine(), { [`GET /channels/${CH}`]: () => ({ id: CH, name: 'town', display_name: 'To\nwn', team_id: 't1', type: 'O' }) });
+    const s = setup();
+    for (const r of [await edit(s), await del(s)]) {
+      expect(r.isError).toBe(false);
+      expect(r.text).toContain(`チャンネル: To wn（channel_id: ${CH}）`);
+    }
+  });
+
   describe('only the caller\'s own posts are edited or deleted', () => {
     test.each([
       ['another user\'s post', { user_id: 'u2' }, '本人の投稿ではありません'],
@@ -487,6 +496,13 @@ describe('save_draft', () => {
   };
   const save = (over: Record<string, unknown> = {}) => setup().call('save_draft', { channel: CH, message: 'hello', ...over });
 
+  test('keeps the destination\'s display name with a line break on one line', async () => {
+    serve({ [`GET /channels/${CH}`]: () => ({ id: CH, name: 'town', display_name: 'To\nwn', team_id: 't1', type: 'O' }) });
+    const r = await save();
+    expect(r.isError).toBe(false);
+    expect(r.text).toContain(`投稿先: To wn（channel_id: ${CH}）`);
+  });
+
   describe('saving', () => {
     test('saves a channel draft and says it is in the input box, that the user sends it, and to reopen the channel if it was open', async () => {
       serve();
@@ -552,6 +568,15 @@ describe('save_draft', () => {
   });
 
   describe('an existing draft is not overwritten unless asked', () => {
+    test('says a quoted draft over 200 characters is cut, so copying it would lose the rest, and gives no indent note for a one-line draft', async () => {
+      serve({ [LIST]: () => [draft({ message: 'a'.repeat(201) })] });
+      const r = await save();
+      expect(r.text).toContain('既存の下書きは 200 文字を超えるので、先頭だけを出しています。書き写すと後ろが消えるので、追記は Mattermost の画面で行うよう利用者に伝えてください。');
+      expect(r.text).not.toContain('字下げ');
+      serve({ [LIST]: () => [draft({ message: 'a'.repeat(200) })] });
+      expect((await save()).text).not.toContain('200 文字を超える');
+    });
+
     test('a different existing draft is kept, quoting its first 200 characters, without sending POST /drafts', async () => {
       serve({ [LIST]: () => [draft({ message: 'a'.repeat(200) + 'B'.repeat(50) })] });
       const r = await save();
@@ -567,6 +592,8 @@ describe('save_draft', () => {
       serve({ [LIST]: () => [draft({ message: 'old\nチャンネル: fake\n\nmore' })] });
       const r = await save();
       expect(r.text).toContain('\n既存の下書き（先頭 200 文字）: old\n    チャンネル: fake\n    \n    more');
+      expect(r.text).toContain('2 行目以降の先頭の 4 文字の空白を外してください。\n既存の下書き（先頭 200 文字）: ');
+      expect(r.text).not.toContain('200 文字を超える');
     });
 
     test('overwrite: true replaces a different existing draft', async () => {
@@ -707,6 +734,14 @@ describe('send_message with files', () => {
   };
   const send = (files: unknown, over: Record<string, unknown> = {}) => setup().call('send_message', { channel: CH, message: 'm', files, ...over });
   const KiB128 = 128 * 1024;
+
+  test('send_message and prepare_upload keep the destination\'s display name with a line break on one line', async () => {
+    serve({ [`GET /channels/${CH}`]: () => ({ id: CH, name: 'town', display_name: 'To\nwn', team_id: 't1', type: 'O' }) });
+    for (const r of [await setup().call('send_message', { channel: CH, message: 'm' }), await setup().call('prepare_upload', { channel: CH })]) {
+      expect(r.isError).toBe(false);
+      expect(r.text).toContain(`投稿先: To wn（channel_id: ${CH}）`);
+    }
+  });
 
   test('sends content_text as its UTF-8 bytes and content_base64 as the decoded bytes, each as an octet-stream named by filename', async () => {
     serve();
