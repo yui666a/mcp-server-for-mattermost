@@ -1,7 +1,7 @@
 import type { McpServer, ToolCallback } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
 import { z } from 'zod';
-import { MmError, UpstreamUnavailable, type MmClient } from '../mattermost/client.ts';
+import { CallAborted, MmError, UpstreamUnavailable, type MmClient } from '../mattermost/client.ts';
 import { idArg } from './args.ts';
 import { ASK_ADMIN, BAD_CURSOR, BODY_CUT_NOTE, BODY_MAX_CHARS, decodeCursor, encodeCursor, fileLine, formatPost, formatTime, graphemeCount, indented, InputError, localTime, oneLine, POST_FORBIDDEN, postTruncated, postUserIds, RETRY, RETRY_SOON, truncate, unformat, type MmFileInfo, type MmPost } from './format.ts';
 import { pageCursor, paginate } from './paging.ts';
@@ -15,7 +15,7 @@ import { parseWhen } from './when.ts';
 type PostList = { order: string[]; posts: Record<string, MmPost>; has_next?: boolean | null; prev_post_id?: string };
 type Page = { lines: string[]; next?: object; posts?: MmPost[]; notes?: string[] };
 
-type ReadMm = Mm & Pick<MmClient, 'callBytes'> & { signal: AbortSignal };
+type ReadMm = Mm & Pick<MmClient, 'callBytes'>;
 type FoundFile = MmFileInfo & { user_id: string; post_id: string; channel_id: string; create_at: number };
 type FileList = { order: string[]; file_infos: Record<string, FoundFile> };
 
@@ -495,7 +495,7 @@ export function registerReadTools(server: McpServer, ctx: ToolContext): void {
   function tool<S extends z.ZodRawShape>(name: string, description: string, inputSchema: S, fn: (args: z.infer<z.ZodObject<S>>, mm: ReadMm) => Promise<string | CallToolResult>) {
     server.registerTool(name, { description, inputSchema, annotations: { readOnlyHint: true } },
       guarded(ctx, name, async (args: z.infer<z.ZodObject<S>>, extra: { signal: AbortSignal }) => {
-        const mm: ReadMm = { call: (u, m, p, b) => ctx.mm.call(u, m, p, b, extra.signal), callBytes: (u, p, _s, o) => ctx.mm.callBytes(u, p, extra.signal, o), signal: extra.signal };
+        const mm: ReadMm = { call: (u, m, p, b) => ctx.mm.call(u, m, p, b, extra.signal), callBytes: (u, p, _s, o) => ctx.mm.callBytes(u, p, extra.signal, o) };
         const r = await fn(args, mm);
         return typeof r === 'string' ? text(r) : r;
       // Cast rather than typed directly: the SDK's callback type is a conditional type TypeScript cannot resolve for a generic shape.
@@ -935,7 +935,7 @@ export function registerReadTools(server: McpServer, ctx: ToolContext): void {
       // Not failing the list when the partners' names cannot be read: they only label the DMs, which then show the partner's user_id marked as one, as dmLabel gives up.
       const partners = await usernamesOf(mm, uid, dms.map(other)).catch((e) => {
         // Not giving up on a call the user aborted: there is no one left to read the list.
-        if (!mm.signal.aborted && (e instanceof MmError || e instanceof UpstreamUnavailable)) return new Map<string, string>();
+        if (!(e instanceof CallAborted) && (e instanceof MmError || e instanceof UpstreamUnavailable)) return new Map<string, string>();
         throw e;
       });
       const kind: Record<string, string> = { O: '公開', P: '非公開', D: 'DM', G: 'グループ DM' };

@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { MmError, UpstreamUnavailable, type MmClient } from '../mattermost/client.ts';
+import { CallAborted, MmError, UpstreamUnavailable, type MmClient } from '../mattermost/client.ts';
 import { ASK_ADMIN, InputError, oneLine, RETRY, unformat } from './format.ts';
 
 export type Mm = Pick<MmClient, 'call'>;
@@ -154,7 +154,8 @@ export async function resolveChannel(mm: Mm, userId: string, spec: string, opts:
 export async function dmLabel(mm: Mm, userId: string, c: MmChannel): Promise<string | undefined> {
   // Given up on rather than failing the tool: the name is only for the output, and Mattermost's display_name is left as it was.
   const giveUp = (e: unknown) => {
-    if (e instanceof MmError || e instanceof UpstreamUnavailable) return undefined;
+    // Not giving up on a call the caller aborted: there is no one left to read the output.
+    if (!(e instanceof CallAborted) && (e instanceof MmError || e instanceof UpstreamUnavailable)) return undefined;
     throw e;
   };
   if (c.type === 'D') {
