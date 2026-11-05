@@ -521,7 +521,7 @@ describe('search_posts in: filters', () => {
     ['x in:team-a/nowhere', 'チャンネル「team-a/nowhere」が見つかりません。'],
     [`x in:${PV}`, `チャンネル「${PV}」を見る権限がありません（参加していない非公開チャンネルなど）。`],
     ['x in:team-a/private', 'チャンネル「team-a/private」が見つかりません。名前の誤りなら search_channels で確かめてください。'],
-    ['x in:team-c/town', 'チャンネル「team-c/town」を見る権限がありません（参加していないチームのチャンネルなど）。'],
+    ['x in:team-c/town', 'チャンネル「team-c/town」を見る権限がありません（参加していないチームのチャンネルや、見る権限の無い公開チャンネルなど）。'],
     [`x in:${AR}`, `チャンネル「${AR}」はアーカイブ済みで、検索の対象外です。読むなら read_channel に渡します。`],
     [`x in:${AR} in:only-a`, `チャンネル「${AR}」はアーカイブ済みで、検索の対象外です。読むなら read_channel に渡します。`],
     ['x in:nowhere', 'チャンネル「nowhere」が見つかりません。名前の誤りなら search_channels で確かめてください。参加していない非公開チャンネルとアーカイブ済みのチャンネルは名前では見つからず、アーカイブ済みのチャンネルは検索の対象外です（読むなら、利用者に ID を確かめて read_channel に渡します）。'],
@@ -3447,7 +3447,7 @@ describe('search_files', () => {
       expect(onlyAsked()).toBe(true);
     });
 
-    test('says a channel is not found, for a name, a channel_id or team/channel answered with 403 or 404, each in its own words, without searching for the terms', async () => {
+    test('says a channel is not found or archived, for a name, a channel_id or team/channel answered with 403 or 404 or an archived channel_id, each in its own words, without searching for the terms', async () => {
       routes = { ...base(), [`GET /channels/${B}`]: mmError(403), 'GET /teams/name/team-b/channels/name/dup': mmError(404), [`GET /channels/${'a'.repeat(26)}`]: () => ({ id: 'a'.repeat(26), name: 'old', display_name: 'old', team_id: 't'.repeat(26), type: 'O', delete_at: 1 }) };
       const call = setup();
       expect(await call('search_files', { terms: 'x in:nowhere' }, true)).toBe('チャンネル「nowhere」が見つかりません。名前の誤りなら search_channels で確かめてください。参加していない非公開チャンネルとアーカイブ済みのチャンネルは名前では見つからず、アーカイブ済みのチャンネルは検索の対象外です（読むなら、利用者に ID を確かめて read_channel に渡します）。参加しているはずなら、Mattermost の一時的な障害の可能性があります。少し待ってから再試行してください。続くなら、チャンネルから外されたか、サーバーの権限の設定で読む権限が外されている可能性があるので、管理者に確かめてください。');
