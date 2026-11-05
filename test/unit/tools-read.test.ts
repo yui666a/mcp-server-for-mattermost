@@ -1410,6 +1410,7 @@ describe('get_file', () => {
       // Fixing a known wrong guess: the ･ (0xA5) pairs with the next byte into an EUC-JP katakana.
       ['half-width kana Shift_JIS with ･ in an even place', [0xd4, 0xcf, 0xc0, 0xde, 0xa5, 0xc0, 0xdb, 0xb3], 'EUC-JP', undefined],
       ['Latin-1 °©½', [0xb0, 0xa9, 0xbd], 'Shift_JIS', 'ｰｩｽ'],
+      ['odd-length half-width kana Shift_JIS that EUC-JP reads only by dropping its last byte', [0xa4, 0xa2, 0xb1], 'Shift_JIS', '､｢ｱ'],
       ['Latin-1 séance', [...Buffer.from('séance', 'latin1')], 'Shift_JIS', 's饌nce'],
     ])('notes that the encoding is a guess for %s', async (_, b, encoding, shown) => {
       routes = { [INFO]: textInfo('a.txt', b.length), [FILE]: body(Uint8Array.from(b)) };
@@ -1436,6 +1437,7 @@ describe('get_file', () => {
       expect(content()).toBe(shown);
       expect(out).toContain(`文字コード: ${encoding}`);
       expect(out).toContain(TAIL);
+      if (encoding === 'Shift_JIS') expect(out).toContain(GUESSED);
       expect(out).not.toContain('先頭の');
     });
 

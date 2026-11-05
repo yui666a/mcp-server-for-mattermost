@@ -83,12 +83,13 @@ function decodeText(b: Uint8Array, name: string, whole: boolean): Decoded | unde
   if (!SJIS_EXTENSIONS.has(ext)) return undefined;
   const sjis = decode('shift_jis');
   const euc = decode('euc-jp');
-  // Shift_JIS counts as not read when it needs its last character dropped and EUC-JP reads the whole: kana-less EUC-JP ends that way.
+  // One counts as not read when it needs its last character dropped and the other reads the whole: kana-less EUC-JP and odd-length half-width kana end that way.
   const sjisRead = sjis && !(sjis.cutTail && euc && !euc.cutTail) ? sjis : undefined;
+  const eucRead = euc && !(euc.cutTail && sjis && !sjis.cutTail) ? euc : undefined;
   // Not EUC-JP for any text with kana: half-width kana Shift_JIS also reads as EUC-JP, though rarely with kana.
-  if (euc && KANA.test(euc.text) && (!sjisRead || HALF_KANA.test(sjisRead.text))) return { ...euc, encoding: 'EUC-JP', guessed: true };
+  if (eucRead && KANA.test(eucRead.text) && (!sjisRead || HALF_KANA.test(sjisRead.text))) return { ...eucRead, encoding: 'EUC-JP', guessed: true };
   if (sjisRead) return { ...sjisRead, encoding: 'Shift_JIS', guessed: true };
-  return euc && { ...euc, encoding: 'EUC-JP', guessed: true };
+  return eucRead && { ...eucRead, encoding: 'EUC-JP', guessed: true };
 }
 
 async function fileText(mm: ReadMm, uid: string, fileId: string, f: MmFileInfo, about: string): Promise<string | CallToolResult> {
