@@ -77,14 +77,16 @@ export function mentionsMe(message: string, u: MentionUser): boolean {
   keywords.forEach((k) => CHANNEL_WIDE.has(k) && keywords.delete(k));
   const multibyte = [...keywords].filter((k) => /[^\x00-\x7f]/.test(k));
   const hit = (w: string) => keywords.has(w.toLowerCase()) || keywords.has(w);
+  // Lowercasing never shortens a string, so a word longer than every keyword cannot be one.
+  const longest = Math.max(0, ...[...keywords].map((k) => k.length));
   for (let word of textOf(message).split(/[^:.\-_@\p{L}\p{N}]+/u)) {
     if (!word || (word[0] === ':' && word.at(-1) === ':')) continue;
     word = word.replace(/^[:.\-_]+/, '');
     if (hit(word)) return true;
-    for (let w = word; /[.\-:_]$/.test(w);) {
-      w = w.slice(0, -1);
-      if (hit(w)) return true;
-    }
+    // Not dropping the trailing marks one at a time from the whole word: a word ending in thousands of them would take quadratic time, and only prefixes no longer than a keyword can match.
+    let end = word.length;
+    while (end > 0 && '.-:_'.includes(word[end - 1])) end--;
+    for (let k = Math.min(word.length - 1, longest); k >= end; k--) if (hit(word.slice(0, k))) return true;
     if (!word.startsWith('@') && /[.\-:]/.test(word) && word.split(/[.\-:]+/).some(hit)) return true;
     if (/[^\x00-\x7f]/.test(word) && multibyte.some((k) => word.includes(k))) return true;
   }
