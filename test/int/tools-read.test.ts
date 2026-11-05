@@ -98,7 +98,7 @@ describe('read tools against the local Mattermost', () => {
   afterAll(() => vi.restoreAllMocks());
 
   test('read_channel paginates without gaps or duplicates', async () => {
-    const all = await mmApi<{ order: string[] }>(aliceMm, 'GET', `/channels/${channel.id}/posts?per_page=200`);
+    const all = await mmApi<{ order: string[]; posts: Record<string, { create_at: number }> }>(aliceMm, 'GET', `/channels/${channel.id}/posts?per_page=200`);
     const seen: string[] = [];
     let cursor: string | undefined;
     let pages = 0;
@@ -114,6 +114,8 @@ describe('read tools against the local Mattermost', () => {
     expect(pages).toBeGreaterThan(1);
     // Not comparing the order: Mattermost orders posts of the same millisecond differently from call to call.
     expect([...seen].sort()).toEqual([...all.order].sort());
+    const at = seen.map((id) => all.posts[id].create_at);
+    expect(at).toEqual([...at].sort((a, b) => b - a));
   });
 
   test('read_channel with since and until reads that range oldest first in JST, with replies and attachment-only posts', async () => {
