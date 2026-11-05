@@ -104,7 +104,8 @@ describe('attachments of a post', () => {
       }
     });
 
-    test('still shows the files Mattermost left, before the hidden count', () => {
+    // Not a case Mattermost (v11.7.15) produces: it strips every file when it hides any. This pins the order should both ever come together.
+    test('still shows any files left, before the hidden count', () => {
       const lines = formatPost({ ...p, file_ids: [png.id], metadata: { files: [png], redacted_file_count: 2 } }, ctx).split('\n');
       const at = lines.findIndex((l) => l.startsWith('添付: '));
       expect(at).toBeGreaterThan(0);
