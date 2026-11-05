@@ -162,7 +162,7 @@ describe('list_followed_threads', () => {
   test('says a short page under a larger total holds follows the list cannot return, not that it stopped', async () => {
     routes = { ...base(), [`GET /users/u1/teams/${T1}/threads`]: () => page([thread(TH1, CH1, 5000)], 3) };
     const out = (await setup().call('list_followed_threads', {})).text;
-    expect(out).toContain('（team-a と DM、グループ DM の total: 3 のうち 2 件は一覧に出せません。データ保持ポリシーで根の投稿が消えたスレッドのフォロー（unfollow_thread でも外せません）か、取得の合間に増えたフォローです）');
+    expect(out).toContain('（team-a と DM、グループ DM の total: 3 のうち 2 件は一覧に出せません。データ保持ポリシーでルート投稿が消えたスレッドのフォロー（unfollow_thread でも外せません）か、取得の合間に増えたフォローです）');
     expect(out).not.toContain('だけを取得しています');
     routes[`GET /users/u1/teams/${T2}/threads`] = () => page([], 4);
     expect((await setup().call('list_followed_threads', {})).text).toContain('（team-b の total: 4 のうち 4 件は一覧に出せません。');
