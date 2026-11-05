@@ -3042,9 +3042,9 @@ describe('search_files', () => {
     expect(hits.filter((h) => h === `GET /channels/${B}`)).toHaveLength(1);
   });
 
-  test('shows only the channel_id when the channel the listing lacks cannot be read either', async () => {
+  test.each([403, 404])('shows only the channel_id when the channel the listing lacks answers %i', async (status) => {
     const GONE = 'z'.repeat(26);
-    routes = { ...base(), 'POST /files/search': () => found([file(F1, { channel_id: GONE })]) };
+    routes = { ...base(), 'POST /files/search': () => found([file(F1, { channel_id: GONE })]), [`GET /channels/${GONE}`]: mmError(status) };
     const out = await setup()('search_files', { terms: 'fff' });
     expect(out).toContain(`channel_id: ${GONE}`);
     expect(out).toContain(`https://mm.example/team-a/pl/${P1}`);
