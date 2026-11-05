@@ -7,6 +7,8 @@ type Route = (req: Request) => unknown;
 let routes: Record<string, Route>;
 let hits: string[];
 
+const UID = 'u'.repeat(26);
+const BOB = 'b5'.repeat(13);
 const NOW = Date.UTC(2026, 10, 2, 0, 0); // 2026-11-02T09:00 JST
 const MIN = 60_000;
 const DAY = 24 * 60 * MIN;
@@ -49,12 +51,12 @@ function setup() {
     return out instanceof Response ? out : Response.json(out);
   });
   const code = ctx.store.createCode({
-    mmUserId: 'u1', clientId: 'c1', redirectUri: 'http://localhost:1/cb', codeChallenge: 'ch', resource: ctx.config.resource, scope: 'mattermost',
+    mmUserId: UID, clientId: 'c1', redirectUri: 'http://localhost:1/cb', codeChallenge: 'ch', resource: ctx.config.resource, scope: 'mattermost',
   });
   const rec = ctx.store.consumeCode(code);
   if (typeof rec !== 'object') throw new Error('code not consumed');
-  const { accessToken } = ctx.store.createGrant({ mmUserId: 'u1', clientId: 'c1', scope: 'mattermost', resource: ctx.config.resource, fromCodeHash: rec.codeHash });
-  ctx.store.putMmCred('u1', 'mm-access', 'mm-refresh');
+  const { accessToken } = ctx.store.createGrant({ mmUserId: UID, clientId: 'c1', scope: 'mattermost', resource: ctx.config.resource, fromCodeHash: rec.codeHash });
+  ctx.store.putMmCred(UID, 'mm-access', 'mm-refresh');
   const rpc = async (method: string, params: object) => {
     const r = await ctx.req.post('/mcp').set({ authorization: `Bearer ${accessToken}`, accept: 'application/json, text/event-stream', 'content-type': 'application/json' })
       .send(JSON.stringify({ jsonrpc: '2.0', id: 1, method, params }));
@@ -98,7 +100,7 @@ describe('schedule_message', () => {
     beforeEach(() => {
       routes['GET /users/me/teams'] = () => [{ id: TEAM, name: 'team-a' }];
       routes['GET /users/username/carol'] = () => ({ id: CAROL, username: 'carol', delete_at: 0 });
-      routes['POST /channels/direct'] = () => ({ id: NEW_DM, name: `${CAROL}__u1`, display_name: '', team_id: '', type: 'D' });
+      routes['POST /channels/direct'] = () => ({ id: NEW_DM, name: `${CAROL}__${UID}`, display_name: '', team_id: '', type: 'D' });
     });
 
     test('creates the DM when scheduling, so the destination is fixed to its channel_id', async () => {
@@ -118,7 +120,7 @@ describe('schedule_message', () => {
     test('with file_ids uploaded for another channel, reports the file mistake rather than the missing DM, and does not create the DM', async () => {
       const s = setup();
       const f = 'f'.repeat(26);
-      s.store.recordUploadedFile({ mmUserId: 'u1', channelId: CH }, f);
+      s.store.recordUploadedFile({ mmUserId: UID, channelId: CH }, f);
       const r = await s.call('schedule_message', { channel: '@carol', message: 'hello', at: '2026-11-03T10:00', file_ids: [f] });
       expect(r.isError).toBe(true);
       expect(r.text).toContain(`別のチャンネル（channel_id: ${CH}）`);
@@ -127,7 +129,7 @@ describe('schedule_message', () => {
 
     test.each(['@carol', ' @carol'])('with the pending schedules at the limit, refuses %j before resolving the channel, so no DM is created', async (channel) => {
       const s = setup();
-      for (let i = 0; i < MAX_PENDING_SCHEDULED; i++) s.store.createScheduled({ mmUserId: 'u1', channelId: CH, message: `m${i}`, scheduledAt: NOW + DAY }, NOW);
+      for (let i = 0; i < MAX_PENDING_SCHEDULED; i++) s.store.createScheduled({ mmUserId: UID, channelId: CH, message: `m${i}`, scheduledAt: NOW + DAY }, NOW);
       const r = await s.call('schedule_message', { channel, message: 'hello', at: '2026-11-03T10:00' });
       expect(r.isError).toBe(true);
       expect(r.text).toContain(`待機中の予約が上限の ${MAX_PENDING_SCHEDULED} 件に達しています`);
@@ -140,7 +142,7 @@ describe('schedule_message', () => {
       ['a root_id that does not exist', { channel: CH, root_id: 'q'.repeat(26) }, `root_id ${'q'.repeat(26)} の投稿が見つかりません`],
     ])('with the pending schedules at the limit, %s is reported before the limit', async (_, args, error) => {
       const s = setup();
-      for (let i = 0; i < MAX_PENDING_SCHEDULED; i++) s.store.createScheduled({ mmUserId: 'u1', channelId: CH, message: `m${i}`, scheduledAt: NOW + DAY }, NOW);
+      for (let i = 0; i < MAX_PENDING_SCHEDULED; i++) s.store.createScheduled({ mmUserId: UID, channelId: CH, message: `m${i}`, scheduledAt: NOW + DAY }, NOW);
       const r = await s.call('schedule_message', { message: 'hello', at: '2026-11-03T10:00', ...args });
       expect(r.isError).toBe(true);
       expect(r.text).toContain(error);
@@ -149,7 +151,7 @@ describe('schedule_message', () => {
 
     test('with the pending schedules at the limit, a valid channel gets the limit error', async () => {
       const s = setup();
-      for (let i = 0; i < MAX_PENDING_SCHEDULED; i++) s.store.createScheduled({ mmUserId: 'u1', channelId: CH, message: `m${i}`, scheduledAt: NOW + DAY }, NOW);
+      for (let i = 0; i < MAX_PENDING_SCHEDULED; i++) s.store.createScheduled({ mmUserId: UID, channelId: CH, message: `m${i}`, scheduledAt: NOW + DAY }, NOW);
       const r = await s.call('schedule_message', { channel: CH, message: 'hello', at: '2026-11-03T10:00' });
       expect(r.isError).toBe(true);
       expect(r.text).toBe(`待機中の予約が上限の ${MAX_PENDING_SCHEDULED} 件に達しています。不要な予約を cancel_scheduled_message で取り消してください。`);
@@ -268,7 +270,7 @@ describe('schedule_message with file_ids', () => {
   const F1 = 'a'.repeat(26);
   const F2 = 'b'.repeat(26);
   const uploaded = (s: ReturnType<typeof setup>, ids = [F1, F2], channelId = CH) => {
-    for (const i of ids) s.store.recordUploadedFile({ mmUserId: 'u1', channelId }, i);
+    for (const i of ids) s.store.recordUploadedFile({ mmUserId: UID, channelId }, i);
   };
   const refused = async (s: ReturnType<typeof setup>, args: Record<string, unknown>) => {
     const r = await s.call('schedule_message', { channel: CH, message: 'hello', at: '2026-11-03T10:00', ...args });
@@ -282,7 +284,7 @@ describe('schedule_message with file_ids', () => {
     const r = await s.call('schedule_message', { channel: CH, message: 'hello', at: '2026-11-03T10:00', file_ids: [F1, F2] });
     expect(r.isError).toBe(false);
     expect(r.text).toContain(`添付: ${F1}, ${F2}`);
-    expect(s.store.listScheduled('u1', { limit: 1 })[0].fileIds).toEqual([F1, F2]);
+    expect(s.store.listScheduled(UID, { limit: 1 })[0].fileIds).toEqual([F1, F2]);
   });
 
   test('refuses files the way send_message does: not uploaded by the user, uploaded to another channel, repeated, or already posted', async () => {
@@ -292,9 +294,9 @@ describe('schedule_message with file_ids', () => {
     expect(await refused(s, { file_ids: ['z'.repeat(26)] })).toContain('24 時間以内にアップロードしたファイルではありません');
     expect(await refused(s, { file_ids: [F2] })).toContain('別のチャンネル');
     expect(await refused(s, { file_ids: [F1, F1] })).toContain('重なっています');
-    s.store.markFilesPosted('u1', [F1], POSTED);
+    s.store.markFilesPosted(UID, [F1], POSTED);
     expect(await refused(s, { file_ids: [F1] })).toContain('既に投稿');
-    expect(s.store.listScheduled('u1', { limit: 10 })).toHaveLength(0);
+    expect(s.store.listScheduled(UID, { limit: 10 })).toHaveLength(0);
   });
 
   test('takes 1 to 5 file_ids', async () => {
@@ -390,11 +392,11 @@ describe('list_scheduled_messages', () => {
   test('names the destination of every row, looking up each channel once, a DM by the other user, and falls back to the id alone', async () => {
     const DM = 'm'.repeat(26);
     const GONE = 'g'.repeat(26);
-    routes[`GET /channels/${DM}`] = () => ({ id: DM, name: 'u1__u5', display_name: '', team_id: '', type: 'D' });
-    routes['GET /users/u5'] = () => ({ id: 'u5', username: 'bob' });
+    routes[`GET /channels/${DM}`] = () => ({ id: DM, name: `${UID}__${BOB}`, display_name: '', team_id: '', type: 'D' });
+    routes[`GET /users/${BOB}`] = () => ({ id: BOB, username: 'bob' });
     const s = setup();
     let n = 0;
-    for (const channelId of [CH, CH2, CH, DM, GONE]) s.store.createScheduled({ mmUserId: 'u1', channelId, message: 'x', scheduledAt: NOW + DAY + n++ * MIN }, NOW);
+    for (const channelId of [CH, CH2, CH, DM, GONE]) s.store.createScheduled({ mmUserId: UID, channelId, message: 'x', scheduledAt: NOW + DAY + n++ * MIN }, NOW);
     const r = await s.call('list_scheduled_messages', {});
     expect(r.isError).toBe(false);
     expect(r.text.match(/投稿先: .*/g)).toEqual([
@@ -404,7 +406,7 @@ describe('list_scheduled_messages', () => {
       `投稿先: @bob（channel_id: ${DM}）`,
       `投稿先: channel_id: ${GONE}`,
     ]);
-    expect(hits).toEqual([`GET /channels/${CH}`, `GET /channels/${CH2}`, `GET /channels/${DM}`, 'GET /users/u5', `GET /channels/${GONE}`]);
+    expect(hits).toEqual([`GET /channels/${CH}`, `GET /channels/${CH2}`, `GET /channels/${DM}`, `GET /users/${BOB}`, `GET /channels/${GONE}`]);
   });
 
   test('names a group DM by the other members as schedule_message does, deactivated ones included, looking it up once, and by its display_name when the members cannot be listed', async () => {
@@ -415,9 +417,9 @@ describe('list_scheduled_messages', () => {
     routes[`GET /channels/${GM2}`] = () => ({ id: GM2, name: 'i'.repeat(40), display_name: 'alice, dave, erin', team_id: '', type: 'G' });
     routes[`GET /channels/${LONE}`] = () => ({ id: LONE, name: 'j'.repeat(40), display_name: 'alice, frank, gina', team_id: '', type: 'G' });
     const members: Record<string, unknown> = {
-      [GM]: [{ id: 'u7', username: 'carol' }, { id: 'u1', username: 'alice' }, { id: 'u5', username: 'bob', delete_at: NOW - DAY }],
+      [GM]: [{ id: 'u7', username: 'carol' }, { id: UID, username: 'alice' }, { id: 'u5', username: 'bob', delete_at: NOW - DAY }],
       [GM2]: Response.json({ id: 'api.context.permissions.app_error', message: 'm', status_code: 403 }, { status: 403 }),
-      [LONE]: [{ id: 'u1', username: 'alice' }],
+      [LONE]: [{ id: UID, username: 'alice' }],
     };
     const queries: { keys: string[]; perPage: string | null }[] = [];
     routes['GET /users'] = (req) => {
@@ -427,7 +429,7 @@ describe('list_scheduled_messages', () => {
     };
     const s = setup();
     let n = 0;
-    for (const channelId of [GM, GM, GM2, LONE]) s.store.createScheduled({ mmUserId: 'u1', channelId, message: 'x', scheduledAt: NOW + DAY + n++ * MIN }, NOW);
+    for (const channelId of [GM, GM, GM2, LONE]) s.store.createScheduled({ mmUserId: UID, channelId, message: 'x', scheduledAt: NOW + DAY + n++ * MIN }, NOW);
     const r = await s.call('list_scheduled_messages', {});
     expect(r.isError, r.text).toBe(false);
     expect(r.text.match(/投稿先: .*/g)).toEqual([
@@ -437,7 +439,26 @@ describe('list_scheduled_messages', () => {
       `投稿先: alice, frank, gina（channel_id: ${LONE}）`,
     ]);
     expect(hits.filter((h) => h === 'GET /users')).toHaveLength(3);
-    expect(queries).toEqual(Array(3).fill({ keys: ['in_channel', 'per_page'], perPage: '200' }));
+    expect(queries).toEqual(Array(3).fill({ keys: ['in_channel', 'per_page'], perPage: '8' }));
+  });
+
+  test.each([
+    [404, 'store.sql_user.missing.app_error'],
+    [429, 'rate_limited'],
+  ])('a DM or group DM whose names cannot be looked up (%i) keeps Mattermost\'s name and the permalink, and the list still returns', async (status, id) => {
+    const DM = 'm'.repeat(26);
+    const GM = 'n'.repeat(26);
+    routes[`GET /channels/${DM}`] = () => ({ id: DM, name: `${UID}__${BOB}`, display_name: '', team_id: '', type: 'D' });
+    routes[`GET /channels/${GM}`] = () => ({ id: GM, name: 'h'.repeat(40), display_name: 'alice, bob, carol', team_id: '', type: 'G' });
+    routes[`GET /users/${BOB}`] = () => Response.json({ id, message: 'm', status_code: status }, { status });
+    routes['GET /users'] = () => Response.json({ id, message: 'm', status_code: status }, { status });
+    routes['GET /users/me/teams'] = () => [{ id: TEAM, name: 'team-a' }];
+    const s = setup();
+    for (const [i, channelId] of [DM, GM].entries()) s.setRow(s.store.createScheduled({ mmUserId: UID, channelId, message: 'x', scheduledAt: NOW + DAY + i * MIN }, NOW)!, "status = 'posted', post_id = ?", POSTED);
+    const r = await s.call('list_scheduled_messages', {});
+    expect(r.isError, r.text).toBe(false);
+    expect(r.text.match(/投稿先: .*/g)).toEqual([`投稿先: ${UID}__${BOB}（channel_id: ${DM}）`, `投稿先: alice, bob, carol（channel_id: ${GM}）`]);
+    expect(r.text.match(/\/team-a\/pl\//g)).toHaveLength(2);
   });
 
   test.each([
@@ -446,7 +467,7 @@ describe('list_scheduled_messages', () => {
   ])('a posted row whose team lookup fails with %i is listed without a permalink, and the list still returns', async (status, id) => {
     routes[`GET /teams/${TEAM}`] = () => Response.json({ id, message: 'm', status_code: status }, { status });
     const s = setup();
-    s.setRow(s.store.createScheduled({ mmUserId: 'u1', channelId: CH, message: 'p', scheduledAt: NOW + DAY }, NOW)!, "status = 'posted', post_id = ?", POSTED);
+    s.setRow(s.store.createScheduled({ mmUserId: UID, channelId: CH, message: 'p', scheduledAt: NOW + DAY }, NOW)!, "status = 'posted', post_id = ?", POSTED);
     const r = await s.call('list_scheduled_messages', {});
     expect(r.isError, r.text).toBe(false);
     expect(r.text).toContain(`post_id: ${POSTED}`);
@@ -455,11 +476,11 @@ describe('list_scheduled_messages', () => {
 
   test('a posted DM row gets no permalink when the user has no team to put in it', async () => {
     const DM = 'm'.repeat(26);
-    routes[`GET /channels/${DM}`] = () => ({ id: DM, name: 'u1__u5', display_name: '', team_id: '', type: 'D' });
-    routes['GET /users/u5'] = () => ({ id: 'u5', username: 'bob' });
+    routes[`GET /channels/${DM}`] = () => ({ id: DM, name: `${UID}__${BOB}`, display_name: '', team_id: '', type: 'D' });
+    routes[`GET /users/${BOB}`] = () => ({ id: BOB, username: 'bob' });
     routes['GET /users/me/teams'] = () => [];
     const s = setup();
-    const id = s.store.createScheduled({ mmUserId: 'u1', channelId: DM, message: 'x', scheduledAt: NOW + DAY }, NOW)!;
+    const id = s.store.createScheduled({ mmUserId: UID, channelId: DM, message: 'x', scheduledAt: NOW + DAY }, NOW)!;
     s.setRow(id, "status = 'posted', post_id = ?", POSTED);
     const r = await s.call('list_scheduled_messages', {});
     expect(r.isError).toBe(false);
@@ -672,7 +693,7 @@ describe('one schedule in full', () => {
 
   test('a multi-line body comes last, after the files and the reason, so that everything after its heading is the body', async () => {
     const s = setup();
-    for (const f of ['a'.repeat(26)]) s.store.recordUploadedFile({ mmUserId: 'u1', channelId: CH }, f);
+    for (const f of ['a'.repeat(26)]) s.store.recordUploadedFile({ mmUserId: UID, channelId: CH }, f);
     const body = '1 行目\n添付: これは本文\n\npost_id: これも本文\n';
     const id = await s.schedule({ message: body, file_ids: ['a'.repeat(26)] });
     s.setRow(id, "status = 'failed', error = 'nope'");
@@ -762,7 +783,7 @@ describe('arguments a tool does not take', () => {
     expect(time.isError).toBe(true);
     expect(time.text).toContain(`${GENERAL}time。`);
     expect(time.text).not.toContain('prepare_upload');
-    expect(s.store.listScheduled('u1', { limit: 10 })).toEqual([]);
+    expect(s.store.listScheduled(UID, { limit: 10 })).toEqual([]);
   });
 
   test('an unknown key and an invalid value are both reported, the value with its place', async () => {
@@ -779,7 +800,7 @@ describe('arguments a tool does not take', () => {
     expect(r.isError).toBe(true);
     expect(r.text).toContain(`${GENERAL}channel, file_ids。`);
     expect(r.text.split('投稿先と添付は変えられません').length - 1).toBe(1);
-    expect(s.store.listScheduled('u1', { limit: 1 })[0].message).toBe('hello');
+    expect(s.store.listScheduled(UID, { limit: 1 })[0].message).toBe('hello');
   });
 
   test.each(['channel', 'root_id', 'files', 'file_ids'])('update_scheduled_message gives the cancel hint for %s alone', async (key) => {

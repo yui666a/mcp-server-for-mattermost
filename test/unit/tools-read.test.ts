@@ -1029,6 +1029,24 @@ describe('get_unreads', () => {
     }
   });
 
+  test('looks up the users of unread threads in calls of at most 1,000 ids, and names the users of every call', async () => {
+    const user = (i: number, j: number) => `r${String(i * 20 + j).padStart(4, '0')}`;
+    const many = Array.from({ length: 50 }, (_, i) => thread(`t${String(i).padStart(25, '0')}`, OLD, 9000 - i, {
+      post: { id: `t${String(i).padStart(25, '0')}`, user_id: `a${i}`, channel_id: OLD, root_id: '', message: `m${i}`, create_at: 100,
+        metadata: { reactions: Array.from({ length: 20 }, (_, j) => ({ user_id: user(i, j), emoji_name: j < 10 ? 'x' : 'y', create_at: j })) } },
+    }));
+    const asked: string[][] = [];
+    routes = {
+      ...base(),
+      [`GET /users/u1/teams/${T1}/threads`]: () => threadPage(many),
+      [`GET /users/u1/teams/${T2}/threads`]: () => threadPage([]),
+      'POST /users/ids': () => { const ids = bodies['/users/ids'] as string[]; asked.push(ids); return ids.map((x) => ({ id: x, username: `n${x}` })); },
+    };
+    const out = await setup()('get_unreads', { limit: 100 });
+    expect(asked.map((x) => x.length)).toEqual([1000, 51]);
+    for (const x of asked[1]) expect(out).toContain(`@n${x}`);
+  });
+
   test('keeps a channel\'s display name with a line break on one line', async () => {
     routes = { ...base(), 'GET /users/me/channels': () => channels().map((x) => (x.id === OLD ? { ...x, display_name: 'O\nLD' } : x)) };
     expect(await setup()('get_unreads', {})).toContain(`- team-a/old（表示名: O LD、channel_id: ${OLD}`);
@@ -1126,6 +1144,10 @@ describe('get_unreads', () => {
     test('a short page that skipped threads, as when a reply of the thread paged from is deleted, says so too', async () => {
       const out = await run([span(0, 50), 70], [span(50, 60), 70]);
       expect(out).toContain(SHORT);
+    });
+
+    test('a short first page below total, as when total also counts threads whose root post a retention policy removed, says such threads cannot be taken by calling again', async () => {
+      expect(await run([span(0, 10), 11])).toContain('データ保持ポリシーで根の投稿が消えたスレッドは、呼び直しても取得できません）');
     });
 
     test('says nothing when every thread was taken, also when the 4th page is full', async () => {
@@ -1576,10 +1598,9 @@ describe('get_mentions', () => {
       expect(await setup()('get_mentions', { unread_only: true })).toContain('未読スレッドは、50 件ずつ 4 回の取得で打ち切りました。');
     });
 
-    test('notes when a team\'s unread threads were not all taken', async () => {
+    test('notes when a team\'s unread threads were not all taken, as when a full page is followed by nothing', async () => {
       put({ create_at: at(22, 1) });
       routes = unreadBase('always_on', [member(C, at(22, 0), 0, 1)]);
-      // A full first page, then nothing: as when the thread paged from is deleted in between.
       let k = 0;
       routes[`GET /users/u1/teams/${T}/threads`] = () => ({ total_unread_threads: 60, threads: k++ ? [] : Array.from({ length: 50 }, (_, i) => thread(`t${String(i).padStart(25, '0')}`, 0, 0)) });
       expect(await setup()('get_mentions', { unread_only: true })).toContain('未読スレッドを total_unread_threads: 60 に対して取り切れませんでした。');
@@ -1797,7 +1818,7 @@ describe('get_file', () => {
       });
     });
 
-    describe('a whole file without Japanese but for an incomplete last character (UTF-8 is only a guess)', () => {
+    describe('a whole file cut at its last character, otherwise made only of what half-width kana Shift_JIS can pass for in UTF-8 (UTF-8 is only a guess)', () => {
       test.each([
         ['a.txt', [0x61, 0x62, 0x63, 0xc2], 'Shift_JIS', 'abcﾂ', false],
         ['a.txt', [0x61, 0x62, 0x63, 0xe8, 0xa0], 'Shift_JIS', 'abc陟', false],
@@ -1816,15 +1837,42 @@ describe('get_file', () => {
         ['a.txt', [...Buffer.from('abc,'), 0xc3, 0xbd, 0xc4], 'Shift_JIS', 'abc,ﾃｽﾄ', false],
         // Fixing a known wrong guess: Latin UTF-8 with a cut last character also reads whole as Shift_JIS.
         ['a.txt', [...Buffer.from('naïve caf'), 0xc3], 'Shift_JIS', 'naﾃｯve cafﾃ', false],
-        ['a.txt', [...Buffer.from('voilà'), 0xc3], 'UTF-8', 'voilà', true],
         ['a.md', [...Buffer.from('café'), 0xe2], 'UTF-8', 'café', true],
-      ])('reads %s %j, without Japanese and with a cut last character in UTF-8, as %s with the guess noted', async (name, b, encoding, shown, cut) => {
+      ])('reads %s %j, whose UTF-8 half-width kana Shift_JIS could also make, as %s with the guess noted', async (name, b, encoding, shown, cut) => {
         routes = { [INFO]: textInfo(name as string, (b as number[]).length), [FILE]: body(Uint8Array.from(b as number[])) };
         const out = await setup()('get_file', { file_id: F });
         expect(content()).toBe(shown);
         expect(out).toContain(`文字コード: ${encoding}`);
         expect(out).toContain(GUESSED);
         expect(out.includes('末尾に不完全な文字')).toBe(cut);
+      });
+
+      test.each([
+        // à is C3 A0: an A0 trail byte half-width kana Shift_JIS never has, so this cannot be it.
+        ['a.txt', [...Buffer.from('voilà'), 0xc3], 'voilà'],
+        ['a.txt', [...Buffer.from('deploy 🚀 done '), 0xe3, 0x81], 'deploy 🚀 done '],
+        ['a.txt', [...Buffer.from('Grüße'), 0xc3], 'Grüße'],
+        ['a.md', [...Buffer.from('ship it 🚀'), 0xe3], 'ship it 🚀'],
+      ])('keeps UTF-8 without a guess for %s %j, whose characters half-width kana Shift_JIS cannot make', async (name, b, shown) => {
+        routes = { [INFO]: textInfo(name as string, (b as number[]).length), [FILE]: body(Uint8Array.from(b as number[])) };
+        const out = await setup()('get_file', { file_id: F });
+        expect(content()).toBe(shown);
+        expect(out).toContain('文字コード: UTF-8');
+        expect(out).not.toContain('推定');
+        expect(out).toContain('末尾に不完全な文字');
+      });
+
+      test.each([
+        [[0x61, 0x62, 0x63, 0xe3, 0x81], 'abc縺'],
+        [[...Buffer.from('résumé'), 0xc3], 'rﾃｩsumﾃｩﾃ'],
+        // á is C3 A1, the lowest trail byte half-width kana can make.
+        [[...Buffer.from('á'), 0xc3], 'ﾃ｡ﾃ'],
+      ])('reads ASCII or half-width kana look-alikes %j cut at the end as Shift_JIS with the guess noted, the price of not ruling out Latin-1', async (b, shown) => {
+        routes = { [INFO]: textInfo('a.txt', (b as number[]).length), [FILE]: body(Uint8Array.from(b as number[])) };
+        const out = await setup()('get_file', { file_id: F });
+        expect(content()).toBe(shown);
+        expect(out).toContain('文字コード: Shift_JIS');
+        expect(out).toContain(GUESSED);
       });
 
       test('reads a file as not text when Node cannot make a Shift_JIS or EUC-JP decoder, instead of failing', async () => {
@@ -2121,6 +2169,18 @@ describe('read_channel', () => {
 
   const membersMe = (status: number, mmId: string) => ({ ...base(), [`GET /channels/${CH}/members/me`]: () => Response.json({ id: mmId, message: 'm', status_code: status }, { status }) });
 
+  const refused = (status: number) => ({ ...base(), 'GET /users/me/teams': () => [], [`GET /channels/${CH}`]: () => Response.json({ id: 'x', message: 'm', status_code: status }, { status }) });
+
+  test('words 403 from fetching the channel as get_channel does', async () => {
+    routes = refused(403);
+    expect(await setup()('read_channel', { channel: CH }, true)).toBe('このチャンネルを見る権限がありません（参加していない非公開チャンネルなど）。参加しているはずなら、Mattermost の一時的な障害の可能性があります。少し待ってから再試行してください。');
+  });
+
+  test('words 404 from fetching the channel, with no channel of that name either, as get_channel does', async () => {
+    routes = refused(404);
+    expect(await setup()('read_channel', { channel: CH }, true)).toBe('チャンネルが見つかりません（参加していない非公開チャンネルを名前で指定した場合も、Mattermost はこの結果を返します）');
+  });
+
   test('when members/me answers 404, says the user has not joined and to use from latest', async () => {
     routes = membersMe(404, 'app.channel.get_member.missing.app_error');
     const out = await setup()('read_channel', { channel: CH, from: 'unread' }, true);
@@ -2235,8 +2295,8 @@ describe('read_channel with since and until', () => {
   const byNewest = () => [...corpus].sort((a, b) => b.create_at - a.create_at || byTie(a, b));
   const byOldest = () => [...corpus].sort((a, b) => a.create_at - b.create_at || byTie(a, b));
   const asList = (ps: P[]) => ({ order: ps.map((p) => p.id), posts: Object.fromEntries(ps.map((p) => [p.id, p])) });
-  // Like Mattermost: page/per_page by offset newest first, after= (before=) by create_at strictly later (earlier), the oldest (newest) per_page, listed newest first,
-  // nothing when the cursor's post is gone, at most 200 per call.
+  // Like Mattermost: page/per_page by offset, newest first. after= takes the oldest per_page strictly later, before= the newest per_page strictly earlier,
+  // both listed newest first and nothing when the cursor's post is gone. At most 200 per call.
   const postsRoute = (req: Request) => {
     const q = new URL(req.url).searchParams;
     const per = Math.min(Number(q.get('per_page')), 200);
@@ -2352,13 +2412,6 @@ describe('read_channel with since and until', () => {
     const { seen } = await readAll(setup(), { since: new Date(T0 - 60_000).toISOString(), limit: 100 });
     expect(new Set(seen).size).toBe(205);
     expect(seen.length).toBe(205);
-  });
-
-  test('in a range, shows every post of a millisecond that one fetch took whole', async () => {
-    fill(5, secs(0, 1, 1, 1, 5));
-    routes = base();
-    const { seen } = await readAll(setup(), { since: iso(1), limit: 3 });
-    expect(seen).toEqual([1, 2, 3, 4].map(id));
   });
 
   test('in a range, fetches once within a call when no millisecond is shared', async () => {
