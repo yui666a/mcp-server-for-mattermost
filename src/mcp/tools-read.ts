@@ -1073,7 +1073,7 @@ export function registerReadTools(server: McpServer, ctx: ToolContext): void {
       const line = (r: (typeof rows)[number]): string => {
         if (r.kind === 'channel') {
           const w = where(r.ch);
-          return `- ${w.path}（channel_id: ${r.ch.id}${r.ch.team_id ? `、team_id: ${r.ch.team_id}` : ''}、表示名: ${w.label}）未読: ${r.count}、メンション: ${r.mentions}、${crt.on ? '最終のルート投稿' : '最終投稿'}: ${formatTime(r.updatedAt)}`;
+          return `- ${w.path}（channel_id: ${r.ch.id}${r.ch.team_id ? `、team_id: ${r.ch.team_id}` : ''}）未読: ${r.count}、メンション: ${r.mentions}、${crt.on ? '最終のルート投稿' : '最終投稿'}: ${formatTime(r.updatedAt)}、表示名: ${w.label}`;
         }
         const ch = channels.get(r.th.post.channel_id);
         const team = ch && teamName.get(ch.team_id);
