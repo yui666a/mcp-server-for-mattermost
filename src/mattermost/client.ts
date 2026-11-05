@@ -93,7 +93,7 @@ export class MmClient {
     const cred = this.store.getMmCred(mmUserId);
     if (!cred) this.reauthorize(mmUserId, at);
     let res: Response | undefined = await send(cred.access);
-    if (res.status !== 401) return read(res);
+    if (res.status !== 401) return this.reading(read, res, at);
     await discard(res);
     const latest = this.store.getMmCred(mmUserId);
     if (!latest) this.reauthorize(mmUserId, at);
@@ -106,9 +106,19 @@ export class MmClient {
       res = await this.lastChance(mmUserId, at, out.used, send);
     }
     try {
-      return await read(res);
+      return await this.reading(read, res, at);
     } catch (e) {
       if (e instanceof RateLimited && at.doubt) throw new RateLimited(e.retryAfterSec, e.sent, true);
+      throw e;
+    }
+  }
+
+  // Not turning a 4xx into CallAborted: MmError means Mattermost refused, which callers act on (dropping a send_message claim).
+  private async reading<T>(read: Read<T>, res: Response, at: Attempt): Promise<T> {
+    try {
+      return await read(res);
+    } catch (e) {
+      if (at.signal?.aborted && e instanceof UpstreamUnavailable && !(e instanceof CallAborted)) throw new CallAborted(e.message, e.sent);
       throw e;
     }
   }
