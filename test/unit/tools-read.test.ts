@@ -771,12 +771,20 @@ describe('list_my_channels', () => {
     expect(out).toContain(`- alice, bob（channel_id: ${GM}、種類: グループ DM、最終投稿: 投稿なし、表示名: alice, bob）`);
   });
 
-  test.each([[503, 'oops'], [403, '{"id":"api.context.permissions.app_error"}']])('still lists the channels, a DM by its partner\'s user_id, when the partners\' names cannot be read (%i)', async (status, body) => {
+  test.each([[503, 'oops'], [403, '{"id":"api.context.permissions.app_error"}']])('still lists the channels, a DM as one with an unknown username and the partner\'s user_id, when the partners\' names cannot be read (%i)', async (status, body) => {
     routes = { ...base(), 'POST /users/ids': () => new Response(body, { status }) };
     const out = await setup()('list_my_channels', {});
-    expect(out).toContain(`channel_id: ${DM}`);
-    expect(out).toContain('@u2');
+    expect(out).toContain(`- ユーザー名不明（user_id: u2）（channel_id: ${DM}、`);
+    expect(out).not.toContain('@u2');
     expect(out).toContain('- team-a/town');
+  });
+
+  test('shows a DM whose partner the user lookup leaves out as one with an unknown username, and a DM with oneself by one\'s own name', async () => {
+    routes = { ...base(), 'POST /users/ids': () => [] };
+    expect(await setup()('list_my_channels', {})).toContain(`- ユーザー名不明（user_id: u2）（channel_id: ${DM}、`);
+    const SELF = 's'.repeat(26);
+    routes = { ...base(), 'GET /users/me/channels': () => [{ id: SELF, type: 'D', name: 'u1__u1', display_name: '', team_id: '', last_post_at: 2500 }], 'POST /users/ids': () => [{ id: 'u1', username: 'alice' }] };
+    expect(await setup()('list_my_channels', {})).toContain(`- @alice（channel_id: ${SELF}、`);
   });
 
   test('fails on a rate limit while reading the partners\' names, as dmLabel does', async () => {
@@ -1250,6 +1258,14 @@ describe('get_unreads', () => {
     expect(out).toContain(`- @bob（channel_id: ${DM}、表示名: @bob）未読: 1、メンション: 1`);
     for (const hidden of [QUIET, MUTED, ARCHIVED]) expect(out).not.toContain(hidden);
     expect(out).not.toContain(`channel_id: ${MUTED_MENTION}`);
+  });
+
+  test('shows a DM whose partner the user lookup leaves out as one with an unknown username and the user_id, on its channel line and its thread line', async () => {
+    routes = { ...base(), 'POST /users/ids': () => [] };
+    const out = await setup()('get_unreads', {});
+    expect(out).toContain(`- ユーザー名不明（user_id: u2）（channel_id: ${DM}、表示名: ユーザー名不明（user_id: u2））`);
+    expect(out).toContain(`channel_id: ${DM}、name: u1__u2、表示名: ユーザー名不明（user_id: u2）`);
+    expect(out).not.toContain('@u2');
   });
 
   test('a mention-only channel is shown when it has a mention', async () => {
