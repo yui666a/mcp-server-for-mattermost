@@ -27,7 +27,8 @@ function classify(e: unknown): [outcome: string, text: string] | undefined {
   if (e instanceof Reauthorize) return ['reauthorize', 'Mattermost への再ログインが必要です。コネクタを再接続してください。'];
   if (e instanceof RateLimited) return ['rate_limited', `呼び出しが多すぎます。${e.retryAfterSec} 秒後に再試行してください。`];
   if (e instanceof UpstreamUnavailable) return ['upstream_unavailable', 'Mattermost に一時的に接続できません。しばらくしてから再試行してください。'];
-  if (e instanceof MmError) return ['mm_error', `Mattermost がエラーを返しました（${e.status}）: ${e.message}`];
+  // Not a bare colon when Mattermost sends no message: the sentence would end in ": " in lines that go on after it.
+  if (e instanceof MmError) return ['mm_error', `Mattermost がエラーを返しました（${e.status}）${e.message.trim() ? `: ${e.message}` : '。'}`];
   return undefined;
 }
 

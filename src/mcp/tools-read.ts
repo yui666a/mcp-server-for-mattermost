@@ -188,7 +188,7 @@ export function channelLines(c: ChannelRef): string[] {
 function channelError(e: unknown): never {
   // Not converting a missing team: /teams/name/{team}/channels/name/{channel} answers it with 404 too.
   if (e instanceof ChannelFetchError && e.id !== 'app.team.get_by_name.missing.app_error') {
-    if (e.status === 403) throw new InputError('このチャンネルを見る権限がありません（参加していない非公開チャンネルなど）。参加しているはずなら、Mattermost の一時的な障害の可能性があります。少し待ってから再試行してください。');
+    if (e.status === 403) throw new InputError('このチャンネルを見る権限がありません（参加していない非公開チャンネルなど）。参加しているはずなら、Mattermost の一時的な障害の可能性があります。少し待ってから再試行してください。続くなら、チャンネルから外されたか、サーバーの権限の設定で読む権限が外されている可能性があるので、管理者に確かめてください。');
     if (e.status === 404) throw new InputError('チャンネルが見つかりません（参加していない非公開チャンネルを名前で指定した場合も、Mattermost はこの結果を返します）');
   }
   throw e;
@@ -265,7 +265,7 @@ function channelFilters(words: string[]): { at: number; span: number; value: str
 
 async function filterChannelIds(mm: Mm, userId: string, spec: string, written: string, exclude: boolean, notes: string[]): Promise<string[]> {
   try {
-    return [(await resolveChannel(mm, userId, spec)).id];
+    return [(await resolveChannel(mm, userId, spec, { names: false })).id];
   } catch (e) {
     if (e instanceof Ambiguous) {
       const ids = [...new Set(e.candidates.map((c) => c.id))];
@@ -447,10 +447,21 @@ export function registerReadTools(server: McpServer, ctx: ToolContext): void {
   }
 
   // Not the channel's own team for the permalink of a DM or group DM: they have none, so the user's first team.
-  async function places(mm: Mm, archived = true): Promise<(channelId: string) => { where: string; team: string }> {
+  async function places(mm: Mm, ids: string[], archived: boolean): Promise<(channelId: string) => { where: string; team: string }> {
     // Not the default listing unless archived is false: it leaves out archived channels the user is still in, where saved posts can sit.
     const listed = await mm.call<(MmChannel & { delete_at?: number })[]>(uid, 'GET', archived ? '/users/me/channels?include_deleted=true' : '/users/me/channels');
     const channels = new Map(listed.map((x) => [x.id, x]));
+    // Not listing archived channels always for the few a search finds after they were archived; one by one, not in parallel, for the
+    // per-user concurrency limit. Not the first team on errors other than 403 and 404: a user in several teams would get another team's
+    // permalink without notice.
+    for (const id of new Set(ids)) {
+      if (channels.has(id)) continue;
+      const ch = await mm.call<MmChannel & { delete_at?: number }>(uid, 'GET', `/channels/${id}`).catch((e) => {
+        if (e instanceof MmError && (e.status === 403 || e.status === 404)) return undefined;
+        throw e;
+      });
+      if (ch) channels.set(id, ch);
+    }
     const teams = await myTeams(mm, uid);
     const teamName = new Map(teams.map((t) => [t.id, t.name]));
     return (channelId) => {
@@ -465,7 +476,7 @@ export function registerReadTools(server: McpServer, ctx: ToolContext): void {
 
   async function withChannels(mm: Mm, shown: MmPost[], archived = false): Promise<string[]> {
     // Not always listing archived channels: the post searches leave their posts out, and a user can be in many of them.
-    const placeOf = await places(mm, archived);
+    const placeOf = await places(mm, shown.map((p) => p.channel_id), archived);
     const users = await usernames(mm, uid, shown);
     return shown.map((p) => {
       const { where, team } = placeOf(p.channel_id);
@@ -579,7 +590,7 @@ export function registerReadTools(server: McpServer, ctx: ToolContext): void {
       const shown = all.slice(page * per, (page + 1) * per);
       const lines = [`ファイルの検索: ${terms}`];
       if (shown.length) {
-        const placeOf = await places(mm);
+        const placeOf = await places(mm, shown.map((f) => f.channel_id), false);
         // Not looking up the uploader of a channel bookmark file: its user_id is the fixed string "bookmark".
         const ids = [...new Set(shown.filter((f) => f.post_id).map((f) => f.user_id))];
         const users = ids.length ? new Map((await mm.call<UserRef[]>(uid, 'POST', '/users/ids', ids)).map((u) => [u.id, u.username])) : new Map<string, string>();
@@ -901,7 +912,7 @@ export function registerReadTools(server: McpServer, ctx: ToolContext): void {
           `種類: ${kind[ch.raw.type] ?? ch.raw.type}`,
           ...indented('目的', ch.raw.purpose || 'なし'),
           ...indented('ヘッダー', ch.raw.header || 'なし'),
-          `メンバー数: ${stats ? stats.member_count : '取得できません（参加していないか、一時的な障害）'}`,
+          `メンバー数: ${stats ? stats.member_count : '取得できません（参加していないか、一時的な障害か、権限の設定）'}`,
         );
       }
       // Sorting here rather than asking Mattermost for a page: /pinned has neither a limit nor paging.
@@ -929,7 +940,7 @@ export function registerReadTools(server: McpServer, ctx: ToolContext): void {
       const q = new URLSearchParams({ in_channel: ch.id, active: 'true', page: String(page), per_page: String(per) });
       // Not rewording the 403 of /users alone: the user may leave the channel before /stats.
       const refused = (e: unknown): never => {
-        if (e instanceof MmError && e.status === 403) throw new InputError('このチャンネルのメンバーを見る権限がありません。参加していないチャンネルのメンバーは、公開チャンネルでも見られません。参加しているはずなら、Mattermost の一時的な障害の可能性があります。少し待ってから再試行してください。');
+        if (e instanceof MmError && e.status === 403) throw new InputError('このチャンネルのメンバーを見る権限がありません。参加していないチャンネルのメンバーは、公開チャンネルでも見られません。参加しているはずなら、Mattermost の一時的な障害の可能性があります。少し待ってから再試行してください。続くなら、チャンネルから外されたか、サーバーの権限の設定で読む権限が外されている可能性があるので、管理者に確かめてください。');
         throw e;
       };
       const users = await mm.call<UserRef[]>(uid, 'GET', `/users?${q}`).catch(refused);
