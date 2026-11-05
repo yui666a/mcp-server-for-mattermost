@@ -130,6 +130,7 @@ describe('search_posts in: filters', () => {
     ['x -channel:only-a', `x -in:${CX}`],
     ['"a  b" in:only-a', `"a  b" in:${CX}`],
     ['x -"in:town" in:only-a', `x -"in:town" in:${CX}`],
+    ['abc"in:town" in:only-a', `abc "in:town" in:${CX}`],
   ])('sends %j to Mattermost as %j', async (terms, expected) => {
     routes = base();
     await setup()('search_posts', { terms });
@@ -184,6 +185,7 @@ describe('search_posts in: filters', () => {
     ['a  "b in:only-a" c'],
     ['from: in:only-a x'],
     ['x in:'],
+    ['  a  b '],
   ])('passes %j through unchanged', async (terms) => {
     routes = base();
     await setup()('search_posts', { terms });
@@ -237,6 +239,8 @@ describe('search_posts in: filters', () => {
     routes = base();
     await setup()('search_posts', { terms: 'x -in:@bob' });
     expect(sent()).toBe('x');
+    await setup()('search_posts', { terms: 'x -in: @bob y' });
+    expect(sent()).toBe('x y');
     expect(hits).not.toContain('POST /channels/direct');
   });
 
@@ -2544,14 +2548,12 @@ describe('search_files', () => {
       expect(await terms('x -in:dup')).toBe(`x -in:${A} -in:${B}`);
     });
 
-    test('without a DM, in:@user fails and -in:@user (also as two words) drops the condition', async () => {
+    test('without a DM, in:@user fails and -in:@user drops the condition', async () => {
       routes = base();
       const call = setup();
       expect(await call('search_files', { terms: 'x in:@carol' }, true)).toBe('@carol との DM はまだありません。');
       expect(onlyAsked()).toBe(true);
       await call('search_files', { terms: 'x -in:@carol y' });
-      expect(sent()).toBe('x y');
-      await call('search_files', { terms: 'x -in: @carol y' });
       expect(sent()).toBe('x y');
       expect(hits).not.toContain('POST /channels/direct');
     });
