@@ -106,7 +106,7 @@ describe('schedule_message', () => {
     test('creates the DM when scheduling, so the destination is fixed to its channel_id', async () => {
       const r = await setup().call('schedule_message', { channel: '@carol', message: 'hello', at: '2026-11-03T10:00' });
       expect(r.isError).toBe(false);
-      expect(r.text).toContain(`投稿先: @carol（channel_id: ${NEW_DM}）`);
+      expect(r.text).toContain(`投稿先: channel_id: ${NEW_DM}、表示名: @carol`);
       expect(hits).toContain('POST /channels/direct');
     });
 
@@ -167,7 +167,7 @@ describe('schedule_message', () => {
   test('keeps the destination\'s display name with a line break on one line', async () => {
     routes[`GET /channels/${CH}`] = () => ({ id: CH, name: 'town', display_name: 'To\nwn', team_id: TEAM, type: 'O' });
     const r = await setup().call('schedule_message', { channel: CH, message: 'hello', at: '2026-11-03T10:00' });
-    expect(r.text).toContain(`投稿先: To wn（channel_id: ${CH}）`);
+    expect(r.text).toContain(`投稿先: channel_id: ${CH}、表示名: To wn`);
   });
 
   test('saves the schedule without posting and reports its id, the destination, the time in UTC and JST, and where to check the result', async () => {
@@ -175,7 +175,7 @@ describe('schedule_message', () => {
     const r = await s.call('schedule_message', { channel: CH, message: 'hello', root_id: ROOT, at: '2026-11-03T10:00' });
     expect(r.isError).toBe(false);
     expect(r.text).toMatch(/予約 ID: [A-Za-z0-9_-]{43}/);
-    expect(r.text).toContain(`投稿先: Town（channel_id: ${CH}）、返信先 post_id: ${ROOT}`);
+    expect(r.text).toContain(`投稿先: channel_id: ${CH}、返信先 post_id: ${ROOT}、表示名: Town`);
     expect(r.text).toContain('2026-11-03T01:00:00Z | 2026-11-03T10:00:00+09:00');
     expect(r.text).toContain('list_scheduled_messages で確かめられます');
     expect(hits.filter((h) => h.startsWith('POST'))).toEqual([]);
@@ -187,7 +187,7 @@ describe('schedule_message', () => {
   });
 
   test.each([
-    ['a root in another channel', { channel_id: CH2, root_id: '' }, `root_id ${ROOT} の投稿はチャンネル「Town」（channel_id: ${CH}）にありません。`],
+    ['a root in another channel', { channel_id: CH2, root_id: '' }, `root_id ${ROOT} の投稿はチャンネル（channel_id: ${CH}、表示名: Town）にありません。`],
     ['a reply', { channel_id: CH, root_id: 'x'.repeat(26) }, `root_id ${ROOT} は返信です。スレッドの親投稿の post_id を指定してください。`],
   ])('refuses %s as root_id and saves nothing', async (_, root, msg) => {
     routes[`GET /posts/${ROOT}`] = () => ({ id: ROOT, user_id: 'u9', message: 'm', create_at: 1, ...root });
@@ -382,7 +382,7 @@ describe('list_scheduled_messages', () => {
     expect(r.isError).toBe(false);
     expect(rows(r.text)).toEqual([early, late]);
     expect(r.text).toContain('状態: 待機中');
-    expect(r.text).toContain(`投稿先: Town（channel_id: ${CH}）、返信先 post_id: ${ROOT}`);
+    expect(r.text).toContain(`投稿先: channel_id: ${CH}、返信先 post_id: ${ROOT}、表示名: Town`);
     expect(r.text).toContain('予定時刻: 2026-11-03T01:00:00Z | 2026-11-03T10:00:00+09:00');
     expect(r.text).toContain(`本文（先頭 200 文字）: ${'あ'.repeat(200)}\n（本文を先頭 200 文字で切りました。全文は list_scheduled_messages に id を渡すと出ます）\n`);
     expect(r.text).not.toContain('not mine');
@@ -400,10 +400,10 @@ describe('list_scheduled_messages', () => {
     const r = await s.call('list_scheduled_messages', {});
     expect(r.isError).toBe(false);
     expect(r.text.match(/投稿先: .*/g)).toEqual([
-      `投稿先: Town（channel_id: ${CH}）`,
-      `投稿先: Other（channel_id: ${CH2}）`,
-      `投稿先: Town（channel_id: ${CH}）`,
-      `投稿先: @bob（channel_id: ${DM}）`,
+      `投稿先: channel_id: ${CH}、表示名: Town`,
+      `投稿先: channel_id: ${CH2}、表示名: Other`,
+      `投稿先: channel_id: ${CH}、表示名: Town`,
+      `投稿先: channel_id: ${DM}、表示名: @bob`,
       `投稿先: channel_id: ${GONE}`,
     ]);
     expect(hits).toEqual([`GET /channels/${CH}`, `GET /channels/${CH2}`, `GET /channels/${DM}`, `GET /users/${BOB}`, `GET /channels/${GONE}`]);
@@ -433,10 +433,10 @@ describe('list_scheduled_messages', () => {
     const r = await s.call('list_scheduled_messages', {});
     expect(r.isError, r.text).toBe(false);
     expect(r.text.match(/投稿先: .*/g)).toEqual([
-      `投稿先: @bob, @carol（channel_id: ${GM}）`,
-      `投稿先: @bob, @carol（channel_id: ${GM}）`,
-      `投稿先: alice, dave, erin（channel_id: ${GM2}）`,
-      `投稿先: alice, frank, gina（channel_id: ${LONE}）`,
+      `投稿先: channel_id: ${GM}、表示名: @bob, @carol`,
+      `投稿先: channel_id: ${GM}、表示名: @bob, @carol`,
+      `投稿先: channel_id: ${GM2}、表示名: alice, dave, erin`,
+      `投稿先: channel_id: ${LONE}、表示名: alice, frank, gina`,
     ]);
     expect(hits.filter((h) => h === 'GET /users')).toHaveLength(3);
     expect(queries).toEqual(Array(3).fill({ keys: ['in_channel', 'per_page'], perPage: '8' }));
@@ -457,7 +457,7 @@ describe('list_scheduled_messages', () => {
     for (const [i, channelId] of [DM, GM].entries()) s.setRow(s.store.createScheduled({ mmUserId: UID, channelId, message: 'x', scheduledAt: NOW + DAY + i * MIN }, NOW)!, "status = 'posted', post_id = ?", POSTED);
     const r = await s.call('list_scheduled_messages', {});
     expect(r.isError, r.text).toBe(false);
-    expect(r.text.match(/投稿先: .*/g)).toEqual([`投稿先: ${UID}__${BOB}（channel_id: ${DM}）`, `投稿先: alice, bob, carol（channel_id: ${GM}）`]);
+    expect(r.text.match(/投稿先: .*/g)).toEqual([`投稿先: channel_id: ${DM}、表示名: ${UID}__${BOB}`, `投稿先: channel_id: ${GM}、表示名: alice, bob, carol`]);
     expect(r.text.match(/\/team-a\/pl\//g)).toHaveLength(2);
   });
 
