@@ -4,7 +4,7 @@ import { afterAll, beforeAll, describe, expect, test, vi } from 'vitest';
 import type { MmClient } from '../../src/mattermost/client.ts';
 import { tick } from '../../src/scheduler.ts';
 import type { Store } from '../../src/store.ts';
-import { intApp, mcpAuthorize, mmDeauthorize, mmLoginCookie, requireMm } from './helpers.ts';
+import { intApp, mcpAuthorize, mmDeauthorize, mmLoginCookie, requireMm, withUsers } from './helpers.ts';
 
 const e = await requireMm();
 
@@ -82,26 +82,18 @@ describe('scheduled messages against the local Mattermost', () => {
     expect(row).toContain(`/team-a/pl/${post.id}`);
   });
 
-  test('a schedule to a user never messaged before creates the DM when scheduling and is posted there when its time comes', async () => {
+  test('a schedule to a user never messaged before creates the DM when scheduling and is posted there when its time comes', () => withUsers(async (users) => {
     const name = `sdm${TAG}`;
     const u = await mmApi<{ id: string }>(e.adminToken, 'POST', '/users', { username: name, email: `${name}@example.com`, password: 'Passw0rd!dev123' });
-    let ok = false;
-    try {
-      const message = `${TAG} scheduled dm`;
-      const made = await call('schedule_message', { channel: `@${name}`, message, at: inTwoMinutes() });
-      expect(made.isError, made.content[0].text).toBeFalsy();
-      const dm = await mmApi<{ id: string }>(aliceMm, 'GET', `/teams/${e.teams.a.id}/channels/name/${[e.users.alice.id, u.id].sort().join('__')}`);
-      expect(made.content[0].text).toContain(`channel_id: ${dm.id}`);
-      await tick(store, mm, Date.now() + 120_000);
-      expect((await postsWith(dm.id, message))[0]?.user_id).toBe(e.users.alice.id);
-      ok = true;
-    } finally {
-      // Not letting a failed deactivation replace the test's own failure: that failure is the one to read.
-      await mmApi(e.adminToken, 'DELETE', `/users/${u.id}`).catch((err) => {
-        if (ok) throw err;
-      });
-    }
-  });
+    users.push(u.id);
+    const message = `${TAG} scheduled dm`;
+    const made = await call('schedule_message', { channel: `@${name}`, message, at: inTwoMinutes() });
+    expect(made.isError, made.content[0].text).toBeFalsy();
+    const dm = await mmApi<{ id: string }>(aliceMm, 'GET', `/teams/${e.teams.a.id}/channels/name/${[e.users.alice.id, u.id].sort().join('__')}`);
+    expect(made.content[0].text).toContain(`channel_id: ${dm.id}`);
+    await tick(store, mm, Date.now() + 120_000);
+    expect((await postsWith(dm.id, message))[0]?.user_id).toBe(e.users.alice.id);
+  }));
 
   test('a schedule with a file uploaded beforehand is posted with the file attached, and send_message refuses the file meanwhile', async () => {
     const res = await fetch(`${e.mmUrl}/api/v4/files?${new URLSearchParams({ channel_id: channel.id, filename: `${TAG}.txt` })}`, {
