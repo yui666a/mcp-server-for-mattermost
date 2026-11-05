@@ -1185,6 +1185,16 @@ describe('get_unreads', () => {
     for (const x of asked[1]) expect(out).toContain(`@n${x}`);
   });
 
+  test('starts a group DM\'s line with its display name on one line, not its name', async () => {
+    const GM = 'p'.repeat(26);
+    routes = {
+      ...base(),
+      'GET /users/me/channels': () => [...channels(), ch(GM, 'gm-name', { team_id: '', type: 'G', display_name: 'alice, bob,\ncarol', total_msg_count: 2, total_msg_count_root: 2, last_post_at: 300, last_root_post_at: 300 })],
+      'GET /users/me/channel_members': () => [...members(), mem(GM)],
+    };
+    expect(await setup()('get_unreads', {})).toContain(`- alice, bob, carol（channel_id: ${GM}、表示名: alice, bob, carol）`);
+  });
+
   test('keeps a channel\'s display name with a line break on one line', async () => {
     routes = { ...base(), 'GET /users/me/channels': () => channels().map((x) => (x.id === OLD ? { ...x, display_name: 'O\nLD' } : x)) };
     expect(await setup()('get_unreads', {})).toContain(`- team-a/old（channel_id: ${OLD}、team_id: ${T1}、表示名: O LD）`);
@@ -1365,7 +1375,6 @@ describe('get_unreads', () => {
       'POST /users/ids': () => [{ id: 'u1', username: 'alice' }, { id: 'u2', username: 'bob' }].filter((u) => (bodies['/users/ids'] as string[]).includes(u.id)),
     };
     const out = await setup()('get_unreads', {});
-    // The team before the channel on the joined line, so the display name comes last.
     expect(out).toContain(`チーム: なし（DM またはグループ DM） | チャンネル: channel_id: ${DM}、name: u1__u2、表示名: @bob`);
   });
 
