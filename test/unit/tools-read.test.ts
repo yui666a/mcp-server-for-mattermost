@@ -2122,7 +2122,8 @@ describe('list_saved_posts', () => {
     const T2 = 'u'.repeat(26);
     routes = { ...base(),
       'GET /users/me/teams': () => [{ id: T, name: 'team-a' }, { id: T2, name: 'team-b' }],
-      'GET /users/me/channels': () => [{ id: OLD, name: 'old', display_name: 'Old', team_id: T2, type: 'O', delete_at: 5 }],
+      // Mattermost lists an archived channel only when include_deleted is true.
+      'GET /users/me/channels': (req) => (new URL(req.url).searchParams.get('include_deleted') === 'true' ? [{ id: OLD, name: 'old', display_name: 'Old', team_id: T2, type: 'O', delete_at: 5 }] : []),
       [FLAGGED]: byOffset([{ ...post('x'.repeat(26), 2), channel_id: OLD }]) };
     const out = await setup()('list_saved_posts', {});
     expect(urls).toContain('GET /users/me/channels?include_deleted=true');
