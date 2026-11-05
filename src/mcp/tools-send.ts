@@ -28,7 +28,7 @@ const inputSchema = {
     z.strictObject({ name: FILE_NAME, content_text: z.string().min(1).describe('UTF-8 のテキストとしてそのまま添付する中身') }),
     z.strictObject({ name: FILE_NAME, content_base64: z.string().min(1).describe('バイナリの中身の base64（data URL の接頭辞や改行は付けない）') }),
   ])).min(1).max(5).optional()
-    .describe('添付ファイル（1〜5 件、中身の合計 128KiB まで）。各要素は name と、content_text（SVG、CSV、Markdown、コードなどのテキスト）か content_base64（小さなバイナリ）のどちらか一方。利用者の PC にあるファイルは、PC でコマンドを実行できるクライアントなら prepare_upload を使う。チャットに添付されたファイルを content_base64 で送れるのは、コード実行で中身を読めるときだけ。読めなければ prepare_upload の説明の案内に従う'),
+    .describe('添付ファイル（1〜5 件、中身の合計 128KiB まで）。各要素は name と、content_text（SVG、CSV、Markdown、コードなどのテキスト）か content_base64（小さなバイナリ）のどちらか一方。中身を読めて合計 128KiB に収まるファイルだけを渡す。チャットに添付されたファイルは、コード実行で中身を読めるときだけ content_base64 で送れる。読めないファイル、収まらないファイル、利用者の PC にあるファイルは、prepare_upload の説明の案内に従う'),
   file_ids: z.array(z.string().regex(/^[A-Za-z0-9]{26}$/)).min(1).max(5).optional()
     .describe('prepare_upload で、投稿先と同じチャンネルへ 24 時間以内にアップロードした file_id（1〜5 件）'),
 };
@@ -46,7 +46,7 @@ function decodeFiles(files: FileArg[]): Upload[] {
     return { name: f.name, bytes };
   });
   const total = out.reduce((n, f) => n + f.bytes.length, 0);
-  if (total > MAX_FILES_BYTES) throw new InputError(`添付ファイルの中身の合計が ${total} バイトで、上限の ${MAX_FILES_BYTES} バイト（128KiB）を超えています。`);
+  if (total > MAX_FILES_BYTES) throw new InputError(`添付ファイルの中身の合計が ${total} バイトで、上限の ${MAX_FILES_BYTES} バイト（128KiB）を超えています。この大きさのファイルは files では送れないので、prepare_upload の説明の案内に従ってください。`);
   return out;
 }
 
@@ -539,14 +539,14 @@ export function registerSendTools(server: McpServer, ctx: ToolContext): void {
   ) as unknown as ToolCallback<typeof deleteSchema>);
 
   server.registerTool('save_draft', {
-    description: '投稿せずに、本人の Mattermost の下書きとして保存する。送信は本人が画面で行う。root_id を渡すとスレッドへの返信の下書きになる。同じ投稿先に本文の違う下書きがあれば、overwrite: true が無い限り上書きしない。下書きの同期を切っている利用者には保存しない。この下書きと同じ本文を send_message で送ると、投稿の後に下書きを消す（画面で添付を付けた下書きは消さない）',
+    description: '投稿せずに、本人の Mattermost の下書きとして保存する。送信は本人が画面で行う。root_id を渡すとスレッドへの返信の下書きになる。同じ投稿先に本文の違う下書きがあれば、overwrite: true が無い限り上書きしない。下書きの同期を切っている利用者には保存しない。この下書きと同じ本文を send_message で送ると、投稿の後に下書きを消す（添付の付いた下書きは消さない）',
     inputSchema: draftSchema,
     annotations: destructive,
   }, guarded(ctx, 'save_draft', async (args: DraftArgs, extra: { signal: AbortSignal }) => saveDraft(mmOf(extra.signal), ctx.mmUserId, args),
   ) as unknown as ToolCallback<typeof draftSchema>);
 
   server.registerTool('prepare_upload', {
-    description: '利用者の PC にあるファイル（スクリーンショット、PDF など）を添付するための、使い捨てのアップロード URL と curl のコマンドを返す。PC でコマンドを実行できるクライアント（Claude Code、Codex CLI など）向け。curl を実行する前に、送るファイルのパスと投稿先を利用者に示して確認を取ること。PC でコマンドを実行できないクライアント（claude.ai など）では、save_draft で本文を下書きにし、ファイルは Mattermost の画面から添付するよう案内する',
+    description: '利用者の PC にあるファイル（スクリーンショット、PDF など）を添付するための、使い捨てのアップロード URL と curl のコマンドを返す。PC でコマンドを実行できるクライアント（Claude Code、Codex CLI など）向けで、パスの分からないファイル（Claude Code に貼り付けた画像など）は利用者にパスを聞き、無ければ下の save_draft の案内に従う。curl を実行する前に、送るファイルのパスと投稿先を利用者に示して確認を取ること。PC でコマンドを実行できないクライアント（claude.ai など）では、save_draft で本文を下書きにし、ファイルは Mattermost の画面から添付するよう案内する',
     inputSchema: prepareSchema,
     annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false },
   }, guarded(ctx, 'prepare_upload', async (args: PrepareArgs, extra: { signal: AbortSignal }) =>
