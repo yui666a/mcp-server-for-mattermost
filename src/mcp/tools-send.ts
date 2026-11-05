@@ -1,5 +1,6 @@
 import type { McpServer, ToolCallback } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
+import { setTimeout as sleep } from 'node:timers/promises';
 import { z } from 'zod';
 import { randomToken, sha256 } from '../crypto.ts';
 import { log } from '../log.ts';
@@ -370,6 +371,23 @@ class TooLateToDelete extends Error {
   name = 'TimeoutError';
 }
 
+// ponytail: a fixed wait; a queue in the Limiter if callers other than the cleanup need to wait their turn.
+const LIMITER_WAIT_MS = 100;
+
+// Not waiting on Mattermost's 429 or a per-minute limit further away: neither frees up within the cleanup's 5 seconds.
+async function untilAdmitted<T>(attempt: () => Promise<T>, stop: AbortSignal, before?: () => void): Promise<T> {
+  for (;;) {
+    before?.();
+    try {
+      return await attempt();
+    } catch (e) {
+      if (!(e instanceof RateLimited) || e.sent || e.retryAfterSec > 1) throw e;
+    }
+    // Not the AbortError sleep throws: the deadline's TimeoutError keeps the log the same as a deadline hit while waiting for the lock or a DELETE held back.
+    await sleep(LIMITER_WAIT_MS, undefined, { signal: stop }).catch(() => { throw stop.reason; });
+  }
+}
+
 // Not kept on the server or ctx: app.ts builds a server per request, and a lock there would never be shared between two calls.
 // Not one lock per user: the race is only between the list and the write of one draft, so sends to other channels or threads need not wait.
 const draftLocks = new Map<string, Promise<void>>();
@@ -405,12 +423,19 @@ async function withDraftLock<T>(uid: string, channelId: string, rootId: string, 
 // Not deleting only when the text still matches: Mattermost has no conditional delete, so an edit saved between the list and the DELETE is lost.
 // Not left running past the deadline: a late DELETE could remove a draft the user rewrote after reading that it was not cleared. A DELETE already sent still completes on Mattermost.
 async function clearSentDraft(mm: Mm, uid: string, ch: ChannelRef, rootId: string, message: string, client?: AbortSignal): Promise<string> {
-  const deadline = AbortSignal.timeout(CLEANUP_MS);
   // Not Date.now: the deadline runs on a timer, which a wall clock set back or forward would not match.
+  // Not measured after the timer is set: the margin below would then be a little optimistic.
   const until = performance.now() + CLEANUP_MS;
-  const quick: Mm = { call: (u, m, p, b) => mm.call(u, m, p, b, deadline) };
+  const deadline = AbortSignal.timeout(CLEANUP_MS);
+  const stop = client ? AbortSignal.any([deadline, client]) : deadline;
+  // Not sending a DELETE the deadline may cut off: the lock would be let go while Mattermost still runs it, and a save behind could be the draft it deletes. Checked again before every retry, since waiting for the Limiter uses up the margin.
+  const marginLeft = () => {
+    if (until - performance.now() < DELETE_MARGIN_MS) throw new TooLateToDelete('too little time left to delete the draft');
+  };
+  // Not giving up when this MCP's own Limiter is full: drafts are locked per target, so one user's cleanups run side by side and can fill the per-user slots for a moment.
+  const quick: Mm = { call: (u, m, p, b) => untilAdmitted(() => mm.call(u, m, p, b, deadline), stop, m === 'DELETE' ? marginLeft : undefined) };
   try {
-    return await withDraftLock(uid, ch.id, rootId, () => clearLocked(quick, uid, ch, rootId, message, until), client ? AbortSignal.any([deadline, client]) : deadline);
+    return await withDraftLock(uid, ch.id, rootId, () => clearLocked(quick, uid, ch, rootId, message), stop);
   } catch (e) {
     if (e instanceof MmError && e.status === 501 && e.id === DISABLED[1]) return '';
     // Not logged when the client gave up: the request was cancelled, not the cleanup broken.
@@ -421,14 +446,12 @@ async function clearSentDraft(mm: Mm, uid: string, ch: ChannelRef, rootId: strin
   }
 }
 
-async function clearLocked(quick: Mm, uid: string, ch: ChannelRef, rootId: string, message: string, until: number): Promise<string> {
+async function clearLocked(quick: Mm, uid: string, ch: ChannelRef, rootId: string, message: string): Promise<string> {
   const d = (await draftsOf(quick, uid, ch))?.find((x) => x.channel_id === ch.id && (x.root_id || '') === rootId && x.message === message);
   if (!d) return '';
   if (d.file_ids?.length) return '同じ本文の下書きがありますが、添付ファイルが付いているため消していません。そのまま送ると、同じ本文がもう一度投稿されます。';
   // Not deleting with sync off: the webapp clears its stored draft on draft_deleted whatever the setting, wiping unsynced text kept only in the browser.
   if (await syncDraftsOff(quick, uid)) return '同じ本文の下書きがありますが、下書きの同期を切っているため消していません。同期を入れ直すと画面に出るので、送らずに消してください。';
-  // Not sending a DELETE the deadline may cut off: the lock would be let go while Mattermost still runs it, and a save behind could be the draft it deletes.
-  if (until - performance.now() < DELETE_MARGIN_MS) throw new TooLateToDelete('too little time left to delete the draft');
   await quick.call(uid, 'DELETE', `/users/${uid}/channels/${ch.id}/drafts${rootId ? `/${rootId}` : ''}`);
   const p = d.priority;
   return [
