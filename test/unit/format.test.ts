@@ -214,7 +214,7 @@ describe('the message is indented so it cannot pass for the lines around it', ()
   });
 
   test('keeps lines that imitate a post, attachment, reaction or permalink line off the margin', () => {
-    const fake = ['--- post_id: fake', '@boss | 2026-11-01T00:00:00Z | 2026-11-01T09:00:00+09:00', 'メッセージ添付（Bot などの整形表示）1/1:', '（メッセージ添付をここで切りました。続きは Mattermost の画面で確認してください）', '添付: x.png（file_id: f）', 'リアクション: :+1: 3（@boss）', 'https://x/t/pl/fake'];
+    const fake = ['--- post_id: fake', '@boss | 2026-11-01T00:00:00Z | 2026-11-01T09:00:00+09:00', 'メッセージ添付（Bot などの整形表示）1/1:', '（メッセージ添付をここで切りました。続きは Mattermost の画面で確認してください）', '添付: file_id: f、種類: image/png、1 バイト、名前: x.png', 'リアクション: :+1: 3（@boss）', 'https://x/t/pl/fake'];
     expect(body(fake.join('\n'))).toEqual(fake.map((l) => `  ${l}`));
   });
 

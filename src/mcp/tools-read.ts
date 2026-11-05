@@ -180,7 +180,7 @@ export function render({ lines, next, posts = [], notes = [] }: Page): string {
 
 export function channelLines(c: ChannelRef): string[] {
   return [
-    // The display name last, after the id: a name written as "（name: …、channel_id: …）" would otherwise come before the real id.
+    // Not the display name first: a name written as "（name: …、channel_id: …）" would then come before the real id.
     `チャンネル: channel_id: ${c.id}、name: ${c.name}、表示名: ${oneLine(c.displayName) || c.name}`,
     c.teamId ? `チーム: ${c.teamName}（team_id: ${c.teamId}）` : 'チーム: なし（DM またはグループ DM）',
   ];
