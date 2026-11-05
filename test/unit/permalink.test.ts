@@ -25,6 +25,8 @@ describe('parsePostRef accepts', () => {
 describe('parsePostRef rejects with InputError', () => {
   test.each([
     ['another host', `https://evil.example/team-a/pl/${ID}`, 'https://h'],
+    ['another host with format characters around it', `\u200bhttps://evil.example/team-a/pl/${ID}\u200b`, 'https://h'],
+    ['a format character inside the post_id', `https://h/team-a/pl/\u200b${ID}`, 'https://h'],
     ['another scheme', `http://h/team-a/pl/${ID}`, 'https://h'],
     ['another port', `https://h:8443/team-a/pl/${ID}`, 'https://h'],
     ['a username in the URL', `https://user@h/team-a/pl/${ID}`, 'https://h'],
