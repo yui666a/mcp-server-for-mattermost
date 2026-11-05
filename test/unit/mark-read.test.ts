@@ -343,8 +343,10 @@ describe('mark_as_read for threads', () => {
     routes = threads({ [`GET /posts/${id(7)}`]: mmError(404, 'app.post.get.app_error') });
     const r = await setup().call({ threads: [{ post_id: id(7) }, { post_id: ROOT }] });
     expect(r.isError).toBe(false);
-    expect(r.text).toContain(`スレッド（post_id: ${id(7)}）: 既読にできませんでした。投稿が見つかりません`);
+    expect(r.text).toContain(`スレッド（post_id: ${id(7)}）: 既読にできませんでした。投稿が見つかりません（削除されたか、存在しません）。`);
     expect(r.text).toContain(`スレッド（親 post_id: ${ROOT}）: 呼んだ時点の最終返信までを既読にしました。`);
+    routes[`GET /posts/${id(7)}`] = mmError(403, 'api.context.permissions.app_error');
+    expect((await setup().call({ threads: [{ post_id: id(7) }] })).text).toContain('この投稿は見られません（参加していない非公開チャンネルの投稿など）。');
   });
 
   test('says so when the user belongs to no team, for a DM thread', async () => {
@@ -402,6 +404,23 @@ describe('mark_as_read for threads', () => {
     });
     const r = await setup().call({ threads: [{ post_id: ROOT }] });
     expect(r.text).toContain('既読にしました。');
+  });
+
+  test('looks up the user\'s teams once for several DM threads in one call', async () => {
+    const DM2 = 'e'.repeat(26);
+    const ROOT2 = 'q'.repeat(26);
+    routes = threads({
+      [`GET /posts/${ROOT}`]: () => post(0, { id: ROOT, channel_id: DM }),
+      [`GET /posts/${ROOT2}`]: () => post(0, { id: ROOT2, channel_id: DM2 }),
+      [`GET /channels/${DM}`]: () => channel(DM, 'u1__u2', { team_id: '', type: 'D' }),
+      [`GET /channels/${DM2}`]: () => channel(DM2, 'u1__u3', { team_id: '', type: 'D' }),
+      'GET /users/me/teams': () => [{ id: TEAM, name: 'team-a' }],
+      [`GET /users/u1/teams/${TEAM}/threads/${ROOT2}`]: () => ({ ...state(1001, { unread_replies: 3 }), id: ROOT2 }),
+      [`PUT /users/u1/teams/${TEAM}/threads/${ROOT2}/read/1010`]: () => read(),
+    });
+    const r = await setup().call({ threads: [{ post_id: ROOT }, { post_id: ROOT2 }] });
+    expect(r.text).toContain(`スレッド（親 post_id: ${ROOT2}）: 呼んだ時点の最終返信までを既読にしました。`);
+    expect(hits.filter((h) => h === 'GET /users/me/teams')).toHaveLength(1);
   });
 
   test('with CRT off, leaves threads alone and points to marking the channel', async () => {
