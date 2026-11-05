@@ -358,9 +358,9 @@ describe('read tools against the local Mattermost', () => {
 
     test('lists alice\'s public, private, DM and group DM channels, but not an archived one', async () => {
       const { text } = await listAll({ limit: 200 });
-      expect(lineOf(text, pub.id)).toContain(`${e.teams.a.name}/t7-pub-${TAG}（表示名: t7-pub ${TAG}、種類: 公開`);
+      expect(lineOf(text, pub.id)).toContain(`${e.teams.a.name}/t7-pub-${TAG}（channel_id: ${pub.id}、team_id: ${e.teams.a.id}、種類: 公開、最終投稿: `);
       expect(lineOf(text, priv.id)).toContain('種類: 非公開');
-      expect(lineOf(text, dm.id)).toContain(`@${e.users.bob.username}（表示名: @${e.users.bob.username}、種類: DM`);
+      expect(lineOf(text, dm.id)).toContain(`@${e.users.bob.username}（channel_id: ${dm.id}、種類: DM、最終投稿: `);
       expect(lineOf(text, gm.id)).toContain('種類: グループ DM');
       expect(text).not.toContain(archived.id);
     });
