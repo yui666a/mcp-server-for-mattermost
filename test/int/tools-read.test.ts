@@ -619,6 +619,11 @@ describe('read tools against the local Mattermost', () => {
       expect(r.content[0].text).toContain('in:general-dup は複数のチームにあるため、すべてで探しました');
     });
 
+    test('a search for "*" alone answers an empty result, which search_files asks before reporting an in: error', async () => {
+      const r = await mmApi<{ order: string[] }>(aliceMm, 'POST', '/files/search', { terms: '*', is_or_search: false, include_deleted_channels: false, time_zone_offset: 32400, page: 0, per_page: 1 });
+      expect(r.order).toEqual([]);
+    });
+
     test('in:@user does not create a DM: it fails without one, and -in:@user drops the condition', async () => {
       const name = `${TAG}dm`;
       const u = await mmApi<{ id: string }>(e.adminToken, 'POST', '/users', { username: name, email: `${name}@example.com`, password: 'Passw0rd!dev123' });
