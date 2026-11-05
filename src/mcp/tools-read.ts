@@ -56,7 +56,11 @@ function imageType(b: Uint8Array): string | undefined {
 type Decoded = { text: string; encoding: string; guessed: boolean; cutTail: boolean };
 const KANA = /[\u3041-\u3096\u30a1-\u30fa]/;
 const HALF_KANA = /[\uff61-\uff9f]/;
-const JAPANESE = /[\u3000-\u30ff\u31f0-\u31ff\u3400-\u9fff\uf900-\ufaff\uff00-\uffef\u{20000}-\u{3ffff}]/u;
+// Every character half-width kana Shift_JIS can pass for in UTF-8: a lead byte C2–DF and a trail byte A1–BF, the kana being single bytes A1–DF.
+const fromHalfKana = (s: string): boolean => [...s].every((c) => {
+  const p = c.codePointAt(0)!;
+  return p < 0x80 || (p <= 0x7ff && (p & 0x3f) >= 0x21);
+});
 
 // Not by mime_type: Mattermost guesses it from the extension, so a Shift_JIS CSV is labelled utf-8 and a file without an extension gets none.
 // whole: the bytes are the whole file, so a character left incomplete at the end is the file's own and not where the fetch stopped.
@@ -88,13 +92,13 @@ function decodeText(b: Uint8Array, name: string, whole: boolean): Decoded | unde
     }
   };
   const utf8 = decode('utf-8');
-  // No Japanese and a cut last character: such text may as well be half-width kana Shift_JIS or Latin-1, so UTF-8 is only a guess.
-  // Not for text with Japanese: a log cut at its size limit stays UTF-8.
-  const guessUtf8 = utf8?.cutTail && !JAPANESE.test(utf8.text);
-  if (utf8 && !guessUtf8) return { ...utf8, encoding: 'UTF-8', guessed: false };
+  // A cut last character after text half-width kana Shift_JIS could also make: it may as well be that or Latin-1, so UTF-8 is only a guess.
+  // Not for any text without Japanese: emoji or Hangul would then read as Shift_JIS, one character swapped for another unnoticed.
+  const utf8Unsure = utf8?.cutTail && fromHalfKana(utf8.text);
+  if (utf8 && !utf8Unsure) return { ...utf8, encoding: 'UTF-8', guessed: false };
   const ext = name.includes('.') ? name.split('.').pop()!.toLowerCase() : '';
-  const utf8Guess = utf8 && { ...utf8, encoding: 'UTF-8', guessed: true };
-  if (!SJIS_EXTENSIONS.has(ext)) return utf8Guess;
+  const utf8AsGuess = utf8 && { ...utf8, encoding: 'UTF-8', guessed: true };
+  if (!SJIS_EXTENSIONS.has(ext)) return utf8AsGuess;
   const sjis = decode('shift_jis');
   const euc = decode('euc-jp');
   // One counts as not read when it needs its last character dropped and the other reads the whole: kana-less EUC-JP and odd-length half-width kana end that way.
@@ -102,9 +106,9 @@ function decodeText(b: Uint8Array, name: string, whole: boolean): Decoded | unde
   const eucRead = euc && !(euc.cutTail && sjis && !sjis.cutTail) ? euc : undefined;
   // Not EUC-JP for any text with kana: half-width kana Shift_JIS also reads as EUC-JP, though rarely with kana.
   if (eucRead && KANA.test(eucRead.text) && (!sjisRead || HALF_KANA.test(sjisRead.text))) return { ...eucRead, encoding: 'EUC-JP', guessed: true };
-  if (utf8Guess && (!sjisRead || sjisRead.cutTail) && (!eucRead || eucRead.cutTail)) return utf8Guess;
+  if (utf8AsGuess && (!sjisRead || sjisRead.cutTail) && (!eucRead || eucRead.cutTail)) return utf8AsGuess;
   if (sjisRead) return { ...sjisRead, encoding: 'Shift_JIS', guessed: true };
-  return eucRead ? { ...eucRead, encoding: 'EUC-JP', guessed: true } : utf8Guess;
+  return eucRead ? { ...eucRead, encoding: 'EUC-JP', guessed: true } : utf8AsGuess;
 }
 
 async function fileText(mm: ReadMm, uid: string, fileId: string, f: MmFileInfo, about: string): Promise<string | CallToolResult> {
@@ -383,7 +387,7 @@ async function unreadThreads(mm: Mm, uid: string, teams: MmTeam[], keep: (channe
   const notes: string[] = [];
   for (const [i, t] of teams.entries()) {
     let before: string | undefined;
-    // Ids before keep and the largest total: total counts the same threads as the list, and deleting the starting thread or its replies only lowers it.
+    // Ids before keep and the largest total: total counts the list's threads before keep (and also ones whose root post a retention policy removed), and deletes and reads only lower it.
     const seen = new Set<string>();
     let total = 0;
     for (let n = 1; ; n++) {
@@ -398,7 +402,7 @@ async function unreadThreads(mm: Mm, uid: string, teams: MmTeam[], keep: (channe
       }
       if (got.length < THREAD_PAGE) {
         // Not trusting a short page as the end: before= compares with the starting thread's last reply, so deleting that thread or its replies in between skips or drops the rest.
-        if (seen.size < total) notes.push(`（${t.name} の未読スレッドを total_unread_threads: ${total} に対して取り切れませんでした。取得の合間にスレッドや返信が削除されたときなどに、続きを取りこぼすことがあります。呼び直すと取り直せます）`);
+        if (seen.size < total) notes.push(`（${t.name} の未読スレッドを total_unread_threads: ${total} に対して取り切れませんでした。取得の合間にスレッドが削除・更新されたときなどは、呼び直すと取り直せます。データ保持ポリシーで根の投稿が消えたスレッドは、呼び直しても取得できません）`);
         break;
       }
       if (n === THREAD_PAGES) {
