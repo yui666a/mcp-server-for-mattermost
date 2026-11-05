@@ -181,6 +181,13 @@ describe('search_posts in: filters', () => {
     expect(sent()).toBe(expected);
   });
 
+  test('searches terms with 200,000 words before a quote', async () => {
+    routes = base();
+    const terms = `${'w '.repeat(200_000)}"a b" in:only-a`;
+    expect(await setup()('search_posts', { terms })).not.toContain('エラー');
+    expect(sent()).toBe(`${'w '.repeat(200_000)}"a b" in:${CX}`);
+  });
+
   test('in:@ with the caller\'s own name uses the DM with oneself, without creating one', async () => {
     const SELF = 'u1__u1';
     routes = { ...base(), 'GET /users/username/me': () => ({ id: 'u1', username: 'me' }), [`GET /teams/${T1}/channels/name/${SELF}`]: () => ch(pad('self'), SELF, '', 'D') };
@@ -1360,7 +1367,7 @@ describe('get_unreads', () => {
     });
 
     test('a short first page below total, as when total also counts threads whose root post a retention policy removed, says to stop calling again when a note of threads not all taken keeps coming back, even with another total', async () => {
-      expect(await run([span(0, 10), 11])).toContain('呼び直しても取り切れなかった旨の注記が続くなら（total の数が変わっても）、データ保持ポリシーで根の投稿が消えたスレッドがあるか、最終返信の時刻が同じスレッドが多い可能性があり、その場合はそれ以上呼び直しても取得できません）');
+      expect(await run([span(0, 10), 11])).toContain('呼び直しても取り切れなかった旨の注記が続くなら（total の数が変わっても）、データ保持ポリシーでルート投稿が消えたスレッドがあるか、最終返信の時刻が同じスレッドが多い可能性があり、その場合はそれ以上呼び直しても取得できません）');
     });
 
     test('says nothing when every thread was taken, also when the 4th page is full', async () => {

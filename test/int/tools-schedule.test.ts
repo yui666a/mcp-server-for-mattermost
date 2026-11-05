@@ -85,13 +85,22 @@ describe('scheduled messages against the local Mattermost', () => {
   test('a schedule to a user never messaged before creates the DM when scheduling and is posted there when its time comes', async () => {
     const name = `sdm${TAG}`;
     const u = await mmApi<{ id: string }>(e.adminToken, 'POST', '/users', { username: name, email: `${name}@example.com`, password: 'Passw0rd!dev123' });
-    const message = `${TAG} scheduled dm`;
-    const made = await call('schedule_message', { channel: `@${name}`, message, at: inTwoMinutes() });
-    expect(made.isError, made.content[0].text).toBeFalsy();
-    const dm = await mmApi<{ id: string }>(aliceMm, 'GET', `/teams/${e.teams.a.id}/channels/name/${[e.users.alice.id, u.id].sort().join('__')}`);
-    expect(made.content[0].text).toContain(`channel_id: ${dm.id}`);
-    await tick(store, mm, Date.now() + 120_000);
-    expect((await postsWith(dm.id, message))[0]?.user_id).toBe(e.users.alice.id);
+    let ok = false;
+    try {
+      const message = `${TAG} scheduled dm`;
+      const made = await call('schedule_message', { channel: `@${name}`, message, at: inTwoMinutes() });
+      expect(made.isError, made.content[0].text).toBeFalsy();
+      const dm = await mmApi<{ id: string }>(aliceMm, 'GET', `/teams/${e.teams.a.id}/channels/name/${[e.users.alice.id, u.id].sort().join('__')}`);
+      expect(made.content[0].text).toContain(`channel_id: ${dm.id}`);
+      await tick(store, mm, Date.now() + 120_000);
+      expect((await postsWith(dm.id, message))[0]?.user_id).toBe(e.users.alice.id);
+      ok = true;
+    } finally {
+      // Not letting a failed deactivation replace the test's own failure: that failure is the one to read.
+      await mmApi(e.adminToken, 'DELETE', `/users/${u.id}`).catch((err) => {
+        if (ok) throw err;
+      });
+    }
   });
 
   test('a schedule with a file uploaded beforehand is posted with the file attached, and send_message refuses the file meanwhile', async () => {

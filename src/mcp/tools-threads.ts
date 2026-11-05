@@ -15,6 +15,7 @@ type ThreadList = { total: number; threads: FollowedThread[] | null };
 type Key = { t: number; id: string };
 
 // Not following before= across pages: every call refetches and re-sorts all teams' lists, so paging would repeat the per-team fetches on each call for a team past 200. One page of Mattermost's maximum per team instead, with a note where it stops.
+// Mattermost's PerPageMaximum (server/channels/web/params.go): a page shorter than this is the whole list.
 const THREAD_PAGE = 200;
 
 const CRT_OFF = 'スレッドの折りたたみ（CRT）が無効なため、スレッドのフォローは画面にも通知にも効きません。返信の通知はスレッドごとには止められず、Mattermost の通知の設定（すべてのスレッドに効く）で変えます。';
@@ -65,8 +66,12 @@ export function registerThreadTools(server: McpServer, ctx: ToolContext): void {
         const got = r.threads ?? [];
         threads.push(...got.map((x) => ({ ...x, teamName: t.name })));
         total += r.total;
-        if (r.total > got.length && got.length) {
-          notes.push(`（${t.name}${i ? '' : ' と DM、グループ DM'} のフォロー中のスレッドは、最終返信の新しい ${got.length} 件だけを取得しています（total: ${r.total}）。${got.at(-1)!.last_reply_at ? `最終返信が ${formatTime(got.at(-1)!.last_reply_at)} 以前のスレッド` : '返信がすべて削除されたほかのスレッド'}は出ていないことがあります）`);
+        const who = `${t.name}${i ? '' : ' と DM、グループ DM'}`;
+        // Not taking a short page with a larger total as cut off: Mattermost counts the follows of threads whose root post is gone, which the list never returns.
+        if (r.total > got.length && got.length < THREAD_PAGE) {
+          notes.push(`（${who} の total: ${r.total} のうち ${r.total - got.length} 件は一覧に出せません。データ保持ポリシーでルート投稿が消えたスレッドのフォロー（unfollow_thread でも外せません）か、取得の合間に増えたフォローです）`);
+        } else if (r.total > got.length) {
+          notes.push(`（${who} のフォロー中のスレッドは、最終返信の新しい ${got.length} 件だけを取得しています（total: ${r.total}）。${got.at(-1)!.last_reply_at ? `最終返信が ${formatTime(got.at(-1)!.last_reply_at)} 以前のスレッド` : '返信がすべて削除されたほかのスレッド'}は出ていないことがあります）`);
         }
       }
       const rows = threads.map((th) => ({ th, updatedAt: th.last_reply_at, key: { t: th.last_reply_at, id: th.id } }));
