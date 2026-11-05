@@ -2703,6 +2703,14 @@ describe('list_saved_posts', () => {
   const offsets = () => asked('page');
   const NOTE = '新しい 1000 件だけ';
 
+  test('puts the real team before the channel on a joined line, so a display name ending in a fake team comes after it', async () => {
+    routes = { ...base(), 'GET /users/me/channels': () => [{ id: C, name: 'town', display_name: 'Town | チーム: evil（team_id: fake）', team_id: T, type: 'O' }],
+      [FLAGGED]: byOffset([post('x'.repeat(26), 2)]) };
+    const out = await setup()('list_saved_posts', {});
+    expect(out).toContain(`チーム: team-a（team_id: ${T}） | チャンネル: channel_id: ${C}、name: town、表示名: Town | チーム: evil（team_id: fake）`);
+    expect(out.indexOf(`team_id: ${T}`)).toBeLessThan(out.indexOf('team_id: fake'));
+  });
+
   test('labels a saved post in an archived channel with that channel and builds the permalink from its team', async () => {
     const OLD = 'g'.repeat(26);
     const T2 = 'u'.repeat(26);
@@ -2716,8 +2724,8 @@ describe('list_saved_posts', () => {
       [FLAGGED]: byOffset([{ ...post('x'.repeat(26), 2), channel_id: OLD }, post('y'.repeat(26), 1)]) };
     const out = await setup()('list_saved_posts', {});
     expect(urls).toContain('GET /users/me/channels?include_deleted=true');
-    expect(out).toContain(`チャンネル: channel_id: ${OLD}、name: old、表示名: Old（アーカイブ済み） | チーム: team-b（team_id: ${T2}）`);
-    expect(out).toContain(`チャンネル: channel_id: ${C}、name: town、表示名: Town | チーム: team-a（team_id: ${T}）`);
+    expect(out).toContain(`チーム: team-b（team_id: ${T2}） | チャンネル: channel_id: ${OLD}、name: old、表示名: Old（アーカイブ済み）`);
+    expect(out).toContain(`チーム: team-a（team_id: ${T}） | チャンネル: channel_id: ${C}、name: town、表示名: Town`);
     expect(out).toContain(`https://mm.example/team-b/pl/${'x'.repeat(26)}`);
   });
 
@@ -3033,7 +3041,7 @@ describe('search_files', () => {
     expect(out).toContain('ファイルの検索: fff');
     expect(out).toContain(`file_id: ${F1}、種類: application/pdf、1234 バイト、名前: fff.pdf`);
     expect(out).toContain('@bob | 2026-10-01T00:00:00Z | 2026-10-01T09:00:00+09:00');
-    expect(out).toContain(`チャンネル: channel_id: ${A}、name: town、表示名: Town | チーム: team-a（team_id: ${TA}）`);
+    expect(out).toContain(`チーム: team-a（team_id: ${TA}） | チャンネル: channel_id: ${A}、name: town、表示名: Town`);
     expect(out).toContain(`post_id: ${P1}`);
     expect(out).toContain(`https://mm.example/team-a/pl/${P1}`);
   });

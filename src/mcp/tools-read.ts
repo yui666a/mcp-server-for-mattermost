@@ -186,6 +186,12 @@ export function channelLines(c: ChannelRef): string[] {
   ];
 }
 
+// The team before the channel when the two share a line: the display name, written by users, must come last, or a name ending in "| チーム: …（team_id: …）" comes before the real team.
+export function channelInline(c: ChannelRef): string {
+  const [channel, team] = channelLines(c);
+  return `${team} | ${channel}`;
+}
+
 function channelError(e: unknown): never {
   // Not converting a missing team: /teams/name/{team}/channels/name/{channel} answers it with 404 too.
   if (e instanceof ChannelFetchError && e.id !== 'app.team.get_by_name.missing.app_error') {
@@ -456,7 +462,7 @@ export function registerReadTools(server: McpServer, ctx: ToolContext): void {
       const ch = channels.get(channelId);
       const team = ch?.team_id ? teamName.get(ch.team_id) : undefined;
       const where = ch
-        ? channelLines({ id: ch.id, name: ch.name, displayName: (ch.display_name || ch.name) + (ch.delete_at ? '（アーカイブ済み）' : ''), teamId: ch.team_id, teamName: team ?? '' }).join(' | ')
+        ? channelInline({ id: ch.id, name: ch.name, displayName: (ch.display_name || ch.name) + (ch.delete_at ? '（アーカイブ済み）' : ''), teamId: ch.team_id, teamName: team ?? '' })
         : `channel_id: ${channelId}`;
       return { where, team: team ?? teams[0]?.name ?? '' };
     };
@@ -1004,7 +1010,7 @@ export function registerReadTools(server: McpServer, ctx: ToolContext): void {
         }
         const ch = channels.get(r.th.post.channel_id);
         const team = ch && teamName.get(ch.team_id);
-        const at = ch ? channelLines({ id: ch.id, name: ch.name, displayName: where(ch).label, teamId: ch.team_id, teamName: team ?? '' }).join(' | ') : `channel_id: ${r.th.post.channel_id}`;
+        const at = ch ? channelInline({ id: ch.id, name: ch.name, displayName: where(ch).label, teamId: ch.team_id, teamName: team ?? '' }) : `channel_id: ${r.th.post.channel_id}`;
         posts.push(r.th.post);
         return [
           formatPost(r.th.post, { baseUrl: base, teamName: team ?? r.th.teamName, usernames: users, channel: at }),
