@@ -82,7 +82,7 @@ export async function resolveChannel(mm: Mm, userId: string, spec: string, opts:
   const s = spec.trim();
   if (ID.test(s)) {
     const c = await fetchChannel(mm, userId, `/channels/${s}`).catch(async (e) => {
-      // Not on a 403, which means the ID exists. Lowered rather than skipped for upper case: Mattermost IDs are lower case, so upper case points to a mistyped name.
+      // Not on a 403, which means the ID exists. Lowered for the name too: a channel name is lower case only.
       if (!(e instanceof ChannelFetchError && e.status === 404)) throw e;
       const lower = s.toLowerCase();
       // Tried again in lower case before any name: Mattermost IDs are lower case, so an upper case ID is the same ID written differently,
@@ -113,7 +113,7 @@ export async function resolveChannel(mm: Mm, userId: string, spec: string, opts:
   }
   // Only when every part could be a user name: @bob、議事録 is a missing space before a search word, not a separator.
   const parts = s.slice(1).split(/[,、，]/).map((p) => p.trim().replace(/^@/, '')).filter(Boolean);
-  // Empty parts left out, so that a trailing 、 as in @bob、 is called a separator too, not a character a user name cannot have.
+  // Not counting empty parts as names: a trailing 、 as in @bob、 is a separator, not a character a user name cannot have.
   if (s.startsWith('@') && /[、，]/.test(s) && parts.length && parts.every((p) => NAME.test(p))) throw new InputError('@a,b の区切りは半角のカンマ（,）で書いてください。読点（、）や全角のカンマ（，）は使えません。');
   if (!s.startsWith('@')) plain(s, 'チャンネル名');
   const teams = await myTeams(mm, userId);

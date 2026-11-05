@@ -255,7 +255,7 @@ async function filterChannelIds(mm: Mm, userId: string, spec: string, exclude: b
   }
 }
 
-// Not higher: with 10 teams the worst case (1 + flags × (teams + 1) GETs) already takes 221 of the 300 requests a user may send per minute,
+// Not higher: with 10 teams the worst case (1 + flags × (teams + 2) GETs) already takes 241 of the 300 requests a user may send per minute,
 // before anything else the user sends in that minute.
 const MAX_CHANNEL_FILTERS = 20;
 
