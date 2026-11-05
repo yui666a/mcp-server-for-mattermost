@@ -467,7 +467,7 @@ export function registerReadTools(server: McpServer, ctx: ToolContext): void {
       const rc = c && 'since' in c ? c : undefined;
       const range = rc ?? (!c && (since !== undefined || until !== undefined) ? rangeOf(since, until, from) : undefined);
       const ch = await resolveChannel(mm, uid, channel);
-      const GONE = '（カーソルの起点か、その続きの投稿が削除されたため、続きを取りこぼしている可能性があります。';
+      const GONE = '（カーソルの起点かその続きの投稿が削除されたか、同じミリ秒の投稿が多かったため、続きを取りこぼしている可能性があります。';
       const renderPage = async (head: string[], all: MmPost[], next: (last: MmPost) => object, none: string, gone: string) => {
         const shown = all.slice(0, all.length > per ? tieStart(all.slice(0, per + 1)) || per : per);
         const users = await usernames(mm, uid, shown);
@@ -495,8 +495,9 @@ export function registerReadTools(server: McpServer, ctx: ToolContext): void {
         };
         const forward = async (after: string | undefined, got: MmPost[]) => {
           for (let at = after; at && got.length <= per;) {
-            const page = (await posts({ after: at, per_page: String(per + 1) })).sort(oldestFirst);
-            const done = page.length <= per || page.some((p) => range.until !== undefined && p.create_at >= range.until);
+            // Not taking per+1 as for a page shown: the posts of the last millisecond are left to the next fetch, which would then always be needed.
+            const page = (await posts({ after: at, per_page: String(per + 2) })).sort(oldestFirst);
+            const done = page.length <= per + 1 || page.some((p) => range.until !== undefined && p.create_at >= range.until);
             const n = done ? page.length : tieStart(page) || page.length;
             got.push(...page.slice(0, n).filter(inRange));
             if (done) break;

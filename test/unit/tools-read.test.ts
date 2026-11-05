@@ -1649,7 +1649,7 @@ describe('read_channel with since and until', () => {
     [`GET /users/u1/channels/${CH}/posts/unread`]: unreadRoute(viewed),
   });
   const secs = (...t: number[]) => (n: number) => T0 + t[n] * 1000;
-  const GONE = '削除されたため、続きを取りこぼしている可能性があります';
+  const GONE = '続きを取りこぼしている可能性があります';
 
   test('newest first, the posts of the millisecond at the end of a page move to the next page, so none drops out', async () => {
     fill(10, secs(0, 1, 2, 3, 4, 5, 5, 5, 8, 9));
@@ -1659,7 +1659,7 @@ describe('read_channel with since and until', () => {
   });
 
   test('from unread, the posts of the millisecond at the end of a page move to the next page, so none drops out', async () => {
-    fill(10, secs(0, 1, 2, 3, 3, 3, 6, 7, 8, 9));
+    fill(10, secs(0, 1, 2, 3, 4, 4, 4, 7, 8, 9));
     routes = unreadBase(T0 + 1000);
     const { seen } = await readAll(setup(), { from: 'unread', limit: 3 });
     expect(seen).toEqual([2, 3, 4, 5, 6, 7, 8, 9].map(id));
@@ -1679,6 +1679,14 @@ describe('read_channel with since and until', () => {
     const { seen } = await readAll(setup(), { since: new Date(T0 - 60_000).toISOString(), limit: 100 });
     expect(new Set(seen).size).toBe(205);
     expect(seen.length).toBe(205);
+  });
+
+  test('in a range, when every post fetched within a call shares one millisecond, keeps them all and reads on from the last', async () => {
+    fill(6, secs(0, 1, 1, 1, 1, 5));
+    routes = base();
+    const { seen } = await readAll(setup(), { since: iso(1), limit: 2 });
+    expect(seen.slice(0, 2)).toEqual([id(1), id(2)]);
+    expect(seen).toContain(id(5));
   });
 
   test('when every post fetched shares one millisecond, still shows a full page and pages on from its last post', async () => {
@@ -1729,6 +1737,10 @@ describe('read_channel with since and until', () => {
     const latest = await call('read_channel', { channel: CH });
     expect(latest).toContain('投稿はありません。');
     expect(latest).not.toContain(GONE);
+    routes = unreadBase(T0);
+    const unread = await call('read_channel', { channel: CH, from: 'unread' });
+    expect(unread).toContain('未読はありません。');
+    expect(unread).not.toContain(GONE);
   });
 
   test('every call asks Mattermost to skip fetching threads', async () => {
@@ -1805,7 +1817,7 @@ describe('read_channel with since and until', () => {
     hits = []; urls = [];
     const second = await call('read_channel', { channel: CH, since: iso(0), cursor: cursorIn(first) });
     expect(shownIds(second)).toEqual([id(5), id(6), id(7)]);
-    expect(Object.fromEntries(pages()[0])).toEqual({ after: id(4), per_page: '4', skipFetchThreads: 'true' });
+    expect(Object.fromEntries(pages()[0])).toEqual({ after: id(4), per_page: '5', skipFetchThreads: 'true' });
     expect(second).toContain('の前まで');
     expect(second).toContain('（続きはありません）');
   });
@@ -1830,7 +1842,7 @@ describe('read_channel with since and until', () => {
       const q = new URL(req.url).searchParams;
       if (q.has('after') && first) {
         first = false;
-        return asList(corpus.slice(10, 14));
+        return asList(corpus.slice(10, 15));
       }
       return postsRoute(req);
     };
