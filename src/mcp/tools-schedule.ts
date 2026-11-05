@@ -148,9 +148,10 @@ async function row(s: Scheduled, where: string, teamOf: (channelId: string) => P
     if (team !== undefined) out.push(`${baseUrl}/${team}/pl/${s.postId}`);
   }
   // Not in the middle as in the list: the body may span lines, and last is the only place where it ends unambiguously.
-  if (full) out.push(s.message === undefined
-    ? '本文: （復号できません。本文を直すには、update_scheduled_message に新しい本文全体を渡すか、取り消して予約し直してください）'
-    : `本文（この行の次から末尾まで）:\n${s.message}`);
+  // Not pointing a schedule that is no longer pending to update or cancel: both refuse it.
+  if (full) out.push(s.message !== undefined ? `本文（この行の次から末尾まで）:\n${s.message}`
+    : s.status === 'pending' ? '本文: （復号できません。本文を直すには、update_scheduled_message に新しい本文全体を渡すか、取り消して予約し直してください）'
+      : '本文: （復号できません）');
   return out;
 }
 
@@ -198,7 +199,7 @@ export function registerScheduleTools(server: McpServer, ctx: ToolContext): void
 
   const destructive = { readOnlyHint: false, destructiveHint: true, idempotentHint: true };
   server.registerTool('update_scheduled_message', {
-    description: '待機中の本人の予約の本文か予定時刻を変える。message は本文全体を置き換える。一覧の本文は先頭 200 文字までなので、書き換える前に list_scheduled_messages に id を渡して全文を得る。投稿先と添付ファイルは変えられない（変えるときは取り消して予約し直す）。投稿中や投稿を試みた後の予約は変えられない',
+    description: '待機中の本人の予約の本文か予定時刻を変える。message は本文全体を置き換える。書き換える前は、常に list_scheduled_messages に id を渡して全文を得る（一覧の本文は先頭 200 文字までで、後ろに別の行が続く）。投稿先と添付ファイルは変えられない（変えるときは取り消して予約し直す）。投稿中や投稿を試みた後の予約は変えられない',
     inputSchema: updateSchema,
     annotations: destructive,
   }, guarded(ctx, 'update_scheduled_message', async (args: { id: string; message?: string; at?: string }) => updateScheduledMessage(ctx.store, uid, args),
