@@ -161,6 +161,9 @@ describe('a DM or group DM given by its channel ID is named as when given as @us
     const { mm, calls } = fake(routes);
     expect(await resolveChannel(mm, ME, DM)).toMatchObject({ id: DM, displayName: '@bob' });
     expect(calls).toContain(`GET /users/${BOB}`);
+    const RIGHT = 'r'.repeat(26);
+    const { mm: mm2 } = fake({ ...routes, [`/channels/${RIGHT}`]: ch(RIGHT, `${BOB}__${ME}`, '', 'D') });
+    expect(await resolveChannel(mm2, ME, RIGHT)).toMatchObject({ displayName: '@bob' });
   });
 
   test('the DM with oneself by one\'s own name', async () => {

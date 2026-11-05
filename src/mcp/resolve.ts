@@ -125,8 +125,7 @@ export async function resolveChannel(mm: Mm, userId: string, spec: string, opts:
   return found[0];
 }
 
-// The name an ID-given DM or group DM is shown by, the same as when it is given as @user or @a,b. Mattermost leaves a DM's display_name empty
-// and puts every member, the caller included, in a group DM's.
+// Not using display_name: Mattermost leaves a DM's empty and puts every member, the caller included, in a group DM's.
 async function dmLabel(mm: Mm, userId: string, c: MmChannelFull): Promise<string | undefined> {
   // Given up on rather than failing the tool: the name is only for the output, and Mattermost's display_name is left as it was.
   const giveUp = (e: unknown) => {
