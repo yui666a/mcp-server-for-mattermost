@@ -219,7 +219,7 @@ export async function resolveInFilters(mm: Mm, userId: string, terms: string): P
   const out = words.map((w) => [w]);
   for (const f of filters) {
     const next = words[f.at + f.span];
-    if (f.value.replace(/^~+/, '').startsWith('@') && next?.startsWith(',')) {
+    if (f.value.replace(/^~+/, '').startsWith('@') && /^[,、，]/.test(next ?? '')) {
       throw new InputError(`in:${f.value} の後の「${next}」: 検索の in: では @a,b のようにカンマの前後に空白を入れずに書いてください。`);
     }
   }

@@ -233,6 +233,9 @@ describe('search_posts in: filters', () => {
       ['x in:@bob, carol', 'カンマの前後に空白を入れない'],
       ['x in:@bob ,carol', 'in:@bob の後の「,carol」: 検索の in: では @a,b のようにカンマの前後に空白を入れずに書いてください。'],
       ['x in:@bob , carol', 'in:@bob の後の「,」'],
+      ['x in: @bob ,carol', 'in:@bob の後の「,carol」'],
+      ['x channel:~@bob ,carol', 'in:~@bob の後の「,carol」'],
+      ['x in:@bob 、carol', 'in:@bob の後の「、carol」'],
     ])('%j is an input error without searching', async (terms, message) => {
       routes = withGroup();
       const out = await setup()('search_posts', { terms }, true);
@@ -245,6 +248,11 @@ describe('search_posts in: filters', () => {
       await setup()('search_posts', { terms: 'x in:only-a in:@bob ,carol' }, true);
       expect(hits).toEqual([]);
     });
+  });
+
+  test('a 404 while resolving a group DM is not reported as a user named after the whole spec', async () => {
+    routes = { ...base(), 'POST /users/usernames': () => Response.json({ id: 'x' }, { status: 404 }) };
+    expect(await setup()('search_posts', { terms: 'x in:@bob,carol' }, true)).not.toContain('ユーザー「@bob,carol」');
   });
 
   test('in:@user answered 403 by the user lookup, as with restricted user visibility, is a user not found', async () => {
