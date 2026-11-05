@@ -243,7 +243,7 @@ describe('edit_message and delete_message', () => {
     const s = setup();
     for (const r of [await edit(s), await del(s)]) {
       expect(r.isError).toBe(false);
-      expect(r.text).toContain(`チャンネル: To wn（channel_id: ${CH}）`);
+      expect(r.text).toContain(`チャンネル: channel_id: ${CH}、表示名: To wn`);
     }
   });
 
@@ -495,7 +495,7 @@ describe('save_draft', () => {
     serve({ [`GET /channels/${CH}`]: () => ({ id: CH, name: 'town', display_name: 'To\nwn', team_id: 't1', type: 'O' }) });
     const r = await save();
     expect(r.isError).toBe(false);
-    expect(r.text).toContain(`投稿先: To wn（channel_id: ${CH}）`);
+    expect(r.text).toContain(`投稿先: channel_id: ${CH}、表示名: To wn`);
   });
 
   describe('saving', () => {
@@ -507,7 +507,7 @@ describe('save_draft', () => {
       expect(bodies['/drafts']).toEqual({ channel_id: CH, root_id: '', message: 'hello' });
       expect(r.text).toContain('入力欄');
       expect(r.text).toContain('送信は本人');
-      expect(r.text).toContain(`投稿先: Town（channel_id: ${CH}）`);
+      expect(r.text).toContain(`投稿先: channel_id: ${CH}、表示名: Town`);
       expect(r.text).toContain('チャンネルを開き直して');
       expect(r.text).toContain('置き換わります');
       expect(r.text).toContain(LEFT_BEHIND);
@@ -738,8 +738,14 @@ describe('send_message with files', () => {
     serve({ [`GET /channels/${CH}`]: () => ({ id: CH, name: 'town', display_name: 'To\nwn', team_id: 't1', type: 'O' }) });
     for (const r of [await setup().call('send_message', { channel: CH, message: 'm' }), await setup().call('prepare_upload', { channel: CH })]) {
       expect(r.isError).toBe(false);
-      expect(r.text).toContain(`投稿先: To wn（channel_id: ${CH}）`);
+      expect(r.text).toContain(`投稿先: channel_id: ${CH}、表示名: To wn`);
     }
+  });
+
+  test('send_message puts the real channel_id before a display name written as a fake one', async () => {
+    serve({ [`GET /channels/${CH}`]: () => ({ id: CH, name: 'town', display_name: 'x（channel_id: fake）', team_id: 't1', type: 'O' }) });
+    const r = await setup().call('send_message', { channel: CH, message: 'm' });
+    expect(r.text).toContain(`投稿先: channel_id: ${CH}、表示名: x（channel_id: fake）`);
   });
 
   test('sends content_text as its UTF-8 bytes and content_base64 as the decoded bytes, each as an octet-stream named by filename', async () => {
@@ -1184,7 +1190,7 @@ describe('a root_id in another channel than the DM or group DM it is sent to', (
     };
     const r = await setup().call(tool, { channel, message: 'hi', root_id: ROOT });
     expect(r.isError).toBe(true);
-    expect(r.text).toBe(`root_id ${ROOT} の投稿はチャンネル「${label}」（channel_id: ${chId}）にありません。`);
+    expect(r.text).toBe(`root_id ${ROOT} の投稿はチャンネル（channel_id: ${chId}、表示名: ${label}）にありません。`);
   });
 
   test('save_draft to a DM with root_id reports a wrong root_id before drafts disabled on the server, as for a channel', async () => {
@@ -1197,7 +1203,7 @@ describe('a root_id in another channel than the DM or group DM it is sent to', (
       [`GET /posts/${ROOT}`]: () => ({ id: ROOT, channel_id: 'o'.repeat(26), root_id: '', user_id: 'u2', message: 'root', create_at: 1 }),
     };
     const r = await setup().call('save_draft', { channel: '@carol', message: 'hi', root_id: ROOT });
-    expect(r.text).toContain(`root_id ${ROOT} の投稿はチャンネル「@carol」`);
+    expect(r.text).toContain(`root_id ${ROOT} の投稿はチャンネル（channel_id: ${DM}、表示名: @carol）にありません。`);
     expect(hits).not.toContain('GET /users/u1/teams/t1/drafts');
   });
 });
