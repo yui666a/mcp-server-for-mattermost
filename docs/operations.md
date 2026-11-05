@@ -61,6 +61,7 @@ docker compose logs --no-log-prefix mcp | grep '"event":"tool_call"'
 | `event` | 内容 |
 |---|---|
 | `tool_call` | ツールの呼び出し。`mm_user_id`、`tool`、`outcome`（`ok`、`tool_error`、`input_error`、`invalid_args`（ツールを呼ぶ前に MCP SDK が、inputSchema に合わない引数を断った。受けない引数、型・形式・長さ・範囲の誤り、必須の欠け。`input_error` は、スキーマには合うがツールが処理の中で断ったもの）、`reauthorize`、`rate_limited`、`upstream_unavailable`、`mm_error`、`error`）、`ms` |
+| `tool_interrupted` | `mark_as_read` が再ログイン・429・Mattermost の停止などで途中で中断し、それまでの結果をツールのエラーとして返したとき。`mm_user_id`、`tool`、`outcome`（中断の原因。`tool_call` の `outcome` と同じ値。このとき `tool_call` の `outcome` は `tool_error` になる） |
 | `scheduled_post` | 予約の投稿の結果。`mm_user_id`、`outcome` |
 | `upload` | `prepare_upload` の URL へのアップロード。`mm_user_id`、`outcome`（`ok`、`too_large`、`client_gone`（本文の途中で接続が切れた）、`stalled`（本文を待つ間に 15 秒データが来なかった）、`InputError`、`MmError`、`RateLimited`、`UpstreamUnavailable` など）、`files`（Mattermost へ送れた件数）、`bytes`（受け取ったファイルの合計）、`ms`。URL が無効なときと、同時に処理できる件数を超えたときは出ない |
 | `draft_cleanup_failed` | `send_message` の投稿の後の、同じ本文の下書きの確認か削除の失敗。投稿は成功している。`mm_user_id`、`channel_id`、`name`（エラーの名前）、Mattermost のエラーなら `status` と `id`。`skipped` が `delete` なら、打ち切りまでの残りが短いため削除を送っておらず、下書きは残っている。`skipped` が無いときは、順番待ち、確認、削除のどこかで失敗したか打ち切られたので、消えたかは下書きの一覧で確かめる。サーバーで下書きの同期が無効なときと、クライアントが要求を取り消したときは出ない |

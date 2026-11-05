@@ -30,7 +30,7 @@ This project targets the other case:
 | `read_channel` | Read a channel's posts, newest first, or oldest first from the first unread post or over a date and time range |
 | `read_thread` | Read a thread's root and replies, oldest first |
 | `get_post` | Read one post by post ID or permalink URL |
-| `get_file` | Read an attached file; images are returned as a preview image, and text (UTF-8, or Shift_JIS for csv/tsv/txt/log) as up to its first 10,000 characters |
+| `get_file` | Read an attached file; images are returned as a preview image, and text (UTF-8, or Shift_JIS or EUC-JP for csv/tsv/txt/log) as up to its first 10,000 characters |
 | `search_files` | Find attached files by name with Mattermost search syntax (`from:`, `in:`, `ext:`, ...) |
 | `list_saved_posts` | List the user's saved (flagged) posts, newest first |
 | `search_channels` | Find channels (public, joined private, DMs, group DMs) by name |
