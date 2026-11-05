@@ -879,7 +879,7 @@ describe('list_scheduled_messages when the caller aborts', () => {
   });
 
   // A 5xx rather than a 4xx: CallAborted is an UpstreamUnavailable, so a check widened to its parent would pass a 4xx and fail on this.
-  test.each(at)('still lists every row when Mattermost fails at %s', async (_, fails) => {
+  test.each(at)('still lists through the last row when Mattermost fails at %s', async (_, fails) => {
     const s = setup();
     rows(s);
     const { mm } = failingAt(fails, () => new UpstreamUnavailable('Mattermost API failed: 500', true, 500));
