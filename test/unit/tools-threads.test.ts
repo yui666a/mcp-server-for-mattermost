@@ -111,12 +111,25 @@ describe('list_followed_threads', () => {
     expect(out).toContain('（続きはありません）');
   });
 
-  test('shows a DM thread under the other user\'s name and an archived channel\'s thread by channel_id with the team it came from', async () => {
+  test('shows a DM thread under the other user\'s name and a thread of a channel missing from the user\'s list by channel_id with the team it came from', async () => {
     routes = base();
     const { text: out } = await setup().call('list_followed_threads', {});
     expect(out).toContain(`チャンネル: @carol（name: u1__u3、channel_id: ${DM}） | チーム: なし（DM またはグループ DM）`);
     expect(out).toContain(`--- post_id: ${TH_ARCH}\n@bob | 1970-01-01T00:00:00Z | 1970-01-01T09:00:00+09:00\nchannel_id: ${ARCHIVED}\n`);
     expect(out).toContain(`https://mm.example/team-b/pl/${TH_ARCH}`);
+  });
+
+  test('asks for archived channels too, and shows an archived channel\'s thread with its name marked archived and its team', async () => {
+    routes = { ...base(), 'GET /users/me/channels': () => [
+      { id: CH1, name: 'one', display_name: 'One', team_id: T1, type: 'O', delete_at: 0 },
+      { id: CH2, name: 'two', display_name: 'Two', team_id: T2, type: 'O', delete_at: 0 },
+      { id: DM, name: 'u1__u3', display_name: '', team_id: '', type: 'D', delete_at: 0 },
+      { id: ARCHIVED, name: 'old', display_name: 'Old', team_id: T2, type: 'O', delete_at: 7000 },
+    ] };
+    const { text: out } = await setup().call('list_followed_threads', {});
+    expect(urls).toContain('GET /users/me/channels?include_deleted=true');
+    expect(out).toContain(`チャンネル: Old（アーカイブ済み）（name: old、channel_id: ${ARCHIVED}） | チーム: team-b（team_id: ${T2}）`);
+    expect(out).toContain(`チャンネル: One（name: one、channel_id: ${CH1}）`);
   });
 
   test('says where it stopped when a team follows more threads than one page returns', async () => {
