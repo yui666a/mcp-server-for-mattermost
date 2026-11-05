@@ -79,7 +79,7 @@ function decodeText(b: Uint8Array, name: string, whole: boolean): Decoded | unde
     }
   };
   const utf8 = decode('utf-8');
-  // ASCII but for a cut last character: that one byte may as well be Latin-1 or a Shift_JIS character, so UTF-8 is only a guess.
+  // ASCII but for a cut last character: its bytes may as well be Latin-1 or a Shift_JIS character, so UTF-8 is only a guess.
   const asciiButTail = utf8?.cutTail && !/[^\x00-\x7f]/.test(utf8.text);
   if (utf8 && !asciiButTail) return { ...utf8, encoding: 'UTF-8', guessed: false };
   const ext = name.includes('.') ? name.split('.').pop()!.toLowerCase() : '';

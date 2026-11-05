@@ -1578,6 +1578,11 @@ describe('get_file', () => {
         expect(await setup()('get_file', { file_id: F })).toContain('先頭の 10000 文字だけを返しました（ファイル全体は少なくとも 40000 バイト）');
       });
 
+      test('writes the bytes fetched, not the size it says, as the size of a whole file cut to 10,000 characters', async () => {
+        routes = { [INFO]: textInfo('a.md', 1_000_000), [FILE]: body(new Uint8Array(Buffer.from('a'.repeat(10_001)))) };
+        expect(await setup()('get_file', { file_id: F })).toContain('先頭の 10000 文字だけを返しました（ファイル全体は 10001 バイト）');
+      });
+
       test('keeps UTF-8, with neither note, for ASCII ending in a UTF-8 lead byte when the fetch may have stopped there', async () => {
         const b = Uint8Array.from([...Buffer.from('a'.repeat(39_999)), 0xe3]);
         routes = { [INFO]: textInfo('a.log', 1_000_000), [FILE]: body(b) };
