@@ -159,6 +159,44 @@ describe('search_posts in: filters', () => {
     expect(sent()).toBe(expected);
   });
 
+  test('in:@ with the caller\'s own name uses the DM with oneself, without creating one', async () => {
+    const SELF = 'u1__u1';
+    routes = { ...base(), 'GET /users/username/me': () => ({ id: 'u1', username: 'me' }), [`GET /teams/${T1}/channels/name/${SELF}`]: () => ch(pad('self'), SELF, '', 'D') };
+    await setup()('search_posts', { terms: 'x in:@me' });
+    expect(sent()).toBe(`x in:${pad('self')}`);
+    expect(hits).not.toContain('POST /channels/direct');
+  });
+
+  test.each([
+    ['x in:~@bob', `x in:${DM}`],
+    ['x -channel:~@bob', `x -in:${DM}`],
+  ])('reads %j, with a leading ~ before @user, as the DM', async (terms, expected) => {
+    routes = withDm();
+    await setup()('search_posts', { terms });
+    expect(sent()).toBe(expected);
+  });
+
+  test.each([
+    ['no-break space', '\u00a0'],
+    ['em space', '\u2003'],
+    ['next line', '\u0085'],
+    ['line separator', '\u2028'],
+  ])('splits words on a %s as Go\'s unicode.IsSpace does', async (_name, space) => {
+    routes = base();
+    await setup()('search_posts', { terms: `x${space}in:only-a` });
+    expect(sent()).toBe(`x in:${CX}`);
+  });
+
+  test.each([
+    ['U+FEFF', '\ufeff'],
+    ['U+200B', '\u200b'],
+  ])('does not split words on %s, which Go\'s unicode.IsSpace does not count as a space', async (_name, c) => {
+    routes = base();
+    await setup()('search_posts', { terms: `x${c}in:only-a` });
+    expect(sent()).toBe(`x${c}in:only-a`);
+    expect(hits).toEqual(['POST /posts/search']);
+  });
+
   test('a channel ID is looked up to check it is visible before it is sent', async () => {
     routes = base();
     await setup()('search_posts', { terms: `x in:${CX}` });
