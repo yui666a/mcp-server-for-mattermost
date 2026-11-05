@@ -528,7 +528,7 @@ describe('mark_as_read for threads', () => {
     expect(r.text).toContain(`スレッド（post_id: ${id(7)}）: 既読にできませんでした。投稿が見つかりません（削除されたか、存在しません）。`);
     expect(r.text).toContain(`スレッド（親 post_id: ${ROOT}）: 呼んだ時点の最終返信までを既読にしました。`);
     routes[`GET /posts/${id(7)}`] = mmError(403, 'api.context.permissions.app_error');
-    expect((await setup().call({ threads: [{ post_id: id(7) }] })).text).toContain('この投稿は見られません（参加していない非公開チャンネルの投稿など）。参加しているはずなら、Mattermost の一時的な障害の可能性があります。少し待ってから再試行してください。続くなら、チャンネルから外されたか、サーバーの権限の設定で読む権限が外されている可能性があるので、管理者に確かめてください。');
+    expect((await setup().call({ threads: [{ post_id: id(7) }] })).text).toContain('この投稿を見る権限がありません（参加していない非公開チャンネルなど）。参加しているはずなら、Mattermost の一時的な障害の可能性があります。少し待ってから再試行してください。続くなら、チャンネルから外されたか、サーバーの権限の設定で読む権限が外されている可能性があるので、管理者に確かめてください。');
   });
 
   test('says so when the user belongs to no team, for a DM thread', async () => {
