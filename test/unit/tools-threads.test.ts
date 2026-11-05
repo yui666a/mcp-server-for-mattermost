@@ -292,12 +292,12 @@ describe('follow_thread and unfollow_thread', () => {
     expect(writes()).toEqual([`PUT /users/u1/teams/${T1}/threads/${ROOT}/following`]);
   });
 
-  test('follow_thread still reports the follow when checking the state afterwards fails', async () => {
+  test.each([400, 500])('follow_thread still reports the follow when checking the state afterwards fails (%i)', async (status) => {
     let follows = 0;
     routes = {
       ...noReplies(),
       [`PUT /users/u1/teams/${T1}/threads/${ROOT}/following`]: () => { follows++; return { status: 'OK' }; },
-      [`GET /users/u1/teams/${T1}/threads/${ROOT}`]: () => follows ? Response.json({ id: 'app.user.get_thread_membership_for_user.app_error' }, { status: 400 }) : Response.json({ id: 'app.user.get_threads_for_user.not_found' }, { status: 404 }),
+      [`GET /users/u1/teams/${T1}/threads/${ROOT}`]: () => follows ? Response.json({ id: 'app.user.get_thread_membership_for_user.app_error' }, { status }) : Response.json({ id: 'app.user.get_threads_for_user.not_found' }, { status: 404 }),
     };
     const r = await setup().call('follow_thread', { post_id: ROOT });
     expect(r.isError).toBe(false);
