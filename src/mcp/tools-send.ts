@@ -28,7 +28,7 @@ const inputSchema = {
     z.strictObject({ name: FILE_NAME, content_text: z.string().min(1).describe('UTF-8 のテキストとしてそのまま添付する中身') }),
     z.strictObject({ name: FILE_NAME, content_base64: z.string().min(1).describe('バイナリの中身の base64（data URL の接頭辞や改行は付けない）') }),
   ])).min(1).max(5).optional()
-    .describe('添付ファイル（1〜5 件、中身の合計 128KiB まで）。各要素は name と、content_text（SVG、CSV、Markdown、コードなどのテキスト）か content_base64（小さなバイナリ）のどちらか一方。利用者の PC にあるファイルは、PC でコマンドを実行できるクライアントなら prepare_upload を使う'),
+    .describe('添付ファイル（1〜5 件、中身の合計 128KiB まで）。各要素は name と、content_text（SVG、CSV、Markdown、コードなどのテキスト）か content_base64（小さなバイナリ）のどちらか一方。利用者の PC にあるファイルは、PC でコマンドを実行できるクライアントなら prepare_upload を使う。チャットに添付されたファイルを content_base64 で送れるのは、コード実行で中身を読めるときだけ。読めなければ prepare_upload の説明の案内に従う'),
   file_ids: z.array(z.string().regex(/^[A-Za-z0-9]{26}$/)).min(1).max(5).optional()
     .describe('prepare_upload で、投稿先と同じチャンネルへ 24 時間以内にアップロードした file_id（1〜5 件）'),
 };
@@ -472,7 +472,7 @@ export function registerSendTools(server: McpServer, ctx: ToolContext): void {
   ) as unknown as ToolCallback<typeof prepareSchema>);
 
   server.registerTool('send_message', {
-    description: 'チャンネルへ投稿する。root_id を渡すとスレッドへの返信になる。channel はチャンネル ID、「チーム名/チャンネル名」、チャンネル名、@ユーザー名（DM）、@a,b（グループ DM）のどれか。DM とグループ DM は無ければ作る。添付は files（中身を直接渡す）か file_ids（prepare_upload の結果）。同じ投稿先へ同じ本文と添付を 10 分以内に送ると、やり直しとみなして投稿しない。同じ投稿先に本文の同じ下書きがあれば、投稿の後に消す',
+    description: 'チャンネルへ投稿する。root_id を渡すとスレッドへの返信になる。channel はチャンネル ID、「チーム名/チャンネル名」、チャンネル名、@ユーザー名（DM）、@a,b（グループ DM）のどれか。DM とグループ DM は無ければ作る。添付は files（中身を直接渡す）か file_ids（prepare_upload の結果）。同じ投稿先へ同じ本文と添付を 10 分以内に送ると、やり直しとみなして投稿しない。同じ投稿先に本文の同じ下書きがあれば、投稿の後に消す（添付の付いた下書きは消さない）',
     inputSchema,
     annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false },
   }, guarded(ctx, 'send_message', async (args: Args, extra: { signal: AbortSignal }) => {
