@@ -3,7 +3,7 @@ export class InputError extends Error {
 }
 
 export type MmFileInfo = { id: string; name: string; mime_type: string; size: number; width?: number; height?: number };
-export type MmReaction = { user_id: string; emoji_name: string };
+export type MmReaction = { user_id: string; emoji_name: string; create_at: number };
 export type MmPost = {
   id: string; user_id: string; channel_id: string; root_id: string; message: string; create_at: number;
   type?: string; edit_at?: number; has_reactions?: boolean; props?: Record<string, unknown>;
@@ -53,13 +53,17 @@ function attachmentLines(p: MmPost): string[] {
 }
 
 const REACTION_NAMES = 10;
+const REACTION_MAX_CHARS = 4000;
 const isRecord = (x: unknown): x is Record<string, unknown> => typeof x === 'object' && x !== null && !Array.isArray(x);
 const str = (x: unknown): string => (typeof x === 'string' ? x : typeof x === 'number' || typeof x === 'boolean' ? String(x) : '');
 const records = (x: unknown): Record<string, unknown>[] => (Array.isArray(x) ? x.filter(isRecord) : []);
 
+const lines = (s: string): string[] => s.split(/\r\n|[\r\n\v\f\x1c-\x1e\u0085\u2028\u2029]/);
+const width = (s: string): number => [...segmenter.segment(s)].length;
+
 // Indenting every line rather than quoting: attachments are written by whoever posts, and a line at the margin could pass for a post, file or heading line.
 function item(label: string, value: string): string[] {
-  return `${label}: ${value}`.split(/\r\n|[\r\n\v\f\x1c-\x1e\u0085\u2028\u2029]/).map((l, i) => `${i ? '    ' : '  '}${l}`);
+  return lines(`${label}: ${value}`).map((l, i) => `${i ? '    ' : '  '}${l}`);
 }
 
 function messageAttachment(a: Record<string, unknown>, n: number, total: number): string[] {
@@ -86,9 +90,13 @@ function messageAttachments(p: MmPost): { text: string; truncated: boolean } {
 
 export const postTruncated = (p: MmPost): boolean => truncate(p.message).truncated || messageAttachments(p).truncated;
 
+// Not trusting Mattermost's order: it sorts by create_at alone, so reactions of the same millisecond come in any order.
+const reactionOrder = (a: MmReaction, b: MmReaction) =>
+  a.create_at - b.create_at || (a.user_id < b.user_id ? -1 : a.user_id > b.user_id ? 1 : 0) || (a.emoji_name < b.emoji_name ? -1 : a.emoji_name > b.emoji_name ? 1 : 0);
+
 function reactionsByEmoji(p: MmPost): { emoji: string; shown: string[]; total: number }[] {
   const by = new Map<string, string[]>();
-  for (const r of p.metadata?.reactions ?? []) by.set(r.emoji_name, [...(by.get(r.emoji_name) ?? []), r.user_id]);
+  for (const r of [...(p.metadata?.reactions ?? [])].sort(reactionOrder)) by.set(r.emoji_name, [...(by.get(r.emoji_name) ?? []), r.user_id]);
   return [...by].map(([emoji, ids]) => ({ emoji, shown: ids.slice(0, REACTION_NAMES), total: ids.length }));
 }
 
@@ -96,11 +104,18 @@ export const postUserIds = (p: MmPost): string[] => [...new Set([p.user_id, ...r
 
 function reactionLines(p: MmPost, usernames: Map<string, string>): string[] {
   const by = reactionsByEmoji(p);
-  if (!by.length) return p.has_reactions && !p.metadata?.reactions ? ['リアクションあり（get_post で確認できます）'] : [];
+  // Only without metadata at all: the threads API returns none, while the post APIs always do and leave reactions out when there are none.
+  if (!by.length) return p.has_reactions && !p.metadata ? ['リアクションあり（get_post で確認できます）'] : [];
   const name = (id: string) => (usernames.has(id) ? `@${usernames.get(id)}` : `user_id: ${id}`);
   const each = by.map(({ emoji, shown, total }) =>
     `:${emoji}: ${total}（${shown.map(name).join('、')}${total > shown.length ? `、ほか ${total - shown.length} 人` : ''}）`);
-  return [`リアクション: ${each.join('、')}`];
+  const head = 'リアクション: ';
+  let n = width(head) + width(each[0]);
+  let k = 1;
+  while (k < each.length && (n += 1 + width(each[k])) <= REACTION_MAX_CHARS) k++;
+  const left = by.slice(k);
+  const rest = left.length ? `、ほか ${left.length} 種類（${left.reduce((m, r) => m + r.total, 0)} 人）` : '';
+  return [`${head}${each.slice(0, k).join('、')}${rest}`];
 }
 
 export function formatPost(p: MmPost, ctx: PostCtx): string {
@@ -112,9 +127,9 @@ export function formatPost(p: MmPost, ctx: PostCtx): string {
     ...(p.edit_at ? [`編集済み: ${formatTime(p.edit_at)}`] : []),
     ...(p.type?.startsWith('system_') ? [`システムメッセージ（${p.type}）`] : []),
     ...(ctx.channel ? [ctx.channel] : []),
-    truncate(p.message).text,
+    ...(p.message ? lines(truncate(p.message).text).map((l) => `  ${l}`) : ['']),
     ...(ma.text ? [ma.text] : []),
-    ...(ma.truncated ? ['  （メッセージ添付をここで切りました。続きは Mattermost の画面で確認してください）'] : []),
+    ...(ma.truncated ? ['（メッセージ添付をここで切りました。続きは Mattermost の画面で確認してください）'] : []),
     ...attachmentLines(p),
     ...reactionLines(p, ctx.usernames),
     `${ctx.baseUrl}/${ctx.teamName}/pl/${p.id}`,

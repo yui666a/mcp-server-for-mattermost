@@ -66,8 +66,8 @@ export type ClaimedScheduled = Scheduled & {
   mmUserId: string; message: string | undefined; pendingPostId: string | null; firstAttemptAt: number | null; retry: boolean;
 };
 export type ScheduledOutcome =
-  | { status: 'posted'; postId: string; fileIds?: string[]; note?: string }
-  | { status: 'failed'; error: string }
+  | { status: 'posted'; postId: string; fileIds: string[]; note?: string }
+  | { status: 'failed'; error: string; forgetAttempt?: boolean }
   | { status: 'pending'; forgetAttempt: boolean };
 
 type Row = Record<string, any>;
@@ -366,12 +366,15 @@ export class Store {
     this.run('DELETE FROM post_claims WHERE mm_user_id = ? AND post_id = ?', mmUserId, postId);
   }
 
+  openUploadUrlCount(mmUserId: string): number {
+    return Number(this.get('SELECT COUNT(*) AS n FROM upload_urls WHERE mm_user_id = ? AND used_at IS NULL AND expires_at > ?', mmUserId, this.now())?.n ?? 0);
+  }
+
   // Not a COUNT outside the transaction: two requests at the cap would both get in.
   createUploadUrl(t: UploadTarget): string | undefined {
     return this.tx(() => {
       const now = this.now();
-      const n = Number(this.get('SELECT COUNT(*) AS n FROM upload_urls WHERE mm_user_id = ? AND used_at IS NULL AND expires_at > ?', t.mmUserId, now)?.n ?? 0);
-      if (n >= MAX_OPEN_UPLOAD_URLS) return undefined;
+      if (this.openUploadUrlCount(t.mmUserId) >= MAX_OPEN_UPLOAD_URLS) return undefined;
       const token = randomToken();
       this.run('INSERT INTO upload_urls (token_hash, mm_user_id, channel_id, expires_at) VALUES (?, ?, ?, ?)',
         sha256(token), t.mmUserId, t.channelId, now + UPLOAD_URL_TTL);
@@ -411,13 +414,16 @@ export class Store {
     for (const id of fileIds) stmt.run(postId, id, mmUserId);
   }
 
+  pendingScheduledCount(mmUserId: string): number {
+    return Number(this.get("SELECT COUNT(*) AS n FROM scheduled_posts WHERE mm_user_id = ? AND status = 'pending'", mmUserId)?.n ?? 0);
+  }
+
   // Not a COUNT outside the transaction: two requests at the cap would both get in.
   // Not checking the held files outside the transaction either: two schedules taking one file would both get in, and Mattermost gives it to the first only.
   createScheduled(s: { mmUserId: string; channelId: string; rootId?: string; message: string; scheduledAt: number; fileIds?: string[] }, now: number): string | undefined {
     const fileIds = s.fileIds ?? [];
     return this.tx(() => {
-      const n = Number(this.get("SELECT COUNT(*) AS n FROM scheduled_posts WHERE mm_user_id = ? AND status = 'pending'", s.mmUserId)?.n ?? 0);
-      if (n >= MAX_PENDING_SCHEDULED) return undefined;
+      if (this.pendingScheduledCount(s.mmUserId) >= MAX_PENDING_SCHEDULED) return undefined;
       const [held] = this.heldScheduledFiles(s.mmUserId, fileIds);
       if (held) throw new FileHeld(held);
       const id = randomToken();
@@ -430,7 +436,7 @@ export class Store {
     });
   }
 
-  // Not releasing the files of an attempted failed row: it may have been posted, and Mattermost would drop the files from any other post.
+  // Not releasing the files of a failed row that keeps its attempt: it may have been posted, and Mattermost would drop the files from any other post.
   heldScheduledFiles(mmUserId: string, fileIds: string[]): HeldFile[] {
     if (!fileIds.length) return [];
     const rows = this.db.prepare(
@@ -520,16 +526,18 @@ export class Store {
 
   // Not a second statement after the UPDATE: a crash between them would leave a posted schedule's files unmarked, and send_message would refuse them with the wrong reason.
   settleScheduled(id: string, now: number, o: ScheduledOutcome): void {
-    const forget = o.status === 'pending' && o.forgetAttempt ? 1 : 0;
+    const forget = o.status !== 'posted' && o.forgetAttempt ? 1 : 0;
+    const posted = o.status === 'posted';
     const error = o.status === 'failed' ? o.error : o.status === 'posted' ? o.note ?? null : null;
     this.tx(() => {
       const r = this.get(
         `UPDATE scheduled_posts SET status = ?, post_id = ?, error = ?, updated_at = ?,
-           first_attempt_at = CASE WHEN ? THEN NULL ELSE first_attempt_at END, pending_post_id = CASE WHEN ? THEN NULL ELSE pending_post_id END
+           first_attempt_at = CASE WHEN ? THEN NULL ELSE first_attempt_at END, pending_post_id = CASE WHEN ? THEN NULL ELSE pending_post_id END,
+           file_ids = CASE WHEN ? THEN ? ELSE file_ids END
          WHERE id = ? AND status = 'sending' RETURNING mm_user_id`,
-        o.status, o.status === 'posted' ? o.postId : null, error, now, forget, forget, id,
+        o.status, posted ? o.postId : null, error, now, forget, forget, posted ? 1 : 0, posted ? JSON.stringify(o.fileIds) : null, id,
       );
-      if (r && o.status === 'posted' && o.fileIds?.length) this.markFilesPosted(r.mm_user_id, o.fileIds, o.postId);
+      if (r && o.status === 'posted' && o.fileIds.length) this.markFilesPosted(r.mm_user_id, o.fileIds, o.postId);
     });
   }
 
