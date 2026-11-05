@@ -104,6 +104,7 @@ describe('mark_as_read for channels', () => {
     routes = base();
     const r = await setup().call({ channels: [{ channel: '\u200bnowhere\u200b' }] });
     expect(r.text).toContain('チャンネル「nowhere」');
+    expect((await setup().call({ channels: [{ channel: 'no\nwhere' }] })).text).toContain('チャンネル「no where」');
     expect(r.text).not.toContain('\u200b');
   });
 

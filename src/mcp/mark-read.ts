@@ -70,7 +70,7 @@ export async function markAsRead(mm: Mm, uid: string, args: Args): Promise<CallT
   if (!n || n > MAX_ITEMS) throw new InputError(`channels と threads を合わせて 1〜${MAX_ITEMS} 件を指定してください。`);
   const crt = (await collapsedThreads(mm, uid)).on;
   const results: Result[] = [];
-  const pending = [...channels.map((c) => `チャンネル「${unformat(c.channel)}」`), ...threads.map((t) => `スレッド（post_id: ${t.post_id}）`)];
+  const pending = [...channels.map((c) => `チャンネル「${oneLine(unformat(c.channel))}」`), ...threads.map((t) => `スレッド（post_id: ${t.post_id}）`)];
   let started = 0;
   let writing = false;
   // Per item rather than failing the call: one bad item should not keep the others unread. Anything else (re-login, 429, outage, a bug) concerns every item, so the run stops there.
@@ -103,7 +103,7 @@ export async function markAsRead(mm: Mm, uid: string, args: Args): Promise<CallT
     for (const item of channels) {
       started++;
       writing = false;
-      let label = `チャンネル「${unformat(item.channel)}」`;
+      let label = `チャンネル「${oneLine(unformat(item.channel))}」`;
       try {
         const ch = await resolveChannel(mm, uid, item.channel).catch(channelError);
         label = `チャンネル ${oneLine(ch.displayName || ch.name)}（channel_id: ${ch.id}）`;
