@@ -1202,7 +1202,7 @@ describe('a root_id in another channel than the DM or group DM it is sent to', (
       [`GET /posts/${ROOT}`]: () => ({ id: ROOT, channel_id: 'o'.repeat(26), root_id: '', user_id: 'u2', message: 'root', create_at: 1 }),
     };
     const r = await setup().call('save_draft', { channel: '@carol', message: 'hi', root_id: ROOT });
-    expect(r.text).toContain(`root_id ${ROOT} の投稿はチャンネル（channel_id: `);
+    expect(r.text).toContain(`root_id ${ROOT} の投稿はチャンネル（channel_id: ${DM}、表示名: @carol）にありません。`);
     expect(hits).not.toContain('GET /users/u1/teams/t1/drafts');
   });
 });
