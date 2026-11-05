@@ -193,7 +193,7 @@ describe('@user that cannot be looked up', () => {
 });
 
 test('@、, with no name at all, is left to the name check', async () => {
-  await expect(resolveChannel(fake(routes).mm, ME, '@、')).rejects.not.toThrow('区切りは半角のカンマ');
+  await expect(resolveChannel(fake(routes).mm, ME, '@、')).rejects.toThrow('使えない文字を含みます');
 });
 
 describe('a real channel ID written in upper case', () => {
