@@ -1859,6 +1859,15 @@ describe('list_saved_posts', () => {
     expect(shownIds(out)).toEqual([...all.slice(0, 5), ...all.slice(41, 56)].map((p) => p.id));
   });
 
+  test('reads the first rows again 200 at a time when the small first read comes back empty, as all of its rows may be ones the user may not read', async () => {
+    const all = Array.from({ length: 60 }, (_, i) => post(pid(i), 10_000 - i));
+    routes = { ...base(), [FLAGGED]: (req: Request) => (new URL(req.url).searchParams.get('per_page') === '41' ? list([]) : byOffset(all)(req)) };
+    const out = await setup()('list_saved_posts', { limit: 20 });
+    expect(offsets()).toEqual([0, 0]);
+    expect(asked('per_page')).toEqual([41, 200]);
+    expect(shownIds(out)).toEqual(all.slice(0, 20).map((p) => p.id));
+  });
+
   test('shows a post that comes in two reads once', async () => {
     const [a, b, c] = [post(pid(1), 3000), post(pid(2), 2000), post(pid(3), 1000)];
     routes = { ...base(), [FLAGGED]: inTurn([[a, b], [b, c]]) };
@@ -1866,9 +1875,9 @@ describe('list_saved_posts', () => {
   });
 
   test('misses no post of a group of 21 with the same time across the boundary of a read, though each read orders the group differently', async () => {
-    // Two groups: one across the end of the first read (row 41 for limit 20), one across the end of the second (row 221).
+    // Two groups at rows 21-41 and 201-221: 20 rows before and 1 after the end of the first read (row 41 for limit 20) and of the second (row 221).
     const all = [
-      ...Array.from({ length: 30 }, (_, i) => post(pid(i), 10_000 - i)),
+      ...Array.from({ length: 21 }, (_, i) => post(pid(i), 10_000 - i)),
       ...Array.from({ length: 21 }, (_, i) => post(pid(100 + i), 5000)),
       ...Array.from({ length: 159 }, (_, i) => post(pid(200 + i), 4000 - i)),
       ...Array.from({ length: 21 }, (_, i) => post(pid(400 + i), 1000)),

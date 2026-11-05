@@ -386,11 +386,16 @@ export function registerReadTools(server: McpServer, ctx: ToolContext): void {
         const r = await mm.call<PostList>(uid, 'GET', `/users/${uid}/posts/flagged?page=${at}&per_page=${size}`);
         const got = r.order.map((id) => r.posts[id]).filter(Boolean);
         // Not stopping at a short page: Mattermost drops posts the user may not read after counting the page.
+        // Not taking an empty first read as the end: the first read is small, and all of its rows may be ones the user may not read.
+        if (!got.length && at === 0 && size < SAVED_PAGE) {
+          size = SAVED_PAGE;
+          continue;
+        }
         if (!got.length) break;
         for (const p of got) found.set(p.id, p);
         rest = [...found.values()].filter(older).sort(newestFirst);
         if (rest.length > per && Math.min(...got.map((p) => p.create_at)) < rest[per - 1].create_at) break;
-        // Starting each read SAVED_OVERLAP rows back: Mattermost orders only by create_at, so posts of the same time can swap places between reads and one at the boundary would come in neither.
+        // Not starting where the last read ended: Mattermost orders only by create_at, so posts of the same time can swap places between reads and one at the boundary would come in neither.
         // Not more rows back: a larger group of the same time across a boundary comes only from bulk imports, and an unsave during the call uses up the same margin.
         at += size - SAVED_OVERLAP;
         if (at + SAVED_OVERLAP >= SAVED_SCAN) {
