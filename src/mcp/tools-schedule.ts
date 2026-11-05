@@ -3,7 +3,7 @@ import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
 import { z } from 'zod';
 import { FileHeld, MAX_PENDING_SCHEDULED, type Scheduled, type ScheduledStatus, type Store } from '../store.ts';
 import { strictArgs } from './args.ts';
-import { encodeCursor, formatTime, InputError, truncate } from './format.ts';
+import { encodeCursor, formatTime, InputError, lines, truncate } from './format.ts';
 import { teamNameOf, type Mm, type MmChannel, type UserRef } from './resolve.ts';
 import { guarded, text, type ToolContext } from './server.ts';
 import { cursorArg, cursorOf, limitArg, perPage } from './tools-read.ts';
@@ -138,7 +138,8 @@ async function row(s: Scheduled, where: string, teamOf: (channelId: string) => P
     `予定時刻: ${formatTime(s.scheduledAt)}`,
   ];
   const head = s.message === undefined ? undefined : truncate(s.message, 200);
-  if (!full) out.push(head ? `本文（先頭 200 文字）: ${head.text}` : '本文: （復号できません）');
+  // Not leaving the body's later lines at the margin: one could pass for a heading or a field of the list, so they are indented as formatPost does.
+  if (!full) out.push(head ? `本文（先頭 200 文字）: ${lines(head.text).join('\n  ')}` : '本文: （復号できません）');
   // Not on the body line itself: a copied body would carry the hint into the post.
   if (!full && head?.truncated) out.push('（本文を先頭 200 文字で切りました。全文は list_scheduled_messages に id を渡すと出ます）');
   if (s.fileIds.length) out.push(`添付: ${s.fileIds.join(', ')}`);
@@ -187,7 +188,7 @@ export function registerScheduleTools(server: McpServer, ctx: ToolContext): void
   ) as unknown as ToolCallback<typeof scheduleSchema>);
 
   const listSchema = {
-    id: ID.optional().describe('この予約 ID の 1 件だけを、本文を切らずに返す。update_scheduled_message で本文を直す前に全文を得るのに使う。status、limit、cursor は無視する（limit は範囲外ならエラー）'),
+    id: ID.optional().describe('この予約 ID の 1 件だけを、本文を切らずに返す。update_scheduled_message で本文を直す前に全文を得るのに使う。status、limit、cursor は無視する（limit は不正な値ならエラー）'),
     status: z.enum(STATUSES).optional().describe('状態で絞る（pending: 待機中、sending: 投稿中、posted: 投稿済み、failed: 失敗）。cursor を渡したときは無視する'),
     limit: limitArg(20, 50),
     cursor: cursorArg,
