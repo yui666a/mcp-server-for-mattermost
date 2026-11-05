@@ -1,5 +1,6 @@
 import { randomBytes } from 'node:crypto';
 import request from 'supertest';
+import { vi } from 'vitest';
 import { createApp } from '../../src/app.ts';
 import { loadConfig } from '../../src/config.ts';
 import { openDb } from '../../src/db.ts';
@@ -22,3 +23,10 @@ export function makeApp(env: Record<string, string> = {}, fetchImpl: typeof fetc
 // Not vitest's defaults (1 s for vi.waitFor, 5 s for a test): on a busy machine the awaited event can take seconds.
 export const SLOW = { timeout: 10_000 };
 export const SLOW_TEST = 30_000;
+
+const realTimeout = AbortSignal.timeout.bind(AbortSignal);
+// Not left to the real clock: under load the cleanup's 5-second deadline and its 1-second margin before DELETE would run out while a test holds the lock or waits.
+export const freezeCleanupClock = () => {
+  vi.spyOn(AbortSignal, 'timeout').mockImplementation((ms) => (ms === 5000 ? new AbortController().signal : realTimeout(ms)));
+  vi.spyOn(performance, 'now').mockReturnValue(0);
+};
