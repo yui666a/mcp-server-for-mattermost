@@ -570,6 +570,18 @@ describe('save_draft', () => {
       expect(whole).toMatch(new RegExp(`既存の下書き（全文）: a{200}$`));
     });
 
+    test('counts the 200 characters of a quoted draft by grapheme, so an emoji of several code points is neither split nor counted as several', async () => {
+      const family = '👨‍👩‍👧';
+      serve({ [LIST]: () => [draft({ message: family.repeat(200) })] });
+      const whole = (await save()).text;
+      expect(whole).not.toContain('200 文字を超える');
+      expect(whole.endsWith(`既存の下書き（全文）: ${family.repeat(200)}`)).toBe(true);
+      serve({ [LIST]: () => [draft({ message: family.repeat(201) })] });
+      const cut = (await save()).text;
+      expect(cut).toContain('200 文字を超える');
+      expect(cut.endsWith(`既存の下書き（先頭 200 文字）: ${family.repeat(200)}`)).toBe(true);
+    });
+
     test('a different existing draft is kept, quoting its first 200 characters, without sending POST /drafts', async () => {
       serve({ [LIST]: () => [draft({ message: 'a'.repeat(200) + 'B'.repeat(50) })] });
       const r = await save();
