@@ -653,6 +653,22 @@ describe('a draft with the sent message is cleared after the post', () => {
     expect(logged.map((l) => JSON.parse(l))).toEqual([expect.objectContaining({ event: 'draft_cleanup_failed', name: 'Reauthorize', channel_id: CH })]);
   });
 
+  test.each([
+    ['less than a second', 4001, false],
+    ['exactly a second', 4000, true],
+  ])('with %s of the 5 seconds left before the DELETE, the DELETE is sent only when a second is left', async (_, at, sent) => {
+    vi.spyOn(performance, 'now').mockReturnValueOnce(0).mockReturnValue(at);
+    const f = fakeMm({ drafts: () => [draft()] });
+    const r = await f.send({ channel: 'team-a/dup', message: 'hello' });
+    expect(deletes(f)).toHaveLength(sent ? 1 : 0);
+    if (sent) {
+      expect(textOf(r)).toContain(CLEARED);
+    } else {
+      expect(textOf(r)).toContain(FAILED);
+      expect(logged.map((l) => JSON.parse(l))).toEqual([expect.objectContaining({ event: 'draft_cleanup_failed', name: 'TimeoutError', skipped: 'delete', channel_id: CH })]);
+    }
+  });
+
   test('a cleanup failure is logged with the channel_id', async () => {
     const f = fakeMm({ drafts: () => [draft()], failDelete: () => new MmError(500, 'app.draft.delete.app_error', 'x') });
     await f.send({ channel: 'team-a/dup', message: 'hello' });
