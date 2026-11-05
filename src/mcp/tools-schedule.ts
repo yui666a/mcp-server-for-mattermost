@@ -71,12 +71,16 @@ export async function scheduleMessage(mm: Mm, store: Store, uid: string, args: S
 
 const listCursor = z.object({ at: z.number().int(), id: z.string(), per_page: perPage(50), status: z.enum(STATUSES).optional() }).strict();
 
-export async function listScheduledMessages(mm: Mm, store: Store, uid: string, baseUrl: string,
-  args: { status?: ScheduledStatus; limit?: number; cursor?: string }): Promise<CallToolResult> {
-  const c = cursorOf(listCursor, args.cursor);
+type ListArgs = { id?: string; status?: ScheduledStatus; limit?: number; cursor?: string };
+
+export async function listScheduledMessages(mm: Mm, store: Store, uid: string, baseUrl: string, args: ListArgs): Promise<CallToolResult> {
+  // Not reading the cursor before the id: a stale cursor left in the call must not block fetching one schedule.
+  const one = args.id === undefined ? undefined : store.getScheduled(uid, args.id);
+  if (args.id !== undefined && !one) throw new InputError('予約が見つかりません。予約 ID は list_scheduled_messages（id を渡さずに）で確かめてください。');
+  const c = one ? undefined : cursorOf(listCursor, args.cursor);
   const per = c?.per_page ?? args.limit ?? 20;
   const status = c ? c.status : args.status;
-  const rows = store.listScheduled(uid, { status, after: c && { at: c.at, id: c.id }, limit: per + 1 });
+  const rows = one ? [one] : store.listScheduled(uid, { status, after: c && { at: c.at, id: c.id }, limit: per + 1 });
   const shown = rows.slice(0, per);
   if (!shown.length && !c) return text('予約はありません。');
   // Not failing the list on any of these lookups: it is the only place a user learns a schedule failed, and a channel they have left answers 403.
@@ -116,20 +120,25 @@ export async function listScheduledMessages(mm: Mm, store: Store, uid: string, b
     return teams.get(id);
   };
   const lines: string[] = [];
-  for (const s of shown) lines.push(...await row(s, (await channelOf(s.channelId)).label, teamOf, baseUrl));
+  for (const s of shown) lines.push(...await row(s, (await channelOf(s.channelId)).label, teamOf, baseUrl, !!one));
+  // Not ending a single schedule with the paging line: its body comes last so that everything after its heading is the body.
+  if (one) return text(lines.join('\n'));
   const last = shown.at(-1);
   lines.push(rows.length > per && last ? `next_cursor: ${encodeCursor({ at: last.scheduledAt, id: last.id, per_page: per, ...(status ? { status } : {}) })}` : '（続きはありません）');
   return text(lines.join('\n'));
 }
 
-async function row(s: Scheduled, where: string, teamOf: (channelId: string) => Promise<string | undefined>, baseUrl: string): Promise<string[]> {
+async function row(s: Scheduled, where: string, teamOf: (channelId: string) => Promise<string | undefined>, baseUrl: string, full: boolean): Promise<string[]> {
   const out = [
     `--- 予約 ID: ${s.id}`,
     `状態: ${STATUS[s.status]}`,
     `投稿先: ${where}${s.rootId ? `、返信先 post_id: ${s.rootId}` : ''}`,
     `予定時刻: ${formatTime(s.scheduledAt)}`,
-    s.message === undefined ? '本文: （復号できません）' : `本文（先頭 200 文字）: ${truncate(s.message, 200).text}`,
   ];
+  const head = s.message === undefined ? undefined : truncate(s.message, 200);
+  if (!full) out.push(head ? `本文（先頭 200 文字）: ${head.text}` : '本文: （復号できません）');
+  // Not on the body line itself: a copied body would carry the hint into the post.
+  if (!full && head?.truncated) out.push('（本文を先頭 200 文字で切りました。全文は list_scheduled_messages に id を渡すと出ます）');
   if (s.fileIds.length) out.push(`添付: ${s.fileIds.join(', ')}`);
   // Not saving the re-upload hint with the reason: rows fail on several paths (the tick, the late sweep, invalidate-scheduled), and this covers them all.
   if (s.error) out.push(s.status === 'posted' ? `注意: ${s.error}` : `失敗の理由: ${s.error}${s.fileIds.length ? ' ファイルを付けて送り直すときは、prepare_upload からアップロードし直してください。' : ''}`);
@@ -138,6 +147,10 @@ async function row(s: Scheduled, where: string, teamOf: (channelId: string) => P
     const team = s.status === 'posted' ? await teamOf(s.channelId) : undefined;
     if (team !== undefined) out.push(`${baseUrl}/${team}/pl/${s.postId}`);
   }
+  // Not in the middle as in the list: the body may span lines, and last is the only place where it ends unambiguously.
+  if (full) out.push(s.message === undefined
+    ? '本文: （復号できません。本文を直すには、update_scheduled_message に新しい本文全体を渡すか、取り消して予約し直してください）'
+    : `本文（この行の次から末尾まで）:\n${s.message}`);
   return out;
 }
 
@@ -149,7 +162,8 @@ export function updateScheduledMessage(store: Store, uid: string, args: { id: st
   const at = args.at === undefined ? undefined : when(args.at);
   const s = store.updateScheduled(uid, args.id, { message: args.message, scheduledAt: at }, Date.now());
   if (!s) throw new InputError(NOT_CHANGEABLE);
-  return text(['予約を変更しました。', `予約 ID: ${s.id}`, `予定時刻: ${formatTime(s.scheduledAt)}`].join('\n'));
+  return text(['予約を変更しました。', `予約 ID: ${s.id}`, `予定時刻: ${formatTime(s.scheduledAt)}`,
+    ...(args.message === undefined ? [] : ['本文は list_scheduled_messages に id を渡すと確かめられます。'])].join('\n'));
 }
 
 export function cancelScheduledMessage(store: Store, uid: string, args: { id: string }): CallToolResult {
@@ -169,6 +183,7 @@ export function registerScheduleTools(server: McpServer, ctx: ToolContext): void
   ) as unknown as ToolCallback<typeof scheduleSchema>);
 
   const listSchema = {
+    id: ID.optional().describe('この予約 ID の 1 件だけを、本文を切らずに返す。update_scheduled_message で本文を直す前に全文を得るのに使う。status と cursor は無視する'),
     status: z.enum(STATUSES).optional().describe('状態で絞る（pending: 待機中、sending: 投稿中、posted: 投稿済み、failed: 失敗）。cursor を渡したときは無視する'),
     limit: limitArg(20, 50),
     cursor: cursorArg,
@@ -177,13 +192,13 @@ export function registerScheduleTools(server: McpServer, ctx: ToolContext): void
     description: '本人の予約投稿を、予定時刻の順に返す。状態、失敗の理由、添付するファイル（あるとき）、投稿済みなら post_id とパーマリンクを出す。投稿済みと失敗の予約は 7 日で消える',
     inputSchema: listSchema,
     annotations: { readOnlyHint: true },
-  }, guarded(ctx, 'list_scheduled_messages', async (args: { status?: ScheduledStatus; limit?: number; cursor?: string }, extra: { signal: AbortSignal }) =>
+  }, guarded(ctx, 'list_scheduled_messages', async (args: ListArgs, extra: { signal: AbortSignal }) =>
     listScheduledMessages(mmOf(extra.signal), ctx.store, uid, ctx.cfg.mmBrowserUrl, args),
   ) as unknown as ToolCallback<typeof listSchema>);
 
   const destructive = { readOnlyHint: false, destructiveHint: true, idempotentHint: true };
   server.registerTool('update_scheduled_message', {
-    description: '待機中の本人の予約の本文か予定時刻を変える。投稿先と添付ファイルは変えられない（変えるときは取り消して予約し直す）。投稿中や投稿を試みた後の予約は変えられない',
+    description: '待機中の本人の予約の本文か予定時刻を変える。message は本文全体を置き換える。一覧の本文は先頭 200 文字までなので、書き換える前に list_scheduled_messages に id を渡して全文を得る。投稿先と添付ファイルは変えられない（変えるときは取り消して予約し直す）。投稿中や投稿を試みた後の予約は変えられない',
     inputSchema: updateSchema,
     annotations: destructive,
   }, guarded(ctx, 'update_scheduled_message', async (args: { id: string; message?: string; at?: string }) => updateScheduledMessage(ctx.store, uid, args),
