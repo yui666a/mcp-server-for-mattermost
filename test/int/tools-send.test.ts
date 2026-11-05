@@ -21,7 +21,6 @@ async function mmApi<T>(token: string, method: string, path: string, body?: unkn
   return res.json() as Promise<T>;
 }
 
-// Not stopping at the first failed deactivation: every user made has to go, and the test's own failure must not be replaced by the cleanup's.
 describe('send_message against the local Mattermost', () => {
   let req: ReturnType<typeof request>;
   let access: string;

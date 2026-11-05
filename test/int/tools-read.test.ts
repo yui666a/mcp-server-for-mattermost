@@ -50,7 +50,6 @@ async function upload(token: string, channelId: string, filename: string, body: 
 const nextCursor = (r: Result) => /next_cursor: (\S+)/.exec(r.content[0].text)?.[1];
 const postIds = (r: Result) => [...r.content[0].text.matchAll(/^--- post_id: ([a-z0-9]{26})/gm)].map((m) => m[1]);
 
-// Not stopping at the first failed deactivation: every user made has to go, and the test's own failure must not be replaced by the cleanup's.
 describe('read tools against the local Mattermost', () => {
   let req: ReturnType<typeof request>;
   let limiter: Limiter;
