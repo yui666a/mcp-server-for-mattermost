@@ -91,7 +91,7 @@ describe('a missing ID that is the name of a channel (26 lower-case letters and 
   test('is not used in place of the missing ID, but named in the error with its team/channel form', async () => {
     const { mm, calls } = fake({ ...routes, [`/teams/${teams[0].id}/channels/name/${NAME}`]: named, [`/teams/name/team-a/channels/name/${NAME}`]: named });
     await expect(resolveChannel(mm, ME, NAME)).rejects.toThrow(new InputError(
-      `チャンネル ID「${NAME}」のチャンネルはありません。ユーザー ID や投稿 ID を渡したのなら、チャンネルの指定ではありません。同じ文字列を名前に持つチャンネルはあります。そのチャンネルを指すときだけ、「team-a/${NAME}」の形で指定してください。\n    「team-a/${NAME}」の表示名: ${NAME.toUpperCase()}`,
+      `チャンネル ID「${NAME}」のチャンネルはありません。ユーザー ID や投稿 ID を渡したのなら、チャンネルの指定ではありません。同じ文字列を名前に持つチャンネルはあります。そのチャンネルを指すときだけ、「team-a/${NAME}」の形で指定してください。\n候補「team-a/${NAME}」の表示名: ${NAME.toUpperCase()}`,
     ));
     expect(calls).toEqual([`GET /channels/${NAME}`, 'GET /users/me/teams', `GET /teams/${teams[0].id}/channels/name/${NAME}`, `GET /teams/${teams[1].id}/channels/name/${NAME}`]);
     expect(await resolveChannel(mm, ME, `team-a/${NAME}`)).toMatchObject({ id: named.id, name: NAME });
@@ -108,7 +108,7 @@ describe('a missing ID that is the name of a channel (26 lower-case letters and 
   test('puts the display name of a candidate on one line, as anyone who creates the channel can write line breaks in it', async () => {
     const { mm } = fake({ ...routes, [`/teams/${teams[0].id}/channels/name/${NAME}`]: { ...named, display_name: 'a\nb\u2028c' } });
     const e = await resolveChannel(mm, ME, NAME).catch((x) => x);
-    expect(e.message).toContain(`\n    「team-a/${NAME}」の表示名: a b c`);
+    expect(e.message).toContain(`\n候補「team-a/${NAME}」の表示名: a b c`);
     expect(e.message.split('\n')).toHaveLength(2);
     expect(e.message).not.toMatch(/\u2028/);
   });
@@ -116,12 +116,12 @@ describe('a missing ID that is the name of a channel (26 lower-case letters and 
   test('names a candidate without a display name by its name', async () => {
     const { mm } = fake({ ...routes, [`/teams/${teams[0].id}/channels/name/${NAME}`]: { ...named, display_name: '' } });
     const e = await resolveChannel(mm, ME, NAME).catch((x) => x);
-    expect(e.message).toMatch(new RegExp(`\\n    「team-a/${NAME}」の表示名: ${NAME}$`));
+    expect(e.message).toMatch(new RegExp(`\\n候補「team-a/${NAME}」の表示名: ${NAME}$`));
   });
 
   test('names every team that has that name', async () => {
     const { mm } = fake({ ...routes, [`/teams/${teams[0].id}/channels/name/${NAME}`]: named, [`/teams/${teams[1].id}/channels/name/${NAME}`]: ch('g'.repeat(26), NAME, teams[1].id) });
-    await expect(resolveChannel(mm, ME, NAME)).rejects.toThrow(`「team-a/${NAME}」か「team-b/${NAME}」の形で指定してください。\n    「team-a/${NAME}」の表示名: ${NAME.toUpperCase()}\n    「team-b/${NAME}」の表示名: ${NAME.toUpperCase()}`);
+    await expect(resolveChannel(mm, ME, NAME)).rejects.toThrow(`「team-a/${NAME}」か「team-b/${NAME}」の形で指定してください。\n候補「team-a/${NAME}」の表示名: ${NAME.toUpperCase()}\n候補「team-b/${NAME}」の表示名: ${NAME.toUpperCase()}`);
   });
 
   test('is not looked up by name after a 403, which means the ID exists', async () => {
@@ -137,7 +137,7 @@ describe('a missing ID that is the name of a channel (26 lower-case letters and 
   test('with upper case, is looked up by name in lower case, which is the only case a channel name has', async () => {
     const upper = 'N'.repeat(26);
     const { mm, calls } = fake({ ...routes, [`/teams/${teams[0].id}/channels/name/${NAME}`]: named });
-    await expect(resolveChannel(mm, ME, upper)).rejects.toThrow(`「team-a/${NAME}」の形で指定してください。\n    「team-a/${NAME}」の表示名: ${NAME.toUpperCase()}`);
+    await expect(resolveChannel(mm, ME, upper)).rejects.toThrow(`「team-a/${NAME}」の形で指定してください。\n候補「team-a/${NAME}」の表示名: ${NAME.toUpperCase()}`);
     expect(calls).toContain(`GET /teams/${teams[0].id}/channels/name/${NAME}`);
     await expect(resolveChannel(fake(routes).mm, ME, upper)).rejects.toMatchObject({ status: 404 });
   });

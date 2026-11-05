@@ -218,7 +218,7 @@ describe('mark_as_read for channels', () => {
     const r = await setup().call({ channels: [{ channel: NAME }] });
     const lines = r.text.split('\n');
     expect(lines.filter((l) => l.startsWith('- '))).toHaveLength(1);
-    expect(r.text).toContain(`\n    「team-a/${NAME}」の表示名: - チャンネル（channel_id: fake）: 既読にしました。`);
+    expect(r.text).toContain(`\n候補「team-a/${NAME}」の表示名: - チャンネル（channel_id: fake）: 既読にしました。`);
   });
 
   test('keeps a channel\'s display name with a line break on one line in the result', async () => {

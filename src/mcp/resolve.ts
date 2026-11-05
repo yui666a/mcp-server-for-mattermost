@@ -101,8 +101,9 @@ export async function resolveChannel(mm: Mm, userId: string, spec: string, opts:
       throw new InputError([
         `チャンネル ID「${s}」のチャンネルはありません。ユーザー ID や投稿 ID を渡したのなら、チャンネルの指定ではありません。`,
         `同じ文字列を名前に持つチャンネルはあります。そのチャンネルを指すときだけ、${found.map((f) => `「${f.teamName}/${lower}」`).join('か')}の形で指定してください。`,
-        // Not "- " at the head: mark_read puts this message in one item of its list, where such a line would read as another item.
-        ...found.map((f) => `\n    「${f.teamName}/${lower}」の表示名: ${oneLine(f.displayName || f.name)}`),
+        // Not "- " at the head: mark_as_read puts this message in one item of its list, where such a line would read as another item.
+        // Not indented either: shown as Markdown, an indented line reads as a code block or as part of the list item above it.
+        ...found.map((f) => `\n候補「${f.teamName}/${lower}」の表示名: ${oneLine(f.displayName || f.name)}`),
       ].join(''));
     });
     // Not looked up when only the ID is wanted (in: in a search): a lookup the output does not use could still fail on a rate limit.
