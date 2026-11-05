@@ -174,7 +174,7 @@ export function channelLines(c: ChannelRef): string[] {
 function channelError(e: unknown): never {
   // Not converting a missing team: /teams/name/{team}/channels/name/{channel} answers it with 404 too.
   if (e instanceof ChannelFetchError && e.id !== 'app.team.get_by_name.missing.app_error') {
-    if (e.status === 403) throw new InputError('このチャンネルを見る権限がありません（参加していない非公開チャンネルなど）');
+    if (e.status === 403) throw new InputError('このチャンネルを見る権限がありません（参加していない非公開チャンネルなど）。参加しているはずなら、Mattermost の一時的な障害の可能性があります。少し待ってから再試行してください。');
     if (e.status === 404) throw new InputError('チャンネルが見つかりません（参加していない非公開チャンネルを名前で指定した場合も、Mattermost はこの結果を返します）');
   }
   throw e;
@@ -675,8 +675,9 @@ export function registerReadTools(server: McpServer, ctx: ToolContext): void {
       }
       if (!c && from === 'unread') {
         const me = await mm.call<{ last_viewed_at: number }>(uid, 'GET', `/channels/${ch.id}/members/me`).catch((e) => {
-          // Not reading only 404 as not joined: a public channel the user has not joined is refused with 403 before the membership lookup.
-          if (e instanceof MmError && (e.status === 403 || e.status === 404)) throw new InputError('このチャンネルに参加していないため、未読の位置がありません。from: "latest" で読んでください。');
+          if (e instanceof MmError && e.status === 404) throw new InputError('このチャンネルに参加していないため、未読の位置がありません。from: "latest" で読んでください。');
+          // Not saying the user has not joined on 403: Mattermost refuses a public channel the user has not joined with 403 before the membership lookup, and a passing failure answers 403 too.
+          if (e instanceof MmError && e.status === 403) throw new InputError('このチャンネルの未読の位置を取得できませんでした（参加していないか、Mattermost の一時的な障害）。参加していないなら from: "latest" で読んでください。参加しているはずなら、少し待ってから再試行してください。');
           throw e;
         });
         // Falling back to newest first rather than walking back to the first post: a channel never opened counts its whole history as unread, with no bound on the walk.
