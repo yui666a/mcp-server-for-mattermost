@@ -11,7 +11,7 @@ import { guarded, text, type ToolContext } from './server.ts';
 import { worded, type Wording } from './tools-send.ts';
 import { parseWhen } from './when.ts';
 
-type PostList = { order: string[]; posts: Record<string, MmPost>; has_next?: boolean | null };
+type PostList = { order: string[]; posts: Record<string, MmPost>; has_next?: boolean | null; prev_post_id?: string };
 type Page = { lines: string[]; next?: object; posts?: MmPost[]; notes?: string[] };
 
 type ReadMm = Mm & Pick<MmClient, 'callBytes'>;
@@ -336,7 +336,7 @@ export async function collapsedThreads(mm: Mm, uid: string): Promise<{ on: boole
   const server = (await mm.call<{ CollapsedThreads?: string }>(uid, 'GET', '/config/client?format=old')).CollapsedThreads ?? '';
   if (server !== 'default_on' && server !== 'default_off') return { on: server === 'always_on', label: `サーバー設定: ${server}` };
   const pref = await mm.call<{ value: string }>(uid, 'GET', CRT_PREF).catch((e) => {
-    // A 400 rather than 404 is how Mattermost answers for a user who never saved the preference.
+    // Not treating the 400 as an error: Mattermost answers 400 rather than 404 for a user who never saved the preference.
     if (e instanceof MmError && e.status === 400 && e.id === 'app.preference.get.app_error') return undefined;
     throw e;
   });
@@ -638,7 +638,13 @@ export function registerReadTools(server: McpServer, ctx: ToolContext): void {
         else {
           const crt = (await collapsedThreads(mm, uid)).on;
           const q = new URLSearchParams({ limit_before: '0', limit_after: String(per + 1), collapsedThreads: String(crt), skipFetchThreads: 'true' });
-          return unreadPage(crt, await mm.call<PostList>(uid, 'GET', `/users/${uid}/channels/${ch.id}/posts/unread?${q}`));
+          const first = await mm.call<PostList>(uid, 'GET', `/users/${uid}/channels/${ch.id}/posts/unread?${q}`);
+          // Not keeping Mattermost's first page: it reads strictly after the first unread post, leaving out others of its millisecond, so it is read again after the post before it.
+          // Not saying there is nothing unread when the second call comes back empty: the post before may have been deleted for good in between.
+          if (!first.order.length || !first.prev_post_id) return unreadPage(crt, first);
+          const after = new URLSearchParams({ after: first.prev_post_id, per_page: String(per + 1), collapsedThreads: String(crt), skipFetchThreads: 'true' });
+          const again = await mm.call<PostList>(uid, 'GET', `/channels/${ch.id}/posts?${after}`);
+          return unreadPage(crt, again.order.length ? again : first);
         }
       }
       // Paging with before=<post_id> rather than page numbers: new posts arriving between calls would shift pages.
