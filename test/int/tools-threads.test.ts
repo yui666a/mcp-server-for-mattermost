@@ -119,7 +119,7 @@ describe('followed threads against the local Mattermost', () => {
     }
     const page = pages.find((t) => t.includes(root));
     expect(page).toBeDefined();
-    expect(page).toContain(`（アーカイブ済み）（name: t79-archived-${TAG}、channel_id: ${ch}） | チーム: ${e.teams.a.name}（team_id: ${team}）`);
+    expect(page).toMatch(new RegExp(`チーム: ${e.teams.a.name}（team_id: ${team}） \\| チャンネル: channel_id: ${ch}、name: t79-archived-${TAG}、表示名: [^\\n]*（アーカイブ済み）`));
   });
 
   test('follow_thread on a followed thread keeps its unread replies and mentions', async () => {
@@ -175,7 +175,6 @@ describe('followed threads against the local Mattermost', () => {
     await say(bobMm, ch, 'bob reply', root);
     const r = await call('follow_thread', { post_id: root });
     expect(r.isError).toBe(true);
-    // A non-member gets 403 from members/me, which a transient failure also gives, so the tool does not say outright that alice has not joined.
     expect(r.content[0].text).toContain('このチャンネルに参加しているかを確かめられませんでした');
     expect(await followed()).not.toContain(root);
   });
