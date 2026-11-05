@@ -94,7 +94,7 @@ export async function resolveChannel(mm: Mm, userId: string, spec: string, opts:
         `同じ文字列を名前に持つチャンネルはあります。そのチャンネルを指すときだけ、${found.map((f) => `「${f.teamName}/${lower}」（${f.displayName}）`).join('か')}の形で指定してください。`,
       ].join(''));
     });
-    // Not looked up when only the ID is wanted, as for a search's in:: a lookup the output does not use could still fail on a rate limit.
+    // Not looked up when only the ID is wanted (in: in a search): a lookup the output does not use could still fail on a rate limit.
     if (opts.names === false) return ref(c, '');
     const r = ref(c, await teamNameOf(mm, userId, c.team_id));
     const label = await dmLabel(mm, userId, c);

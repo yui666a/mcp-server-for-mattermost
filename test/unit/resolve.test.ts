@@ -151,6 +151,21 @@ test.each([
   await expect(resolveChannel(fake(routes).mm, ME, spec)).rejects.toThrow(new InputError(message));
 });
 
+test('a user ID written in upper case is looked up in lower case, which is the only case Mattermost IDs have', async () => {
+  const { mm, calls } = fake(routes);
+  expect(await resolveUser(mm, ME, BOB.toUpperCase())).toMatchObject({ id: BOB });
+  expect(calls).toEqual([`GET /users/${BOB}`]);
+});
+
+test('with names: false, a channel given by its ID looks up neither its team nor the users of a DM or group DM', async () => {
+  const GM_ID = 'g'.repeat(26);
+  const { mm, calls } = fake({ ...routes, [`/channels/${GM_ID}`]: { id: GM_ID, name: 'f'.repeat(40), display_name: 'x', team_id: '', type: 'G' } });
+  expect(await resolveChannel(mm, ME, DM, { names: false })).toMatchObject({ id: DM, teamName: '' });
+  expect(await resolveChannel(mm, ME, GM_ID, { names: false })).toMatchObject({ id: GM_ID });
+  expect(await resolveChannel(mm, ME, CH_A, { names: false })).toMatchObject({ id: CH_A, teamName: '' });
+  expect(calls).toEqual([`GET /channels/${DM}`, `GET /channels/${GM_ID}`, `GET /channels/${CH_A}`]);
+});
+
 describe('a DM or group DM given by its channel ID is named as when given as @user or @a,b', () => {
   const GM_ID = 'g'.repeat(26);
   const CAROL = 'c'.padEnd(26, '1');
