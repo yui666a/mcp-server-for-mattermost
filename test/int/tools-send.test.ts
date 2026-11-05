@@ -160,27 +160,27 @@ describe('send_message against the local Mattermost', () => {
   });
 
   test('creates a group DM given as @a,b, which read_channel then reads but does not create', () => withUsers(async (made) => {
-      const names = ['ga', 'gb'].map((p) => `${p}${TAG}`);
-      const ids: string[] = [];
-      for (const name of names) {
-        ids.push((await mmApi<{ id: string }>(e.adminToken, 'POST', '/users', { username: name, email: `${name}@example.com`, password: 'Passw0rd!dev123' })).id);
-        made.push(ids.at(-1)!);
-      }
-      const spec = `@${names[1]},${names[0]}`;
-      const gmName = createHash('sha1').update([e.users.alice.id, ...ids].sort().join('')).digest('hex');
-      const gm = () => fetch(`${e.mmUrl}/api/v4/teams/${e.teams.a.id}/channels/name/${gmName}`, { headers: { authorization: `Bearer ${aliceMm}` } });
-      const read = () => req.post('/mcp')
-        .set({ authorization: `Bearer ${access}`, accept: 'application/json, text/event-stream', 'content-type': 'application/json' })
-        .send(JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'read_channel', arguments: { channel: spec } } }));
-      expect((await read()).body.result.content[0].text).toContain(`@${names[0]}, @${names[1]} とのグループ DM はまだありません`);
-      expect((await gm()).status).toBe(404);
+    const names = ['ga', 'gb'].map((p) => `${p}${TAG}`);
+    const ids: string[] = [];
+    for (const name of names) {
+      ids.push((await mmApi<{ id: string }>(e.adminToken, 'POST', '/users', { username: name, email: `${name}@example.com`, password: 'Passw0rd!dev123' })).id);
+      made.push(ids.at(-1)!);
+    }
+    const spec = `@${names[1]},${names[0]}`;
+    const gmName = createHash('sha1').update([e.users.alice.id, ...ids].sort().join('')).digest('hex');
+    const gm = () => fetch(`${e.mmUrl}/api/v4/teams/${e.teams.a.id}/channels/name/${gmName}`, { headers: { authorization: `Bearer ${aliceMm}` } });
+    const read = () => req.post('/mcp')
+      .set({ authorization: `Bearer ${access}`, accept: 'application/json, text/event-stream', 'content-type': 'application/json' })
+      .send(JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'read_channel', arguments: { channel: spec } } }));
+    expect((await read()).body.result.content[0].text).toContain(`@${names[0]}, @${names[1]} とのグループ DM はまだありません`);
+    expect((await gm()).status).toBe(404);
 
-      const r = await call({ channel: spec, message: `${TAG} first group dm` });
-      expect(r.isError).toBeFalsy();
-      const created = await (await gm()).json() as { id: string; type: string };
-      expect(created.type).toBe('G');
-      expect(r.content[0].text).toContain(`投稿先: channel_id: ${created.id}、表示名: @${names[0]}, @${names[1]}`);
-      expect((await read()).body.result.content[0].text).toContain(`${TAG} first group dm`);
+    const r = await call({ channel: spec, message: `${TAG} first group dm` });
+    expect(r.isError).toBeFalsy();
+    const created = await (await gm()).json() as { id: string; type: string };
+    expect(created.type).toBe('G');
+    expect(r.content[0].text).toContain(`投稿先: channel_id: ${created.id}、表示名: @${names[0]}, @${names[1]}`);
+    expect((await read()).body.result.content[0].text).toContain(`${TAG} first group dm`);
   }));
 
   test('ambiguous channel name is rejected without posting', async () => {
@@ -191,23 +191,23 @@ describe('send_message against the local Mattermost', () => {
   });
 
   test('creates the DM with a user never messaged before, which read_channel does not', () => withUsers(async (made) => {
-      const name = `dm${TAG}`;
-      const u = await mmApi<{ id: string }>(e.adminToken, 'POST', '/users', { username: name, email: `${name}@example.com`, password: 'Passw0rd!dev123' });
-      made.push(u.id);
-      const dmName = [e.users.alice.id, u.id].sort().join('__');
-      const dm = () => fetch(`${e.mmUrl}/api/v4/teams/${e.teams.a.id}/channels/name/${dmName}`, { headers: { authorization: `Bearer ${aliceMm}` } });
-      const read = await req.post('/mcp')
-        .set({ authorization: `Bearer ${access}`, accept: 'application/json, text/event-stream', 'content-type': 'application/json' })
-        .send(JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'read_channel', arguments: { channel: `@${name}` } } }));
-      expect(read.body.result.content[0].text).toContain(`@${name} との DM はまだありません`);
-      expect((await dm()).status).toBe(404);
+    const name = `dm${TAG}`;
+    const u = await mmApi<{ id: string }>(e.adminToken, 'POST', '/users', { username: name, email: `${name}@example.com`, password: 'Passw0rd!dev123' });
+    made.push(u.id);
+    const dmName = [e.users.alice.id, u.id].sort().join('__');
+    const dm = () => fetch(`${e.mmUrl}/api/v4/teams/${e.teams.a.id}/channels/name/${dmName}`, { headers: { authorization: `Bearer ${aliceMm}` } });
+    const read = await req.post('/mcp')
+      .set({ authorization: `Bearer ${access}`, accept: 'application/json, text/event-stream', 'content-type': 'application/json' })
+      .send(JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'read_channel', arguments: { channel: `@${name}` } } }));
+    expect(read.body.result.content[0].text).toContain(`@${name} との DM はまだありません`);
+    expect((await dm()).status).toBe(404);
 
-      const r = await call({ channel: `@${name}`, message: `${TAG} first dm` });
-      expect(r.isError).toBeFalsy();
-      const created = await (await dm()).json() as { id: string };
-      expect(r.content[0].text).toContain(`投稿先: channel_id: ${created.id}、表示名: @${name}`);
-      const posts = await mmApi<{ posts: Record<string, Post> }>(aliceMm, 'GET', `/channels/${created.id}/posts`);
-      expect(Object.values(posts.posts).map((p) => p.message)).toEqual([`${TAG} first dm`]);
+    const r = await call({ channel: `@${name}`, message: `${TAG} first dm` });
+    expect(r.isError).toBeFalsy();
+    const created = await (await dm()).json() as { id: string };
+    expect(r.content[0].text).toContain(`投稿先: channel_id: ${created.id}、表示名: @${name}`);
+    const posts = await mmApi<{ posts: Record<string, Post> }>(aliceMm, 'GET', `/channels/${created.id}/posts`);
+    expect(Object.values(posts.posts).map((p) => p.message)).toEqual([`${TAG} first dm`]);
   }));
 
   test('attaches a file uploaded through prepare_upload to a DM that prepare_upload created', async () => {
