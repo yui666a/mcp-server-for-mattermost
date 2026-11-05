@@ -249,12 +249,17 @@ async function filterChannelIds(mm: Mm, userId: string, spec: string, exclude: b
   }
 }
 
+// Not higher: with 10 teams the worst case (1 + names × teams GETs) already takes 201 of the 300 requests a user may send per minute,
+// before anything else the user sends in that minute.
+const MAX_CHANNEL_FILTERS = 20;
+
 // Rewritten here rather than left to Mattermost: a search across all teams looks channel names up without a team and matches nothing,
 // and in:@user creates the DM (GetOrCreateDirectChannel) from a read-only tool.
 export async function resolveInFilters(mm: Mm, userId: string, terms: string): Promise<{ terms: string; notes: string[] }> {
   const words = splitWords(terms);
   const filters = channelFilters(words);
   if (!filters.length) return { terms, notes: [] };
+  if (filters.length > MAX_CHANNEL_FILTERS) throw new InputError(`in: と channel: は 1 回の検索で ${MAX_CHANNEL_FILTERS} 個まで指定できます。`);
   const notes: string[] = [];
   const out = words.map((w) => [w]);
   for (const f of filters) {
@@ -263,10 +268,20 @@ export async function resolveInFilters(mm: Mm, userId: string, terms: string): P
       throw new InputError(`in:${f.value} の後の「${next}」: 検索の in: では @a,b のようにカンマの前後に空白を入れずに書いてください。`);
     }
   }
+  // Kept for this search only, not across searches: a channel created or joined in between would stay unseen.
+  // POST is not kept: a group DM's POST /users/usernames rarely repeats within one search.
+  const memo = new Map<string, Promise<unknown>>();
+  const cached: Mm = {
+    call: <T>(u: string, m: string, p: string, b?: unknown, sig?: AbortSignal) => {
+      if (m !== 'GET') return mm.call<T>(u, m, p, b, sig);
+      if (!memo.has(p)) memo.set(p, mm.call<T>(u, m, p, b, sig));
+      return memo.get(p) as Promise<T>;
+    },
+  };
   // Sequential rather than Promise.all: parallel lookups would exceed the per-user concurrency limit.
   for (const f of filters) {
     const spec = f.value.replace(/^~+/, '');
-    const ids = await filterChannelIds(mm, userId, spec, f.exclude, notes);
+    const ids = await filterChannelIds(cached, userId, spec, f.exclude, notes);
     out.splice(f.at, f.span, ids.map((id) => `${f.exclude ? '-' : ''}in:${id}`), ...(f.span === 2 ? [[]] : []));
   }
   const rewritten = out.flat().join(' ');
