@@ -251,7 +251,7 @@ describe('search_posts in: filters', () => {
     ['x in:~\u200d\u200e@bob ,carol', '「,carol」', false],
     ['x in:@bob \u2060，carol', '「\u2060，carol」', true],
     ['x in:@bob \ufeff，carol', '「\ufeff，carol」', true],
-  ])('a U+FEFF or zero-width character after ~ or before the next word does not hide a misplaced comma in %j', async (terms, word, fullWidth) => {
+  ])('a format character after ~ or before the next word does not hide a misplaced comma in %j', async (terms, word, fullWidth) => {
     routes = base();
     const out = await setup()('search_posts', { terms }, true);
     expect(out).toContain(`の後の${word}`);
