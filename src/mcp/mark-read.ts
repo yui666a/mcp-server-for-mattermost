@@ -4,7 +4,7 @@ import { z } from 'zod';
 import { MmError, RateLimited } from '../mattermost/client.ts';
 import { strictArgs } from './args.ts';
 import { InputError, oneLine, type MmPost } from './format.ts';
-import { myTeams, resolveChannel, type Mm } from './resolve.ts';
+import { myTeams, resolveChannel, unformat, type Mm } from './resolve.ts';
 import { log } from '../log.ts';
 import { failure, failureText, guarded, text, type ToolContext } from './server.ts';
 import { collapsedThreads } from './tools-read.ts';
@@ -103,7 +103,7 @@ export async function markAsRead(mm: Mm, uid: string, args: Args): Promise<CallT
     for (const item of channels) {
       started++;
       writing = false;
-      let label = `チャンネル「${item.channel}」`;
+      let label = `チャンネル「${unformat(item.channel)}」`;
       try {
         const ch = await resolveChannel(mm, uid, item.channel);
         label = `チャンネル（channel_id: ${ch.id}、表示名: ${oneLine(ch.displayName || ch.name)}）`;

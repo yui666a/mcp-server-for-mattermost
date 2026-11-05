@@ -1033,6 +1033,7 @@ describe('a DM not opened yet', { timeout: SLOW_TEST }, () => {
     test.each([
       ['@carol', CREATE],
       ['  @carol ', CREATE],
+      ['\u200b@carol', CREATE],
       ['@carol,dave', 'POST /channels/group'],
     ])('to %j on a server with attachments off is refused after finding no DM and before creating one', async (channel, create) => {
       serveWith(() => ({ EnableFileAttachments: 'false', MaxFileSize: '100' }));
