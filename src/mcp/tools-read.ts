@@ -192,13 +192,13 @@ function channelFilters(words: string[]): { at: number; span: number; value: str
   return found;
 }
 
-async function filterChannelIds(mm: Mm, userId: string, spec: string, exclude: boolean, notes: string[]): Promise<string[]> {
+async function filterChannelIds(mm: Mm, userId: string, spec: string, written: string, exclude: boolean, notes: string[]): Promise<string[]> {
   try {
     return [(await resolveChannel(mm, userId, spec)).id];
   } catch (e) {
     if (e instanceof Ambiguous) {
       const ids = [...new Set(e.candidates.map((c) => c.id))];
-      if (ids.length > 1 && !exclude) notes.push(`in:${spec} は複数のチームにあるため、すべてで探しました（${e.candidates.map((c) => c.team).join('、')}）。`);
+      if (ids.length > 1 && !exclude) notes.push(`${written} は複数のチームにあるため、すべてで探しました（${e.candidates.map((c) => c.team).join('、')}）。`);
       return ids;
     }
     // No DM means no posts to exclude, so the condition is dropped rather than failing the search.
@@ -218,16 +218,17 @@ export async function resolveInFilters(mm: Mm, userId: string, terms: string): P
   if (!filters.length) return { terms, notes: [] };
   const notes: string[] = [];
   const out = words.map((w) => [w]);
+  const written = (f: (typeof filters)[number]) => words.slice(f.at, f.at + f.span).join(' ');
   for (const f of filters) {
     const next = words[f.at + f.span];
     if (f.value.replace(/^~+/, '').startsWith('@') && /^[,、，]/.test(next ?? '')) {
-      throw new InputError(`in:${f.value} の後の「${next}」: 検索の in: では @a,b のようにカンマの前後に空白を入れずに書いてください。`);
+      throw new InputError(`${written(f)} の後の「${next}」: 検索の in: では @a,b のようにカンマの前後に空白を入れずに書いてください。`);
     }
   }
   // Sequential rather than Promise.all: parallel lookups would exceed the per-user concurrency limit.
   for (const f of filters) {
     const spec = f.value.replace(/^~+/, '');
-    const ids = await filterChannelIds(mm, userId, spec, f.exclude, notes);
+    const ids = await filterChannelIds(mm, userId, spec, written(f), f.exclude, notes);
     out.splice(f.at, f.span, ids.map((id) => `${f.exclude ? '-' : ''}in:${id}`), ...(f.span === 2 ? [[]] : []));
   }
   const rewritten = out.flat().join(' ');
