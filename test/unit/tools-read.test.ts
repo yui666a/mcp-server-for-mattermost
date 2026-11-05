@@ -187,7 +187,7 @@ describe('search_posts in: filters', () => {
     expect(words.at(-1)).toBe('"a b"');
   });
 
-  test('searches terms with 200,000 words before a quote', async () => {
+  test('searches terms with 200,000 words before a quote, replacing in: end to end', async () => {
     routes = base();
     const terms = `${'w '.repeat(200_000)}"a b" in:only-a`;
     expect(await setup()('search_posts', { terms })).not.toContain('エラー');
