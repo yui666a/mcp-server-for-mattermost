@@ -120,10 +120,15 @@ export async function markAsRead(mm: Mm, uid: string, args: Args): Promise<CallT
       // Not looking for the team the user has open: for a DM or group DM thread the team only tells clients which team's thread counts to update, and no API tells which one is open.
       const team = ch.team_id || (anyTeam ??= (await myTeams(mm, uid))[0]?.id);
       if (!team) throw new InputError('所属しているチームがないため、スレッドを既読にできません。');
-      const state = await mm.call<ThreadState>(uid, 'GET', `/users/${uid}/teams/${team}/threads/${root}`).catch((e) => {
+      const state = await mm.call<ThreadState>(uid, 'GET', `/users/${uid}/teams/${team}/threads/${root}`).catch(async (e) => {
         if (!(e instanceof MmError && e.status === 404)) throw e;
         // Not pointing a root post without replies to follow_thread: Mattermost has no thread state for it until the first reply, followed or not.
         if (!p.root_id && !p.reply_count) throw new InputError('このスレッドには返信が無いため、既読にするものがありません。');
+        // Not pointing a thread of a channel the user has not joined to follow_thread: follow_thread refuses it. A public channel's posts are readable without joining, so the 404 alone does not tell.
+        await mm.call(uid, 'GET', `/channels/${p.channel_id}/members/me`).catch((m) => {
+          if (missing(m)) throw new InputError('このスレッドのチャンネルに参加していません。参加していないチャンネルのスレッドは未読に数えられないので、既読にするものがありません。');
+          throw m;
+        });
         throw new InputError('このスレッドはフォローしていないため、既読の状態がありません（フォローしていないスレッドの返信は未読に数えられません）。フォローするなら follow_thread を使ってください（フォローした時点までの返信が既読になります）。');
       });
       let at = state.last_reply_at;
