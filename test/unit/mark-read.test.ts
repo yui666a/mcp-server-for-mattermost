@@ -107,6 +107,12 @@ describe('mark_as_read for channels', () => {
     expect(r.text).not.toContain('\u200b');
   });
 
+  test.each([[403, 'このチャンネルを見る権限がありません'], [404, 'チャンネルが見つかりません']])('words a channel spec Mattermost answers with %i, as get_channel does', async (status, wording) => {
+    routes = { ...base(), 'GET /teams/name/team-a/channels/name/nowhere': mmError(status, 'app.channel.get_by_name.missing.app_error') };
+    const r = await setup().call({ channels: [{ channel: 'team-a/nowhere' }] });
+    expect(r.text).toContain(wording);
+  });
+
   test('marks each channel read right after checking it when nothing but the user\'s own posts (sent through this app) follow last_post_id', async () => {
     routes = { ...base(), [`GET /channels/${CH}/posts`]: () => after([post(1, { user_id: 'u1', props: { from_oauth_app: 'true' } })]) };
     const r = await setup().call({ channels: [{ channel: CH, last_post_id: LAST }, { channel: CH2 }] });
@@ -423,6 +429,13 @@ describe('mark_as_read for threads', () => {
     const logged = vi.mocked(process.stdout.write).mock.calls.map(([l]) => JSON.parse(String(l)));
     expect(logged).toContainEqual(expect.objectContaining({ event: 'tool_interrupted', mm_user_id: 'u1', tool: 'mark_as_read', outcome: 'upstream_unavailable' }));
     expect(logged).toContainEqual(expect.objectContaining({ event: 'tool_call', tool: 'mark_as_read', outcome: 'tool_error' }));
+  });
+
+  test('lists a channel not started without the format characters around its spec', async () => {
+    routes = threads({ 'POST /channels/members/u1/mark_read': unavailable });
+    const r = await setup().call({ channels: [{ channel: CH }, { channel: `\u200b${CH2}\u200b` }] });
+    expect(r.text).toContain(`次の 1 件は処理していません: チャンネル「${CH2}」`);
+    expect(r.text).not.toContain('\u200b');
   });
 
   test('stops at a rate limit in the threads before writing, saying that thread was not marked', async () => {
