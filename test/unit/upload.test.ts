@@ -243,7 +243,7 @@ describe('replies before the whole body has arrived', { timeout: 30_000 }, () =>
     const s = await listen();
     const url = s.url();
     // Not made after rawPost: the log can come before it resolves.
-    const loggedOnce = new Promise<void>((r) => vi.spyOn(process.stdout, 'write').mockImplementation((line) => { out.push(String(line)); if (logged().length) r(); return true; }));
+    const loggedOnce = new Promise<void>((r) => vi.spyOn(process.stdout, 'write').mockImplementation((line) => { out.push(String(line)); if (String(line).includes('"event":"upload"')) r(); return true; }));
     await rawPost(s.port, url, Buffer.alloc(1024 * 1024), { chunked: true, stopAfter: 100_000 });
     await loggedOnce;
     expect(logged()).toHaveLength(1);
@@ -256,6 +256,7 @@ describe('replies before the whole body has arrived', { timeout: 30_000 }, () =>
 // Not 15 s (BODY_IDLE_MS) or more: the handler must use the idle limit it is given, not its default.
 const IDLE_ENDED_WITHIN = 10_000;
 
+// Not vitest's 5 s: it would cut the test before IDLE_ENDED_WITHIN on a busy machine.
 describe('a client that stops sending mid-body', { timeout: 30_000 }, () => {
   let close: () => void;
   afterEach(() => close?.());
