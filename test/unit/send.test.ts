@@ -341,7 +341,7 @@ test('a 429 after an earlier request of the call may have posted keeps the claim
   let first = true;
   const f = fakeMm({ failPost: () => (first ? ((first = false), 'rate429doubt') : undefined) });
   await expect(f.send({ channel: 'team-a/dup', message: '429' })).rejects.toBeInstanceOf(RateLimited);
-  expect((await f.send({ channel: 'team-a/dup', message: '429' })).isError).toBe(true);
+  expect(textOf(await f.send({ channel: 'team-a/dup', message: '429' }))).toContain('処理中');
 });
 
 test('a failed lookup on the retry path keeps the claim', async () => {
