@@ -36,6 +36,7 @@ let joined: { id: string };
 let outside: { id: string };
 let secret: { id: string };
 let archived: { id: string };
+let left: { id: string };
 let archivedByTest = false;
 
 const call = async (name: string, args: Record<string, unknown>): Promise<Result> => {
@@ -67,7 +68,7 @@ async function saved(): Promise<string[]> {
 }
 async function savedInMattermost(): Promise<string[]> {
   const res = await fetch(`${e.mmUrl}/api/v4/users/${alice}/preferences/flagged_post`, { headers: { authorization: `Bearer ${aliceMm}` } });
-  // A 404 rather than an empty list is how Mattermost answers when the user has no saved post at all.
+  // Not treating a 404 as an error: Mattermost answers 404 rather than an empty list when the user has no saved post at all.
   if (res.status === 404) return [];
   if (!res.ok) throw new Error(`flagged_post -> ${res.status}`);
   return ((await res.json()) as { name: string }[]).map((p) => p.name);
@@ -98,6 +99,8 @@ beforeAll(async () => {
   secret = await channel('sp-secret', 'P');
   archived = await channel('sp-arch', 'O');
   await addAlice(archived.id);
+  left = await channel('sp-left', 'O');
+  await addAlice(left.id);
 });
 
 afterAll(async () => {
@@ -108,7 +111,9 @@ afterAll(async () => {
     ...channels.filter((x) => !(archivedByTest && x === archived.id)).map((id) => mmApi(bobMm, 'DELETE', `/channels/${id}`)),
   ]);
   vi.restoreAllMocks();
-  for (const d of done) if (d.status === 'rejected') throw d.reason;
+  const failed = done.flatMap((d) => (d.status === 'rejected' ? [d.reason] : []));
+  if (failed.length === 1) throw failed[0];
+  if (failed.length) throw new AggregateError(failed, 'cleanup failed');
 });
 
 describe('save_post and unsave_post agree with list_saved_posts', () => {
@@ -127,6 +132,17 @@ describe('save_post and unsave_post agree with list_saved_posts', () => {
     expect(await saved()).not.toContain(id);
     expect(await savedInMattermost()).not.toContain(id);
     expect((await call('unsave_post', { post_id: id })).isError).toBeFalsy();
+  });
+
+  test('unsave_post removes a save left behind in a channel alice has left', async () => {
+    const id = await bobPost(left.id);
+    expect((await call('save_post', { post_id: id })).isError).toBeFalsy();
+    await mmApi(bobMm, 'DELETE', `/channels/${left.id}/members/${alice}`);
+    expect(await savedInMattermost()).toContain(id);
+    expect(await saved()).not.toContain(id);
+
+    expect((await call('unsave_post', { post_id: id })).isError).toBeFalsy();
+    expect(await savedInMattermost()).not.toContain(id);
   });
 
   test('a post of a public channel alice has not joined is refused and saved nowhere', async () => {
@@ -169,18 +185,30 @@ describe('pin_post and unpin_post agree with get_channel', () => {
     const post = await mmApi<{ is_pinned: boolean }>(bobMm, 'GET', `/posts/${id}`);
     expect(post.is_pinned).toBe(false);
   });
+
+  test('a pin in a public channel alice has not joined is not removed', async () => {
+    const id = await bobPost(outside.id);
+    await mmApi(bobMm, 'POST', `/posts/${id}/pin`);
+    const r = await call('unpin_post', { post_id: id });
+    expect(r.isError).toBe(true);
+    expect(r.content[0].text).toBe('参加していないチャンネルの投稿のピン留めは外せません。');
+    const post = await mmApi<{ is_pinned: boolean }>(bobMm, 'GET', `/posts/${id}`);
+    expect(post.is_pinned).toBe(true);
+  });
 });
 
-test('in an archived channel alice belongs to, a post can be saved and listed but not pinned', async () => {
-  // Not pinned beforehand: Mattermost answers 200 to pinning an already pinned post even in an archived channel.
-  const id = await bobPost(archived.id);
-  await mmApi(bobMm, 'DELETE', `/channels/${archived.id}`);
-  archivedByTest = true;
+describe('in an archived channel', () => {
+  test('a post of a channel alice belongs to can be saved and listed, but not pinned', async () => {
+    // Not pinned beforehand: Mattermost answers 200 to pinning an already pinned post even in an archived channel.
+    const id = await bobPost(archived.id);
+    await mmApi(bobMm, 'DELETE', `/channels/${archived.id}`);
+    archivedByTest = true;
 
-  expect((await call('save_post', { post_id: id })).isError).toBeFalsy();
-  expect(await saved()).toContain(id);
+    expect((await call('save_post', { post_id: id })).isError).toBeFalsy();
+    expect(await saved()).toContain(id);
 
-  const r = await call('pin_post', { post_id: id });
-  expect(r.isError).toBe(true);
-  expect(r.content[0].text).toBe('アーカイブ済みのチャンネルの投稿のピン留めは変えられません。');
+    const r = await call('pin_post', { post_id: id });
+    expect(r.isError).toBe(true);
+    expect(r.content[0].text).toBe('アーカイブ済みのチャンネルの投稿のピン留めは変えられません。');
+  });
 });
