@@ -48,6 +48,8 @@ function lastPost(mm: Mm, uid: string, id: string, reread: string): Promise<Post
 }
 
 const itemError = (e: unknown): e is InputError | MmError => e instanceof InputError || e instanceof MmError;
+// Not taking a rate limit as carried out unless an earlier request of the call may have been: Mattermost refuses a 429 before its handler runs.
+const mayHaveRun = (e: unknown) => (e instanceof RateLimited ? e.doubt : (e as { sent?: boolean }).sent !== false);
 
 class Interrupted extends Error {
   readonly line: string;
@@ -75,8 +77,8 @@ export async function markAsRead(mm: Mm, uid: string, args: Args): Promise<CallT
   const failed = (label: string, e: unknown): Result => {
     if (e instanceof Interrupted) throw e;
     if (itemError(e)) return { line: `- ${label}: 既読にできませんでした。${failureText(e)}`, ok: false };
-    // Not saying the item stayed unread once its write was sent: it may have reached Mattermost before the timeout or the 5xx. A rate limit, or a failure known to be raised before sending, left it unread.
-    const maybe = writing && !(e instanceof RateLimited) && (e as { sent?: boolean }).sent !== false;
+    // Not saying the item stayed unread once its write was sent: it may have reached Mattermost before the timeout or the 5xx.
+    const maybe = writing && mayHaveRun(e);
     throw new Interrupted(`- ${label}: 処理中に中断しました（${maybe ? '既読になったかは分かりません' : '既読にしていません'}）。`, maybe, e);
   };
   try {
@@ -183,7 +185,7 @@ export async function markAsRead(mm: Mm, uid: string, args: Args): Promise<CallT
         // Not pointing a call without last_post_id to a plain retry: it would also mark read the replies that arrived meanwhile.
         const retry = item.last_post_id ? 'このスレッドを同じ last_post_id で再実行すると消せることがあります。' : 'このスレッドを read_thread で読み、読んだ最終返信を last_post_id に渡して再実行すると消せることがあります。';
         const clearing = (ts: number, read: string) => put(ts).catch((e) => {
-          if (!itemError(e)) throw new Interrupted(`- ${label}: ${read}ただし、位置ちょうどの返信のメンションを消す前に中断しました。${retry}`, true, e);
+          if (!itemError(e)) throw new Interrupted(`- ${label}: ${read}ただし、位置ちょうどの返信のメンションを${mayHaveRun(e) ? '消す書き込みの途中で中断しました（消せたかは分かりません）' : '消す前に中断しました'}。${retry}`, true, e);
           const why = failureText(e);
           return `ただし、位置ちょうどの返信のメンションは消せませんでした。${why}${why.endsWith('。') ? '' : '。'}${retry}`;
         });
