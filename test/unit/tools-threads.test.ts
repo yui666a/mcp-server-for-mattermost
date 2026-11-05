@@ -280,6 +280,36 @@ describe('follow_thread and unfollow_thread', () => {
     expect(hits).not.toContain(`GET /posts/${ROOT}/thread`);
   });
 
+  test('follow_thread does not say a thread whose replies were all deleted waits for its first reply, once it has a state after following', async () => {
+    let follows = 0;
+    routes = {
+      ...noReplies(),
+      [`PUT /users/u1/teams/${T1}/threads/${ROOT}/following`]: () => { follows++; return { status: 'OK' }; },
+      [`GET /users/u1/teams/${T1}/threads/${ROOT}`]: () => follows ? { id: ROOT, unread_replies: 0 } : Response.json({ id: 'app.user.get_threads_for_user.not_found' }, { status: 404 }),
+    };
+    const r = await setup().call('follow_thread', { post_id: ROOT });
+    expect(r.text).toBe(`スレッド（親 post_id: ${ROOT}）をフォローしました。フォローした時点までの返信は既読になります（Mattermost の動作）。`);
+    expect(writes()).toEqual([`PUT /users/u1/teams/${T1}/threads/${ROOT}/following`]);
+  });
+
+  test('follow_thread still reports the follow when checking the state afterwards fails', async () => {
+    let follows = 0;
+    routes = {
+      ...noReplies(),
+      [`PUT /users/u1/teams/${T1}/threads/${ROOT}/following`]: () => { follows++; return { status: 'OK' }; },
+      [`GET /users/u1/teams/${T1}/threads/${ROOT}`]: () => follows ? Response.json({ id: 'app.user.get_thread_membership_for_user.app_error' }, { status: 400 }) : Response.json({ id: 'app.user.get_threads_for_user.not_found' }, { status: 404 }),
+    };
+    const r = await setup().call('follow_thread', { post_id: ROOT });
+    expect(r.isError).toBe(false);
+    expect(r.text).toBe(`スレッド（親 post_id: ${ROOT}）をフォローしました。フォローした時点までの返信は既読になります（Mattermost の動作）。`);
+  });
+
+  test('follow_thread checks the state only once for a thread with replies', async () => {
+    routes = base();
+    await setup().call('follow_thread', { post_id: ROOT });
+    expect(hits.filter((h) => h === `GET /users/u1/teams/${T1}/threads/${ROOT}`)).toHaveLength(1);
+  });
+
   test('follow_thread does not fetch the thread when it has replies', async () => {
     routes = base();
     await setup().call('follow_thread', { post_id: ROOT });

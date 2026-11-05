@@ -149,6 +149,17 @@ describe('followed threads against the local Mattermost', () => {
     expect(r.content[0].text).toContain('最初の返信があるまで');
   });
 
+  test('follow_thread does not say a thread whose replies were all deleted waits for its first reply', async () => {
+    const ch = await newChannel('deleted');
+    // bob writes both, without mentioning alice: a reply on alice's post or a mention would have her follow the thread already.
+    const root = await say(bobMm, ch, 'root');
+    const reply = await say(bobMm, ch, 'bob reply', root);
+    await mmApi(bobMm, 'DELETE', `/posts/${reply}`);
+    const r = await call('follow_thread', { post_id: root });
+    expect(r.content[0].text).toContain('をフォローしました');
+    expect(r.content[0].text).not.toContain('最初の返信があるまで');
+  });
+
   test('follow_thread refuses a thread in a public channel alice has not joined', async () => {
     const ch = await newChannel('away', false);
     const root = await say(bobMm, ch, 'root');
