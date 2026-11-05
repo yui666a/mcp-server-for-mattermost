@@ -57,7 +57,13 @@ describe('send_message against the local Mattermost', () => {
     channel = await mmApi(aliceMm, 'POST', '/channels', { team_id: e.teams.a.id, name: `t9-${TAG}`, display_name: `t9 ${TAG}`, type: 'O' });
   });
 
-  afterAll(() => vi.restoreAllMocks());
+  afterAll(async () => {
+    try {
+      await mmApi(e.adminToken, 'DELETE', `/channels/${channel.id}`);
+    } finally {
+      vi.restoreAllMocks();
+    }
+  });
 
   test('posts to a thread and returns permalink', async () => {
     const root = await mmApi<Post>(aliceMm, 'POST', '/posts', { channel_id: channel.id, message: `${TAG} root` });

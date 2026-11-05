@@ -167,7 +167,8 @@ export function uploadHandler(ctx: AppContext, idleMs = BODY_IDLE_MS): express.R
           ? `本文の送信が ${idleMs / 1000} 秒止まったため打ち切りました。${again}送り直してください。`
           : `${failureText(e)} ${again}送り直してください。`;
       if (statusOf(e) === 500 && !(e instanceof TooLarge) && !(e instanceof ClientGone) && !(e instanceof Stalled)) log('upload_unhandled_error', { name: (e as Error)?.name });
-      if (e instanceof RateLimited) res.set('Retry-After', String(e.retryAfterSec));
+      // Not on a refusal after which the URL is not given back: Retry-After invites a resend to the same URL, which would get a 404.
+      if (e instanceof RateLimited && reusable) res.set('Retry-After', String(e.retryAfterSec));
       await reply(e instanceof TooLarge ? 413 : e instanceof Stalled ? 408 : statusOf(e), [
         head,
         ...(done.length ? ['次のファイルはアップロード済みです。file_ids に渡せます。', ...done.map((f) => `file_id: ${f.id}（${f.name}、${f.size} バイト）`)] : []),

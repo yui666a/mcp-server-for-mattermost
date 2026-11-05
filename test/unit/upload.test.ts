@@ -123,14 +123,28 @@ describe('POST /mcp/upload/:token', () => {
     expect(r.text).toContain('同じ URL で');
   });
 
-  test.each([[false, '同じ URL で', 200], [true, 'URL を発行し直して', 404]])('a 429 leaves the URL usable unless an earlier request of the call may have uploaded the file (doubt: %s)', async (doubt, wording, next) => {
+  test.each([[false, '同じ URL で', 200, '3'], [true, 'URL を発行し直して', 404, undefined]])('a 429 leaves the URL usable, with Retry-After, unless an earlier request of the call may have uploaded the file (doubt: %s)', async (doubt, wording, next, retryAfter) => {
     const s = setup();
     vi.spyOn(s.mm, 'call').mockRejectedValueOnce(new RateLimited(3, true, doubt));
     const url = s.url();
     const r = await s.req.post(url).attach('file', Buffer.from('x'), 'a.txt');
     expect(r.status).toBe(429);
+    expect(r.headers['retry-after']).toBe(retryAfter);
     expect(r.text).toContain(wording);
     expect((await s.req.post(url).attach('file', Buffer.from('x'), 'a.txt')).status).toBe(next);
+  });
+
+  test('a 429 after the first file went to Mattermost asks for a new URL without Retry-After', async () => {
+    const s = setup();
+    const real = s.mm.call.bind(s.mm);
+    let n = 0;
+    vi.spyOn(s.mm, 'call').mockImplementation(((...a: Parameters<typeof s.mm.call>) => (n++ === 1 ? Promise.reject(new RateLimited(3, true)) : real(...a))) as typeof s.mm.call);
+    const url = s.url();
+    const r = await s.req.post(url).attach('file', Buffer.from('x'), 'a.txt').attach('file', Buffer.from('y'), 'b.txt');
+    expect(r.status).toBe(429);
+    expect(r.headers['retry-after']).toBeUndefined();
+    expect(r.text).toContain('URL を発行し直して');
+    expect(r.text).toContain('次のファイルはアップロード済みです');
   });
 
   test('a failure after some files went to Mattermost lists them and asks for a new URL', async () => {
