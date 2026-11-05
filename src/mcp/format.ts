@@ -74,11 +74,13 @@ const isRecord = (x: unknown): x is Record<string, unknown> => typeof x === 'obj
 const str = (x: unknown): string => (typeof x === 'string' ? x : typeof x === 'number' || typeof x === 'boolean' ? String(x) : '');
 const records = (x: unknown): Record<string, unknown>[] => (Array.isArray(x) ? x.filter(isRecord) : []);
 
-// Not one line: a channel header or purpose holds Markdown tables and lists.
-export const indented = (label: string, value: string, first = ''): string[] => lines(`${label}: ${value}`).map((l, i) => `${i ? '    ' : first}${l}`);
+const labelled = (label: string, value: string, first: string): string[] => lines(`${label}: ${value}`).map((l, i) => `${i ? '    ' : first}${l}`);
+
+// Not oneLine: a channel header or purpose holds Markdown tables and lists.
+export const indented = (label: string, value: string): string[] => labelled(label, value, '');
 
 // Indenting every line rather than quoting: attachments are written by whoever posts, and a line at the margin could pass for a post, file or heading line.
-const item = (label: string, value: string): string[] => indented(label, value, '  ');
+const item = (label: string, value: string): string[] => labelled(label, value, '  ');
 
 function messageAttachment(a: Record<string, unknown>, n: number, total: number): string[] {
   const title = str(a.title), link = str(a.title_link);
