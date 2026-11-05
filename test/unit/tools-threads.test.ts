@@ -22,7 +22,7 @@ function setup() {
     urls.push(`${req.method} ${path}${url.search}`);
     const r = routes[`${req.method} ${path}`];
     if (!r) return Response.json({ id: 'not_found' }, { status: 404 });
-    const out = r(req);
+    const out = await r(req);
     return out instanceof Response ? out : Response.json(out);
   });
   const code = ctx.store.createCode({
@@ -140,6 +140,25 @@ describe('list_followed_threads', () => {
     expect(out).not.toContain('team-a と DM、グループ DM のフォロー中');
     routes[`GET /users/u1/teams/${T1}/threads`] = () => page([thread(TH1, CH1, 5000)], 9);
     expect((await setup().call('list_followed_threads', {})).text).toContain('（team-a と DM、グループ DM のフォロー中のスレッドは、最終返信の新しい 1 件だけを取得しています（total: 9）。');
+  });
+
+  test('looks up more than 1,000 users in calls of at most 1,000 ids, and names the users of every call', async () => {
+    // 50 threads by 50 authors, each with 2 emoji of 10 users: 1,050 users.
+    const user = (i: number, j: number) => `r${String(i * 20 + j).padStart(4, '0')}`;
+    const many = Array.from({ length: 50 }, (_, i) => thread(`t${String(i).padStart(25, '0')}`, CH1, 9000 - i, {
+      post: { id: `t${String(i).padStart(25, '0')}`, user_id: `a${i}`, channel_id: CH1, root_id: '', message: `m${i}`, create_at: 100,
+        metadata: { reactions: Array.from({ length: 20 }, (_, j) => ({ user_id: user(i, j), emoji_name: j < 10 ? 'x' : 'y', create_at: j })) } },
+    }));
+    const asked: string[][] = [];
+    routes = {
+      ...base(),
+      [`GET /users/u1/teams/${T1}/threads`]: () => page(many),
+      [`GET /users/u1/teams/${T2}/threads`]: () => page([]),
+      'POST /users/ids': async (req) => { const ids = await req.json() as string[]; asked.push(ids); return ids.map((x) => ({ id: x, username: `n${x}` })); },
+    };
+    const { text: out } = await setup().call('list_followed_threads', { limit: 50 });
+    expect(asked.map((x) => x.length)).toEqual([1000, 50]);
+    for (const x of asked[1]) expect(out).toContain(`@n${x}`);
   });
 
   test('takes limit up to 50 and pages with next_cursor', async () => {
@@ -406,15 +425,3 @@ describe('follow_thread and unfollow_thread', () => {
   });
 });
 
-describe('usernamesOf', () => {
-  test('looks up user ids 1,000 at a time, one call after another, without repeats', async () => {
-    const { usernamesOf } = await import('../../src/mcp/tools-read.ts');
-    const calls: string[][] = [];
-    const mm = { call: async (_u: string, _m: string, _p: string, body?: unknown) => { calls.push(body as string[]); return (body as string[]).map((id) => ({ id, username: `n${id}` })); } };
-    const ids = Array.from({ length: 1001 }, (_, i) => `u${i}`);
-    const names = await usernamesOf(mm as never, 'me', [...ids, 'u0']);
-    expect(calls.map((c) => c.length)).toEqual([1000, 1]);
-    expect(names.get('u1000')).toBe('nu1000');
-    expect(names.size).toBe(1001);
-  });
-});

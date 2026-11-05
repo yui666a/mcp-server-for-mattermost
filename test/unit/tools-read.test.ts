@@ -1017,6 +1017,26 @@ describe('get_unreads', () => {
     }
   });
 
+  test('looks up the users of unread threads in calls of at most 1,000 ids, and names the users of every call', async () => {
+    // 50 threads by 50 authors, each with 2 emoji of 10 users: 1,050 users with the DM partner.
+    const user = (i: number, j: number) => `r${String(i * 20 + j).padStart(4, '0')}`;
+    const many = Array.from({ length: 50 }, (_, i) => thread(`t${String(i).padStart(25, '0')}`, OLD, 9000 - i, {
+      post: { id: `t${String(i).padStart(25, '0')}`, user_id: `a${i}`, channel_id: OLD, root_id: '', message: `m${i}`, create_at: 100,
+        metadata: { reactions: Array.from({ length: 20 }, (_, j) => ({ user_id: user(i, j), emoji_name: j < 10 ? 'x' : 'y', create_at: j })) } },
+    }));
+    const asked: string[][] = [];
+    routes = {
+      ...base(),
+      [`GET /users/u1/teams/${T1}/threads`]: () => threadPage(many),
+      [`GET /users/u1/teams/${T2}/threads`]: () => threadPage([]),
+      'POST /users/ids': () => { const ids = bodies['/users/ids'] as string[]; asked.push(ids); return ids.map((x) => ({ id: x, username: `n${x}` })); },
+    };
+    const out = await setup()('get_unreads', { limit: 100 });
+    expect(asked.flat().length).toBeGreaterThan(1000);
+    expect(asked.map((x) => x.length)).toEqual([1000, asked.flat().length - 1000]);
+    for (const x of asked[1]) expect(out).toContain(`@n${x}`);
+  });
+
   test('with CRT on, counts root posts only, puts channels with mentions first, then newest root post first, and hides read, archived and mention-only channels without mentions', async () => {
     routes = base();
     const out = await setup()('get_unreads', {});
