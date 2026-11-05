@@ -55,6 +55,7 @@ function imageType(b: Uint8Array): string | undefined {
 type Decoded = { text: string; encoding: string; guessed: boolean; cutTail: boolean };
 const KANA = /[\u3041-\u3096\u30a1-\u30fa]/;
 const HALF_KANA = /[\uff61-\uff9f]/;
+const JAPANESE = /[\u3000-\u30ff\u31f0-\u31ff\u3400-\u9fff\uf900-\ufaff\uff00-\uffef\u{20000}-\u{3ffff}]/u;
 
 // Not by mime_type: Mattermost guesses it from the extension, so a Shift_JIS CSV is labelled utf-8 and a file without an extension gets none.
 // whole: the bytes are the whole file, so a character left incomplete at the end is the file's own and not where the fetch stopped.
@@ -62,7 +63,14 @@ function decodeText(b: Uint8Array, name: string, whole: boolean): Decoded | unde
   if (b.includes(0) || Buffer.from(b.subarray(0, 5)).toString('latin1') === '%PDF-') return undefined;
   // stream: true rather than a plain decode, which would reject the whole text for a character cut at the end of the bytes.
   const decode = (encoding: string) => {
-    const d = new TextDecoder(encoding, { fatal: true });
+    let d: TextDecoder;
+    try {
+      d = new TextDecoder(encoding, { fatal: true });
+    } catch (e) {
+      // Not for UTF-8: a Node without full ICU lacks only the legacy encodings, while a missing UTF-8 fatal mode would turn every file unreadable unnoticed.
+      if (encoding === 'utf-8') throw e;
+      return undefined;
+    }
     try {
       const text = d.decode(b, { stream: true });
       let cutTail = false;
@@ -79,9 +87,10 @@ function decodeText(b: Uint8Array, name: string, whole: boolean): Decoded | unde
     }
   };
   const utf8 = decode('utf-8');
-  // ASCII but for a cut last character: its bytes may as well be Latin-1 or a Shift_JIS character, so UTF-8 is only a guess.
-  const asciiButTail = utf8?.cutTail && !/[^\x00-\x7f]/.test(utf8.text);
-  if (utf8 && !asciiButTail) return { ...utf8, encoding: 'UTF-8', guessed: false };
+  // No Japanese and a cut last character: such text may as well be half-width kana Shift_JIS or Latin-1, so UTF-8 is only a guess.
+  // Not for text with Japanese: a log cut at its size limit stays UTF-8.
+  const guessUtf8 = utf8?.cutTail && !JAPANESE.test(utf8.text);
+  if (utf8 && !guessUtf8) return { ...utf8, encoding: 'UTF-8', guessed: false };
   const ext = name.includes('.') ? name.split('.').pop()!.toLowerCase() : '';
   const utf8Guess = utf8 && { ...utf8, encoding: 'UTF-8', guessed: true };
   if (!SJIS_EXTENSIONS.has(ext)) return utf8Guess;

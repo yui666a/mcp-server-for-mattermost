@@ -1682,10 +1682,41 @@ describe('get_file', () => {
         expect(out.includes('末尾に不完全な文字')).toBe(cut);
       });
 
-      test('keeps UTF-8 without a guess when the text has other non-ASCII characters', async () => {
-        routes = { [INFO]: textInfo('a.txt', 5), [FILE]: body(Uint8Array.from([...Buffer.from('あ'), 0xe3, 0x81])) };
+      test.each([
+        ['a.txt', [...Buffer.from('abc,'), 0xc3, 0xbd, 0xc4], 'Shift_JIS', 'abc,ﾃｽﾄ', false],
+        // Fixing a known wrong guess: Latin UTF-8 with a cut last character also reads whole as Shift_JIS.
+        ['a.txt', [...Buffer.from('naïve caf'), 0xc3], 'Shift_JIS', 'naﾃｯve cafﾃ', false],
+        ['a.txt', [...Buffer.from('voilà'), 0xc3], 'UTF-8', 'voilà', true],
+        ['a.md', [...Buffer.from('café'), 0xe2], 'UTF-8', 'café', true],
+      ])('reads %s %j, without Japanese and with a cut last character in UTF-8, as %s with the guess noted', async (name, b, encoding, shown, cut) => {
+        routes = { [INFO]: textInfo(name as string, (b as number[]).length), [FILE]: body(Uint8Array.from(b as number[])) };
         const out = await setup()('get_file', { file_id: F });
-        expect(content()).toBe('あ');
+        expect(content()).toBe(shown);
+        expect(out).toContain(`文字コード: ${encoding}`);
+        expect(out).toContain(GUESSED);
+        expect(out.includes('末尾に不完全な文字')).toBe(cut);
+      });
+
+      test('reads a file as not text when Node cannot make a Shift_JIS or EUC-JP decoder, instead of failing', async () => {
+        const Real = globalThis.TextDecoder;
+        vi.stubGlobal('TextDecoder', class extends Real {
+          constructor(label?: string, options?: TextDecoderOptions) {
+            if (label === 'shift_jis' || label === 'euc-jp') throw new RangeError(`unsupported: ${label}`);
+            super(label, options);
+          }
+        });
+        try {
+          routes = { [INFO]: textInfo('a.csv', 3), [FILE]: body(Uint8Array.from([0xb0, 0xa9, 0xbd])) };
+          expect(await setup()('get_file', { file_id: F })).toContain('テキストとして読めない形式');
+        } finally {
+          vi.unstubAllGlobals();
+        }
+      });
+
+      test('keeps UTF-8 without a guess when the text has Japanese, as a log cut at its size limit', async () => {
+        routes = { [INFO]: textInfo('a.txt', 20), [FILE]: body(Uint8Array.from([...Buffer.from('日本語のログ'), 0xe3, 0x81])) };
+        const out = await setup()('get_file', { file_id: F });
+        expect(content()).toBe('日本語のログ');
         expect(out).toContain('文字コード: UTF-8');
         expect(out).not.toContain('推定');
       });
