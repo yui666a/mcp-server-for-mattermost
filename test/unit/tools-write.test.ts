@@ -2,11 +2,7 @@ import { createHash } from 'node:crypto';
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 import { BODY_CUT_NOTE } from '../../src/mcp/format.ts';
 import { MAX_OPEN_UPLOAD_URLS, type Store } from '../../src/store.ts';
-import { makeApp } from './helpers.ts';
-
-// Not vitest's defaults (1 s for vi.waitFor, 5 s for a test): on a busy machine the awaited event can take seconds.
-const SLOW = { timeout: 10_000 };
-const SLOW_TEST = 30_000;
+import { makeApp, SLOW, SLOW_TEST } from './helpers.ts';
 
 type Route = (req: Request) => unknown;
 let routes: Record<string, Route>;
@@ -1166,6 +1162,18 @@ describe('save_draft and send_message\'s draft cleanup for one draft target (use
   const draft = (message: string) => ({ user_id: 'u1', channel_id: CH, root_id: '', message, create_at: 1, update_at: 1 });
   const count = (h: string) => hits.filter((x) => x === h).length;
   const tick = () => new Promise((r) => setTimeout(r, 20));
+  // Not leaving a gate shut when a test fails before opening it: the lock stays held, and the later tests on the same draft wait to their limit.
+  // Waiting for the calls too: the lock is released only when they finish, and until then their requests would land in the next test's routes and hits.
+  const gates: (() => void)[] = [];
+  const calls: Promise<unknown>[] = [];
+  afterEach(async () => {
+    for (const open of gates.splice(0)) open();
+    await Promise.allSettled(calls.splice(0));
+  });
+  const tracked = () => {
+    const s = setup();
+    return { ...s, call: (name: string, args: Record<string, unknown>) => { const p = s.call(name, args); calls.push(p); return p; } };
+  };
   const serve = (list: () => unknown) => {
     routes = {
       [`GET /channels/${CH}`]: () => ({ id: CH, name: 'town', display_name: 'Town', team_id: 't1', type: 'O' }),
@@ -1180,10 +1188,10 @@ describe('save_draft and send_message\'s draft cleanup for one draft target (use
 
   test('a draft saved while the cleanup is between its list and its DELETE is saved after the DELETE, so it is not the draft deleted', async () => {
     let open!: () => void;
-    const gate = new Promise<void>((r) => { open = r; });
+    const gate = new Promise<void>((r) => { open = r; gates.push(r); });
     let n = 0;
     serve(async () => (n++ === 0 ? (await gate, [draft('hello')]) : [draft('hello')]));
-    const s = setup();
+    const s = tracked();
     const sending = s.call('send_message', { channel: CH, message: 'hello' });
     await vi.waitFor(() => expect(count(LIST)).toBe(1), SLOW);
     const saving = s.call('save_draft', { channel: CH, message: 'newer', overwrite: true });
@@ -1200,12 +1208,12 @@ describe('save_draft and send_message\'s draft cleanup for one draft target (use
   test('a cleanup for a thread does not wait for a save_draft to the channel itself, since they touch different drafts', async () => {
     const ROOT = 'r'.repeat(26);
     let open!: () => void;
-    const gate = new Promise<void>((r) => { open = r; });
+    const gate = new Promise<void>((r) => { open = r; gates.push(r); });
     let n = 0;
     serve(async () => (n++ === 0 ? (await gate, []) : [{ ...draft('hello'), root_id: ROOT }]));
     routes[`GET /posts/${ROOT}`] = () => ({ id: ROOT, channel_id: CH, root_id: '', user_id: 'u2', message: 'root', create_at: 1 });
     routes[`DELETE /users/u1/channels/${CH}/drafts/${ROOT}`] = () => ({ status: 'OK' });
-    const s = setup();
+    const s = tracked();
     const saving = s.call('save_draft', { channel: CH, message: 'mine' });
     await vi.waitFor(() => expect(count(LIST)).toBe(1), SLOW);
     const r = await s.call('send_message', { channel: CH, message: 'hello', root_id: ROOT });
@@ -1217,13 +1225,13 @@ describe('save_draft and send_message\'s draft cleanup for one draft target (use
   test('a cleanup in one channel does not wait for a save_draft to another channel', async () => {
     const CH2 = 'e'.repeat(26);
     let open!: () => void;
-    const gate = new Promise<void>((r) => { open = r; });
+    const gate = new Promise<void>((r) => { open = r; gates.push(r); });
     serve(() => [draft('hello')]);
     routes[`GET /channels/${CH2}`] = () => ({ id: CH2, name: 'other', display_name: 'Other', team_id: 't1', type: 'O' });
     const list = routes[LIST];
     let n = 0;
     routes[LIST] = async (req) => (n++ === 0 ? (await gate, []) : list(req));
-    const s = setup();
+    const s = tracked();
     const saving = s.call('save_draft', { channel: CH2, message: 'mine' });
     await vi.waitFor(() => expect(count(LIST)).toBe(1), SLOW);
     const r = await s.call('send_message', { channel: CH, message: 'hello' });
@@ -1234,10 +1242,10 @@ describe('save_draft and send_message\'s draft cleanup for one draft target (use
 
   test('a save_draft that fails while holding the lock lets the cleanup behind it run', async () => {
     let open!: () => void;
-    const gate = new Promise<void>((r) => { open = r; });
+    const gate = new Promise<void>((r) => { open = r; gates.push(r); });
     let n = 0;
     serve(async () => (n++ === 0 ? (await gate, [draft('different')]) : [draft('hello')]));
-    const s = setup();
+    const s = tracked();
     const saving = s.call('save_draft', { channel: CH, message: 'mine' });
     await vi.waitFor(() => expect(count(LIST)).toBe(1), SLOW);
     const sending = s.call('send_message', { channel: CH, message: 'hello' });
@@ -1253,9 +1261,9 @@ describe('save_draft and send_message\'s draft cleanup for one draft target (use
     const timeout = AbortSignal.timeout.bind(AbortSignal);
     vi.spyOn(AbortSignal, 'timeout').mockImplementation((ms) => (ms === 5000 ? ac.signal : timeout(ms)));
     let open!: () => void;
-    const gate = new Promise<void>((r) => { open = r; });
+    const gate = new Promise<void>((r) => { open = r; gates.push(r); });
     serve(async () => (await gate, [draft('hello')]));
-    const s = setup();
+    const s = tracked();
     const saving = s.call('save_draft', { channel: CH, message: 'mine', overwrite: true });
     await vi.waitFor(() => expect(count(LIST)).toBe(1), SLOW);
     const sending = s.call('send_message', { channel: CH, message: 'hello' });
