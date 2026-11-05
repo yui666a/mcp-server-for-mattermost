@@ -6,6 +6,7 @@ import { expect, test } from 'vitest';
 const SRC = resolve(import.meta.dirname, '../../src');
 
 // Not skipping `import { type A }` as `import type` is: verbatimModuleSyntax keeps it as `import {}`, which still loads the module.
+// Not counting import(): unless awaited at top level, its target evaluates after the importer finishes, so it cannot read the importer's uninitialized bindings.
 function runtimeImports(file: string): string[] {
   const source = ts.createSourceFile(file, readFileSync(file, 'utf8'), ts.ScriptTarget.Latest);
   const found: string[] = [];
