@@ -2,7 +2,7 @@ import type { McpServer, ToolCallback } from '@modelcontextprotocol/sdk/server/m
 import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
 import { z } from 'zod';
 import { MmError, UpstreamUnavailable, type MmClient } from '../mattermost/client.ts';
-import { ASK_ADMIN, BAD_CURSOR, BODY_CUT_NOTE, BODY_MAX_CHARS, decodeCursor, encodeCursor, fileLine, formatPost, formatTime, graphemeCount, indented, InputError, localTime, oneLine, postTruncated, postUserIds, RETRY, RETRY_SOON, truncate, type MmFileInfo, type MmPost } from './format.ts';
+import { ASK_ADMIN, BAD_CURSOR, BODY_CUT_NOTE, BODY_MAX_CHARS, decodeCursor, encodeCursor, fileLine, formatPost, formatTime, graphemeCount, indented, InputError, localTime, oneLine, POST_FORBIDDEN, postTruncated, postUserIds, RETRY, RETRY_SOON, truncate, type MmFileInfo, type MmPost } from './format.ts';
 import { pageCursor, paginate } from './paging.ts';
 import { mentionsMe, mentionTerms, type MentionUser } from './mentions.ts';
 import { parsePostRef } from './permalink.ts';
@@ -40,7 +40,7 @@ const FILE_WORDING: Wording = {
     [404, 'app.file_info.get.app_error', 'ファイルが見つかりません（投稿が削除されたか、存在しません）'],
     [403, 'api.file.get_file.abac_denied.app_error', 'Mattermost のアクセス制御の方針（ABAC）により、このファイルを見られません'],
   ],
-  status: [[403, 'このファイルを見る権限がありません']],
+  status: [[403, `このファイルを見る権限がありません（参加していないチャンネルのファイルなど）。${RETRY}${ASK_ADMIN}`]],
 };
 
 // Not trusting Content-Type: Mattermost labels every preview image/jpeg, PNG ones included.
@@ -196,7 +196,7 @@ const resolvedLines = (ch: ResolvedChannel) => channelLines({ ...ch, archived: !
 
 // For a post fetched by id: get_post and read_thread word its 403 and 404 alike.
 function postError(e: unknown): never {
-  if (e instanceof MmError && e.status === 403) throw new InputError(`この投稿を見る権限がありません（参加していない非公開チャンネルなど）。${RETRY}${ASK_ADMIN}`);
+  if (e instanceof MmError && e.status === 403) throw new InputError(POST_FORBIDDEN);
   if (e instanceof MmError && e.status === 404) throw new InputError('投稿が見つかりません（削除されたか、存在しません）。');
   throw e;
 }
@@ -855,10 +855,16 @@ export function registerReadTools(server: McpServer, ctx: ToolContext): void {
       if (Math.max(w, Math.round((f.height * w) / f.width)) > IMAGE_MAX_SIDE) {
         return `${about}\n縦横が大きすぎるため画像は返しません（プレビューの長い辺が ${IMAGE_MAX_SIDE}px を超えます）。`;
       }
-      const b = await worded(mm.callBytes(uid, `/files/${file_id}/preview`), FILE_WORDING).catch((e) => {
+      // Not the permission wording for a plugin's refusal: the information above was readable, as when a plugin refuses the content.
+      const preview = mm.callBytes(uid, `/files/${file_id}/preview`).catch((e) => {
+        if (e instanceof MmError && e.status === 403 && e.id === 'api.file.get_file_preview.rejected_by_plugin') return 'refused' as const;
+        throw e;
+      });
+      const b = await worded(preview, FILE_WORDING).catch((e) => {
         if (e instanceof MmError && e.status === 400 && e.id === 'api.file.get_file_preview.no_preview.app_error') return undefined;
         throw e;
       });
+      if (b === 'refused') return `${about}\nMattermost がプレビューの取得を拒否しました（プラグインによる制限）。`;
       if (!b) return `${about}\nMattermost がプレビューを作らない形式のため、画像は返しません。`;
       const mimeType = imageType(b);
       if (!mimeType) return `${about}\nプレビューの形式を判定できないため、画像は返しません。`;
