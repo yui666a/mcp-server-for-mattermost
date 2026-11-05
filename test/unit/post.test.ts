@@ -68,6 +68,12 @@ describe('postOnce は 1 回だけ投稿し、結果を構造で返す', () => {
     }
   });
 
+  test('先の要求が処理されたかもしれない後の 429 は、投稿されたかもしれないやり直しにする', async () => {
+    const e = new RateLimited(3, true, true);
+    expect(await postOnce(fails(e), UID, { channelId: CH, message: 'hi', fileIds: [] }, PENDING))
+      .toEqual({ kind: 'retryable', sent: true, error: e });
+  });
+
   test('接続できない失敗は、届いたかどうかを sent に持たせてやり直しにする', async () => {
     for (const sent of [true, false]) {
       const e = new UpstreamUnavailable('Mattermost unreachable', sent);

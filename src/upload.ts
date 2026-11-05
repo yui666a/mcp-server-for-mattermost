@@ -106,7 +106,7 @@ async function filesOf(req: express.Request, body: Buffer<ArrayBuffer>): Promise
 }
 
 // Not counting a timeout or a reset as unsent: the file may have reached Mattermost, and a resend would upload it twice.
-const nothingSent = (e: unknown): boolean => e instanceof TooLarge || e instanceof ClientGone || e instanceof Stalled || e instanceof InputError || e instanceof MmError || e instanceof RateLimited
+const nothingSent = (e: unknown): boolean => e instanceof TooLarge || e instanceof ClientGone || e instanceof Stalled || e instanceof InputError || e instanceof MmError || (e instanceof RateLimited && !e.doubt)
   || (e instanceof UpstreamUnavailable && !e.sent);
 
 const statusOf = (e: unknown): number => {
