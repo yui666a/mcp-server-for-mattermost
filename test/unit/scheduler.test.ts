@@ -1,11 +1,7 @@
 import type { DatabaseSync } from 'node:sqlite';
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 import { every, tick } from '../../src/scheduler.ts';
-import { makeApp } from './helpers.ts';
-
-// Not 2 s, nor vitest's 5 s for a test: on a busy machine the awaited event can take seconds.
-const SLOW = { timeout: 10_000 };
-const SLOW_TEST = 30_000;
+import { makeApp, SLOW, SLOW_TEST } from './helpers.ts';
 
 type Route = (req: Request, body: any) => unknown;
 let routes: Record<string, Route>;
