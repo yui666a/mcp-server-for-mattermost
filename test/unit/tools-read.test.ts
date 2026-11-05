@@ -776,7 +776,7 @@ describe('list_my_channels', () => {
     const out = await setup()('list_my_channels', {});
     expect(order(out)).toEqual([PUB, DM, PRIV, TIE, ORPHAN, GM]);
     expect(out).toContain(`- team-a/town（channel_id: ${PUB}、team_id: ${T}、種類: 公開、最終投稿: 2026-10-01T20:04:05Z | 2026-10-02T05:04:05+09:00、表示名: Town）`);
-    expect(out).toContain(`- team-a/secret（channel_id: ${PRIV}、team_id: `);
+    expect(out).toMatch(new RegExp(`- team-a/secret（channel_id: ${PRIV}、team_id: ${T}、種類: 非公開、最終投稿: [^、]+、表示名: Secret）`));
     expect(out).toContain('（続きはありません）');
     expect(urls).toContain('GET /users/me/channels');
   });
@@ -785,14 +785,14 @@ describe('list_my_channels', () => {
     routes = base();
     const out = await setup()('list_my_channels', {});
     expect(bodies['/users/ids']).toEqual(['u2']);
-    expect(out).toContain(`- @bob（channel_id: ${DM}、種類: DM、最終投稿: `);
+    expect(out).toMatch(new RegExp(`- @bob（channel_id: ${DM}、種類: DM、最終投稿: [^、]+、表示名: @bob）`));
     expect(out).toContain(`- alice, bob, carol（channel_id: ${GM}、種類: グループ DM、最終投稿: 投稿なし、表示名: alice, bob, carol）`);
   });
 
   test('shows only the team_id when the team name cannot be looked up', async () => {
     routes = base();
     const out = await setup()('list_my_channels', {});
-    expect(out).toContain(`- lost（channel_id: ${ORPHAN}、team_id: ${GONE}、種類: 公開、最終投稿: `);
+    expect(out).toMatch(new RegExp(`- lost（channel_id: ${ORPHAN}、team_id: ${GONE}、種類: 公開、最終投稿: [^、]+、表示名: Lost）`));
   });
 
   test('filters by types', async () => {
@@ -1187,7 +1187,7 @@ describe('get_unreads', () => {
 
   test('keeps a channel\'s display name with a line break on one line', async () => {
     routes = { ...base(), 'GET /users/me/channels': () => channels().map((x) => (x.id === OLD ? { ...x, display_name: 'O\nLD' } : x)) };
-    expect(await setup()('get_unreads', {})).toContain(`- team-a/old（channel_id: ${OLD}、team_id: `);
+    expect(await setup()('get_unreads', {})).toContain(`- team-a/old（channel_id: ${OLD}、team_id: ${T1}、表示名: O LD）`);
   });
 
   test('with CRT on, counts root posts only, puts channels with mentions first, then newest root post first, and hides read, archived and mention-only channels without mentions', async () => {
@@ -1212,7 +1212,7 @@ describe('get_unreads', () => {
     routes = base('disabled');
     const out = await setup()('get_unreads', {});
     expect(order(out)).toEqual([OLD, MUTED_MENTION, MENTIONED, DM, NEW]);
-    expect(out).toContain(`channel_id: ${OLD}、team_id: ${T1}、表示名: `);
+    expect(out).toContain(`channel_id: ${OLD}、team_id: ${T1}、表示名: OLD）未読: 3、メンション: 1、最終投稿:`);
     expect(out).toContain('- team-b/new');
     expect(hits.some((h) => h.includes('/threads'))).toBe(false);
     expect(out).toContain('未読のあるチャンネル: 5 件');
