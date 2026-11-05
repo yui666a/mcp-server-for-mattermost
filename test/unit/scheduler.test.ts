@@ -335,7 +335,7 @@ describe('a retry after an unknown outcome looks for the earlier post first', ()
     expect(s.row(id)).toMatchObject({ status: 'posted' });
   });
 
-  test('does not take a post that another schedule with the same text already recorded', async () => {
+  test('does not take a post that another schedule with the same text already recorded, nor post again, and fails as maybe posted', async () => {
     const s = setup();
     const taken = 'taken'.padEnd(26, 'x');
     const other = s.make();
@@ -343,8 +343,51 @@ describe('a retry after an unknown outcome looks for the earlier post first', ()
     routes[`GET /channels/${CH}/posts`] = () => postList(mine(taken));
     const id = attempted(s);
     await s.run(NOW + MIN);
-    expect(s.posts()).toHaveLength(1);
-    expect(s.row(id).post_id).not.toBe(taken);
+    expect(s.posts()).toHaveLength(0);
+    expect(s.row(id)).toMatchObject({ status: 'failed', error: UNKNOWN, post_id: null });
+  });
+
+  const recordSend = (s: ReturnType<typeof setup>, postId: string) => {
+    const c = s.store.claimPost({ mmUserId: UID, channelId: CH, bodyHash: `h-${postId}` });
+    if (c.kind !== 'new') throw new Error('claim not new');
+    s.store.completePost(c.id, postId);
+  };
+
+  test('does not take a post that send_message recorded, even when it is recorded during the lookup', async () => {
+    const s = setup();
+    const sent = 'sent'.padEnd(26, 'x');
+    const later = 'later'.padEnd(26, 'x');
+    recordSend(s, sent);
+    routes[`GET /channels/${CH}/posts`] = () => { recordSend(s, later); return postList(mine(sent), mine(later)); };
+    const id = attempted(s);
+    await s.run(NOW + MIN);
+    expect(s.posts()).toHaveLength(0);
+    expect(s.row(id)).toMatchObject({ status: 'failed', error: UNKNOWN, post_id: null });
+  });
+
+  test('does not post again when a post that send_message recorded was edited since, which may be this schedule\'s own', async () => {
+    const s = setup();
+    const sent = 'sent'.padEnd(26, 'x');
+    recordSend(s, sent);
+    routes[`GET /channels/${CH}/posts`] = () => postList(mine(sent, { message: 'edited', edit_at: NOW + SEC }));
+    const id = attempted(s);
+    await s.run(NOW + MIN);
+    expect(s.posts()).toHaveLength(0);
+    expect(s.row(id)).toMatchObject({ status: 'failed', error: UNKNOWN });
+  });
+
+  test('takes a matching post that no other record holds, next to ones that send_message and another schedule hold', async () => {
+    const s = setup();
+    const sent = 'sent'.padEnd(26, 'x');
+    const taken = 'taken'.padEnd(26, 'x');
+    const mineId = 'mine'.padEnd(26, 'x');
+    recordSend(s, sent);
+    s.set(s.make(), "status = 'posted', post_id = ?", taken);
+    routes[`GET /channels/${CH}/posts`] = () => postList(mine(sent), mine(taken), mine(mineId));
+    const id = attempted(s);
+    await s.run(NOW + MIN);
+    expect(s.posts()).toHaveLength(0);
+    expect(s.row(id)).toMatchObject({ status: 'posted', post_id: mineId });
   });
 
   test('a lookup that fails for a while puts the schedule back to pending, keeping the attempt', async () => {
