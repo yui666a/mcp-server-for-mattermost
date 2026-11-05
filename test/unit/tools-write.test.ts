@@ -164,6 +164,12 @@ describe('remove_reaction', () => {
     expect(r.text).toContain('+1');
   });
 
+  test('drops spaces inside the colons of the emoji, as add_reaction does', async () => {
+    routes = { [path('white_check_mark')]: () => ({ status: 'OK' }) };
+    expect((await setup().call('remove_reaction', { post_id: POST, emoji: ': white_check_mark :' })).isError).toBe(false);
+    expect(hits).toEqual([path('white_check_mark')]);
+  });
+
   test.each(ESCAPES)('rejects the post_id %j without calling Mattermost', async (post_id) => {
     const r = await setup().call('remove_reaction', { post_id, emoji: 'smile' });
     expect(r.isError).toBe(true);
@@ -1077,7 +1083,7 @@ describe('a root_id in another channel than the DM or group DM it is sent to', (
   });
 });
 
-describe('save_draft and send_message\'s draft cleanup of one user run one at a time across requests', () => {
+describe('save_draft and send_message\'s draft cleanup for one draft target (user, channel, root_id) run one at a time across requests', () => {
   const CH = 'c'.repeat(26);
   const LIST = 'GET /users/u1/teams/t1/drafts';
   const DEL = `DELETE /users/u1/channels/${CH}/drafts`;
@@ -1115,6 +1121,41 @@ describe('save_draft and send_message\'s draft cleanup of one user run one at a 
     expect((await saving).isError).toBe(false);
     expect(hits.indexOf(DEL)).toBeLessThan(hits.lastIndexOf(LIST));
     expect(hits.lastIndexOf(LIST)).toBeLessThan(hits.indexOf(SAVE));
+  });
+
+  test('a cleanup for a thread does not wait for a save_draft to the channel itself, since they touch different drafts', async () => {
+    const ROOT = 'r'.repeat(26);
+    let open!: () => void;
+    const gate = new Promise<void>((r) => { open = r; });
+    let n = 0;
+    serve(async () => (n++ === 0 ? (await gate, []) : [{ ...draft('hello'), root_id: ROOT }]));
+    routes[`GET /posts/${ROOT}`] = () => ({ id: ROOT, channel_id: CH, root_id: '', user_id: 'u2', message: 'root', create_at: 1 });
+    routes[`DELETE /users/u1/channels/${CH}/drafts/${ROOT}`] = () => ({ status: 'OK' });
+    const s = setup();
+    const saving = s.call('save_draft', { channel: CH, message: 'mine' });
+    await vi.waitFor(() => expect(count(LIST)).toBe(1));
+    const r = await s.call('send_message', { channel: CH, message: 'hello', root_id: ROOT });
+    expect(r.text).toContain('同じ本文の下書きを消しました');
+    open();
+    expect((await saving).isError).toBe(false);
+  });
+
+  test('a cleanup in one channel does not wait for a save_draft to another channel', async () => {
+    const CH2 = 'e'.repeat(26);
+    let open!: () => void;
+    const gate = new Promise<void>((r) => { open = r; });
+    serve(() => [draft('hello')]);
+    routes[`GET /channels/${CH2}`] = () => ({ id: CH2, name: 'other', display_name: 'Other', team_id: 't1', type: 'O' });
+    const list = routes[LIST];
+    let n = 0;
+    routes[LIST] = async (req) => (n++ === 0 ? (await gate, []) : list(req));
+    const s = setup();
+    const saving = s.call('save_draft', { channel: CH2, message: 'mine' });
+    await vi.waitFor(() => expect(count(LIST)).toBe(1));
+    const r = await s.call('send_message', { channel: CH, message: 'hello' });
+    expect(r.text).toContain('同じ本文の下書きを消しました');
+    open();
+    expect((await saving).isError).toBe(false);
   });
 
   test('a save_draft that fails while holding the lock lets the cleanup behind it run', async () => {
