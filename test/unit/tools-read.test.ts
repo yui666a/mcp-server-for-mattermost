@@ -68,6 +68,23 @@ test('search_posts sends the JST offset, shows the channel and team names, and n
   expect(await call('search_posts', { terms: 'x' })).not.toContain('100 件まで');
 });
 
+test('search_posts pages with its own next_cursor and rejects a search_files cursor', async () => {
+  routes = {
+    'POST /posts/search': () => posts(30),
+    'GET /users/me/channels': () => [],
+    'GET /users/me/teams': () => [{ id: 't'.repeat(26), name: 'team-a' }],
+    'POST /users/ids': () => [{ id: 'u1', username: 'alice' }],
+  };
+  const call = setup();
+  const first = await call('search_posts', { terms: 'x', limit: 20 });
+  const cursor = /next_cursor: (\S+)/.exec(first)![1];
+  const second = await call('search_posts', { terms: 'x', cursor });
+  expect(second).toContain(`post_id: ${id(20)}`);
+  expect(second).not.toContain(`post_id: ${id(19)}`);
+  const files = Buffer.from(JSON.stringify({ page: 1, per_page: 20, files: true })).toString('base64url');
+  expect(await call('search_posts', { terms: 'x', cursor: files }, true)).toBe('cursor が不正です。前回の出力の next_cursor をそのまま渡してください。');
+});
+
 describe('search_posts in: filters', () => {
   const pad = (s: string) => s.padEnd(26, '0');
   const T1 = pad('ta'), T2 = pad('tb');
@@ -2280,8 +2297,16 @@ describe('search_files', () => {
   });
   const found = (fs: ReturnType<typeof file>[]) => ({ order: fs.map((f) => f.id), file_infos: Object.fromEntries(fs.map((f) => [f.id, f])) });
   const mmError = (status: number, id = 'x') => () => Response.json({ id, message: 'm', status_code: status }, { status });
-  const base = () => ({
-    'POST /files/search': () => found([file(F1)]),
+  let searched: string[] = [];
+  const onlyAsked = () => searched.every((t) => t === '*');
+  const base = () => {
+    searched = [];
+    return {
+    'POST /files/search': () => {
+      const t = (bodies['/files/search'] as { terms: string }).terms;
+      searched.push(t);
+      return t === '*' ? found([]) : found([file(F1)]);
+    },
     'GET /users/me/channels': () => [{ id: A, name: 'town', display_name: 'Town', team_id: TA, type: 'O' }],
     'GET /users/me/teams': () => [{ id: TA, name: 'team-a' }, { id: TB, name: 'team-b' }],
     'POST /users/ids': () => [{ id: 'u2', username: 'bob' }],
@@ -2295,7 +2320,8 @@ describe('search_files', () => {
     'GET /users/username/carol': () => ({ id: 'u3', username: 'carol' }),
     [`GET /teams/${TA}/channels/name/u1__u2`]: () => ({ id: DM, name: 'u1__u2', display_name: '', team_id: '', type: 'D' }),
     [`GET /teams/${TB}/channels/name/u1__u2`]: () => ({ id: DM, name: 'u1__u2', display_name: '', team_id: '', type: 'D' }),
-  });
+    };
+  };
   const sent = () => (bodies['/files/search'] as { terms: string }).terms;
   const terms = async (t: string) => {
     routes = base();
@@ -2361,6 +2387,52 @@ describe('search_files', () => {
     expect(out).toBe('この Mattermost ではファイルの検索が無効になっています（システムコンソールの設定）。ファイル名を含む投稿は search_posts で探せます。');
   });
 
+  test('rejects a search_posts cursor, which has the same page and per_page', async () => {
+    routes = base();
+    const out = await setup()('search_files', { terms: 'x', cursor: Buffer.from(JSON.stringify({ page: 1, per_page: 20 })).toString('base64url') }, true);
+    expect(out).toBe('cursor が不正です。前回の出力の next_cursor をそのまま渡してください。');
+  });
+
+  describe('on a server with file search turned off', () => {
+    const off = () => ({ ...base(), 'POST /files/search': () => {
+      searched.push((bodies['/files/search'] as { terms: string }).terms);
+      return Response.json({ id: 'store.sql_file_info.search.disabled', message: 'm', status_code: 501 }, { status: 501 });
+    } });
+
+    test('says file search is off rather than that an in: channel is not found, asking with "*" only', async () => {
+      routes = off();
+      expect(await setup()('search_files', { terms: 'x in:nowhere' }, true)).toContain('ファイルの検索が無効になっています');
+      expect(searched).toEqual(['*']);
+    });
+
+    test('says file search is off for terms that resolve, without asking first', async () => {
+      routes = off();
+      expect(await setup()('search_files', { terms: 'x in:town' }, true)).toContain('ファイルの検索が無効になっています');
+      expect(searched).toEqual([`x in:${A}`]);
+    });
+  });
+
+  test('on a server with file search on, an in: that cannot be resolved is reported after one "*" request', async () => {
+    routes = base();
+    expect(await setup()('search_files', { terms: 'x in:nowhere' }, true)).toBe('チャンネル「nowhere」が見つかりません。');
+    expect(searched).toEqual(['*']);
+  });
+
+  test('an in: that resolves is searched without asking first', async () => {
+    routes = base();
+    await setup()('search_files', { terms: 'x in:town' });
+    expect(searched).toEqual([`x in:${A}`]);
+  });
+
+  test('when the "*" request fails otherwise, reports the in: error', async () => {
+    routes = { ...base(), 'POST /files/search': () => {
+      searched.push((bodies['/files/search'] as { terms: string }).terms);
+      return mmError(500)();
+    } };
+    expect(await setup()('search_files', { terms: 'x in:nowhere' }, true)).toBe('チャンネル「nowhere」が見つかりません。');
+    expect(searched).toEqual(['*']);
+  });
+
   test('rejects a cursor of another shape', async () => {
     routes = base();
     const out = await setup()('search_files', { terms: 'x', cursor: Buffer.from(JSON.stringify({ offset: 0, per_page: 20 })).toString('base64url') }, true);
@@ -2417,7 +2489,7 @@ describe('search_files', () => {
       routes = base();
       const call = setup();
       expect(await call('search_files', { terms: 'x in:@carol' }, true)).toBe('@carol との DM はまだありません。');
-      expect(hits).not.toContain('POST /files/search');
+      expect(onlyAsked()).toBe(true);
       await call('search_files', { terms: 'x -in:@carol y' });
       expect(sent()).toBe('x y');
       await call('search_files', { terms: 'x -in: @carol y' });
@@ -2428,7 +2500,7 @@ describe('search_files', () => {
     test('asks for a term when dropping -in:@user leaves nothing to search', async () => {
       routes = base();
       expect(await setup()('search_files', { terms: '-in:@carol' }, true)).toBe('検索語か条件を 1 つ以上指定してください。');
-      expect(hits).not.toContain('POST /files/search');
+      expect(onlyAsked()).toBe(true);
     });
 
     test('replaces a group DM with its channel_id, as for any other channel', async () => {
@@ -2444,7 +2516,7 @@ describe('search_files', () => {
       expect(hits).not.toContain('POST /channels/group');
     });
 
-    test('says a channel is not found, for a name, a channel_id or team/channel answered with 403 or 404, without searching', async () => {
+    test('says a channel is not found, for a name, a channel_id or team/channel answered with 403 or 404, without searching for the terms', async () => {
       routes = { ...base(), [`GET /channels/${B}`]: mmError(403), 'GET /teams/name/team-b/channels/name/dup': mmError(404) };
       const call = setup();
       expect(await call('search_files', { terms: 'x in:nowhere' }, true)).toBe('チャンネル「nowhere」が見つかりません。');
@@ -2452,7 +2524,7 @@ describe('search_files', () => {
       expect(await call('search_files', { terms: 'x in:team-b/dup' }, true)).toBe('チャンネル「team-b/dup」が見つかりません。');
       routes[`GET /channels/${B}`] = mmError(404);
       expect(await call('search_files', { terms: `x in:${B}` }, true)).toBe(`チャンネル「${B}」が見つかりません。`);
-      expect(hits).not.toContain('POST /files/search');
+      expect(onlyAsked()).toBe(true);
     });
 
     test('says a user is not found for in:@user of nobody', async () => {
