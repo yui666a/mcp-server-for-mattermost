@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { MmError, type MmClient } from '../mattermost/client.ts';
+import { MmError, UpstreamUnavailable, type MmClient } from '../mattermost/client.ts';
 import { InputError } from './format.ts';
 
 export type Mm = Pick<MmClient, 'call'>;
@@ -102,7 +102,9 @@ export async function resolveChannel(mm: Mm, userId: string, spec: string, opts:
         `同じ文字列を名前に持つチャンネルはあります。そのチャンネルを指すときだけ、${found.map((f) => `「${f.teamName}/${lower}」（${f.displayName}）`).join('か')}の形で指定してください。`,
       ].join(''));
     });
-    return ref(c, await teamNameOf(mm, userId, c.team_id));
+    const r = ref(c, await teamNameOf(mm, userId, c.team_id));
+    const label = await dmLabel(mm, userId, c);
+    return label ? { ...r, displayName: label } : r;
   }
   const slash = s.indexOf('/');
   // Lowered rather than passed as typed, here and for a bare channel name: Mattermost names are lower case only, and it answers 400 to any upper case letter.
@@ -140,6 +142,28 @@ export async function resolveChannel(mm: Mm, userId: string, spec: string, opts:
   if (found.length > 1) throw new Ambiguous(s, found.map((c) => ({ team: c.teamName, name: c.name, id: c.id })));
   if (!found.length) throw new InputError(`チャンネル「${s}」が見つかりません。`);
   return found[0];
+}
+
+// Not using display_name: Mattermost leaves a DM's empty and puts every member, the caller included, in a group DM's.
+async function dmLabel(mm: Mm, userId: string, c: MmChannelFull): Promise<string | undefined> {
+  // Given up on rather than failing the tool: the name is only for the output, and Mattermost's display_name is left as it was.
+  const giveUp = (e: unknown) => {
+    if (e instanceof MmError || e instanceof UpstreamUnavailable) return undefined;
+    throw e;
+  };
+  if (c.type === 'D') {
+    const ids = /^([a-z0-9]{26})__([a-z0-9]{26})$/.exec(c.name ?? '');
+    if (!ids || (ids[1] !== userId && ids[2] !== userId)) return undefined;
+    const other = ids[1] === userId ? ids[2] : ids[1];
+    const u = await mm.call<UserRef>(userId, 'GET', `/users/${other}`).catch(giveUp);
+    return u && `@${u.username}`;
+  }
+  if (c.type === 'G') {
+    const members = await mm.call<UserRef[]>(userId, 'GET', `/users?in_channel=${c.id}&per_page=8`).catch(giveUp);
+    const others = (members ?? []).filter((u) => u.id !== userId);
+    return others.length ? others.map((u) => `@${u.username}`).sort().join(', ') : undefined;
+  }
+  return undefined;
 }
 
 async function byName(mm: Mm, userId: string, name: string, teams: MmTeam[]): Promise<ResolvedChannel[]> {
