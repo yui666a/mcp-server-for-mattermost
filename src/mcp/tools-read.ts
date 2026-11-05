@@ -297,8 +297,9 @@ function channelFilters(words: string[]): { at: number; span: number; value: str
 }
 
 async function filterChannelIds(mm: Mm, userId: string, spec: string, written: string, exclude: boolean, notes: string[]): Promise<string[]> {
+  let ch;
   try {
-    return [(await resolveChannel(mm, userId, spec, { names: false })).id];
+    ch = await resolveChannel(mm, userId, spec, { names: false });
   } catch (e) {
     if (e instanceof Ambiguous) {
       const ids = [...new Set(e.candidates.map((c) => c.id))];
@@ -313,13 +314,18 @@ async function filterChannelIds(mm: Mm, userId: string, spec: string, written: s
     if (e instanceof ChannelFetchError && e.id === 'app.team.get_by_name.missing.app_error') {
       throw new InputError(`チャンネル「${spec}」のチームが見つかりません。チーム名の誤りなら、list_my_channels で参加しているチームを確かめてください（チーム名はチャンネルの行の先頭に出ます）。`);
     }
-    if (e instanceof ChannelFetchError && e.status === 403) throw new InputError(`チャンネル「${spec}」を見る権限がありません（参加していない非公開チャンネルなど）。${RETRY}${ASK_ADMIN}`);
+    // Not the private-channel wording for team/channel: by name Mattermost answers 404 to a private channel the user is not in.
+    if (e instanceof ChannelFetchError && e.status === 403) throw new InputError(`チャンネル「${spec}」を見る権限がありません（${spec.includes('/') ? '参加していないチームのチャンネルや、見る権限の無い公開チャンネルなど' : '参加していない非公開チャンネルなど'}）。${RETRY}${ASK_ADMIN}`);
     // Told apart by the form of the spec, not by Mattermost's id: a 404 without an id, as a proxy may give, still gets a fitting message.
     if (e instanceof ChannelFetchError && e.status === 404) {
       throw new InputError(spec.includes('/') ? byName : `チャンネル「${spec}」が見つかりません。ID の誤りなら search_channels で確かめてください。`);
     }
     throw e;
   }
+  // Not dropping an -in: of an archived channel: the search leaves it out anyway.
+  // Not searching with include_deleted_channels instead: the tool descriptions and the listing behind the channel lines assume archived channels stay out.
+  if (!exclude && (ch.raw as { delete_at?: number }).delete_at) throw new InputError(`チャンネル「${spec}」はアーカイブ済みで、検索の対象外です。読むなら read_channel に渡します。`);
+  return [ch.id];
 }
 
 // Not higher: with 10 teams the worst case of in: (1 + flags × (teams + 1) GETs, 221), the search, the 3 calls for its output and up to 50
@@ -531,7 +537,7 @@ export function registerReadTools(server: McpServer, ctx: ToolContext): void {
     });
   }
 
-  tool('search_posts', '参加しているチームのメッセージを検索する。Mattermost の検索構文（from:、in:、before:、after:、on: など）をそのまま使える。in: にはチャンネル ID、「チーム名/チャンネル名」、チャンネル名、@ユーザー名（DM）、@a,b（グループ DM。カンマの前後に空白を入れない）を渡せる。同じ名前が複数のチームにあれば、すべてで探す。見つからない・見る権限の無いチャンネルはエラー、参加していないチャンネル（見られる非公開を含む）に絞ると 0 件になる。in: と channel:（-in: などの除外を含む）は 1 回の検索で合わせて 20 個まで。DM は作らない。日付は日本時間（JST）で解釈する。新しい順。メッセージ添付（Bot や webhook などが付ける整形表示）の中身は検索の対象外（Mattermost の標準のデータベース検索は添付を検索しないため。その中身を探すなら read_channel で読む。read_channel なら since と until で期間を指定して読める）',
+  tool('search_posts', '参加しているチームのメッセージを検索する。Mattermost の検索構文（from:、in:、before:、after:、on: など）をそのまま使える。in: にはチャンネル ID、「チーム名/チャンネル名」、チャンネル名、@ユーザー名（DM）、@a,b（グループ DM。カンマの前後に空白を入れない）を渡せる。同じ名前が複数のチームにあれば、すべてで探す。見つからない・見る権限の無いチャンネルはエラー、参加していないチャンネル（見られる非公開を含む）に絞ると 0 件になる。アーカイブ済みのチャンネルは対象外（in: に ID を渡すとエラー）。in: と channel:（-in: などの除外を含む）は 1 回の検索で合わせて 20 個まで。DM は作らない。日付は日本時間（JST）で解釈する。新しい順。メッセージ添付（Bot や webhook などが付ける整形表示）の中身は検索の対象外（Mattermost の標準のデータベース検索は添付を検索しないため。その中身を探すなら read_channel で読む。read_channel なら since と until で期間を指定して読める）',
     { terms: z.string().min(1), limit: limitArg(20, 50), cursor: cursorArg },
     async ({ terms, limit, cursor }, mm) => {
       const c = cursorOf(z.object({ page: z.number().int().min(0), per_page: perPage(50) }).strict(), cursor);
@@ -609,7 +615,7 @@ export function registerReadTools(server: McpServer, ctx: ToolContext): void {
       return render({ lines, posts: shown, notes, next: rest.length > per && last ? { create_at: last.create_at, id: last.id, per_page: per, at: row.get(last.id) } : undefined });
     });
 
-  tool('search_files', 'ファイルを名前で探す（サーバーが中身を抽出していれば中身にも当たる）。参加しているチャンネル、DM、グループ DM のファイルが対象で、参加していない公開チャンネルとアーカイブ済みのチャンネルのファイルは出ない。Mattermost の検索構文（from:、in:、ext:、before:、after:、on: など）を使え、日付は日本時間（JST）で解釈する。in: にはチャンネル ID、「チーム名/チャンネル名」、チャンネル名、@ユーザー名（DM）、@a,b（グループ DM。カンマの前後に空白を入れない）を渡せる。同じ名前が複数のチームにあれば、すべてで探す。見つからない・見る権限の無いチャンネルはエラー。in: と channel:（-in: などの除外を含む）は 1 回の検索で合わせて 20 個まで。DM は作らない。名前は語の単位で当たり、日本語の名前は名前全体か先頭からの前方一致（例: 2026年10月*）でしか当たらない。新しい順。file_id は get_file に、post_id は get_post に渡せる',
+  tool('search_files', 'ファイルを名前で探す（サーバーが中身を抽出していれば中身にも当たる）。参加しているチャンネル、DM、グループ DM のファイルが対象で、参加していない公開チャンネルとアーカイブ済みのチャンネルのファイルは出ない（アーカイブ済みのチャンネルの ID を in: に渡すとエラー）。Mattermost の検索構文（from:、in:、ext:、before:、after:、on: など）を使え、日付は日本時間（JST）で解釈する。in: にはチャンネル ID、「チーム名/チャンネル名」、チャンネル名、@ユーザー名（DM）、@a,b（グループ DM。カンマの前後に空白を入れない）を渡せる。同じ名前が複数のチームにあれば、すべてで探す。見つからない・見る権限の無いチャンネルはエラー。in: と channel:（-in: などの除外を含む）は 1 回の検索で合わせて 20 個まで。DM は作らない。名前は語の単位で当たり、日本語の名前は名前全体か先頭からの前方一致（例: 2026年10月*）でしか当たらない。新しい順。file_id は get_file に、post_id は get_post に渡せる',
     { terms: z.string().min(1), limit: limitArg(20, 50), cursor: cursorArg },
     async ({ terms, limit, cursor }, mm) => {
       // Marked here rather than on search_posts' cursor: that one is used more, and its cursors issued before a deploy would stop working.
