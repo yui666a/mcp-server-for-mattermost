@@ -64,7 +64,7 @@ async function attempt(store: Store, mm: Mm, s: ClaimedScheduled, now: number): 
       if (!late && (e instanceof RateLimited || e instanceof UpstreamUnavailable)) return { status: 'pending', forgetAttempt: false };
       return failed(UNKNOWN);
     }
-    // Not the found post's own file_ids: the lookup only matches posts that carry every file of the schedule, so those are the kept ones.
+    // Not the found post's own file_ids: the lookup only matches posts that carry every file of the schedule (or, when Mattermost hid them, as many files), so those are the kept ones.
     if (found) return { status: 'posted', postId: found, fileIds };
     // Not posting again: a deleted or edited post may be this schedule's, changed by the user, and its text can no longer be compared; a post with other files may be the earlier attempt with files Mattermost dropped.
     if (touched) return failed(UNKNOWN);
