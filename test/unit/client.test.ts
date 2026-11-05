@@ -257,6 +257,7 @@ test('marks a 500 as a plain body only when it was read whole as text/plain and 
     [() => Response.json({ id: '', message: 'Internal Server Error', status_code: 500 }, { status: 500 }), false],
     [plain('<html>500</html>', 'text/html'), false],
     [plain('{"id":"x"}', 'text/plain'), false],
+    [() => new Response(new ReadableStream({ pull(c) { c.enqueue(new TextEncoder().encode('seeker')); c.error(new Error('reset')); } }), { status: 500, headers: { 'content-type': 'text/plain' } }), false],
   ] as const) {
     api = route;
     expect(await failure(client.callBytes('u1', '/files/f'))).toMatchObject({ status: 500, plainBody: want });
