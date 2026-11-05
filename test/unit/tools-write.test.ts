@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 import { makeApp } from './helpers.ts';
 
@@ -761,16 +762,21 @@ describe('send_message with files', () => {
     for (const s of ['secret-name', 'secret-text', 'secret-bytes', Buffer.from('secret-bytes').toString('base64')]) expect(logged).not.toContain(s);
   });
 
-  test('the tool names both ways to attach and says that a draft with the same message is cleared', async () => {
+  test('the tool names both ways to attach and says that a draft with the same message is cleared unless it has files', async () => {
     const t = (await setup().tools()).find((x) => x.name === 'send_message')!;
     expect(t.description).toContain('添付は files（中身を直接渡す）か file_ids（prepare_upload の結果）');
-    expect(t.description).toContain('同じ投稿先に本文の同じ下書きがあれば、投稿の後に消す');
+    expect(t.description).toContain('同じ投稿先に本文の同じ下書きがあれば、投稿の後に消す（添付の付いた下書きは消さない）');
   });
 
   test('files gives its two forms and limits, and sends files on the user\'s PC to prepare_upload only for clients that can run commands there', async () => {
     const t = (await setup().tools()).find((x) => x.name === 'send_message')! as unknown as { inputSchema: { properties: { files: { description: string } } } };
     const d = t.inputSchema.properties.files.description;
     for (const s of ['1〜5 件', '128KiB', 'content_text', 'content_base64', '利用者の PC にあるファイルは、PC でコマンドを実行できるクライアントなら prepare_upload を使う']) expect(d).toContain(s);
+  });
+
+  test('files allows content_base64 for a file attached to the chat only when code execution can read it', async () => {
+    const t = (await setup().tools()).find((x) => x.name === 'send_message')! as unknown as { inputSchema: { properties: { files: { description: string } } } };
+    expect(t.inputSchema.properties.files.description).toContain('チャットに添付されたファイルを content_base64 で送れるのは、コード実行で中身を読めるときだけ');
   });
 
   test('prepare_upload asks for the user\'s confirmation before curl, and points clients that cannot run commands to save_draft', async () => {
@@ -859,5 +865,35 @@ describe('a DM not opened yet', () => {
     expect(r.isError).toBe(true);
     expect(r.text).toContain('下書きの同期を切っている');
     expect(hits).toEqual([PREF]);
+  });
+});
+
+describe('a root_id in another channel than the DM or group DM it is sent to', () => {
+  const CAROL = 'k'.repeat(26);
+  const DM = 'd'.repeat(26);
+  const ROOT = 'r'.repeat(26);
+
+  const DAVE = 'v'.repeat(26);
+  const GM = 'g'.repeat(26);
+  const GM_NAME = createHash('sha1').update([CAROL, DAVE, 'u1'].sort().join('')).digest('hex');
+
+  test.each([
+    ['send_message', '@carol', '@carol', DM],
+    ['save_draft', '@carol', '@carol', DM],
+    ['send_message', '@carol,dave', '@carol, @dave', GM],
+    ['save_draft', '@carol,dave', '@carol, @dave', GM],
+  ])('%s to %s names the channel by the other users, not by its internal name', async (tool, channel, label, chId) => {
+    routes = {
+      'GET /users/me/teams': () => [{ id: 't1', name: 'team-a' }],
+      'GET /users/username/carol': () => ({ id: CAROL, username: 'carol', delete_at: 0 }),
+      'POST /users/usernames': () => [{ id: CAROL, username: 'carol', delete_at: 0 }, { id: DAVE, username: 'dave', delete_at: 0 }],
+      [`GET /teams/t1/channels/name/${CAROL}__u1`]: () => ({ id: DM, name: `${CAROL}__u1`, display_name: '', team_id: '', type: 'D' }),
+      [`GET /teams/t1/channels/name/${GM_NAME}`]: () => ({ id: GM, name: GM_NAME, display_name: 'carol, dave, me', team_id: '', type: 'G' }),
+      'GET /users/me/preferences/advanced_settings/name/sync_drafts': mmError(400, 'app.preference.get.app_error'),
+      [`GET /posts/${ROOT}`]: () => ({ id: ROOT, channel_id: 'o'.repeat(26), root_id: '', user_id: 'u2', message: 'root', create_at: 1 }),
+    };
+    const r = await setup().call(tool, { channel, message: 'hi', root_id: ROOT });
+    expect(r.isError).toBe(true);
+    expect(r.text).toBe(`root_id ${ROOT} の投稿はチャンネル「${label}」（channel_id: ${chId}）にありません。`);
   });
 });

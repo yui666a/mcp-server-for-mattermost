@@ -52,7 +52,7 @@ This project targets the other case:
 | `edit_message` / `delete_message` | Edit or delete the user's own post |
 | `save_draft` | Save a Mattermost draft for the user to send from the UI (creates the DM for `@username` or `@a,b` if it does not exist yet); sending the same text with `send_message` clears it |
 | `schedule_message` | Schedule a post for a later time (1 minute to 30 days ahead), creating the DM for `@username` or `@a,b` if it does not exist yet, optionally with files uploaded through `prepare_upload` |
-| `list_scheduled_messages` | List the user's scheduled posts with status and permalink |
+| `list_scheduled_messages` | List the user's scheduled posts with status, attached files, and permalink |
 | `update_scheduled_message` / `cancel_scheduled_message` | Change or cancel a pending scheduled post |
 | `search_emoji` | Find custom emoji by part of their name, for `add_reaction` and `set_custom_status` (standard emoji are not included) |
 | `set_status` | Set the user's own status (online, away, do not disturb with an optional end time, offline) |
