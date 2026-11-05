@@ -149,7 +149,7 @@ describe('save_post and unsave_post agree with list_saved_posts', () => {
     const id = await bobPost(outside.id);
     const r = await call('save_post', { post_id: id });
     expect(r.isError).toBe(true);
-    expect(r.content[0].text).toBe('参加していないチャンネルの投稿は保存できません。');
+    expect(r.content[0].text).toBe('このチャンネルに参加しているかを確かめられませんでした（参加していないか、Mattermost の一時的な障害）。参加していないチャンネルの投稿は保存できません。参加しているはずなら、少し待ってから再試行してください。');
     expect(await saved()).not.toContain(id);
     expect(await savedInMattermost()).not.toContain(id);
   });
@@ -157,7 +157,7 @@ describe('save_post and unsave_post agree with list_saved_posts', () => {
   test('a post of a private channel alice cannot see, and a post that does not exist, are refused', async () => {
     const hidden = await call('save_post', { post_id: await bobPost(secret.id) });
     expect(hidden.isError).toBe(true);
-    expect(hidden.content[0].text).toBe('この投稿は見られません（参加していない非公開チャンネルの投稿など）。');
+    expect(hidden.content[0].text).toBe('この投稿は見られません（参加していない非公開チャンネルの投稿など）。参加しているはずなら、Mattermost の一時的な障害の可能性があります。少し待ってから再試行してください。');
     const missing = await call('save_post', { post_id: 'a'.repeat(26) });
     expect(missing.isError).toBe(true);
     expect(missing.content[0].text).toBe('投稿が見つかりません（削除されたか、存在しません）。');
@@ -181,7 +181,7 @@ describe('pin_post and unpin_post agree with get_channel', () => {
     const id = await bobPost(outside.id);
     const r = await call('pin_post', { post_id: id });
     expect(r.isError).toBe(true);
-    expect(r.content[0].text).toBe('参加していないチャンネルの投稿はピン留めできません。');
+    expect(r.content[0].text).toBe('このチャンネルに参加しているかを確かめられませんでした（参加していないか、Mattermost の一時的な障害）。参加していないチャンネルの投稿はピン留めできません。参加しているはずなら、少し待ってから再試行してください。');
     const post = await mmApi<{ is_pinned: boolean }>(bobMm, 'GET', `/posts/${id}`);
     expect(post.is_pinned).toBe(false);
   });
@@ -191,7 +191,7 @@ describe('pin_post and unpin_post agree with get_channel', () => {
     await mmApi(bobMm, 'POST', `/posts/${id}/pin`);
     const r = await call('unpin_post', { post_id: id });
     expect(r.isError).toBe(true);
-    expect(r.content[0].text).toBe('参加していないチャンネルの投稿のピン留めは外せません。');
+    expect(r.content[0].text).toBe('このチャンネルに参加しているかを確かめられませんでした（参加していないか、Mattermost の一時的な障害）。参加していないチャンネルの投稿のピン留めは外せません。参加しているはずなら、少し待ってから再試行してください。');
     const post = await mmApi<{ is_pinned: boolean }>(bobMm, 'GET', `/posts/${id}`);
     expect(post.is_pinned).toBe(true);
   });

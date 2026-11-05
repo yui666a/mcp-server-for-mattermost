@@ -182,7 +182,8 @@ describe('followed threads against the local Mattermost', () => {
     await say(bobMm, ch, 'bob reply', root);
     const r = await call('follow_thread', { post_id: root });
     expect(r.isError).toBe(true);
-    expect(r.content[0].text).toContain('このチャンネルに参加していません');
+    // A non-member gets 403 from members/me, which a transient failure also gives, so the tool does not say outright that alice has not joined.
+    expect(r.content[0].text).toContain('このチャンネルに参加しているかを確かめられませんでした');
     expect(await followed()).not.toContain(root);
   });
 
