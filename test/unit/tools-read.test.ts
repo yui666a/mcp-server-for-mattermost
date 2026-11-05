@@ -1780,7 +1780,7 @@ describe('get_file', () => {
       });
     });
 
-    describe('a whole file without Japanese but for an incomplete last character (UTF-8 is only a guess)', () => {
+    describe('a whole file cut at its last character, otherwise made only of what half-width kana Shift_JIS can pass for in UTF-8 (UTF-8 is only a guess)', () => {
       test.each([
         ['a.txt', [0x61, 0x62, 0x63, 0xc2], 'Shift_JIS', 'abcﾂ', false],
         ['a.txt', [0x61, 0x62, 0x63, 0xe8, 0xa0], 'Shift_JIS', 'abc陟', false],
@@ -1800,7 +1800,7 @@ describe('get_file', () => {
         // Fixing a known wrong guess: Latin UTF-8 with a cut last character also reads whole as Shift_JIS.
         ['a.txt', [...Buffer.from('naïve caf'), 0xc3], 'Shift_JIS', 'naﾃｯve cafﾃ', false],
         ['a.md', [...Buffer.from('café'), 0xe2], 'UTF-8', 'café', true],
-      ])('reads %s %j, without Japanese and with a cut last character in UTF-8, as %s with the guess noted', async (name, b, encoding, shown, cut) => {
+      ])('reads %s %j, whose UTF-8 half-width kana Shift_JIS could also make, as %s with the guess noted', async (name, b, encoding, shown, cut) => {
         routes = { [INFO]: textInfo(name as string, (b as number[]).length), [FILE]: body(Uint8Array.from(b as number[])) };
         const out = await setup()('get_file', { file_id: F });
         expect(content()).toBe(shown);
