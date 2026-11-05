@@ -284,12 +284,13 @@ export async function resolveInFilters(mm: Mm, userId: string, terms: string): P
   const out = words.map((w) => [w]);
   const written = (f: (typeof filters)[number]) => words.slice(f.at, f.at + f.span).join(' ');
   // Trimmed here, not only in resolveChannel: a U+FEFF in front would otherwise hide a leading ~ or @ from the checks below.
-  const specOf = (f: (typeof filters)[number]) => f.value.trim().replace(/^~+/, '');
+  const specOf = (f: (typeof filters)[number]) => f.value.trim().replace(/^~+/, '').trim();
   for (const f of filters) {
     const next = words[f.at + f.span];
+    const word = next?.trim() ?? '';
     // Not treating every 、 or ， as a comma: they also start search words such as 、議事録.
-    if (specOf(f).startsWith('@') && /^,|^[、，][A-Za-z0-9._,@、，-]*$/.test(next ?? '')) {
-      const fullWidth = /^[、，]/.test(next ?? '') ? '区切りは半角のカンマ（,）で書いてください。' : '';
+    if (specOf(f).startsWith('@') && /^,|^[、，][A-Za-z0-9._,@、，-]*$/.test(word)) {
+      const fullWidth = /^[、，]/.test(word) ? '区切りは半角のカンマ（,）で書いてください。' : '';
       throw new InputError(`${written(f)} の後の「${next}」: 検索の条件では @a,b のようにカンマの前後に空白を入れずに書いてください。${fullWidth}`);
     }
   }
