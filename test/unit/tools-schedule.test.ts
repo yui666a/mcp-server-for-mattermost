@@ -187,7 +187,7 @@ describe('schedule_message', () => {
   });
 
   test.each([
-    ['a root in another channel', { channel_id: CH2, root_id: '' }, `root_id ${ROOT} の投稿はチャンネル（channel_id: ${CH}、表示名: Town）にありません。`],
+    ['a root in another channel', { channel_id: CH2, root_id: '' }, `root_id ${ROOT} の投稿は channel_id: ${CH} のチャンネルにありません（表示名: Town）。`],
     ['a reply', { channel_id: CH, root_id: 'x'.repeat(26) }, `root_id ${ROOT} は返信です。スレッドの親投稿の post_id を指定してください。`],
   ])('refuses %s as root_id and saves nothing', async (_, root, msg) => {
     routes[`GET /posts/${ROOT}`] = () => ({ id: ROOT, user_id: 'u9', message: 'm', create_at: 1, ...root });

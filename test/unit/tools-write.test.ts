@@ -1186,7 +1186,7 @@ describe('a root_id in another channel than the DM or group DM it is sent to', (
     };
     const r = await setup().call(tool, { channel, message: 'hi', root_id: ROOT });
     expect(r.isError).toBe(true);
-    expect(r.text).toBe(`root_id ${ROOT} の投稿はチャンネル（channel_id: ${chId}、表示名: ${label}）にありません。`);
+    expect(r.text).toBe(`root_id ${ROOT} の投稿は channel_id: ${chId} のチャンネルにありません（表示名: ${label}）。`);
   });
 
   test('save_draft to a DM with root_id reports a wrong root_id before drafts disabled on the server, as for a channel', async () => {
@@ -1199,7 +1199,7 @@ describe('a root_id in another channel than the DM or group DM it is sent to', (
       [`GET /posts/${ROOT}`]: () => ({ id: ROOT, channel_id: 'o'.repeat(26), root_id: '', user_id: 'u2', message: 'root', create_at: 1 }),
     };
     const r = await setup().call('save_draft', { channel: '@carol', message: 'hi', root_id: ROOT });
-    expect(r.text).toContain(`root_id ${ROOT} の投稿はチャンネル（channel_id: ${DM}、表示名: @carol）にありません。`);
+    expect(r.text).toContain(`root_id ${ROOT} の投稿は channel_id: ${DM} のチャンネルにありません（表示名: @carol）。`);
     expect(hits).not.toContain('GET /users/u1/teams/t1/drafts');
   });
 });

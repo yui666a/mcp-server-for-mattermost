@@ -382,7 +382,7 @@ export async function checkRoot(mm: Mm, uid: string, rootId: string, ch: { id: s
   const root = await worded(mm.call<MmPost>(uid, 'GET', `/posts/${rootId}`), {
     status: [[404, `root_id ${rootId} の投稿が見つかりません。`], [403, `root_id ${rootId} の投稿を見られません。`]],
   });
-  if (root.channel_id !== ch.id) throw new InputError(`root_id ${rootId} の投稿はチャンネル（channel_id: ${ch.id}、表示名: ${oneLine(ch.displayName || ch.name)}）にありません。`);
+  if (root.channel_id !== ch.id) throw new InputError(`root_id ${rootId} の投稿は channel_id: ${ch.id} のチャンネルにありません（表示名: ${oneLine(ch.displayName || ch.name)}）。`);
   if (root.root_id) throw new InputError(`root_id ${rootId} は返信です。スレッドの親投稿の post_id を指定してください。`);
 }
 
