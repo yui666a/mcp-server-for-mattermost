@@ -138,6 +138,17 @@ describe('followed threads against the local Mattermost', () => {
     expect(await followed()).toContain(root);
   });
 
+  test('follow_thread on a followed root post without replies says it is already followed', async () => {
+    const ch = await newChannel('noreply');
+    const root = await say(bobMm, ch, 'root');
+    let r = await call('follow_thread', { post_id: root });
+    expect(r.content[0].text).toContain('をフォローしました');
+    r = await call('follow_thread', { post_id: root });
+    expect(r.isError, r.content[0].text).toBeFalsy();
+    expect(r.content[0].text).toContain('はすでにフォローしています');
+    expect(r.content[0].text).toContain('最初の返信があるまで');
+  });
+
   test('follow_thread refuses a thread in a public channel alice has not joined', async () => {
     const ch = await newChannel('away', false);
     const root = await say(bobMm, ch, 'root');
