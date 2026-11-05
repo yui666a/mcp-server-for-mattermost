@@ -381,7 +381,7 @@ describe('list_scheduled_messages', () => {
     expect(hits).toEqual([`GET /channels/${CH}`, `GET /channels/${CH2}`, `GET /channels/${DM}`, 'GET /users/u5', `GET /channels/${GONE}`]);
   });
 
-  test('names a group DM by the other members as schedule_message does, looking it up once, and by its display_name when the members cannot be listed', async () => {
+  test('names a group DM by the other members as schedule_message does, deactivated ones included, looking it up once, and by its display_name when the members cannot be listed', async () => {
     const GM = 'n'.repeat(26);
     const GM2 = 'o'.repeat(26);
     const LONE = 'q'.repeat(26);
@@ -389,11 +389,16 @@ describe('list_scheduled_messages', () => {
     routes[`GET /channels/${GM2}`] = () => ({ id: GM2, name: 'i'.repeat(40), display_name: 'alice, dave, erin', team_id: '', type: 'G' });
     routes[`GET /channels/${LONE}`] = () => ({ id: LONE, name: 'j'.repeat(40), display_name: 'alice, frank, gina', team_id: '', type: 'G' });
     const members: Record<string, unknown> = {
-      [GM]: [{ id: 'u7', username: 'carol' }, { id: 'u1', username: 'alice' }, { id: 'u5', username: 'bob' }],
+      [GM]: [{ id: 'u7', username: 'carol' }, { id: 'u1', username: 'alice' }, { id: 'u5', username: 'bob', delete_at: NOW - DAY }],
       [GM2]: Response.json({ id: 'api.context.permissions.app_error', message: 'm', status_code: 403 }, { status: 403 }),
       [LONE]: [{ id: 'u1', username: 'alice' }],
     };
-    routes['GET /users'] = (req) => members[new URL(req.url).searchParams.get('in_channel')!];
+    const queries: { keys: string[]; perPage: string | null }[] = [];
+    routes['GET /users'] = (req) => {
+      const q = new URL(req.url).searchParams;
+      queries.push({ keys: [...q.keys()].sort(), perPage: q.get('per_page') });
+      return members[q.get('in_channel')!];
+    };
     const s = setup();
     let n = 0;
     for (const channelId of [GM, GM, GM2, LONE]) s.store.createScheduled({ mmUserId: 'u1', channelId, message: 'x', scheduledAt: NOW + DAY + n++ * MIN }, NOW);
@@ -406,6 +411,7 @@ describe('list_scheduled_messages', () => {
       `投稿先: alice, frank, gina（channel_id: ${LONE}）`,
     ]);
     expect(hits.filter((h) => h === 'GET /users')).toHaveLength(3);
+    expect(queries).toEqual(Array(3).fill({ keys: ['in_channel', 'per_page'], perPage: '200' }));
   });
 
   test.each([
