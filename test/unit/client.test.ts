@@ -156,7 +156,9 @@ test('transient upstream failure keeps grants', async () => {
   }
   api = only([]);
   refresh = () => mmError(503, 'x');
-  await expect(client.call('u1', 'GET', '/users/me')).rejects.toBeInstanceOf(UpstreamUnavailable);
+  const afterRefresh = await failure(client.call('u1', 'GET', '/users/me'));
+  expect(afterRefresh).toBeInstanceOf(UpstreamUnavailable);
+  expect(afterRefresh.sent).toBe(false);
   expect(cred()).toEqual(before);
   expect(store.verifyAccess(pair.accessToken)?.mmUserId).toBe('u1');
 });
@@ -168,7 +170,7 @@ test('revoked app forces relogin', async () => {
   refresh = RELOGIN;
   const e = await failure(client.call('u1', 'GET', '/users/me'));
   expect(e).toBeInstanceOf(Reauthorize);
-  expect(e.sent).toBe(true);
+  expect(e.sent).toBe(false);
   expect(store.verifyAccess(pair.accessToken)).toBeUndefined();
   expect(cred()).toBeUndefined();
 });
@@ -298,7 +300,7 @@ test('a call that has used up its deadline does not start the refresh', async ()
   api = () => { t += CALL_DEADLINE_MS; return mmError(401, 'x'); };
   const e = await failure(c.call('u1', 'GET', '/users/me'));
   expect(e).toBeInstanceOf(UpstreamUnavailable);
-  expect(e.sent).toBe(true);
+  expect(e.sent).toBe(false);
   expect(refreshCalls).toEqual([]);
   expect(CALL_DEADLINE_MS).toBe(25_000);
 });
@@ -354,6 +356,16 @@ test('after a lost save, an inconclusive check of the refreshed token keeps the 
     expect(await client.call('u1', 'GET', '/users/me')).toEqual({ ok: 'aC' });
     expect(cred()).toMatchObject({ access: 'aC', refresh: 'rC' });
   }
+});
+
+test('a relogin after any response other than 401 counts the call as sent, since that request may have been handled', async () => {
+  store.putMmCred('u1', 'a1', 'r1');
+  refresh = () => { store.putMmCred('u1', 'aC', 'rC'); return Response.json({ access_token: 'a2', refresh_token: 'r2' }); };
+  api = (access) => (access === 'a2' ? mmError(503, 'x') : mmError(401, 'api.context.session_expired.app_error'));
+  const e = await failure(client.call('u1', 'POST', '/posts', { message: 'm' }));
+  expect(e).toBeInstanceOf(Reauthorize);
+  expect(e.sent).toBe(true);
+  expect(apiCalls.map((c) => c.access)).toEqual(['a1', 'a2', 'aC']);
 });
 
 test('after a lost save, an authenticated 4xx proves the refreshed token and it is kept', async () => {
