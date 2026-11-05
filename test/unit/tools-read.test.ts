@@ -2169,6 +2169,18 @@ describe('read_channel', () => {
 
   const membersMe = (status: number, mmId: string) => ({ ...base(), [`GET /channels/${CH}/members/me`]: () => Response.json({ id: mmId, message: 'm', status_code: status }, { status }) });
 
+  const refused = (status: number) => ({ ...base(), 'GET /users/me/teams': () => [], [`GET /channels/${CH}`]: () => Response.json({ id: 'x', message: 'm', status_code: status }, { status }) });
+
+  test('words 403 from fetching the channel as get_channel does', async () => {
+    routes = refused(403);
+    expect(await setup()('read_channel', { channel: CH }, true)).toBe('このチャンネルを見る権限がありません（参加していない非公開チャンネルなど）。参加しているはずなら、Mattermost の一時的な障害の可能性があります。少し待ってから再試行してください。');
+  });
+
+  test('words 404 from fetching the channel, with no channel of that name either, as get_channel does', async () => {
+    routes = refused(404);
+    expect(await setup()('read_channel', { channel: CH }, true)).toBe('チャンネルが見つかりません（参加していない非公開チャンネルを名前で指定した場合も、Mattermost はこの結果を返します）');
+  });
+
   test('when members/me answers 404, says the user has not joined and to use from latest', async () => {
     routes = membersMe(404, 'app.channel.get_member.missing.app_error');
     const out = await setup()('read_channel', { channel: CH, from: 'unread' }, true);
