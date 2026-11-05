@@ -335,7 +335,7 @@ describe('list_scheduled_messages', () => {
     expect(r.text).toContain('状態: 待機中');
     expect(r.text).toContain(`投稿先: Town（channel_id: ${CH}）、返信先 post_id: ${ROOT}`);
     expect(r.text).toContain('予定時刻: 2026-11-03T01:00:00Z | 2026-11-03T10:00:00+09:00');
-    expect(r.text).toContain(`本文（先頭 200 文字）: ${'あ'.repeat(200)}\n`);
+    expect(r.text).toContain(`本文（先頭 200 文字）: ${'あ'.repeat(200)}\n（本文を先頭 200 文字で切りました。全文は list_scheduled_messages に id を渡すと出ます）\n`);
     expect(r.text).not.toContain('not mine');
     expect(hits).toEqual([`GET /channels/${CH}`]);
   });
@@ -581,6 +581,96 @@ describe('cancel_scheduled_message', () => {
     const id = s.store.createScheduled({ mmUserId: 'u2', channelId: CH, message: 'theirs', scheduledAt: NOW + DAY }, NOW)!;
     expect((await s.call('cancel_scheduled_message', { id })).text).toBe(NOT_CHANGEABLE);
     expect(s.store.listScheduled('u2', { limit: 1 })).toHaveLength(1);
+  });
+});
+
+describe('one schedule in full', () => {
+  const HINT = '（本文を先頭 200 文字で切りました';
+  const NOT_FOUND = '予約が見つかりません。予約 ID は list_scheduled_messages（id を渡さずに）で確かめてください。';
+  const BODY_HEAD = '本文（この行の次から末尾まで）:\n';
+  const long = '👨‍👩‍👧'.repeat(150) + 'あ'.repeat(50) + 'END-MARK';
+
+  test('the list cuts a long body at 200 graphemes on a line of its own, and id returns all of it with no hint', async () => {
+    const s = setup();
+    const id = await s.schedule({ message: long });
+    const list = (await s.call('list_scheduled_messages', {})).text;
+    expect(list).toContain(`本文（先頭 200 文字）: ${'👨‍👩‍👧'.repeat(150)}${'あ'.repeat(50)}\n${HINT}`);
+    expect(list).not.toContain('END-MARK');
+    const one = await s.call('list_scheduled_messages', { id });
+    expect(one.isError).toBe(false);
+    expect(one.text.endsWith(`${BODY_HEAD}${long}`)).toBe(true);
+    expect(one.text).not.toContain(HINT);
+  });
+
+  test('a body of exactly 200 graphemes gets no hint', async () => {
+    const s = setup();
+    await s.schedule({ message: 'あ'.repeat(200) });
+    expect((await s.call('list_scheduled_messages', {})).text).not.toContain(HINT);
+  });
+
+  test('a multi-line body comes last, after the files and the reason, so that everything after its heading is the body', async () => {
+    const s = setup();
+    for (const f of ['a'.repeat(26)]) s.store.recordUploadedFile({ mmUserId: 'u1', channelId: CH }, f);
+    const body = '1 行目\n添付: これは本文\n\npost_id: これも本文\n';
+    const id = await s.schedule({ message: body, file_ids: ['a'.repeat(26)] });
+    s.setRow(id, "status = 'failed', error = 'nope'");
+    const r = await s.call('list_scheduled_messages', { id });
+    expect(r.text).toContain(`添付: ${'a'.repeat(26)}`);
+    expect(r.text).toContain('失敗の理由: nope');
+    expect(r.text.slice(r.text.indexOf(BODY_HEAD) + BODY_HEAD.length)).toBe(body);
+    expect(r.text).not.toContain('続きはありません');
+  });
+
+  test('another user\'s schedule and an unknown id are not found, worded apart from the change refusal', async () => {
+    const s = setup();
+    const theirs = s.store.createScheduled({ mmUserId: 'u2', channelId: CH, message: 'not mine', scheduledAt: NOW + DAY }, NOW)!;
+    for (const id of [theirs, 'nope']) {
+      const r = await s.call('list_scheduled_messages', { id });
+      expect(r.isError).toBe(true);
+      expect(r.text).toBe(NOT_FOUND);
+    }
+  });
+
+  test('id ignores a broken cursor and a status the schedule does not have', async () => {
+    const s = setup();
+    const id = await s.schedule({ message: 'pending one' });
+    const r = await s.call('list_scheduled_messages', { id, cursor: 'x', status: 'posted' });
+    expect(r.isError, r.text).toBe(false);
+    expect(r.text).toContain(`予約 ID: ${id}`);
+    expect(r.text.endsWith(`${BODY_HEAD}pending one`)).toBe(true);
+  });
+
+  test('a pending body that cannot be decrypted says, on the last line, how to fix it', async () => {
+    const s = setup();
+    const id = await s.schedule({ message: 'x' });
+    s.setRow(id, "message_sealed = 'broken'");
+    const r = await s.call('list_scheduled_messages', { id });
+    expect(r.isError).toBe(false);
+    expect(r.text.endsWith('本文: （復号できません。本文を直すには、update_scheduled_message に新しい本文全体を渡すか、取り消して予約し直してください）')).toBe(true);
+    expect(r.text).not.toContain(BODY_HEAD);
+  });
+
+  test('a body that cannot be decrypted on a schedule no longer pending gets no hint to change it', async () => {
+    const s = setup();
+    const id = await s.schedule({ message: 'x' });
+    s.setRow(id, "message_sealed = 'broken', status = 'failed', error = 'nope'");
+    const r = await s.call('list_scheduled_messages', { id });
+    expect(r.isError).toBe(false);
+    expect(r.text.endsWith('本文: （復号できません）')).toBe(true);
+  });
+
+  test('an empty id is refused by the schema rather than read as no id', async () => {
+    const s = setup();
+    await s.schedule({ message: 'x' });
+    expect((await s.call('list_scheduled_messages', { id: '' })).isError).toBe(true);
+  });
+
+  test('update says how to check the body only when it changed the body', async () => {
+    const s = setup();
+    const id = await s.schedule({ message: 'x' });
+    const check = '本文は list_scheduled_messages に id を渡すと確かめられます。';
+    expect((await s.call('update_scheduled_message', { id, message: 'y' })).text).toContain(check);
+    expect((await s.call('update_scheduled_message', { id, at: '2026-11-04T10:00' })).text).not.toContain(check);
   });
 });
 
