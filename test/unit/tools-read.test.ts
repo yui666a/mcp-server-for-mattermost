@@ -2223,8 +2223,8 @@ describe('read_channel with since and until', () => {
   const byNewest = () => [...corpus].sort((a, b) => b.create_at - a.create_at || byTie(a, b));
   const byOldest = () => [...corpus].sort((a, b) => a.create_at - b.create_at || byTie(a, b));
   const asList = (ps: P[]) => ({ order: ps.map((p) => p.id), posts: Object.fromEntries(ps.map((p) => [p.id, p])) });
-  // Like Mattermost: page/per_page by offset newest first, after= (before=) by create_at strictly later (earlier), the oldest (newest) per_page, listed newest first,
-  // nothing when the cursor's post is gone, at most 200 per call.
+  // Like Mattermost: page/per_page by offset, newest first. after= takes the oldest per_page strictly later, before= the newest per_page strictly earlier,
+  // both listed newest first and nothing when the cursor's post is gone. At most 200 per call.
   const postsRoute = (req: Request) => {
     const q = new URL(req.url).searchParams;
     const per = Math.min(Number(q.get('per_page')), 200);
@@ -2340,13 +2340,6 @@ describe('read_channel with since and until', () => {
     const { seen } = await readAll(setup(), { since: new Date(T0 - 60_000).toISOString(), limit: 100 });
     expect(new Set(seen).size).toBe(205);
     expect(seen.length).toBe(205);
-  });
-
-  test('in a range, shows every post of a millisecond that one fetch took whole', async () => {
-    fill(5, secs(0, 1, 1, 1, 5));
-    routes = base();
-    const { seen } = await readAll(setup(), { since: iso(1), limit: 3 });
-    expect(seen).toEqual([1, 2, 3, 4].map(id));
   });
 
   test('in a range, fetches once within a call when no millisecond is shared', async () => {

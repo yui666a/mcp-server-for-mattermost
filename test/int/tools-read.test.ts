@@ -112,7 +112,7 @@ describe('read tools against the local Mattermost', () => {
       if (pages++ === 0) await mmApi(aliceMm, 'POST', '/posts', { channel_id: channel.id, message: `${TAG} posted while paging` });
     } while (cursor);
     expect(pages).toBeGreaterThan(1);
-    // Not comparing the order: Mattermost orders posts of the same millisecond differently from call to call.
+    // Not comparing ids in order: Mattermost orders posts of the same millisecond differently from call to call.
     expect([...seen].sort()).toEqual([...all.order].sort());
     const at = seen.map((id) => all.posts[id].create_at);
     expect(at).toEqual([...at].sort((a, b) => b - a));
