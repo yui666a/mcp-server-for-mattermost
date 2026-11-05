@@ -51,8 +51,9 @@ export function localTime(tz: string, nowMs: number): string | undefined {
 }
 
 const LINE_BREAK = /\r\n|[\r\n\v\f\x1c-\x1e\u0085\u2028\u2029]/;
+export const lines = (s: string): string[] => s.split(LINE_BREAK);
 // A space rather than nothing: the words on either side of a break would otherwise run together into another word.
-export const oneLine = (s: string): string => s.split(LINE_BREAK).join(' ');
+export const oneLine = (s: string): string => lines(s).join(' ');
 
 export const fileLine = (f: MmFileInfo): string =>
   `${oneLine(f.name)}（file_id: ${f.id}、種類: ${oneLine(f.mime_type) || '不明'}、${f.size} バイト${f.width && f.height ? `、${f.width}x${f.height}` : ''}）`;
@@ -73,15 +74,13 @@ const isRecord = (x: unknown): x is Record<string, unknown> => typeof x === 'obj
 const str = (x: unknown): string => (typeof x === 'string' ? x : typeof x === 'number' || typeof x === 'boolean' ? String(x) : '');
 const records = (x: unknown): Record<string, unknown>[] => (Array.isArray(x) ? x.filter(isRecord) : []);
 
-export const lines = (s: string): string[] => s.split(LINE_BREAK);
+const labelled = (label: string, value: string, first: string): string[] => lines(`${label}: ${value}`).map((l, i) => `${i ? '    ' : first}${l}`);
 
-// A value that may span lines, kept readable (a channel header holds Markdown tables and lists): its continuation lines are indented by 4.
-export const indented = (label: string, value: string): string[] => lines(`${label}: ${value}`).map((l, i) => (i ? `    ${l}` : l));
+// Not oneLine: a channel header or purpose holds Markdown tables and lists.
+export const indented = (label: string, value: string): string[] => labelled(label, value, '');
 
 // Indenting every line rather than quoting: attachments are written by whoever posts, and a line at the margin could pass for a post, file or heading line.
-function item(label: string, value: string): string[] {
-  return lines(`${label}: ${value}`).map((l, i) => `${i ? '    ' : '  '}${l}`);
-}
+const item = (label: string, value: string): string[] => labelled(label, value, '  ');
 
 function messageAttachment(a: Record<string, unknown>, n: number, total: number): string[] {
   const title = str(a.title), link = str(a.title_link);
@@ -113,26 +112,43 @@ const reactionOrder = (a: MmReaction, b: MmReaction) =>
 
 function reactionsByEmoji(p: MmPost): { emoji: string; shown: string[]; total: number }[] {
   const by = new Map<string, string[]>();
-  for (const r of [...(p.metadata?.reactions ?? [])].sort(reactionOrder)) by.set(r.emoji_name, [...(by.get(r.emoji_name) ?? []), r.user_id]);
+  for (const r of [...(p.metadata?.reactions ?? [])].sort(reactionOrder)) {
+    const ids = by.get(r.emoji_name);
+    if (ids) ids.push(r.user_id);
+    else by.set(r.emoji_name, [r.user_id]);
+  }
   return [...by].map(([emoji, ids]) => ({ emoji, shown: ids.slice(0, REACTION_NAMES), total: ids.length }));
 }
 
-export const postUserIds = (p: MmPost): string[] => [...new Set([p.user_id, ...reactionsByEmoji(p).flatMap((r) => r.shown)])];
+const REACTION_HEAD = 'リアクション: ';
+
+// One place for how the reactions line is built and cut, so the users looked up always cover the users shown.
+function fitReactions(by: ReturnType<typeof reactionsByEmoji>, name: (id: string) => string): { each: string[]; k: number } {
+  const each = by.map(({ emoji, shown, total }) =>
+    `:${emoji}: ${total}（${shown.map(name).join('、')}${total > shown.length ? `、ほか ${total - shown.length} 人` : ''}）`);
+  let n = graphemeCount(REACTION_HEAD) + graphemeCount(each[0] ?? '');
+  let k = Math.min(1, each.length);
+  while (k < each.length && (n += 1 + graphemeCount(each[k])) <= REACTION_MAX_CHARS) k++;
+  return { each, k };
+}
+
+// The cut depends on the names, unknown before the lookup, so it is made with the shortest name a user can have ('@' and one letter).
+// Every emoji shown with the real names is then kept, since longer names only cut earlier.
+export const postUserIds = (p: MmPost): string[] => {
+  const by = reactionsByEmoji(p);
+  const { k } = fitReactions(by, () => '@x');
+  return [...new Set([p.user_id, ...by.slice(0, k).flatMap((r) => r.shown)])];
+};
 
 function reactionLines(p: MmPost, usernames: Map<string, string>): string[] {
   const by = reactionsByEmoji(p);
   // Only without metadata at all: the threads API returns none, while the post APIs always do and leave reactions out when there are none.
   if (!by.length) return p.has_reactions && !p.metadata ? ['リアクションあり（get_post で確認できます）'] : [];
   const name = (id: string) => (usernames.has(id) ? `@${usernames.get(id)}` : `user_id: ${id}`);
-  const each = by.map(({ emoji, shown, total }) =>
-    `:${emoji}: ${total}（${shown.map(name).join('、')}${total > shown.length ? `、ほか ${total - shown.length} 人` : ''}）`);
-  const head = 'リアクション: ';
-  let n = graphemeCount(head) + graphemeCount(each[0]);
-  let k = 1;
-  while (k < each.length && (n += 1 + graphemeCount(each[k])) <= REACTION_MAX_CHARS) k++;
+  const { each, k } = fitReactions(by, name);
   const left = by.slice(k);
   const rest = left.length ? `、ほか ${left.length} 種類（リアクション ${left.reduce((m, r) => m + r.total, 0)} 件）` : '';
-  return [`${head}${each.slice(0, k).join('、')}${rest}`];
+  return [`${REACTION_HEAD}${each.slice(0, k).join('、')}${rest}`];
 }
 
 export function formatPost(p: MmPost, ctx: PostCtx): string {
