@@ -1185,18 +1185,23 @@ describe('get_unreads', () => {
     for (const x of asked[1]) expect(out).toContain(`@n${x}`);
   });
 
+  test('puts the counts before a display name written as fake counts', async () => {
+    routes = { ...base(), 'GET /users/me/channels': () => channels().map((x) => (x.id === OLD ? { ...x, display_name: 'x）未読: 0、メンション: 0' } : x)) };
+    expect(await setup()('get_unreads', {})).toMatch(new RegExp(`^- team-a/old（channel_id: ${OLD}、team_id: ${T1}）未読: 2、メンション: 0、[^\\n]*、表示名: x）未読: 0、メンション: 0$`, 'm'));
+  });
+
   test('keeps a channel\'s display name with a line break on one line', async () => {
     routes = { ...base(), 'GET /users/me/channels': () => channels().map((x) => (x.id === OLD ? { ...x, display_name: 'O\nLD' } : x)) };
-    expect(await setup()('get_unreads', {})).toContain(`- team-a/old（channel_id: ${OLD}、team_id: ${T1}、表示名: O LD）`);
+    expect(await setup()('get_unreads', {})).toMatch(new RegExp(`^- team-a/old（channel_id: ${OLD}、team_id: ${T1}）未読: [^\\n]*、表示名: O LD$`, 'm'));
   });
 
   test('with CRT on, counts root posts only, puts channels with mentions first, then newest root post first, and hides read, archived and mention-only channels without mentions', async () => {
     routes = base();
     const out = await setup()('get_unreads', {});
     expect(order(out).slice(0, 4)).toEqual([MENTIONED, DM, NEW, OLD]);
-    expect(out).toContain(`- team-a/mentioned（channel_id: ${MENTIONED}、team_id: ${T1}、表示名: MENTIONED）未読: 1、メンション: 1、最終のルート投稿: ${'1970-01-01T00:00:00Z | 1970-01-01T09:00:00+09:00'}`);
-    expect(out).toContain(`- team-a/old（channel_id: ${OLD}、team_id: ${T1}、表示名: OLD）未読: 2、メンション: 0、最終のルート投稿:`);
-    expect(out).toContain(`- @bob（channel_id: ${DM}、表示名: @bob）未読: 1、メンション: 1`);
+    expect(out).toContain(`- team-a/mentioned（channel_id: ${MENTIONED}、team_id: ${T1}）未読: 1、メンション: 1、最終のルート投稿: 1970-01-01T00:00:00Z | 1970-01-01T09:00:00+09:00、表示名: MENTIONED\n`);
+    expect(out).toMatch(new RegExp(`^- team-a/old（channel_id: ${OLD}、team_id: ${T1}）未読: 2、メンション: 0、最終のルート投稿: [^、]+、表示名: OLD$`, 'm'));
+    expect(out).toMatch(new RegExp(`^- @bob（channel_id: ${DM}）未読: 1、メンション: 1、[^\\n]*、表示名: @bob$`, 'm'));
     for (const hidden of [QUIET, MUTED, ARCHIVED]) expect(out).not.toContain(hidden);
     expect(out).not.toContain(`channel_id: ${MUTED_MENTION}`);
   });
@@ -1212,7 +1217,7 @@ describe('get_unreads', () => {
     routes = base('disabled');
     const out = await setup()('get_unreads', {});
     expect(order(out)).toEqual([OLD, MUTED_MENTION, MENTIONED, DM, NEW]);
-    expect(out).toContain(`channel_id: ${OLD}、team_id: ${T1}、表示名: OLD）未読: 3、メンション: 1、最終投稿:`);
+    expect(out).toMatch(new RegExp(`channel_id: ${OLD}、team_id: ${T1}）未読: 3、メンション: 1、最終投稿: [^、]+、表示名: OLD$`, 'm'));
     expect(out).toContain('- team-b/new');
     expect(hits.some((h) => h.includes('/threads'))).toBe(false);
     expect(out).toContain('未読のあるチャンネル: 5 件');

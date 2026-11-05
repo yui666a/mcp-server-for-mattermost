@@ -74,12 +74,12 @@ export async function markAsRead(mm: Mm, uid: string, args: Args): Promise<CallT
   let started = 0;
   let writing = false;
   // Per item rather than failing the call: one bad item should not keep the others unread. Anything else (re-login, 429, outage, a bug) concerns every item, so the run stops there.
-  const failed = (label: string, e: unknown): Result => {
+  const failed = (label: string, e: unknown, tail = ''): Result => {
     if (e instanceof Interrupted) throw e;
-    if (itemError(e)) return { line: `- ${label}: 既読にできませんでした。${failureText(e)}`, ok: false };
+    if (itemError(e)) return { line: `- ${label}: 既読にできませんでした。${failureText(e)}${tail}`, ok: false };
     // Not saying the item stayed unread once its write was sent: it may have reached Mattermost before the timeout or the 5xx.
     const maybe = writing && mayHaveRun(e);
-    throw new Interrupted(`- ${label}: 処理中に中断しました（${maybe ? '既読になったかは分かりません' : '既読にしていません'}）。`, maybe, e);
+    throw new Interrupted(`- ${label}: 処理中に中断しました（${maybe ? '既読になったかは分かりません' : '既読にしていません'}）。${tail}`, maybe, e);
   };
   try {
     await markItems();
@@ -104,9 +104,12 @@ export async function markAsRead(mm: Mm, uid: string, args: Args): Promise<CallT
       started++;
       writing = false;
       let label = `チャンネル「${unformat(item.channel)}」`;
+      // Not the display name in the label: users write it, and the result sentence after it could then be written into it.
+      let tail = '';
       try {
         const ch = await resolveChannel(mm, uid, item.channel);
-        label = `チャンネル（channel_id: ${ch.id}、表示名: ${oneLine(ch.displayName || ch.name)}）`;
+        label = `チャンネル（channel_id: ${ch.id}）`;
+        tail = `（表示名: ${oneLine(ch.displayName || ch.name)}）`;
         if (seen.has(ch.id)) throw new InputError('同じチャンネルがほかの項目と重なっています。1 件にまとめてください。');
         seen.add(ch.id);
         const me = await mm.call<Member>(uid, 'GET', `/channels/${ch.id}/members/me`).catch((e) => {
@@ -118,7 +121,7 @@ export async function markAsRead(mm: Mm, uid: string, args: Args): Promise<CallT
         const raw = ch.raw as unknown as Counts;
         const unread = crt ? raw.total_msg_count_root - me.msg_count_root : raw.total_msg_count - me.msg_count;
         if (unread <= 0 && !(crt ? me.mention_count_root : me.mention_count)) {
-          results.push({ line: `- ${label}: すでに既読です。`, ok: true });
+          results.push({ line: `- ${label}: すでに既読です。${tail}`, ok: true });
           continue;
         }
         if (item.last_post_id) {
@@ -130,11 +133,11 @@ export async function markAsRead(mm: Mm, uid: string, args: Args): Promise<CallT
           const after = r.order.map((id) => r.posts[id]).filter(Boolean);
           const mine = (p: Post) => p.user_id === uid && !p.props?.from_webhook && !p.props?.from_bot;
           if (after.some((p) => !mine(p) && !JOIN_LEAVE.has(p.type ?? ''))) {
-            results.push({ line: `- ${label}: last_post_id より後に、読んでいない投稿があります。既読にしていません。read_channel の from: "unread" で最後まで読んでから、読んだ中で最も新しい投稿を渡してください。`, ok: false });
+            results.push({ line: `- ${label}: last_post_id より後に、読んでいない投稿があります。既読にしていません。read_channel の from: "unread" で最後まで読んでから、読んだ中で最も新しい投稿を渡してください。${tail}`, ok: false });
             continue;
           }
           if (after.length >= AFTER_PAGE) {
-            results.push({ line: `- ${label}: last_post_id より後に自分の投稿（と参加・退出の通知）が ${AFTER_PAGE} 件以上あり、その先を確かめられないため既読にしていません。`, ok: false });
+            results.push({ line: `- ${label}: last_post_id より後に自分の投稿（と参加・退出の通知）が ${AFTER_PAGE} 件以上あり、その先を確かめられないため既読にしていません。${tail}`, ok: false });
             continue;
           }
         }
@@ -142,9 +145,9 @@ export async function markAsRead(mm: Mm, uid: string, args: Args): Promise<CallT
         // Not batching every channel into one mark_read after all the checks: the gap between a channel's check and its marking would grow to the whole run.
         writing = true;
         await mm.call(uid, 'POST', `/channels/members/${uid}/mark_read`, [ch.id]);
-        results.push({ line: `- ${label}: ${item.last_post_id ? '既読にしました。' : '呼んだ時点までのすべてを既読にしました。'}`, ok: true });
+        results.push({ line: `- ${label}: ${item.last_post_id ? '既読にしました。' : '呼んだ時点までのすべてを既読にしました。'}${tail}`, ok: true });
       } catch (e) {
-        results.push(failed(label, e));
+        results.push(failed(label, e, tail));
       }
     }
 
