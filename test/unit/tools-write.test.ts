@@ -2,15 +2,10 @@ import { createHash } from 'node:crypto';
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 import { BODY_CUT_NOTE } from '../../src/mcp/format.ts';
 import { MAX_OPEN_UPLOAD_URLS, type Store } from '../../src/store.ts';
-import { makeApp, SLOW, SLOW_TEST } from './helpers.ts';
+import { freezeCleanupClock, makeApp, SLOW, SLOW_TEST } from './helpers.ts';
 
 // Not bound inside a test: vitest returns the same spy when spyOn is called on a spy, and binding that spy would make it call itself.
 const realTimeout = AbortSignal.timeout.bind(AbortSignal);
-// Not left to the real clock: under load the cleanup's 5-second deadline and its 1-second margin before DELETE would run out while a test holds the lock.
-const freezeCleanupClock = () => {
-  vi.spyOn(AbortSignal, 'timeout').mockImplementation((ms) => (ms === 5000 ? new AbortController().signal : realTimeout(ms)));
-  vi.spyOn(performance, 'now').mockReturnValue(0);
-};
 
 type Route = (req: Request) => unknown;
 let routes: Record<string, Route>;
@@ -859,6 +854,7 @@ describe('send_message with files', () => {
     const d = t.inputSchema.properties.files.description;
     expect(d).toContain('チャットに添付されたファイルは、コード実行で中身を読めるときだけ content_base64 で送れる');
     expect(d).toContain('PC でコマンドを実行できないクライアントでは、利用者の PC にあるテキストのファイルも、読めて収まれば content_text で送ってよい');
+    expect(d).toContain('中身に � や化けた文字が見えるとき、Excel などで作った CSV のように元の文字コードや BOM が要りそうなときは、content_text で送らず prepare_upload の説明の案内に従う');
     expect(d).toContain('読めないファイル、収まらないファイル、それ以外の利用者の PC にあるファイルは、prepare_upload の説明の案内に従う');
   });
 

@@ -7,7 +7,7 @@ import { log } from '../log.ts';
 import { MmError, RateLimited, Reauthorize } from '../mattermost/client.ts';
 import { MAX_OPEN_UPLOAD_URLS, type HeldFile, type Store } from '../store.ts';
 import { BODY_CUT_NOTE, indented, InputError, oneLine, type MmPost } from './format.ts';
-import { findPosted, postOnce } from './post.ts';
+import { lookPosted, postOnce } from './post.ts';
 import { myTeams, NoDirectChannel, resolveChannel, teamNameOf, type ChannelRef, type Mm, type MmChannel, type ResolvedChannel } from './resolve.ts';
 import { guarded, text, type ToolContext } from './server.ts';
 
@@ -29,7 +29,7 @@ const inputSchema = {
     z.strictObject({ name: FILE_NAME, content_text: z.string().min(1).describe('UTF-8 のテキストとしてそのまま添付する中身') }),
     z.strictObject({ name: FILE_NAME, content_base64: z.string().min(1).describe('バイナリの中身の base64（data URL の接頭辞や改行は付けない）') }),
   ])).min(1).max(MAX_UPLOAD_FILES).optional()
-    .describe(`添付ファイル（1〜${MAX_UPLOAD_FILES} 件、中身の合計 ${MAX_FILES_BYTES / 1024}KiB まで）。各要素は name と、content_text（SVG、CSV、Markdown、コードなどのテキスト）か content_base64（小さなバイナリ）のどちらか一方。中身を読めて合計 ${MAX_FILES_BYTES / 1024}KiB に収まるファイルだけを渡す。PC でコマンドを実行できないクライアントでは、利用者の PC にあるテキストのファイルも、読めて収まれば content_text で送ってよい。チャットに添付されたファイルは、コード実行で中身を読めるときだけ content_base64 で送れる。読めないファイル、収まらないファイル、それ以外の利用者の PC にあるファイルは、prepare_upload の説明の案内に従う`),
+    .describe(`添付ファイル（1〜${MAX_UPLOAD_FILES} 件、中身の合計 ${MAX_FILES_BYTES / 1024}KiB まで）。各要素は name と、content_text（SVG、CSV、Markdown、コードなどのテキスト）か content_base64（小さなバイナリ）のどちらか一方。中身を読めて合計 ${MAX_FILES_BYTES / 1024}KiB に収まるファイルだけを渡す。PC でコマンドを実行できないクライアントでは、利用者の PC にあるテキストのファイルも、読めて収まれば content_text で送ってよい。ただし content_text は UTF-8 で添付するので、元のファイルと同じバイト列にならないことがある。中身に � や化けた文字が見えるとき、Excel などで作った CSV のように元の文字コードや BOM が要りそうなときは、content_text で送らず prepare_upload の説明の案内に従う。チャットに添付されたファイルは、コード実行で中身を読めるときだけ content_base64 で送れる。読めないファイル、収まらないファイル、それ以外の利用者の PC にあるファイルは、prepare_upload の説明の案内に従う`),
   file_ids: z.array(z.string().regex(/^[A-Za-z0-9]{26}$/)).min(1).max(MAX_UPLOAD_FILES).optional()
     .describe(`prepare_upload で、投稿先と同じチャンネルへ 24 時間以内にアップロードした file_id（1〜${MAX_UPLOAD_FILES} 件）`),
 };
@@ -141,6 +141,7 @@ export async function resolveTarget(mm: Mm, store: Store, uid: string, channel: 
 export const heldError = (h: HeldFile) =>
   new InputError(`file_id ${h.fileId} は予約（予約 ID: ${h.scheduledId}）の添付に使われています。投稿を試みる前の待機中の予約なら、cancel_scheduled_message で取り消すと使えます。同じファイルを別に送るときは、prepare_upload からアップロードし直してください。`);
 
+const SIZE_DIFFERS = '同じ本文の投稿がありますが、添付ファイルの大きさが違うため、この送信が投稿されたかは分かりません（アップロードしたファイルを書き換えるプラグインがあるサーバーでは、この送信の投稿でも大きさが変わります）。read_channel などで確かめ、投稿されていなければ allow_duplicate: true で送り直してください。';
 const OWNED_ELSEWHERE = '同じ本文の投稿がありますが、ほかの送信か予約のものとして記録されているため、この送信が投稿されたかは分かりません。read_channel などで確かめ、投稿されていなければ allow_duplicate: true で送り直してください。';
 const INFLIGHT = '同じ投稿を処理中です。少し待ってから read_channel などで投稿されたかを確かめてください。';
 
@@ -189,13 +190,15 @@ export async function sendMessage(mm: Mm, store: Store, uid: string, baseUrl: st
   if (claim.kind === 'inflight') return text(INFLIGHT, true);
   if (claim.kind === 'retry') {
     // Not dropping the claim if this lookup fails: the earlier attempt's outcome is still unknown.
-    const found = await findPosted(mm, uid, { ...spec, fileCount: attached, fileIds }, claim.createdAt);
+    const { found, sizeDiffers } = await lookPosted(mm, uid, { ...spec, fileCount: attached, fileIds, files: files.map((f) => f.bytes.length) }, claim.createdAt);
     // Not read before the lookup: a send that completed meanwhile would be missed.
     const owned = new Set([...store.otherClaimPostIds(uid, claim.id), ...store.otherScheduledPostIds(uid, '')]);
     const prev = found.find((p) => !owned.has(p));
     // Not posting when every match is another record's: such a record may hold this send's own earlier post by a mistaken match of its own, and posting again would post it twice.
     // Not dropping the claim either, for the same reason.
     if (!prev && found.length) return text(OWNED_ELSEWHERE, true);
+    // Not posting either when the only candidates differ in file size: on a server whose plugin rewrites uploads, that is this send's own earlier post.
+    if (!prev && sizeDiffers.some((p) => !owned.has(p))) return text(SIZE_DIFFERS, true);
     if (prev) {
       store.completePost(claim.id, prev);
       store.markFilesPosted(uid, fileIds, prev);
@@ -216,7 +219,7 @@ export async function sendMessage(mm: Mm, store: Store, uid: string, baseUrl: st
     res = r;
   } catch (e) {
     // Not leaving out InputError: here it can only be a file refused before the post or an upload that Mattermost refused, so nothing was posted.
-    if (e instanceof MmError || e instanceof InputError || e instanceof RateLimited || (e as { sent?: boolean })?.sent === false) store.dropPost(claim.id, claimedAt);
+    if (e instanceof MmError || e instanceof InputError || (e instanceof RateLimited && !e.doubt) || (e as { sent?: boolean })?.sent === false) store.dropPost(claim.id, claimedAt);
     throw e;
   }
   store.completePost(claim.id, res.postId);
@@ -401,7 +404,7 @@ class TooLateToDelete extends Error {
 // ponytail: a fixed wait; a queue in the Limiter if callers other than the cleanup need to wait their turn.
 const LIMITER_WAIT_MS = 100;
 
-// Not waiting on Mattermost's 429 or a per-minute limit further away: neither frees up within the cleanup's 5 seconds.
+// Not waiting on Mattermost's 429 or a per-minute limit more than a second away: the wait would use up most of the 4 seconds left before the 1-second margin kept for DELETE, leaving little time to list and delete the draft.
 async function untilAdmitted<T>(attempt: () => Promise<T>, stop: AbortSignal, before?: () => void): Promise<T> {
   for (;;) {
     before?.();
