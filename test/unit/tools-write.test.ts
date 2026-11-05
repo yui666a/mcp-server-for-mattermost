@@ -936,6 +936,82 @@ describe('a DM not opened yet', () => {
     expect(hits.lastIndexOf(list)).toBeLessThan(hits.indexOf('POST /drafts'));
   });
 
+  describe('send_message with files to a DM it may create', () => {
+    const CONFIG = 'GET /config/client';
+    const file = (bytes: number) => ({ name: 'a.txt', content_text: 'a'.repeat(bytes) });
+    const serveWith = (config: Route) => {
+      serve();
+      routes[CONFIG] = config;
+      routes['POST /files'] = () => ({ file_infos: [{ id: FILE }] });
+      routes['POST /posts'] = () => ({ id: POST, channel_id: NEW_DM, root_id: '', user_id: 'u1', message: 'hi', create_at: 1, file_ids: [FILE] });
+    };
+
+    test.each([
+      ['@carol', CREATE],
+      ['  @carol ', CREATE],
+      ['@carol,dave', 'POST /channels/group'],
+    ])('to %j on a server with attachments off is refused before resolving, so no DM is created', async (channel, create) => {
+      serveWith(() => ({ EnableFileAttachments: 'false', MaxFileSize: '100' }));
+      const r = await setup().call('send_message', { channel, message: 'hi', files: [file(1)] });
+      expect(r.isError).toBe(true);
+      expect(r.text).toBe('このサーバーではファイルの添付が無効です。');
+      expect(hits).toEqual([CONFIG]);
+      expect(hits).not.toContain(create);
+    });
+
+    test.each([
+      [4, true],
+      [3, false],
+    ])('a file of %i bytes against MaxFileSize 3, refused before the DM is created: %s', async (bytes, refused) => {
+      serveWith(() => ({ EnableFileAttachments: 'true', MaxFileSize: '3' }));
+      const r = await setup().call('send_message', { channel: '@carol', message: 'hi', files: [{ name: 'small.txt', content_text: 'a' }, { name: 'b.txt', content_text: 'b'.repeat(bytes) }] });
+      if (refused) {
+        expect(r.text).toBe('ファイル「b.txt」は大きすぎるため添付できません。');
+        expect(hits).not.toContain(CREATE);
+      } else {
+        expect(r.text).toContain('投稿しました。');
+        expect(hits).toContain(CREATE);
+      }
+    });
+
+    test.each([
+      ['missing', {}],
+      ['empty', { MaxFileSize: '' }],
+      ['not a whole number', { MaxFileSize: '1e3' }],
+    ])('a MaxFileSize that is %s skips the size check, and the DM is created as before', async (_, config) => {
+      serveWith(() => config);
+      const r = await setup().call('send_message', { channel: '@carol', message: 'hi', files: [file(10)] });
+      expect(r.text).toContain('投稿しました。');
+      expect(hits).toContain(CREATE);
+    });
+
+    test('a failure to read the client config fails the send without creating the DM', async () => {
+      serveWith(mmError(500, 'app.config.get.app_error'));
+      const r = await setup().call('send_message', { channel: '@carol', message: 'hi', files: [file(1)] });
+      expect(r.isError).toBe(true);
+      expect(r.text).toContain('Mattermost に一時的に接続できません');
+      expect(hits).toEqual([CONFIG]);
+    });
+
+    test('to a channel given by its channel_id, which never creates a DM, the client config is not read', async () => {
+      serveWith(() => ({ EnableFileAttachments: 'false' }));
+      routes[`GET /channels/${NEW_DM}`] = () => ({ id: NEW_DM, name: `${CAROL}__u1`, display_name: '', team_id: '', type: 'D' });
+      await setup().call('send_message', { channel: NEW_DM, message: 'hi', files: [file(1)] });
+      expect(hits).not.toContain(CONFIG);
+    });
+
+    test.each([
+      ['root_id', { root_id: ROOT }],
+      ['file_ids', { file_ids: [FILE] }],
+    ])('with %s, which never creates the DM, the client config is not read', async (_, extra) => {
+      serveWith(() => ({ EnableFileAttachments: 'false' }));
+      const r = await setup().call('send_message', { channel: '@carol', message: 'hi', files: [file(1)], ...extra });
+      expect(r.isError).toBe(true);
+      expect(hits).not.toContain(CONFIG);
+      expect(hits).not.toContain(CREATE);
+    });
+  });
+
   test('send_message with files it cannot read does not create the DM', async () => {
     serve();
     const r = await setup().call('send_message', { channel: '@carol', message: 'hi', files: [{ name: 'a.bin', content_base64: 'not base64' }] });
