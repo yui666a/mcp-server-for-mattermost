@@ -4,7 +4,7 @@ import { z } from 'zod';
 import { FileHeld, MAX_PENDING_SCHEDULED, type Scheduled, type ScheduledStatus, type Store } from '../store.ts';
 import { strictArgs } from './args.ts';
 import { encodeCursor, formatTime, indented, InputError, lines, oneLine, truncate } from './format.ts';
-import { teamNameOf, type Mm, type MmChannel, type UserRef } from './resolve.ts';
+import { dmLabel, type Mm, type MmChannel, teamNameOf } from './resolve.ts';
 import { guarded, text, type ToolContext } from './server.ts';
 import { cursorArg, cursorOf, limitArg, perPage } from './tools-read.ts';
 import { checkRoot, checkUnposted, checkUploaded, createsDirect, heldError, MAX_UPLOAD_FILES, resolveTarget } from './tools-send.ts';
@@ -86,22 +86,15 @@ export async function listScheduledMessages(mm: Mm, store: Store, uid: string, b
   const shown = rows.slice(0, per);
   if (!shown.length && !c) return text('予約はありません。');
   // Not failing the list on any of these lookups: it is the only place a user learns a schedule failed, and a channel they have left answers 403.
-  // Not display_name: it names the caller too and differs from resolveGroup's label, so one schedule would read as two destinations.
-  // Not failing the row on the member lookup: display_name still names the group, only in another form.
-  const groupLabel = async (ch: MmChannel) => {
-    const users = await mm.call<UserRef[]>(uid, 'GET', `/users?${new URLSearchParams({ in_channel: ch.id, per_page: '200' })}`).catch(() => []);
-    const others = users.filter((u) => u.id !== uid);
-    return others.length ? others.map((u) => `@${u.username}`).sort().join(', ') : oneLine(ch.display_name || ch.name);
-  };
   const channels = new Map<string, { label: string; ch?: MmChannel }>();
   const channelOf = async (id: string) => {
     if (!channels.has(id)) {
       let v: { label: string; ch?: MmChannel } = { label: `channel_id: ${id}` };
       try {
         const ch = await mm.call<MmChannel>(uid, 'GET', `/channels/${id}`);
-        const other = ch.name.split('__').find((x) => x !== uid) ?? uid;
-        const name = ch.type === 'D' ? `@${(await mm.call<UserRef>(uid, 'GET', `/users/${other}`)).username}`
-          : ch.type === 'G' ? await groupLabel(ch) : oneLine(ch.display_name || ch.name);
+        // Not a name of its own for a DM or group DM: resolveChannel's is what the other outputs show, and two forms would read as two destinations.
+        // Not letting its re-login or rate limit drop the row's channel and permalink: the name is only for display, and Mattermost's name still names it.
+        const name = (await dmLabel(mm, uid, ch).catch(() => undefined)) ?? oneLine(ch.display_name || ch.name);
         v = { label: `${name}（channel_id: ${id}）`, ch };
       } catch {}
       channels.set(id, v);

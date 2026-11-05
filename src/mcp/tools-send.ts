@@ -29,7 +29,7 @@ const inputSchema = {
     z.strictObject({ name: FILE_NAME, content_text: z.string().min(1).describe('UTF-8 のテキストとしてそのまま添付する中身') }),
     z.strictObject({ name: FILE_NAME, content_base64: z.string().min(1).describe('バイナリの中身の base64（data URL の接頭辞や改行は付けない）') }),
   ])).min(1).max(5).optional()
-    .describe('添付ファイル（1〜5 件、中身の合計 128KiB まで）。各要素は name と、content_text（SVG、CSV、Markdown、コードなどのテキスト）か content_base64（小さなバイナリ）のどちらか一方。中身を読めて合計 128KiB に収まるファイルだけを渡す。チャットに添付されたファイルは、コード実行で中身を読めるときだけ content_base64 で送れる。読めないファイル、収まらないファイル、利用者の PC にあるファイルは、prepare_upload の説明の案内に従う'),
+    .describe('添付ファイル（1〜5 件、中身の合計 128KiB まで）。各要素は name と、content_text（SVG、CSV、Markdown、コードなどのテキスト）か content_base64（小さなバイナリ）のどちらか一方。中身を読めて合計 128KiB に収まるファイルだけを渡す。PC でコマンドを実行できないクライアントでは、利用者の PC にあるテキストのファイルも、読めて収まれば content_text で送ってよい。チャットに添付されたファイルは、コード実行で中身を読めるときだけ content_base64 で送れる。読めないファイル、収まらないファイル、それ以外の利用者の PC にあるファイルは、prepare_upload の説明の案内に従う'),
   file_ids: z.array(z.string().regex(/^[A-Za-z0-9]{26}$/)).min(1).max(5).optional()
     .describe('prepare_upload で、投稿先と同じチャンネルへ 24 時間以内にアップロードした file_id（1〜5 件）'),
 };
@@ -150,7 +150,7 @@ export async function sendMessage(mm: Mm, store: Store, uid: string, baseUrl: st
   checkUploaded(store, uid, ch.id, fileIds);
   const rootId = args.root_id;
   if (rootId) await checkRoot(mm, uid, rootId, ch);
-  const where = `チャンネル: ${oneLine(ch.displayName || ch.name)}（channel_id: ${ch.id}）${rootId ? `、返信先 post_id: ${rootId}` : ''}`;
+  const where = `投稿先: ${oneLine(ch.displayName || ch.name)}（channel_id: ${ch.id}）${rootId ? `、返信先 post_id: ${rootId}` : ''}`;
   // Not only after a fresh post: an earlier attempt's cleanup may have failed, and a resend that did not post can retry it.
   const done = async (postId: string, note: string) => {
     const cleared = await clearSentDraft(mm, uid, ch, rootId ?? '', args.message, client);
@@ -495,7 +495,7 @@ export async function saveDraft(mm: Mm, uid: string, args: DraftArgs): Promise<C
   const ch = await resolveChannel(mm, uid, args.channel, { create: !rootId });
   // Checked here rather than left to Mattermost: it saves a draft on any root_id, and one on a reply never shows in any thread.
   if (rootId) await checkRoot(mm, uid, rootId, ch);
-  const where = `チャンネル: ${oneLine(ch.displayName || ch.name)}（channel_id: ${ch.id}）${rootId ? `、返信先 post_id: ${rootId}` : ''}`;
+  const where = `投稿先: ${oneLine(ch.displayName || ch.name)}（channel_id: ${ch.id}）${rootId ? `、返信先 post_id: ${rootId}` : ''}`;
   // Not locking the resolving above: one call may take tens of seconds, and a send_message cleanup waiting behind it would always run out of time.
   // Not leaving the list and the save unlocked: a save made between the cleanup's list and its DELETE would be the draft it deletes.
   const same = await withDraftLock(uid, ch.id, rootId, () => saveLocked(mm, uid, ch, rootId, args, where));

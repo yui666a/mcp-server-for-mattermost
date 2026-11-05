@@ -97,7 +97,7 @@ describe('read_channel from unread and mark_as_read against the local Mattermost
       if (!cursor || i > 5) break;
       r = await call('read_channel', { channel: ch, cursor });
     }
-    // Not comparing the order: posts of the same millisecond are shown by post_id, not in the order they were posted.
+    // Not comparing ids in order: posts of the same millisecond are shown by post_id, not in the order they were posted.
     expect([...seen].sort()).toEqual([...unread].sort());
     const { posts } = await mmApi<{ posts: Record<string, { create_at: number }> }>(aliceMm, 'GET', `/channels/${ch}/posts?per_page=50`);
     const at = seen.map((id) => posts[id].create_at);
@@ -159,7 +159,7 @@ describe('read_channel from unread and mark_as_read against the local Mattermost
     const root = await say(bobMm, ch, 'root');
     await say(bobMm, ch, 'reply', root);
     const r = await call('mark_as_read', { threads: [{ post_id: root }] });
-    expect(r.content[0].text).toContain('このスレッドのチャンネルに参加していません。');
+    expect(r.content[0].text).toContain('このスレッドのチャンネルに参加しているかを確かめられませんでした');
     expect(r.content[0].text).not.toContain('follow_thread');
   });
 

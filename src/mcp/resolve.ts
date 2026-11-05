@@ -145,7 +145,7 @@ export async function resolveChannel(mm: Mm, userId: string, spec: string, opts:
 }
 
 // Not using display_name: Mattermost leaves a DM's empty and puts every member, the caller included, in a group DM's.
-async function dmLabel(mm: Mm, userId: string, c: MmChannelFull): Promise<string | undefined> {
+export async function dmLabel(mm: Mm, userId: string, c: MmChannel): Promise<string | undefined> {
   // Given up on rather than failing the tool: the name is only for the output, and Mattermost's display_name is left as it was.
   const giveUp = (e: unknown) => {
     if (e instanceof MmError || e instanceof UpstreamUnavailable) return undefined;

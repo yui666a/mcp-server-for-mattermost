@@ -4,11 +4,11 @@ import { z } from 'zod';
 import { MmError } from '../mattermost/client.ts';
 import { formatPost, formatTime, InputError, postUserIds, type MmPost } from './format.ts';
 import { pageCursor, paginate } from './paging.ts';
-import { myTeams, type Mm, type MmChannel, type UserRef } from './resolve.ts';
+import { myTeams, type Mm, type MmChannel } from './resolve.ts';
 import { guarded, text, type ToolContext } from './server.ts';
 import { POST_WORDING } from './tools-save-pin.ts';
 import { worded } from './tools-send.ts';
-import { channelLines, collapsedThreads, cursorArg, cursorOf, limitArg, perPage, render } from './tools-read.ts';
+import { channelLines, collapsedThreads, cursorArg, cursorOf, limitArg, perPage, render, usernamesOf } from './tools-read.ts';
 
 type FollowedThread = { id: string; reply_count: number; last_reply_at: number; unread_replies: number; unread_mentions: number; post: MmPost };
 type ThreadList = { total: number; threads: FollowedThread[] | null };
@@ -77,10 +77,8 @@ export function registerThreadTools(server: McpServer, ctx: ToolContext): void {
         const ch = channels.get(id);
         return ch?.type === 'D' ? [other(ch)] : [];
       };
-      const userIds = [...new Set(shown.flatMap((r) => [...postUserIds(r.th.post), ...dmOf(r.th.post.channel_id)]))];
-      const users = userIds.length
-        ? new Map((await mm.call<UserRef[]>(uid, 'POST', '/users/ids', userIds)).map((u) => [u.id, u.username]))
-        : new Map<string, string>();
+      const userIds = shown.flatMap((r) => [...postUserIds(r.th.post), ...dmOf(r.th.post.channel_id)]);
+      const users = await usernamesOf(mm, uid, userIds);
       const posts: MmPost[] = [];
       const line = ({ th }: (typeof rows)[number]): string => {
         const ch = channels.get(th.post.channel_id);
@@ -121,7 +119,9 @@ export function registerThreadTools(server: McpServer, ctx: ToolContext): void {
     async ({ post_id }, mm) => {
       const r = await rootOf(mm, post_id);
       await mm.call(uid, 'GET', `/channels/${r.channelId}/members/me`).catch((e) => {
-        if (missing(e)) throw new InputError('このチャンネルに参加していません。参加していないチャンネルのスレッドは、フォローしても一覧にも通知にも出ません。');
+        // Not saying a 403 means not joined: Mattermost also answers 403 when its permission check fails on a transient error.
+        if (e instanceof MmError && e.status === 403) throw new InputError('このチャンネルに参加しているかを確かめられませんでした（参加していないか、Mattermost の一時的な障害）。参加していないチャンネルのスレッドは、フォローしても一覧にも通知にも出ません。参加しているはずなら、少し待ってから再試行してください。');
+        if (e instanceof MmError && e.status === 404) throw new InputError('このチャンネルに参加していません。参加していないチャンネルのスレッドは、フォローしても一覧にも通知にも出ません。');
         throw e;
       });
       const { team } = await channelOf(mm, r.channelId);
