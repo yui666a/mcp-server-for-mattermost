@@ -37,7 +37,7 @@ export async function tick(store: Store, mm: Mm, now: number): Promise<void> {
       o = await attempt(store, mm, s, now);
     } catch (e) {
       log('scheduled_post_error', { name: (e as Error)?.name });
-      // Not "not posted" for an error before the post: nothing that can throw runs before postOnce, and the lookups of a retry catch their own errors.
+      // Not "not posted" for an error before the post: what runs before sending reports it as a typed failure, and the lookups of a retry catch their own errors, so only a database fault can throw before sending.
       o = failed(UNKNOWN);
     }
     store.settleScheduled(id, now, o);
