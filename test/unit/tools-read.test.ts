@@ -1280,7 +1280,13 @@ describe('get_unreads', () => {
     const out = await setup()('get_unreads', {});
     expect(out).toContain(`channel_id: ${MENTIONED}`);
     expect(out).not.toContain(`post_id: ${TH1}`);
-    expect(out).toContain('未読のスレッドを取得できませんでした');
+    expect(out).toContain('未読のスレッドを取得できませんでした（Mattermost のエラー 403: nope）');
+  });
+
+  test('says only the status when the threads API answers 4xx with a body that is not JSON', async () => {
+    routes = { ...base(), [`GET /users/u1/teams/${T2}/threads`]: () => new Response('<html>403</html>', { status: 403, headers: { 'content-type': 'text/html' } }) };
+    const out = await setup()('get_unreads', {});
+    expect(out).toContain('未読のスレッドを取得できませんでした（Mattermost のエラー 403）。');
   });
 
   test('when the threads API answers 4xx after a team hit the 4-page cap, drops that cap note and says the thread count is unavailable', async () => {
