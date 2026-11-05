@@ -285,7 +285,7 @@ describe('read tools against the local Mattermost', () => {
     const id = (await mmApi<{ id: string }>(aliceMm, 'POST', '/posts', { channel_id: e.teams.a.privateChannelId!, message: `${TAG} private` })).id;
     const r = await call('bob', 'get_post', { post: id });
     expect(r.isError).toBe(true);
-    expect(r.content[0].text).toBe('この投稿を見る権限がありません（参加していない非公開チャンネルなど）');
+    expect(r.content[0].text).toBe('この投稿を見る権限がありません（参加していない非公開チャンネルなど）。参加しているはずなら、Mattermost の一時的な障害の可能性があります。少し待ってから再試行してください。');
   });
 
   test('get_post reports a deleted post as not found', async () => {

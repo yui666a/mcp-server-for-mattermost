@@ -237,11 +237,20 @@ describe('search_posts in: filters', () => {
 
   test('a U+FEFF before or after the value does not change which channel is searched', async () => {
     routes = base();
-    await setup()('search_posts', { terms: 'x in:\ufeffonly-a\ufeff' });
-    expect(sent()).toBe(`x in:${CX}`);
-    await setup()('search_posts', { terms: 'x in:\ufeff~only-a' });
+    await setup()('search_posts', { terms: 'x in:\ufeff~only-a\ufeff' });
     expect(sent()).toBe(`x in:${CX}`);
     expect(await setup()('search_posts', { terms: 'x in:\ufeff@bob ,carol' }, true)).toContain('の後の「,carol」');
+  });
+
+  test.each([
+    ['x in:~\ufeff@bob ,carol', '「,carol」', false],
+    ['x in:@bob \ufeff，carol', '「\ufeff，carol」', true],
+  ])('a U+FEFF after ~ or before the next word does not hide a misplaced comma in %j', async (terms, word, fullWidth) => {
+    routes = base();
+    const out = await setup()('search_posts', { terms }, true);
+    expect(out).toContain(`の後の${word}`);
+    expect(out.includes('区切りは半角のカンマ（,）で書いてください。')).toBe(fullWidth);
+    expect(hits).not.toContain('POST /posts/search');
   });
 
   test('excludes every channel of a name that several teams have', async () => {
@@ -349,7 +358,9 @@ describe('search_posts in: filters', () => {
       ['x in:@bob 、@carol', 'in:@bob の後の「、@carol」'],
       ['x in:@bob 、carol、dave', 'in:@bob の後の「、carol、dave」'],
       ['x in:@bob 、', 'in:@bob の後の「、」'],
-      ['x in:@bob ，議事録', 'in:@bob の後の「，議事録」'],
+      ['x in:@bob ，carol', 'in:@bob の後の「，carol」'],
+      ['x in:@bob ，', 'in:@bob の後の「，」'],
+      ['x channel:~@bob 、carol', 'channel:~@bob の後の「、carol」'],
       ['x in:@bob 、carol，dave', 'in:@bob の後の「、carol，dave」'],
     ])('%j is a separator error that asks for a half-width comma', async (terms, message) => {
       routes = withGroup();
@@ -363,6 +374,17 @@ describe('search_posts in: filters', () => {
       routes = { ...withGroup(), [`GET /teams/${T1}/channels/name/${DM_NAME}`]: () => ch(DM, DM_NAME, '', 'D') };
       await setup()('search_posts', { terms: 'x in:@bob 、議事録' });
       expect(sent()).toBe(`x in:${DM} 、議事録`);
+    });
+
+    test('a search word after the DM that starts with ， is kept as a search word', async () => {
+      routes = { ...withGroup(), [`GET /teams/${T1}/channels/name/${DM_NAME}`]: () => ch(DM, DM_NAME, '', 'D') };
+      await setup()('search_posts', { terms: 'x in:@bob ，議事録' });
+      expect(sent()).toBe(`x in:${DM} ，議事録`);
+    });
+
+    test('in:@bob、 is refused for its separator', async () => {
+      routes = withGroup();
+      expect(await setup()('search_posts', { terms: 'x in:@bob、' }, true)).toContain('@a,b の区切りは半角のカンマ（,）で書いてください。');
     });
 
     test('in:@bob、carol is refused for its separator', async () => {
@@ -441,7 +463,7 @@ describe('search_posts in: filters', () => {
     const twenty = [...Array(10).fill('in:only-a'), ...Array(9).fill('-in:town'), '-in: town'].join(' ');
     await call('search_posts', { terms: `x ${twenty}` });
     hits = [];
-    expect(await call('search_posts', { terms: `x ${twenty} in:@bob ,carol` }, true)).toContain('in: と channel: は 1 回の検索で 20 個まで指定できます。');
+    expect(await call('search_posts', { terms: `x ${twenty} in:@bob ,carol` }, true)).toContain('in: と channel: は、-in: などの除外も含めて 1 回の検索で 20 個まで指定できます。in: が多いときは検索を分け、除外が多いときは数を減らしてください（除外は検索を分けると効きません）。');
     expect(hits).toEqual([]);
   });
 
@@ -583,7 +605,7 @@ describe('get_post', () => {
 
   test('turns 403 from GET /posts/{id} into a permission message', async () => {
     routes = { ...base, [`GET /posts/${ROOT}`]: mmError(403) };
-    expect(await setup()('get_post', { post: ROOT }, true)).toBe('この投稿を見る権限がありません（参加していない非公開チャンネルなど）');
+    expect(await setup()('get_post', { post: ROOT }, true)).toBe('この投稿を見る権限がありません（参加していない非公開チャンネルなど）。参加しているはずなら、Mattermost の一時的な障害の可能性があります。少し待ってから再試行してください。');
   });
 
   test('turns 404 from GET /posts/{id} into a not-found message', async () => {
@@ -1007,6 +1029,11 @@ describe('get_unreads', () => {
     }
   });
 
+  test('keeps a channel\'s display name with a line break on one line', async () => {
+    routes = { ...base(), 'GET /users/me/channels': () => channels().map((x) => (x.id === OLD ? { ...x, display_name: 'O\nLD' } : x)) };
+    expect(await setup()('get_unreads', {})).toContain(`- team-a/old（表示名: O LD、channel_id: ${OLD}`);
+  });
+
   test('with CRT on, counts root posts only, puts channels with mentions first, then newest root post first, and hides read, archived and mention-only channels without mentions', async () => {
     routes = base();
     const out = await setup()('get_unreads', {});
@@ -1099,6 +1126,10 @@ describe('get_unreads', () => {
     test('a short page that skipped threads, as when a reply of the thread paged from is deleted, says so too', async () => {
       const out = await run([span(0, 50), 70], [span(50, 60), 70]);
       expect(out).toContain(SHORT);
+    });
+
+    test('a short first page below total, as when total also counts threads whose root post a retention policy removed, says such threads cannot be taken by calling again', async () => {
+      expect(await run([span(0, 10), 11])).toContain('データ保持ポリシーで根の投稿が消えたスレッドは、呼び直しても取得できません）');
     });
 
     test('says nothing when every thread was taken, also when the 4th page is full', async () => {
@@ -1549,10 +1580,9 @@ describe('get_mentions', () => {
       expect(await setup()('get_mentions', { unread_only: true })).toContain('未読スレッドは、50 件ずつ 4 回の取得で打ち切りました。');
     });
 
-    test('notes when a team\'s unread threads were not all taken', async () => {
+    test('notes when a team\'s unread threads were not all taken, as when a full page is followed by nothing', async () => {
       put({ create_at: at(22, 1) });
       routes = unreadBase('always_on', [member(C, at(22, 0), 0, 1)]);
-      // A full first page, then nothing: as when the thread paged from is deleted in between.
       let k = 0;
       routes[`GET /users/u1/teams/${T}/threads`] = () => ({ total_unread_threads: 60, threads: k++ ? [] : Array.from({ length: 50 }, (_, i) => thread(`t${String(i).padStart(25, '0')}`, 0, 0)) });
       expect(await setup()('get_mentions', { unread_only: true })).toContain('未読スレッドを total_unread_threads: 60 に対して取り切れませんでした。');
@@ -1770,7 +1800,7 @@ describe('get_file', () => {
       });
     });
 
-    describe('a whole file without Japanese but for an incomplete last character (UTF-8 is only a guess)', () => {
+    describe('a whole file cut at its last character, otherwise made only of what half-width kana Shift_JIS can pass for in UTF-8 (UTF-8 is only a guess)', () => {
       test.each([
         ['a.txt', [0x61, 0x62, 0x63, 0xc2], 'Shift_JIS', 'abcﾂ', false],
         ['a.txt', [0x61, 0x62, 0x63, 0xe8, 0xa0], 'Shift_JIS', 'abc陟', false],
@@ -1789,15 +1819,42 @@ describe('get_file', () => {
         ['a.txt', [...Buffer.from('abc,'), 0xc3, 0xbd, 0xc4], 'Shift_JIS', 'abc,ﾃｽﾄ', false],
         // Fixing a known wrong guess: Latin UTF-8 with a cut last character also reads whole as Shift_JIS.
         ['a.txt', [...Buffer.from('naïve caf'), 0xc3], 'Shift_JIS', 'naﾃｯve cafﾃ', false],
-        ['a.txt', [...Buffer.from('voilà'), 0xc3], 'UTF-8', 'voilà', true],
         ['a.md', [...Buffer.from('café'), 0xe2], 'UTF-8', 'café', true],
-      ])('reads %s %j, without Japanese and with a cut last character in UTF-8, as %s with the guess noted', async (name, b, encoding, shown, cut) => {
+      ])('reads %s %j, whose UTF-8 half-width kana Shift_JIS could also make, as %s with the guess noted', async (name, b, encoding, shown, cut) => {
         routes = { [INFO]: textInfo(name as string, (b as number[]).length), [FILE]: body(Uint8Array.from(b as number[])) };
         const out = await setup()('get_file', { file_id: F });
         expect(content()).toBe(shown);
         expect(out).toContain(`文字コード: ${encoding}`);
         expect(out).toContain(GUESSED);
         expect(out.includes('末尾に不完全な文字')).toBe(cut);
+      });
+
+      test.each([
+        // à is C3 A0: an A0 trail byte half-width kana Shift_JIS never has, so this cannot be it.
+        ['a.txt', [...Buffer.from('voilà'), 0xc3], 'voilà'],
+        ['a.txt', [...Buffer.from('deploy 🚀 done '), 0xe3, 0x81], 'deploy 🚀 done '],
+        ['a.txt', [...Buffer.from('Grüße'), 0xc3], 'Grüße'],
+        ['a.md', [...Buffer.from('ship it 🚀'), 0xe3], 'ship it 🚀'],
+      ])('keeps UTF-8 without a guess for %s %j, whose characters half-width kana Shift_JIS cannot make', async (name, b, shown) => {
+        routes = { [INFO]: textInfo(name as string, (b as number[]).length), [FILE]: body(Uint8Array.from(b as number[])) };
+        const out = await setup()('get_file', { file_id: F });
+        expect(content()).toBe(shown);
+        expect(out).toContain('文字コード: UTF-8');
+        expect(out).not.toContain('推定');
+        expect(out).toContain('末尾に不完全な文字');
+      });
+
+      test.each([
+        [[0x61, 0x62, 0x63, 0xe3, 0x81], 'abc縺'],
+        [[...Buffer.from('résumé'), 0xc3], 'rﾃｩsumﾃｩﾃ'],
+        // á is C3 A1, the lowest trail byte half-width kana can make.
+        [[...Buffer.from('á'), 0xc3], 'ﾃ｡ﾃ'],
+      ])('reads ASCII or half-width kana look-alikes %j cut at the end as Shift_JIS with the guess noted, the price of not ruling out Latin-1', async (b, shown) => {
+        routes = { [INFO]: textInfo('a.txt', (b as number[]).length), [FILE]: body(Uint8Array.from(b as number[])) };
+        const out = await setup()('get_file', { file_id: F });
+        expect(content()).toBe(shown);
+        expect(out).toContain('文字コード: Shift_JIS');
+        expect(out).toContain(GUESSED);
       });
 
       test('reads a file as not text when Node cannot make a Shift_JIS or EUC-JP decoder, instead of failing', async () => {
@@ -3120,6 +3177,12 @@ describe('list_channel_members', () => {
     expect(out).toContain(`- @user1（名前: Ann Lee、ニックネーム: annie、役職: PM、user_id: ${user(1).id}）`);
     expect(out).toContain(`- @user2（Bot アカウント、user_id: ${user(2).id}）`);
     expect(names(out)).toEqual(['user1', 'user2', 'user3']);
+  });
+
+  test('keeps a member\'s name, nickname and position with a line break on one line', async () => {
+    routes = { ...base(), 'GET /users': () => [user(1, { first_name: 'A\nnn', nickname: 'an\u2028nie', position: 'P\nM' })] };
+    const out = await setup()('list_channel_members', { channel: C });
+    expect(out).toContain(`- @user1（名前: A nn、ニックネーム: an nie、役職: P M、user_id: ${user(1).id}）`);
   });
 
   test('pages with limit, a cursor keeping the page size; a full last page leads to an empty one that only says there is no more', async () => {
