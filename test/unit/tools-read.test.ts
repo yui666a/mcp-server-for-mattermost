@@ -262,6 +262,8 @@ describe('search_posts in: filters', () => {
   test.each([
     ['x in:~\ufeff@bob ,carol', '「,carol」', false],
     ['x in:~\u200b@bob ,carol', '「,carol」', false],
+    ['x in:@bob \ufeff ,carol', '「,carol」', false],
+    ['x in:@bob \u200b ，carol', '「，carol」', true],
     ['x in:\u200c~@bob ,carol', '「,carol」', false],
     ['x in:~\u200d\u200e@bob ,carol', '「,carol」', false],
     ['x in:@bob \u2060，carol', '「\u2060，carol」', true],
