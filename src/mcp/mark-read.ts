@@ -3,7 +3,7 @@ import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
 import { z } from 'zod';
 import { MmError, RateLimited } from '../mattermost/client.ts';
 import { strictArgs } from './args.ts';
-import { ASK_ADMIN, InputError, oneLine, RETRY, RETRY_SOON, type MmPost } from './format.ts';
+import { ASK_ADMIN, InputError, oneLine, RETRY_SOON, type MmPost } from './format.ts';
 import { myTeams, resolveChannel, unformat, type Mm } from './resolve.ts';
 import { log } from '../log.ts';
 import { failure, failureText, guarded, text, type ToolContext } from './server.ts';
@@ -44,8 +44,8 @@ function lastPost(mm: Mm, uid: string, id: string, reread: string): Promise<Post
   return mm.call<Post>(uid, 'GET', `/posts/${id}`).catch((e) => {
     if (missing(e)) {
       const again = `${reread} で読み直して、読んだ投稿のうち最も新しいものの post_id を渡してください。`;
-      // Not the re-read first: reading the channel again fails the same way until the 403 passes.
-      if ((e as MmError).status === 403) throw new InputError(`last_post_id ${id} の投稿を見る権限がありません（参加していない非公開チャンネルなど）。${RETRY}${ASK_ADMIN}そのうえで、${again}`);
+      // Not RETRY's opening: last_post_id may be a post in another channel than the item's, so being in the item's channel says nothing about it.
+      if ((e as MmError).status === 403) throw new InputError(`last_post_id ${id} の投稿を見る権限がありません（参加していない非公開チャンネルなど）。${again}この投稿のチャンネルに参加しているはずなら、Mattermost の一時的な障害の可能性があります。少し待ってから再試行してください。${ASK_ADMIN}`);
       throw new InputError(`last_post_id ${id} の投稿が見つかりません（削除されたか、存在しません）。${again}`);
     }
     throw e;
