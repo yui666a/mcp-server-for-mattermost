@@ -897,3 +897,85 @@ describe('a root_id in another channel than the DM or group DM it is sent to', (
     expect(r.text).toBe(`root_id ${ROOT} の投稿はチャンネル「${label}」（channel_id: ${chId}）にありません。`);
   });
 });
+
+describe('save_draft and send_message\'s draft cleanup of one user run one at a time across requests', () => {
+  const CH = 'c'.repeat(26);
+  const LIST = 'GET /users/u1/teams/t1/drafts';
+  const DEL = `DELETE /users/u1/channels/${CH}/drafts`;
+  const SAVE = 'POST /drafts';
+  const FAILED = '同じ本文の下書きを確かめられなかったか、消せませんでした';
+  const draft = (message: string) => ({ user_id: 'u1', channel_id: CH, root_id: '', message, create_at: 1, update_at: 1 });
+  const count = (h: string) => hits.filter((x) => x === h).length;
+  const tick = () => new Promise((r) => setTimeout(r, 20));
+  const serve = (list: () => unknown) => {
+    routes = {
+      [`GET /channels/${CH}`]: () => ({ id: CH, name: 'town', display_name: 'Town', team_id: 't1', type: 'O' }),
+      'GET /teams/t1': () => ({ id: 't1', name: 'team-a' }),
+      'GET /users/me/preferences/advanced_settings/name/sync_drafts': mmError(400, 'app.preference.get.app_error'),
+      [LIST]: list,
+      [DEL]: () => ({ status: 'OK' }),
+      [SAVE]: () => new Response('{}', { status: 201, headers: { 'content-type': 'application/json' } }),
+      'POST /posts': () => ({ id: POST, user_id: 'u1', channel_id: CH, root_id: '', message: 'hello', create_at: 1 }),
+    };
+  };
+
+  test('a draft saved while the cleanup is between its list and its DELETE is saved after the DELETE, so it is not the draft deleted', async () => {
+    let open!: () => void;
+    const gate = new Promise<void>((r) => { open = r; });
+    let n = 0;
+    serve(async () => (n++ === 0 ? (await gate, [draft('hello')]) : [draft('hello')]));
+    const s = setup();
+    const sending = s.call('send_message', { channel: CH, message: 'hello' });
+    await vi.waitFor(() => expect(count(LIST)).toBe(1));
+    const saving = s.call('save_draft', { channel: CH, message: 'newer', overwrite: true });
+    await vi.waitFor(() => expect(count('GET /teams/t1')).toBe(2));
+    await tick();
+    expect(count(LIST)).toBe(1);
+    open();
+    expect((await sending).text).toContain('同じ本文の下書きを消しました');
+    expect((await saving).isError).toBe(false);
+    expect(hits.indexOf(DEL)).toBeLessThan(hits.lastIndexOf(LIST));
+    expect(hits.lastIndexOf(LIST)).toBeLessThan(hits.indexOf(SAVE));
+  });
+
+  test('a save_draft that fails while holding the lock lets the cleanup behind it run', async () => {
+    let open!: () => void;
+    const gate = new Promise<void>((r) => { open = r; });
+    let n = 0;
+    serve(async () => (n++ === 0 ? (await gate, [draft('different')]) : [draft('hello')]));
+    const s = setup();
+    const saving = s.call('save_draft', { channel: CH, message: 'mine' });
+    await vi.waitFor(() => expect(count(LIST)).toBe(1));
+    const sending = s.call('send_message', { channel: CH, message: 'hello' });
+    await vi.waitFor(() => expect(count('POST /posts')).toBe(1));
+    open();
+    expect((await saving).text).toContain('本文の違う下書きがあります');
+    expect((await sending).text).toContain('同じ本文の下書きを消しました');
+    expect(count(DEL)).toBe(1);
+  });
+
+  test('a cleanup waiting past its deadline returns before the holder finishes, and never calls Mattermost when its turn comes', async () => {
+    const ac = new AbortController();
+    const timeout = AbortSignal.timeout.bind(AbortSignal);
+    vi.spyOn(AbortSignal, 'timeout').mockImplementation((ms) => (ms === 5000 ? ac.signal : timeout(ms)));
+    let open!: () => void;
+    const gate = new Promise<void>((r) => { open = r; });
+    serve(async () => (await gate, [draft('hello')]));
+    const s = setup();
+    const saving = s.call('save_draft', { channel: CH, message: 'mine', overwrite: true });
+    await vi.waitFor(() => expect(count(LIST)).toBe(1));
+    const sending = s.call('send_message', { channel: CH, message: 'hello' });
+    await vi.waitFor(() => expect(count('POST /posts')).toBe(1));
+    ac.abort(new DOMException('timed out', 'TimeoutError'));
+    const r = await sending;
+    expect(r.isError).toBe(false);
+    expect(r.text).toContain(FAILED);
+    const logged = vi.mocked(process.stdout.write).mock.calls.map((c) => JSON.parse(String(c[0])));
+    expect(logged).toContainEqual(expect.objectContaining({ event: 'draft_cleanup_failed', name: 'TimeoutError', channel_id: CH }));
+    open();
+    expect((await saving).isError).toBe(false);
+    await tick();
+    expect(count(LIST)).toBe(1);
+    expect(count(DEL)).toBe(0);
+  });
+});
