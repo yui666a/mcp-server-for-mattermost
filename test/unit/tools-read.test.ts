@@ -237,11 +237,20 @@ describe('search_posts in: filters', () => {
 
   test('a U+FEFF before or after the value does not change which channel is searched', async () => {
     routes = base();
-    await setup()('search_posts', { terms: 'x in:\ufeffonly-a\ufeff' });
-    expect(sent()).toBe(`x in:${CX}`);
-    await setup()('search_posts', { terms: 'x in:\ufeff~only-a' });
+    await setup()('search_posts', { terms: 'x in:\ufeff~only-a\ufeff' });
     expect(sent()).toBe(`x in:${CX}`);
     expect(await setup()('search_posts', { terms: 'x in:\ufeff@bob ,carol' }, true)).toContain('の後の「,carol」');
+  });
+
+  test.each([
+    ['x in:~\ufeff@bob ,carol', '「,carol」', false],
+    ['x in:@bob \ufeff，carol', '「\ufeff，carol」', true],
+  ])('a U+FEFF after ~ or before the next word does not hide a misplaced comma in %j', async (terms, word, fullWidth) => {
+    routes = base();
+    const out = await setup()('search_posts', { terms }, true);
+    expect(out).toContain(`の後の${word}`);
+    expect(out.includes('区切りは半角のカンマ（,）で書いてください。')).toBe(fullWidth);
+    expect(hits).not.toContain('POST /posts/search');
   });
 
   test('excludes every channel of a name that several teams have', async () => {
@@ -350,6 +359,7 @@ describe('search_posts in: filters', () => {
       ['x in:@bob 、carol、dave', 'in:@bob の後の「、carol、dave」'],
       ['x in:@bob 、', 'in:@bob の後の「、」'],
       ['x in:@bob ，議事録', 'in:@bob の後の「，議事録」'],
+      ['x channel:~@bob 、carol', 'channel:~@bob の後の「、carol」'],
       ['x in:@bob 、carol，dave', 'in:@bob の後の「、carol，dave」'],
     ])('%j is a separator error that asks for a half-width comma', async (terms, message) => {
       routes = withGroup();
