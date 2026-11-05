@@ -162,6 +162,12 @@ describe('schedule_message', () => {
     });
   });
 
+  test('keeps the destination\'s display name with a line break on one line', async () => {
+    routes[`GET /channels/${CH}`] = () => ({ id: CH, name: 'town', display_name: 'To\nwn', team_id: TEAM, type: 'O' });
+    const r = await setup().call('schedule_message', { channel: CH, message: 'hello', at: '2026-11-03T10:00' });
+    expect(r.text).toContain(`投稿先: To wn（channel_id: ${CH}）`);
+  });
+
   test('saves the schedule without posting and reports its id, the destination, the time in UTC and JST, and where to check the result', async () => {
     const s = setup();
     const r = await s.call('schedule_message', { channel: CH, message: 'hello', root_id: ROOT, at: '2026-11-03T10:00' });

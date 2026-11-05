@@ -3,7 +3,7 @@ import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
 import { z } from 'zod';
 import { MmError } from '../mattermost/client.ts';
 import { strictArgs } from './args.ts';
-import { InputError, type MmPost } from './format.ts';
+import { InputError, oneLine, type MmPost } from './format.ts';
 import { myTeams, resolveChannel, type Mm } from './resolve.ts';
 import { failureText, guarded, text, type ToolContext } from './server.ts';
 import { collapsedThreads } from './tools-read.ts';
@@ -65,7 +65,7 @@ export async function markAsRead(mm: Mm, uid: string, args: Args): Promise<CallT
     let label = `チャンネル「${item.channel}」`;
     try {
       const ch = await resolveChannel(mm, uid, item.channel);
-      label = `チャンネル ${ch.displayName || ch.name}（channel_id: ${ch.id}）`;
+      label = `チャンネル ${oneLine(ch.displayName || ch.name)}（channel_id: ${ch.id}）`;
       if (seen.has(ch.id)) throw new InputError('同じチャンネルがほかの項目と重なっています。1 件にまとめてください。');
       seen.add(ch.id);
       const me = await mm.call<Member>(uid, 'GET', `/channels/${ch.id}/members/me`).catch((e) => {
