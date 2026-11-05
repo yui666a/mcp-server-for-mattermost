@@ -1898,6 +1898,16 @@ describe('get_file', () => {
         expect(out).toContain(GUESSED);
       });
 
+      test('keeps UTF-8 without a guess for a file with a UTF-8 BOM, even when it is ASCII but for a cut last character', async () => {
+        const b = Uint8Array.from([0xef, 0xbb, 0xbf, ...Buffer.from('abc'), 0xc2]);
+        routes = { [INFO]: textInfo('a.txt', b.length), [FILE]: body(b) };
+        const out = await setup()('get_file', { file_id: F });
+        expect(content()).toBe('abc');
+        expect(out).toContain('文字コード: UTF-8');
+        expect(out).not.toContain('推定');
+        expect(out).toContain('末尾に不完全な文字');
+      });
+
       test('reads a file as not text when Node cannot make a Shift_JIS or EUC-JP decoder, instead of failing', async () => {
         const Real = globalThis.TextDecoder;
         vi.stubGlobal('TextDecoder', class extends Real {
