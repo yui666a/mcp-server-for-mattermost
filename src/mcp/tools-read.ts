@@ -1,8 +1,8 @@
 import type { McpServer, ToolCallback } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
 import { z } from 'zod';
-import { MmError, type MmClient } from '../mattermost/client.ts';
-import { BAD_CURSOR, decodeCursor, encodeCursor, fileLine, formatPost, formatTime, InputError, localTime, postTruncated, postUserIds, truncate, type MmFileInfo, type MmPost } from './format.ts';
+import { MmError, UpstreamUnavailable, type MmClient } from '../mattermost/client.ts';
+import { BAD_CURSOR, decodeCursor, encodeCursor, fileLine, formatPost, formatTime, graphemeCount, InputError, localTime, postTruncated, postUserIds, truncate, type MmFileInfo, type MmPost } from './format.ts';
 import { pageCursor, paginate } from './paging.ts';
 import { mentionsMe, mentionTerms, type MentionUser } from './mentions.ts';
 import { parsePostRef } from './permalink.ts';
@@ -32,11 +32,13 @@ const IMAGE_MAX_BYTES = 3_750_000;
 const TEXT_MAX_CHARS = 10_000;
 // 4 bytes per code point rather than per grapheme: a grapheme has no byte limit, so text of long graphemes is cut by bytes first.
 const TEXT_FETCH_BYTES = 4 * TEXT_MAX_CHARS;
-// Shift_JIS only for these: its decoder also accepts the head of binary files such as PDF.
+// Shift_JIS and EUC-JP only for these: their decoders also accept the head of binary files such as PDF.
 const SJIS_EXTENSIONS = new Set(['csv', 'tsv', 'txt', 'log']);
-const graphemes = new Intl.Segmenter();
 const FILE_WORDING: Wording = {
-  id: [[404, 'app.file_info.get.app_error', 'ファイルが見つかりません（投稿が削除されたか、存在しません）']],
+  id: [
+    [404, 'app.file_info.get.app_error', 'ファイルが見つかりません（投稿が削除されたか、存在しません）'],
+    [403, 'api.file.get_file.abac_denied.app_error', 'Mattermost のアクセス制御の方針（ABAC）により、このファイルを見られません'],
+  ],
   status: [[403, 'このファイルを見る権限がありません']],
 };
 
@@ -50,22 +52,45 @@ function imageType(b: Uint8Array): string | undefined {
   return undefined;
 }
 
+type Decoded = { text: string; encoding: string; guessed: boolean; cutTail: boolean };
+const KANA = /[\u3041-\u3096\u30a1-\u30fa]/;
+const HALF_KANA = /[\uff61-\uff9f]/;
+
 // Not by mime_type: Mattermost guesses it from the extension, so a Shift_JIS CSV is labelled utf-8 and a file without an extension gets none.
-function decodeText(b: Uint8Array, name: string): { text: string; encoding: string } | undefined {
+// whole: the bytes are the whole file, so a character left incomplete at the end is the file's own and not where the fetch stopped.
+function decodeText(b: Uint8Array, name: string, whole: boolean): Decoded | undefined {
   if (b.includes(0) || Buffer.from(b.subarray(0, 5)).toString('latin1') === '%PDF-') return undefined;
-  // stream: true rather than a plain decode, which would reject the whole text for a character cut at the end of the fetched bytes.
-  const decode = (enc: string) => {
+  // stream: true rather than a plain decode, which would reject the whole text for a character cut at the end of the bytes.
+  const decode = (encoding: string) => {
+    const d = new TextDecoder(encoding, { fatal: true });
     try {
-      return new TextDecoder(enc, { fatal: true }).decode(b, { stream: true });
+      const text = d.decode(b, { stream: true });
+      let cutTail = false;
+      if (whole) {
+        try {
+          d.decode();
+        } catch {
+          cutTail = true;
+        }
+      }
+      return { text, cutTail };
     } catch {
       return undefined;
     }
   };
   const utf8 = decode('utf-8');
-  if (utf8 !== undefined) return { text: utf8, encoding: 'UTF-8' };
+  if (utf8) return { ...utf8, encoding: 'UTF-8', guessed: false };
   const ext = name.includes('.') ? name.split('.').pop()!.toLowerCase() : '';
-  const sjis = SJIS_EXTENSIONS.has(ext) ? decode('shift_jis') : undefined;
-  return sjis === undefined ? undefined : { text: sjis, encoding: 'Shift_JIS' };
+  if (!SJIS_EXTENSIONS.has(ext)) return undefined;
+  const sjis = decode('shift_jis');
+  const euc = decode('euc-jp');
+  // One counts as not read when it needs its last character dropped and the other reads the whole: kana-less EUC-JP and odd-length half-width kana end that way.
+  const sjisRead = sjis && !(sjis.cutTail && euc && !euc.cutTail) ? sjis : undefined;
+  const eucRead = euc && !(euc.cutTail && sjis && !sjis.cutTail) ? euc : undefined;
+  // Not EUC-JP for any text with kana: half-width kana Shift_JIS also reads as EUC-JP, though rarely with kana.
+  if (eucRead && KANA.test(eucRead.text) && (!sjisRead || HALF_KANA.test(sjisRead.text))) return { ...eucRead, encoding: 'EUC-JP', guessed: true };
+  if (sjisRead) return { ...sjisRead, encoding: 'Shift_JIS', guessed: true };
+  return eucRead && { ...eucRead, encoding: 'EUC-JP', guessed: true };
 }
 
 async function fileText(mm: ReadMm, uid: string, fileId: string, f: MmFileInfo, about: string): Promise<string | CallToolResult> {
@@ -74,18 +99,24 @@ async function fileText(mm: ReadMm, uid: string, fileId: string, f: MmFileInfo, 
   try {
     b = await mm.callBytes(uid, `/files/${fileId}`, undefined, { maxBytes: TEXT_FETCH_BYTES });
   } catch (e) {
+    // Only a 500 without a Mattermost error id: that is net/http failing to seek a file the storage does not have.
+    if (e instanceof UpstreamUnavailable && e.status === 500 && !e.id) {
+      return `${about}\n中身を取得できませんでした（HTTP 500）。保存先にファイルの実体が無いか、保存先の一時的な障害です。`;
+    }
     if (!(e instanceof MmError)) throw e;
     return e.id === 'api.file.get_file.rejected_by_plugin'
       ? `${about}\nMattermost が中身のダウンロードを拒否しました（プラグインによる制限）。`
       : `${about}\n中身を取得できませんでした（HTTP ${e.status}）。`;
   }
-  const t = decodeText(b, f.name);
+  const t = decodeText(b, f.name, b.length >= f.size);
   if (!t) return `${about}\nテキストとして読めない形式のため、中身は返しません。`;
-  if (!t.text) return `${about}\n中身は空です。`;
+  if (!t.text) return `${about}\n${t.cutTail ? 'ファイルの末尾に不完全な文字があり、それを除くと読める中身がありません。' : '中身は空です。'}`;
   const { text: shown, truncated } = truncate(t.text, TEXT_MAX_CHARS);
   const head = [about, `文字コード: ${t.encoding}`];
+  if (t.guessed) head.push('文字コードは中身から推定しました。文字化けしているなら、Shift_JIS、EUC-JP、Latin-1 など別の文字コードかもしれません。');
+  if (t.cutTail) head.push('ファイルの末尾に不完全な文字があったため、その部分を除きました。');
   if (truncated || f.size > b.length) {
-    head.push(`先頭の ${[...graphemes.segment(shown)].length} 文字だけを返しました（ファイル全体は ${f.size} バイト）。`);
+    head.push(`先頭の ${graphemeCount(shown)} 文字だけを返しました（ファイル全体は ${f.size} バイト）。`);
   }
   return { content: [{ type: 'text', text: head.join('\n') }, { type: 'text', text: shown }] };
 }
@@ -95,6 +126,13 @@ const nextDay = (day: string) => new Date(Date.parse(day) + DAY_MS).toISOString(
 const prevDay = (day: string) => new Date(Date.parse(day) - DAY_MS).toISOString().slice(0, 10);
 const newestFirst = (a: MmPost, b: MmPost) => b.create_at - a.create_at || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
 const oldestFirst = (a: MmPost, b: MmPost) => a.create_at - b.create_at || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
+// Where the posts sharing the last post's create_at begin (0 when all share it, or when empty).
+// Not paging on from the last post itself: Mattermost's after= and before= compare create_at strictly, so the rest of its millisecond would drop out.
+const tieStart = (ps: MmPost[]) => {
+  let k = ps.length - 1;
+  while (k > 0 && ps[k - 1].create_at === ps[k].create_at) k--;
+  return Math.max(k, 0);
+};
 
 export const limitArg = (def: number, max: number) => z.number().int().min(1).max(max).optional()
   .describe(`件数（既定 ${def}、最大 ${max}）。cursor を渡したときは無視する`);
@@ -141,6 +179,7 @@ async function usernames(mm: Mm, uid: string, posts: MmPost[]): Promise<Map<stri
   return new Map(users.map((u) => [u.id, u.username]));
 }
 
+const FILE_SEARCH_OFF = 'この Mattermost ではファイルの検索が無効になっています（システムコンソールの設定）。ファイル名を含む投稿は search_posts で探せます。';
 const capNote = (n: number, what: string) => (n >= MM_SEARCH_CAP
   ? [`（Mattermost の検索は ${MM_SEARCH_CAP} 件までしか返さないため、${what}は出ていない可能性があります。条件を絞ってください）`]
   : []);
@@ -208,12 +247,17 @@ async function filterChannelIds(mm: Mm, userId: string, spec: string, exclude: b
   }
 }
 
+// Not higher: with 10 teams the worst case (1 + names × teams GETs) already takes 201 of the 300 requests a user may send per minute,
+// before anything else the user sends in that minute.
+const MAX_CHANNEL_FILTERS = 20;
+
 // Rewritten here rather than left to Mattermost: a search across all teams looks channel names up without a team and matches nothing,
 // and in:@user creates the DM (GetOrCreateDirectChannel) from a read-only tool.
 export async function resolveInFilters(mm: Mm, userId: string, terms: string): Promise<{ terms: string; notes: string[] }> {
   const words = splitWords(terms);
   const filters = channelFilters(words);
   if (!filters.length) return { terms, notes: [] };
+  if (filters.length > MAX_CHANNEL_FILTERS) throw new InputError(`in: と channel: は 1 回の検索で ${MAX_CHANNEL_FILTERS} 個まで指定できます。`);
   const notes: string[] = [];
   const out = words.map((w) => [w]);
   for (const f of filters) {
@@ -224,10 +268,20 @@ export async function resolveInFilters(mm: Mm, userId: string, terms: string): P
       throw new InputError(`in:${f.value} の後の「${next}」: 検索の in: では @a,b のようにカンマの前後に空白を入れずに書いてください。${fullWidth}`);
     }
   }
+  // Kept for this search only, not across searches: a channel created or joined in between would stay unseen.
+  // POST is not kept: a group DM's POST /users/usernames rarely repeats within one search.
+  const memo = new Map<string, Promise<unknown>>();
+  const cached: Mm = {
+    call: <T>(u: string, m: string, p: string, b?: unknown, sig?: AbortSignal) => {
+      if (m !== 'GET') return mm.call<T>(u, m, p, b, sig);
+      if (!memo.has(p)) memo.set(p, mm.call<T>(u, m, p, b, sig));
+      return memo.get(p) as Promise<T>;
+    },
+  };
   // Sequential rather than Promise.all: parallel lookups would exceed the per-user concurrency limit.
   for (const f of filters) {
     const spec = f.value.replace(/^~+/, '');
-    const ids = await filterChannelIds(mm, userId, spec, f.exclude, notes);
+    const ids = await filterChannelIds(cached, userId, spec, f.exclude, notes);
     out.splice(f.at, f.span, ids.map((id) => `${f.exclude ? '-' : ''}in:${id}`), ...(f.span === 2 ? [[]] : []));
   }
   const rewritten = out.flat().join(' ');
@@ -363,7 +417,7 @@ export function registerReadTools(server: McpServer, ctx: ToolContext): void {
   tool('search_posts', '参加しているチームのメッセージを検索する。Mattermost の検索構文（from:、in:、before:、after:、on: など）をそのまま使える。in: にはチャンネル ID、「チーム名/チャンネル名」、チャンネル名、@ユーザー名（DM）、@a,b（グループ DM。カンマの前後に空白を入れない）を渡せる。同じ名前が複数のチームにあれば、すべてで探す。見つからなければエラー。参加していないチャンネルは 0 件になる。DM は作らない。日付は日本時間（JST）で解釈する。新しい順。メッセージ添付（Bot や webhook などが付ける整形表示）の中身は検索の対象外（Mattermost の標準のデータベース検索は添付を検索しないため。その中身を探すなら read_channel で読む。read_channel なら since と until で期間を指定して読める）',
     { terms: z.string().min(1), limit: limitArg(20, 50), cursor: cursorArg },
     async ({ terms, limit, cursor }, mm) => {
-      const c = cursorOf(z.object({ page: z.number().int().min(0), per_page: perPage(50) }), cursor);
+      const c = cursorOf(z.object({ page: z.number().int().min(0), per_page: perPage(50) }).strict(), cursor);
       const per = c?.per_page ?? limit ?? 20;
       const page = c?.page ?? 0;
       const filtered = await resolveInFilters(mm, uid, terms);
@@ -422,19 +476,27 @@ export function registerReadTools(server: McpServer, ctx: ToolContext): void {
   tool('search_files', 'ファイルを名前で探す（サーバーが中身を抽出していれば中身にも当たる）。参加しているチャンネル、DM、グループ DM のファイルが対象で、参加していない公開チャンネルとアーカイブ済みのチャンネルのファイルは出ない。Mattermost の検索構文（from:、in:、ext:、before:、after:、on: など）を使え、日付は日本時間（JST）で解釈する。in: にはチャンネル ID、「チーム名/チャンネル名」、チャンネル名、@ユーザー名（DM）、@a,b（グループ DM。カンマの前後に空白を入れない）を渡せる。同じ名前が複数のチームにあれば、すべてで探す。見つからなければエラー。DM は作らない。名前は語の単位で当たり、日本語の名前は名前全体か先頭からの前方一致（例: 2026年10月*）でしか当たらない。新しい順。file_id は get_file に、post_id は get_post に渡せる',
     { terms: z.string().min(1), limit: limitArg(20, 50), cursor: cursorArg },
     async ({ terms, limit, cursor }, mm) => {
-      const c = cursorOf(z.object({ page: z.number().int().min(0), per_page: perPage(50) }).strict(), cursor);
+      // Marked here rather than on search_posts' cursor: that one is used more, and its cursors issued before a deploy would stop working.
+      const c = cursorOf(z.object({ page: z.number().int().min(0), per_page: perPage(50), files: z.literal(true) }).strict(), cursor);
       const per = c?.per_page ?? limit ?? 20;
       const page = c?.page ?? 0;
-      const q = await resolveInFilters(mm, uid, terms);
-      // Not passing the cursor's page to Mattermost: its database search returns nothing for page > 0.
-      const r = await mm.call<FileList>(uid, 'POST', '/files/search', {
-        terms: q.terms, is_or_search: false, include_deleted_channels: false, time_zone_offset: JST_OFFSET_SEC, page: 0, per_page: MM_SEARCH_CAP,
+      const search = (t: string, perPageOf: number) => mm.call<FileList>(uid, 'POST', '/files/search', {
+        terms: t, is_or_search: false, include_deleted_channels: false, time_zone_offset: JST_OFFSET_SEC, page: 0, per_page: perPageOf,
       }).catch((e) => {
-        if (e instanceof MmError && e.status === 501 && e.id === 'store.sql_file_info.search.disabled') {
-          throw new InputError('この Mattermost ではファイルの検索が無効になっています（システムコンソールの設定）。ファイル名を含む投稿は search_posts で探せます。');
-        }
+        if (e instanceof MmError && e.status === 501 && e.id === 'store.sql_file_info.search.disabled') throw new InputError(FILE_SEARCH_OFF);
         throw e;
       });
+      const q = await resolveInFilters(mm, uid, terms).catch(async (e) => {
+        if (!(e instanceof InputError)) throw e;
+        // Asked with "*" only after a failure: Mattermost checks the setting before converting channel names, and "*" alone searches nothing.
+        // Any other failure of this request is set aside: the in: error stays true and is the one the caller can act on.
+        await search('*', 1).catch((off) => {
+          if (off instanceof InputError) throw off;
+        });
+        throw e;
+      });
+      // Not passing the cursor's page to Mattermost: its database search returns nothing for page > 0.
+      const r = await search(q.terms, MM_SEARCH_CAP);
       const all = r.order.map((id) => r.file_infos[id]).filter(Boolean);
       const shown = all.slice(page * per, (page + 1) * per);
       const lines = [`ファイルの検索: ${terms}`];
@@ -458,7 +520,7 @@ export function registerReadTools(server: McpServer, ctx: ToolContext): void {
         }
       } else lines.push('一致するファイルはありません。');
       const more = all.length > (page + 1) * per;
-      return render({ lines, notes: [...q.notes, ...capNote(all.length, 'これより古い一致')], next: more ? { page: page + 1, per_page: per } : undefined });
+      return render({ lines, notes: [...q.notes, ...capNote(all.length, 'これより古い一致')], next: more ? { page: page + 1, per_page: per, files: true } : undefined });
     });
 
   tool('read_channel', 'チャンネルの投稿を読む。既定は新しい順。from: "unread" なら未読の先頭から古い順に読み、スレッドの折りたたみ（CRT）が有効ならルート投稿だけを返す。読むだけで、既読にはしない。channel はチャンネル ID、「チーム名/チャンネル名」、チャンネル名、@ユーザー名（DM）、@a,b（グループ DM）のどれか。since を渡すと、その時刻から until（省くと最新）の前までを古い順に読み、返信も含む',
@@ -481,13 +543,16 @@ export function registerReadTools(server: McpServer, ctx: ToolContext): void {
       const rc = c && 'since' in c ? c : undefined;
       const range = rc ?? (!c && (since !== undefined || until !== undefined) ? rangeOf(since, until, from) : undefined);
       const ch = await resolveChannel(mm, uid, channel);
-      const renderPage = async (head: string[], all: MmPost[], next: (last: MmPost) => object, none: string) => {
-        const shown = all.slice(0, per);
+      const GONE = '（カーソルの起点かその続きの投稿が削除されたか、同じミリ秒の投稿が多かったため、続きを取りこぼしている可能性があります。';
+      const renderPage = async (head: string[], all: MmPost[], next: (last: MmPost) => object, none: string, gone: string) => {
+        const shown = all.slice(0, all.length > per ? tieStart(all.slice(0, per + 1)) || per : per);
         const users = await usernames(mm, uid, shown);
         const lines = [...channelLines(ch), ...head, ...shown.map((p) => formatPost(p, { baseUrl: base, teamName: ch.teamName, usernames: users }))];
-        if (!shown.length) lines.push(none);
-        return render({ lines, posts: shown, next: all.length > per ? next(shown[shown.length - 1]) : undefined });
+        // Not asking Mattermost whether the cursor's post is gone: GET /posts answers 404 for soft and hard deletes alike, and a cursor is only given while posts remain past it.
+        if (!shown.length) lines.push(none, ...(c ? [GONE + gone] : []));
+        return render({ lines, posts: shown, next: shown.length < all.length ? next(shown[shown.length - 1]) : undefined });
       };
+      const sinceAgain = '前のページの最後の投稿の時刻を since に渡すと、その位置から古い順に読み直せます。その時刻の投稿は重ねて出ることがあり、返信も含みます';
       const unreadPage = (crt: boolean, r: PostList) => renderPage(
         [crt
           ? '未読の先頭から古い順（スレッドの折りたたみ（CRT）が有効なため、ルート投稿だけです。返信は get_unreads の未読のスレッドと read_thread で読めます）'
@@ -495,6 +560,7 @@ export function registerReadTools(server: McpServer, ctx: ToolContext): void {
         r.order.map((id) => r.posts[id]).filter(Boolean).sort(oldestFirst),
         (last) => ({ channel_id: ch.id, after: last.id, per_page: per, crt }),
         c ? '投稿はありません。' : '未読はありません。',
+        `${sinceAgain}）`,
       );
       if (range) {
         if (rc && rc.channel_id !== ch.id) throw new InputError(BAD_CURSOR);
@@ -505,10 +571,13 @@ export function registerReadTools(server: McpServer, ctx: ToolContext): void {
         };
         const forward = async (after: string | undefined, got: MmPost[]) => {
           for (let at = after; at && got.length <= per;) {
-            const page = (await posts({ after: at, per_page: String(per + 1) })).sort(oldestFirst);
-            got.push(...page.filter(inRange));
-            if (page.length <= per || page.some((p) => range.until !== undefined && p.create_at >= range.until)) break;
-            at = page.at(-1)!.id;
+            // Not taking per+1 as for a page shown: the posts of the last millisecond are left to the next fetch, which would then always be needed.
+            const page = (await posts({ after: at, per_page: String(per + 2) })).sort(oldestFirst);
+            const done = page.length <= per + 1 || page.some((p) => range.until !== undefined && p.create_at >= range.until);
+            const n = done ? page.length : tieStart(page) || page.length;
+            got.push(...page.slice(0, n).filter(inRange));
+            if (done) break;
+            at = page[n - 1].id;
           }
           return got;
         };
@@ -536,8 +605,9 @@ export function registerReadTools(server: McpServer, ctx: ToolContext): void {
           if (start) all = await forward(start.id, []);
           else {
             // Not reading on from the oldest post with after= alone: it would skip that post and those of the same millisecond.
-            const seed = [...loPage].sort(oldestFirst);
-            const passed = seed.some((p) => range.until !== undefined && p.create_at >= range.until);
+            const sorted = [...loPage].sort(oldestFirst);
+            const passed = sorted.some((p) => range.until !== undefined && p.create_at >= range.until);
+            const seed = passed ? sorted : sorted.slice(0, tieStart(sorted) || sorted.length);
             all = await forward(passed ? undefined : seed.at(-1)?.id, seed.filter(inRange));
           }
         }
@@ -547,6 +617,7 @@ export function registerReadTools(server: McpServer, ctx: ToolContext): void {
           all,
           (last) => ({ channel_id: ch.id, after: last.id, since: range.since, until: range.until, per_page: per }),
           'この範囲に投稿はありません。',
+          `${sinceAgain}${range.until === undefined ? '' : '。until は前と同じ値を渡してください'}）`,
         );
       }
       let head: string[] = [];
@@ -572,7 +643,7 @@ export function registerReadTools(server: McpServer, ctx: ToolContext): void {
       // Paging with before=<post_id> rather than page numbers: new posts arriving between calls would shift pages.
       const q = new URLSearchParams({ per_page: String(per + 1), ...(c && 'before' in c ? { before: c.before } : {}), skipFetchThreads: 'true' });
       const r = await mm.call<PostList>(uid, 'GET', `/channels/${ch.id}/posts?${q}`);
-      return renderPage(head, r.order.map((id) => r.posts[id]).filter(Boolean), (last) => ({ before: last.id, per_page: per }), '投稿はありません。');
+      return renderPage(head, r.order.map((id) => r.posts[id]).filter(Boolean), (last) => ({ before: last.id, per_page: per }), '投稿はありません。', 'cursor を渡さずに呼ぶと、最新から読み直せます）');
     });
 
   tool('read_thread', 'スレッドの親投稿と返信を古い順に読む。post_id はスレッド内のどの投稿でもよい。親投稿は最初のページにだけ含める',
@@ -600,7 +671,7 @@ export function registerReadTools(server: McpServer, ctx: ToolContext): void {
       });
     });
 
-  tool('get_post', '1 件の投稿を読む。post は post_id か、パーマリンクの URL（…/<チーム名>/pl/<post_id>）',
+  tool('get_post', '1 件の投稿を読む。post は post_id か、パーマリンクの URL（…/<チーム名>/pl/<post_id>）。本文は各行を 2 文字字下げし、4000 文字を超える本文は切って出す（edit_message で書き換えるときは字下げを外し、切った投稿は出力を元に書き換えない）',
     { post: z.string().min(1) },
     async ({ post }, mm) => {
       const id = parsePostRef(post, base);
@@ -625,7 +696,7 @@ export function registerReadTools(server: McpServer, ctx: ToolContext): void {
       ].join('\n');
     });
 
-  tool('get_file', `投稿に添付されたファイルを読む。画像なら縮小版（プレビュー）を画像として返す。テキスト（UTF-8、または拡張子が csv・tsv・txt・log の Shift_JIS）なら中身を先頭の ${TEXT_MAX_CHARS} 文字まで返す。それ以外（PDF など）は名前・種類・大きさだけを返す。file_id は投稿の「添付:」の行にある`,
+  tool('get_file', `投稿に添付されたファイルを読む。画像なら縮小版（プレビュー）を画像として返す。テキスト（UTF-8、または拡張子が csv・tsv・txt・log の Shift_JIS か EUC-JP）なら中身を先頭の ${TEXT_MAX_CHARS} 文字まで返す。それ以外（PDF など）は名前・種類・大きさだけを返す。file_id は投稿の「添付:」の行にある`,
     { file_id: z.string().regex(/^[A-Za-z0-9]{26}$/) },
     async ({ file_id }, mm) => {
       const f = await worded(mm.call<MmFileInfo>(uid, 'GET', `/files/${file_id}/info`), FILE_WORDING);
