@@ -155,6 +155,16 @@ describe('root_id', () => {
     await expect(f.send({ channel: DM, message: 'hi', root_id: id(0) })).rejects.toMatchObject({
       message: `root_id ${id(0)} の投稿はチャンネル「${UID}__${OTHER}」（channel_id: ${DM}）にありません。`,
     });
+    expect(f.created).toHaveLength(0);
+  });
+
+  test('a reply in another channel is refused as being in another channel, which is checked before whether it is a reply', async () => {
+    const f = withRoots();
+    f.posts.push({ id: id(6), user_id: UID, channel_id: OTHER, root_id: id(0), message: 'reply elsewhere', create_at: 0 });
+    await expect(f.send({ channel: 'team-a/dup', message: 'hi', root_id: id(6) })).rejects.toMatchObject({
+      message: `root_id ${id(6)} の投稿はチャンネル「Dup」（channel_id: ${CH}）にありません。`,
+    });
+    expect(f.created).toHaveLength(0);
   });
 });
 
