@@ -742,7 +742,7 @@ describe('get_channel', () => {
   test('when /stats is refused (a public channel the user has not joined), says the member count is unavailable and returns the rest', async () => {
     routes = { ...base(), [`GET /channels/${C}/stats`]: mmError(403) };
     const out = await setup()('get_channel', { channel: C });
-    expect(out).toContain('メンバー数: 取得できません（参加していないか、一時的な障害）');
+    expect(out).toContain('メンバー数: 取得できません（参加していないか、一時的な障害か、権限の設定）');
     expect(out).toContain('目的: 雑談用');
     expect(pinIds(out)).toEqual([P1.id, P2.id, P3.id]);
   });
@@ -790,7 +790,7 @@ describe('get_channel', () => {
 
   test('turns 403 from fetching the channel into a permission message', async () => {
     routes = { ...base(), [`GET /channels/${C}`]: mmError(403) };
-    expect(await setup()('get_channel', { channel: C }, true)).toBe('このチャンネルを見る権限がありません（参加していない非公開チャンネルなど）。参加しているはずなら、Mattermost の一時的な障害の可能性があります。少し待ってから再試行してください。');
+    expect(await setup()('get_channel', { channel: C }, true)).toBe('このチャンネルを見る権限がありません（参加していない非公開チャンネルなど）。参加しているはずなら、Mattermost の一時的な障害の可能性があります。少し待ってから再試行してください。続くなら、チャンネルから外されたか、サーバーの権限の設定で読む権限が外されている可能性があるので、管理者に確かめてください。');
   });
 
   test('turns 404 from fetching the channel, by id or by team/name, into a not-found message', async () => {
@@ -3117,14 +3117,14 @@ describe('list_channel_members', () => {
   test('says members of a channel the user has not joined cannot be seen, without asking for the count', async () => {
     routes = { ...base(), 'GET /users': mmError(403, 'api.context.permissions.app_error') };
     const out = await setup()('list_channel_members', { channel: C }, true);
-    expect(out).toBe('このチャンネルのメンバーを見る権限がありません。参加していないチャンネルのメンバーは、公開チャンネルでも見られません。参加しているはずなら、Mattermost の一時的な障害の可能性があります。少し待ってから再試行してください。');
+    expect(out).toBe('このチャンネルのメンバーを見る権限がありません。参加していないチャンネルのメンバーは、公開チャンネルでも見られません。参加しているはずなら、Mattermost の一時的な障害の可能性があります。少し待ってから再試行してください。続くなら、チャンネルから外されたか、サーバーの権限の設定で読む権限が外されている可能性があるので、管理者に確かめてください。');
     expect(hits).not.toContain(`GET /channels/${C}/stats`);
   });
 
   test('says the same when the user leaves the channel between reading the members and the count, and passes other errors of the count through', async () => {
     routes = { ...base(), [`GET /channels/${C}/stats`]: mmError(403, 'api.context.permissions.app_error') };
     const call = setup();
-    expect(await call('list_channel_members', { channel: C }, true)).toBe('このチャンネルのメンバーを見る権限がありません。参加していないチャンネルのメンバーは、公開チャンネルでも見られません。参加しているはずなら、Mattermost の一時的な障害の可能性があります。少し待ってから再試行してください。');
+    expect(await call('list_channel_members', { channel: C }, true)).toBe('このチャンネルのメンバーを見る権限がありません。参加していないチャンネルのメンバーは、公開チャンネルでも見られません。参加しているはずなら、Mattermost の一時的な障害の可能性があります。少し待ってから再試行してください。続くなら、チャンネルから外されたか、サーバーの権限の設定で読む権限が外されている可能性があるので、管理者に確かめてください。');
     routes[`GET /channels/${C}/stats`] = mmError(404);
     expect(await call('list_channel_members', { channel: C }, true)).toContain('Mattermost がエラーを返しました（404）');
   });
@@ -3132,7 +3132,7 @@ describe('list_channel_members', () => {
   test('words 403 and 404 from fetching the channel as get_channel does', async () => {
     routes = { ...base(), 'GET /users/me/teams': () => [], [`GET /channels/${C}`]: mmError(403) };
     const call = setup();
-    expect(await call('list_channel_members', { channel: C }, true)).toBe('このチャンネルを見る権限がありません（参加していない非公開チャンネルなど）。参加しているはずなら、Mattermost の一時的な障害の可能性があります。少し待ってから再試行してください。');
+    expect(await call('list_channel_members', { channel: C }, true)).toBe('このチャンネルを見る権限がありません（参加していない非公開チャンネルなど）。参加しているはずなら、Mattermost の一時的な障害の可能性があります。少し待ってから再試行してください。続くなら、チャンネルから外されたか、サーバーの権限の設定で読む権限が外されている可能性があるので、管理者に確かめてください。');
     routes[`GET /channels/${C}`] = mmError(404);
     expect(await call('list_channel_members', { channel: C }, true)).toContain('チャンネルが見つかりません');
   });

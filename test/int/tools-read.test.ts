@@ -421,7 +421,7 @@ describe('read tools against the local Mattermost', () => {
     test('for a public channel bob has not joined, says the member count is unavailable', async () => {
       const r = await call('bob', 'get_channel', { channel: ch.id });
       expect(r.isError).toBeFalsy();
-      expect(r.content[0].text).toContain('メンバー数: 取得できません（参加していないか、一時的な障害）');
+      expect(r.content[0].text).toContain('メンバー数: 取得できません（参加していないか、一時的な障害か、権限の設定）');
       expect(r.content[0].text).toContain(`目的: ${TAG} purpose`);
       expect(postIds(r)).toEqual(pins);
     });
@@ -429,7 +429,7 @@ describe('read tools against the local Mattermost', () => {
     test('for the id of a private channel bob has not joined, says he has no permission', async () => {
       const r = await call('bob', 'get_channel', { channel: e.teams.a.privateChannelId! });
       expect(r.isError).toBe(true);
-      expect(r.content[0].text).toBe('このチャンネルを見る権限がありません（参加していない非公開チャンネルなど）。参加しているはずなら、Mattermost の一時的な障害の可能性があります。少し待ってから再試行してください。');
+      expect(r.content[0].text).toBe('このチャンネルを見る権限がありません（参加していない非公開チャンネルなど）。参加しているはずなら、Mattermost の一時的な障害の可能性があります。少し待ってから再試行してください。続くなら、チャンネルから外されたか、サーバーの権限の設定で読む権限が外されている可能性があるので、管理者に確かめてください。');
     });
 
     test('pages through 3 pinned posts with pinned_limit 2', async () => {
@@ -657,7 +657,7 @@ describe('read tools against the local Mattermost', () => {
     try {
       const refused = await call('bob', 'list_channel_members', { channel: ch.id });
       expect(refused.isError).toBe(true);
-      expect(refused.content[0].text).toBe('このチャンネルのメンバーを見る権限がありません。参加していないチャンネルのメンバーは、公開チャンネルでも見られません。参加しているはずなら、Mattermost の一時的な障害の可能性があります。少し待ってから再試行してください。');
+      expect(refused.content[0].text).toBe('このチャンネルのメンバーを見る権限がありません。参加していないチャンネルのメンバーは、公開チャンネルでも見られません。参加しているはずなら、Mattermost の一時的な障害の可能性があります。少し待ってから再試行してください。続くなら、チャンネルから外されたか、サーバーの権限の設定で読む権限が外されている可能性があるので、管理者に確かめてください。');
       await mmApi(aliceMm, 'POST', `/channels/${ch.id}/members`, { user_id: e.users.bob.id });
       const members = (r: Result) => [...r.content[0].text.matchAll(/^- @(\S+?)（/gm)].map((m) => m[1]);
       const pages: string[][] = [];
