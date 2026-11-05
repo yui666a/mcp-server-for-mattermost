@@ -31,7 +31,7 @@ async function savePost(mm: Mm, uid: string, args: Args): Promise<CallToolResult
 }
 
 async function unsavePost(mm: Mm, uid: string, args: Args): Promise<CallToolResult> {
-  // Not reading the post first: a save left behind after leaving the channel or after the post was deleted has to be removable too.
+  // Not reading the post first: a save left behind after leaving the channel has to be removable too.
   await mm.call(uid, 'POST', `/users/${uid}/preferences/delete`, [{ user_id: uid, category: 'flagged_post', name: args.post_id, value: 'true' }]);
   return text(`投稿を保存していれば、保存した投稿から外しました。\npost_id: ${args.post_id}`);
 }
@@ -59,7 +59,7 @@ export function registerSavePinTools(server: McpServer, ctx: ToolContext): void 
   const mmOf = (signal: AbortSignal): Mm => ({ call: (u, m, p, b) => ctx.mm.call(u, m, p, b, signal) });
   const tools: [name: string, description: string, fn: (mm: Mm, uid: string, args: Args) => Promise<CallToolResult>][] = [
     ['save_post', '投稿を自分の「保存した投稿」に加える（Mattermost の保存。自分にだけ見える印）。参加しているチャンネルの投稿だけを保存できる。保存した投稿は list_saved_posts で一覧できる。保存済みでも成功する', savePost],
-    ['unsave_post', '投稿を自分の「保存した投稿」から外す。保存していなくても成功する', unsavePost],
+    ['unsave_post', '投稿を自分の「保存した投稿」から外す。投稿もチャンネルへの参加も確かめないので、抜けたチャンネルの投稿に残った保存も外せる。保存していなくても成功する', unsavePost],
     ['pin_post', '投稿をチャンネルにピン留めする（チャンネルの全員に見える）。参加しているチャンネルの投稿だけを扱う。ピン留めは get_channel で読める。既にピン留めされていても成功する', (mm, uid, args) => setPinned(mm, uid, args, true)],
     ['unpin_post', '投稿のピン留めを外す。他人がピン留めしたものも外れる。参加しているチャンネルの投稿だけを扱う。ピン留めされていなくても成功する', (mm, uid, args) => setPinned(mm, uid, args, false)],
   ];
