@@ -216,7 +216,7 @@ export async function sendMessage(mm: Mm, store: Store, uid: string, baseUrl: st
     res = r;
   } catch (e) {
     // Not leaving out InputError: here it can only be a file refused before the post or an upload that Mattermost refused, so nothing was posted.
-    if (e instanceof MmError || e instanceof InputError || e instanceof RateLimited || (e as { sent?: boolean })?.sent === false) store.dropPost(claim.id, claimedAt);
+    if (e instanceof MmError || e instanceof InputError || (e instanceof RateLimited && !e.doubt) || (e as { sent?: boolean })?.sent === false) store.dropPost(claim.id, claimedAt);
     throw e;
   }
   store.completePost(claim.id, res.postId);
