@@ -89,6 +89,8 @@ function base(crt = 'always_on'): Record<string, Route> {
 const query = (prefix: string) => Object.fromEntries(new URLSearchParams(urls.find((u) => u.startsWith(prefix))!.split('?')[1]));
 
 const unavailable = () => new Response('oops', { status: 503 });
+const once = (first: Route, then: Route): Route => { let n = 0; return (req) => (n++ ? then : first)(req); };
+const refused = () => { throw new TypeError('fetch failed', { cause: Object.assign(new Error('refused'), { code: 'ECONNREFUSED' }) }); };
 
 describe('mark_as_read for channels', () => {
   test('lists a channel not started without the format characters around its spec', async () => {
@@ -300,6 +302,43 @@ describe('mark_as_read for channels', () => {
     expect(out.isError).toBe(true);
     expect(out.text).not.toContain('既読にした結果');
   });
+
+  test('says an item was not marked when its write could not connect', async () => {
+    routes = { ...base(), 'POST /channels/members/u1/mark_read': once(() => ({ status: 'OK', last_viewed_at_times: {} }), refused) };
+    const r = await setup().call({ channels: [{ channel: CH }, { channel: CH2 }] });
+    expect(r.text).toMatch(new RegExp(`（channel_id: ${CH}）: 呼んだ時点までのすべてを既読にしました。（表示名: TOWN）$`, 'm'));
+    expect(r.text).toMatch(new RegExp(`（channel_id: ${CH2}）: 処理中に中断しました（既読にしていません）。（表示名: SQUARE）$`, 'm'));
+  });
+
+  test('says an item was not marked when its write is rate limited', async () => {
+    routes = { ...base(), 'POST /channels/members/u1/mark_read': once(() => ({ status: 'OK', last_viewed_at_times: {} }), () => new Response(null, { status: 429, headers: { 'x-ratelimit-reset': '7' } })) };
+    const r = await setup().call({ channels: [{ channel: CH }, { channel: CH2 }] });
+    expect(r.text).toMatch(new RegExp(`（channel_id: ${CH2}）: 処理中に中断しました（既読にしていません）。（表示名: SQUARE）$`, 'm'));
+  });
+
+  test('stops with the results so far even when they are all failures', async () => {
+    routes = { ...base(), 'POST /channels/members/u1/mark_read': once(mmError(400, 'app.channel.update_last_viewed_at.app_error'), unavailable) };
+    const r = await setup().call({ channels: [{ channel: CH }, { channel: CH2 }] });
+    expect(r.isError).toBe(true);
+    expect(r.text).toMatch(new RegExp(`（channel_id: ${CH}）: 既読にできませんでした。[^\\n]*（表示名: TOWN）$`, 'm'));
+    expect(r.text).toMatch(new RegExp(`（channel_id: ${CH2}）: 処理中に中断しました（既読になったかは分かりません）。（表示名: SQUARE）$`, 'm'));
+  });
+
+  test('stops on an unexpected failure too, with the results so far', async () => {
+    routes = { ...base(), [`GET /channels/${CH}/posts`]: () => ({}) };
+    const r = await setup().call({ channels: [{ channel: CH2 }, { channel: CH, last_post_id: LAST }] });
+    expect(r.isError).toBe(true);
+    expect(r.text).toMatch(new RegExp(`（channel_id: ${CH2}）: 呼んだ時点までのすべてを既読にしました。（表示名: SQUARE）$`, 'm'));
+    expect(r.text).toMatch(new RegExp(`（channel_id: ${CH}）: 処理中に中断しました（既読にしていません）。（表示名: TOWN）$`, 'm'));
+    expect(r.text).toContain('ここで中断しました。ツールの実行中に予期しないエラーが発生しました。');
+  });
+
+  test('reports the first item when its write was sent before Mattermost became unavailable', async () => {
+    routes = { ...base(), 'POST /channels/members/u1/mark_read': unavailable };
+    const r = await setup().call({ channels: [{ channel: CH }] });
+    expect(r.isError).toBe(true);
+    expect(r.text).toMatch(new RegExp(`（channel_id: ${CH}）: 処理中に中断しました（既読になったかは分かりません）。（表示名: TOWN）$`, 'm'));
+  });
 });
 
 describe('mark_as_read for threads', () => {
@@ -431,7 +470,6 @@ describe('mark_as_read for threads', () => {
     expect(all.text).toContain('このスレッドを read_thread で読み、読んだ最終返信を last_post_id に渡して再実行すると消せることがあります。');
   });
 
-  const once = (first: Route, then: Route): Route => { let n = 0; return (req) => (n++ ? then : first)(req); };
 
   test.each([
     ['after marking it', { [`PUT /users/u1/teams/${TEAM}/threads/${ROOT}/read/1006`]: () => read({ unread_mentions: 1 }), [`PUT /users/u1/teams/${TEAM}/threads/${ROOT}/read/1007`]: unavailable }, '既読にしました。'],
@@ -445,7 +483,6 @@ describe('mark_as_read for threads', () => {
     expect(r.text).not.toContain('処理していません');
   });
 
-  const refused = () => { throw new TypeError('fetch failed', { cause: Object.assign(new Error('refused'), { code: 'ECONNREFUSED' }) }); };
 
   test('says the mention was not cleared when the write clearing it could not connect', async () => {
     routes = threads({
@@ -454,13 +491,6 @@ describe('mark_as_read for threads', () => {
     });
     const r = await setup().call({ threads: [{ post_id: ROOT, last_post_id: id(5) }] });
     expect(r.text).toContain(`スレッド（親 post_id: ${ROOT}）: 既読にしました。ただし、位置ちょうどの返信のメンションを消す前に中断しました。`);
-  });
-
-  test('says an item was not marked when its write could not connect', async () => {
-    routes = threads({ 'POST /channels/members/u1/mark_read': once(() => ({ status: 'OK', last_viewed_at_times: {} }), refused) });
-    const r = await setup().call({ channels: [{ channel: CH }, { channel: CH2 }] });
-    expect(r.text).toMatch(new RegExp(`（channel_id: ${CH}）: 呼んだ時点までのすべてを既読にしました。（表示名: TOWN）$`, 'm'));
-    expect(r.text).toMatch(new RegExp(`（channel_id: ${CH2}）: 処理中に中断しました（既読にしていません）。（表示名: SQUARE）$`, 'm'));
   });
 
   test('stops at an unavailable write, keeping the items before it and listing the ones not started', async () => {
@@ -483,36 +513,6 @@ describe('mark_as_read for threads', () => {
     expect(r.text).toMatch(new RegExp(`（channel_id: ${CH}）: 呼んだ時点までのすべてを既読にしました。（表示名: TOWN）$`, 'm'));
     expect(r.text).toContain(`スレッド（親 post_id: ${ROOT}）: 処理中に中断しました（既読にしていません）。`);
     expect(r.text).toContain('ここで中断しました。呼び出しが多すぎます。7 秒後に再試行してください。再実行するときは');
-  });
-
-  test('says an item was not marked when its write is rate limited', async () => {
-    routes = threads({ 'POST /channels/members/u1/mark_read': once(() => ({ status: 'OK', last_viewed_at_times: {} }), () => new Response(null, { status: 429, headers: { 'x-ratelimit-reset': '7' } })) });
-    const r = await setup().call({ channels: [{ channel: CH }, { channel: CH2 }] });
-    expect(r.text).toMatch(new RegExp(`（channel_id: ${CH2}）: 処理中に中断しました（既読にしていません）。（表示名: SQUARE）$`, 'm'));
-  });
-
-  test('stops with the results so far even when they are all failures', async () => {
-    routes = threads({ 'POST /channels/members/u1/mark_read': once(mmError(400, 'app.channel.update_last_viewed_at.app_error'), unavailable) });
-    const r = await setup().call({ channels: [{ channel: CH }, { channel: CH2 }] });
-    expect(r.isError).toBe(true);
-    expect(r.text).toMatch(new RegExp(`（channel_id: ${CH}）: 既読にできませんでした。[^\\n]*（表示名: TOWN）$`, 'm'));
-    expect(r.text).toMatch(new RegExp(`（channel_id: ${CH2}）: 処理中に中断しました（既読になったかは分かりません）。（表示名: SQUARE）$`, 'm'));
-  });
-
-  test('stops on an unexpected failure too, with the results so far', async () => {
-    routes = threads({ [`GET /channels/${CH}/posts`]: () => ({}) });
-    const r = await setup().call({ channels: [{ channel: CH2 }, { channel: CH, last_post_id: LAST }] });
-    expect(r.isError).toBe(true);
-    expect(r.text).toMatch(new RegExp(`（channel_id: ${CH2}）: 呼んだ時点までのすべてを既読にしました。（表示名: SQUARE）$`, 'm'));
-    expect(r.text).toMatch(new RegExp(`（channel_id: ${CH}）: 処理中に中断しました（既読にしていません）。（表示名: TOWN）$`, 'm'));
-    expect(r.text).toContain('ここで中断しました。ツールの実行中に予期しないエラーが発生しました。');
-  });
-
-  test('reports the first item when its write was sent before Mattermost became unavailable', async () => {
-    routes = threads({ 'POST /channels/members/u1/mark_read': unavailable });
-    const r = await setup().call({ channels: [{ channel: CH }] });
-    expect(r.isError).toBe(true);
-    expect(r.text).toMatch(new RegExp(`（channel_id: ${CH}）: 処理中に中断しました（既読になったかは分かりません）。（表示名: TOWN）$`, 'm'));
   });
 
   test('accepts the root post itself as last_post_id', async () => {
