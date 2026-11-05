@@ -458,6 +458,16 @@ test('a call that fails without the caller aborting is not taken for an abort', 
   expect(e).not.toBeInstanceOf(CallAborted);
 });
 
+test('aborting while the body is being read is taken for an abort too', async () => {
+  store.putMmCred('u1', 'a1', 'r1');
+  api = (_access, req) => new Response(new ReadableStream({ start(c) { c.enqueue(new TextEncoder().encode('{"a":')); req.signal.addEventListener('abort', () => c.error(req.signal.reason)); } }), { headers: { 'content-type': 'application/json' } });
+  const ac = new AbortController();
+  const running = failure(client.call('u1', 'GET', '/users/me', undefined, ac.signal));
+  await vi.waitFor(() => expect(apiCalls).toHaveLength(1), SLOW);
+  ac.abort();
+  expect(await running).toBeInstanceOf(CallAborted);
+});
+
 test('aborting the caller signal ends the call and frees its limiter slot', async () => {
   store.putMmCred('u1', 'a1', 'r1');
   api = (_access, req) => new Promise((_, fail) => req.signal.addEventListener('abort', () => fail(req.signal.reason)));

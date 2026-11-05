@@ -1,4 +1,5 @@
 import type { McpServer, ToolCallback } from '@modelcontextprotocol/sdk/server/mcp.js';
+import { CallAborted } from '../mattermost/client.ts';
 import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
 import { z } from 'zod';
 import { FileHeld, MAX_PENDING_SCHEDULED, type Scheduled, type ScheduledStatus, type Store } from '../store.ts';
@@ -94,9 +95,15 @@ export async function listScheduledMessages(mm: Mm, store: Store, uid: string, b
         const ch = await mm.call<MmChannel>(uid, 'GET', `/channels/${id}`);
         // Not a name of its own for a DM or group DM: resolveChannel's is what the other outputs show, and two forms would read as two destinations.
         // Not letting its re-login or rate limit drop the row's channel and permalink: the name is only for display, and Mattermost's name still names it.
-        const name = (await dmLabel(mm, uid, ch).catch(() => undefined)) ?? oneLine(ch.display_name || ch.name);
+        const name = (await dmLabel(mm, uid, ch).catch((e) => {
+          if (e instanceof CallAborted) throw e;
+          return undefined;
+        })) ?? oneLine(ch.display_name || ch.name);
         v = { name, ch };
-      } catch {}
+      } catch (e) {
+        // Not going on to the other rows once the caller aborted: no one is left to read the list.
+        if (e instanceof CallAborted) throw e;
+      }
       channels.set(id, v);
     }
     return channels.get(id)!;
