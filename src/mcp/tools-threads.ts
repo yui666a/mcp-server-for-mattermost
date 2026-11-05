@@ -43,7 +43,7 @@ export function registerThreadTools(server: McpServer, ctx: ToolContext): void {
       }) as unknown as ToolCallback<S>);
   }
 
-  tool('list_followed_threads', 'フォロー中のスレッドを、最終返信の新しい順に一覧する。全チームと DM、グループ DM が対象。アーカイブ済みのチャンネルのスレッドも含む（そのチャンネルは channel_id だけを出す）。返信がまだないルート投稿は、フォローしていても最初の返信まで出ない。スレッドの折りたたみ（CRT）が無効な利用者には使えない。読むだけで、既読にはしない',
+  tool('list_followed_threads', 'フォロー中のスレッドを、最終返信の新しい順に一覧する。全チームと DM、グループ DM が対象。アーカイブ済みのチャンネルのスレッドも含む（チャンネル名に「アーカイブ済み」と付ける）。返信がまだないルート投稿は、フォローしていても最初の返信まで出ない。スレッドの折りたたみ（CRT）が無効な利用者には使えない。読むだけで、既読にはしない',
     { limit: limitArg(20, 50), cursor: cursorArg }, { readOnlyHint: true },
     async ({ limit, cursor }, mm) => {
       const startedAt = Date.now();
@@ -53,7 +53,7 @@ export function registerThreadTools(server: McpServer, ctx: ToolContext): void {
       if (!crt.on) throw new InputError(CRT_OFF);
       const teams = await myTeams(mm, uid);
       if (!teams.length) throw new InputError('所属しているチームがないため、フォロー中のスレッドを一覧できません（DM のスレッドもチームを指定して引く API のため）。');
-      const channels = new Map((await mm.call<MmChannel[]>(uid, 'GET', '/users/me/channels')).map((x) => [x.id, x]));
+      const channels = new Map((await mm.call<(MmChannel & { delete_at: number })[]>(uid, 'GET', '/users/me/channels?include_deleted=true')).map((x) => [x.id, x]));
       const teamName = new Map(teams.map((t) => [t.id, t.name]));
       const threads: (FollowedThread & { teamName: string })[] = [];
       const notes: string[] = [];
@@ -85,7 +85,7 @@ export function registerThreadTools(server: McpServer, ctx: ToolContext): void {
       const line = ({ th }: (typeof rows)[number]): string => {
         const ch = channels.get(th.post.channel_id);
         const team = ch && teamName.get(ch.team_id);
-        const label = ch && (ch.type === 'D' ? `@${users.get(other(ch)) ?? other(ch)}` : ch.display_name || ch.name);
+        const label = ch && (ch.type === 'D' ? `@${users.get(other(ch)) ?? other(ch)}` : ch.display_name || ch.name) + (ch.delete_at ? '（アーカイブ済み）' : '');
         const at = ch ? channelLines({ id: ch.id, name: ch.name, displayName: label ?? '', teamId: ch.team_id, teamName: team ?? '' }).join(' | ') : `channel_id: ${th.post.channel_id}`;
         posts.push(th.post);
         return [

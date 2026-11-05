@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto';
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
+import { BODY_CUT_NOTE } from '../../src/mcp/format.ts';
 import { makeApp } from './helpers.ts';
 
 type Route = (req: Request) => unknown;
@@ -203,6 +204,23 @@ describe('search_posts in: filters', () => {
     expect(out).toContain('in:town は複数のチームにあるため、すべてで探しました（team-a、team-b）。');
   });
 
+  test.each([
+    ['x channel:~town', 'channel:~town'],
+    ['x IN: town', 'IN: town'],
+  ])('the note for %j names the flag as written', async (terms, written) => {
+    routes = base();
+    expect(await setup()('search_posts', { terms })).toContain(`${written} は複数のチームにあるため、すべてで探しました（team-a、team-b）。`);
+  });
+
+  test('a U+FEFF before or after the value does not change which channel is searched', async () => {
+    routes = base();
+    await setup()('search_posts', { terms: 'x in:\ufeffonly-a\ufeff' });
+    expect(sent()).toBe(`x in:${CX}`);
+    await setup()('search_posts', { terms: 'x in:\ufeff~only-a' });
+    expect(sent()).toBe(`x in:${CX}`);
+    expect(await setup()('search_posts', { terms: 'x in:\ufeff@bob ,carol' }, true)).toContain('の後の「,carol」');
+  });
+
   test('excludes every channel of a name that several teams have', async () => {
     routes = base();
     await setup()('search_posts', { terms: 'x -in:town' });
@@ -292,10 +310,10 @@ describe('search_posts in: filters', () => {
       ['x -in:@bob,ghost', 'ユーザーが見つかりません: @ghost。'],
       ['x in:@bob,me', 'グループ DM には、自分以外に 2 人以上を指定してください。'],
       ['x in:@bob, carol', 'カンマの前後に空白を入れない'],
-      ['x in:@bob ,carol', 'in:@bob の後の「,carol」: 検索の in: では @a,b のようにカンマの前後に空白を入れずに書いてください。'],
+      ['x in:@bob ,carol', 'in:@bob の後の「,carol」: 検索の条件では @a,b のようにカンマの前後に空白を入れずに書いてください。'],
       ['x in:@bob , carol', 'in:@bob の後の「,」'],
-      ['x in: @bob ,carol', 'in:@bob の後の「,carol」'],
-      ['x channel:~@bob ,carol', 'in:~@bob の後の「,carol」'],
+      ['x in: @bob ,carol', 'in: @bob の後の「,carol」'],
+      ['x channel:~@bob ,carol', 'channel:~@bob の後の「,carol」'],
     ])('%j is an input error without searching', async (terms, message) => {
       routes = withGroup();
       const out = await setup()('search_posts', { terms }, true);
@@ -477,7 +495,8 @@ describe('get_post', () => {
 
   test('notes at the end that the message was cut', async () => {
     routes = { ...base, [`GET /posts/${ROOT}`]: () => post({ id: ROOT, message: 'x'.repeat(4001) }) };
-    expect((await setup()('get_post', { post: ROOT })).split('\n').at(-1)).toBe('（本文を 4000 文字で切りました）');
+    expect((await setup()('get_post', { post: ROOT })).split('\n').at(-1)).toBe(`（${BODY_CUT_NOTE}）`);
+    expect(BODY_CUT_NOTE).toBe('本文を 4000 文字で切りました');
   });
 
   test('notes cut message attachments only where they were cut, not again at the end', async () => {
@@ -2190,12 +2209,46 @@ describe('read_channel with since and until', () => {
     expect(seen.length).toBe(205);
   });
 
-  test('in a range, when every post fetched within a call shares one millisecond, keeps them all and reads on from the last', async () => {
-    fill(6, secs(0, 1, 1, 1, 1, 5));
+  test('in a range, shows every post of a millisecond that one fetch took whole', async () => {
+    fill(5, secs(0, 1, 1, 1, 5));
     routes = base();
-    const { seen } = await readAll(setup(), { since: iso(1), limit: 2 });
-    expect(seen.slice(0, 2)).toEqual([id(1), id(2)]);
-    expect(seen).toContain(id(5));
+    const { seen } = await readAll(setup(), { since: iso(1), limit: 3 });
+    expect(seen).toEqual([1, 2, 3, 4].map(id));
+  });
+
+  test('in a range, fetches once within a call when no millisecond is shared', async () => {
+    fill(10);
+    routes = base();
+    await setup()('read_channel', { channel: CH, since: iso(1), limit: 3 });
+    const reads = pages().filter((q) => q.has('after'));
+    expect(reads).toHaveLength(1);
+    expect(reads[0].get('per_page')).toBe('4');
+  });
+
+  test('in a range starting before the first post of a 201-post channel, the oldest page of one post starts the read and nothing drops out', async () => {
+    fill(201);
+    routes = base();
+    const { seen } = await readAll(setup(), { since: new Date(T0 - 60_000).toISOString(), limit: 100 });
+    expect(seen[0]).toBe(id(0));
+    expect(new Set(seen).size).toBe(201);
+  });
+
+  test('when the start drifts before since and the page ends inside a millisecond, reading on keeps the rest of that millisecond', async () => {
+    // Posts 18 to 22 are in range; 19, 20 and 21 share a millisecond that the first page of 4 cuts.
+    fill(23, (n) => T0 + (n < 18 ? n : [20, 21, 21, 21, 25][n - 18]) * 1000);
+    routes = base();
+    let first = true;
+    routes[`GET /channels/${CH}/posts`] = (req) => {
+      const q = new URL(req.url).searchParams;
+      if (q.has('after') && first) {
+        first = false;
+        // A post deleted during the search shifts the pages: the after= read starts at post 16, before since.
+        return asList(byOldest().filter((p) => p.create_at >= T0 + 16_000).slice(0, Number(q.get('per_page'))));
+      }
+      return postsRoute(req);
+    };
+    const { seen } = await readAll(setup(), { since: iso(20), limit: 3 });
+    expect(seen).toEqual([18, 19, 20, 21, 22].map(id));
   });
 
   test('when every post fetched shares one millisecond, still shows a full page and pages on from its last post', async () => {
@@ -2222,6 +2275,7 @@ describe('read_channel with since and until', () => {
     expect(out).toContain(none);
     expect(out).toContain(GONE);
     expect(out).toContain(how);
+    expect(out).toContain('limit を大きくして読み直すと抜けにくくなります）');
     expect(out).not.toContain('until は前と同じ値');
   });
 
@@ -2326,7 +2380,7 @@ describe('read_channel with since and until', () => {
     hits = []; urls = [];
     const second = await call('read_channel', { channel: CH, since: iso(0), cursor: cursorIn(first) });
     expect(shownIds(second)).toEqual([id(5), id(6), id(7)]);
-    expect(Object.fromEntries(pages()[0])).toEqual({ after: id(4), per_page: '5', skipFetchThreads: 'true' });
+    expect(Object.fromEntries(pages()[0])).toEqual({ after: id(4), per_page: '4', skipFetchThreads: 'true' });
     expect(second).toContain('の前まで');
     expect(second).toContain('（続きはありません）');
   });
@@ -2351,7 +2405,7 @@ describe('read_channel with since and until', () => {
       const q = new URL(req.url).searchParams;
       if (q.has('after') && first) {
         first = false;
-        return asList(corpus.slice(10, 15));
+        return asList(corpus.slice(10, 10 + Number(q.get('per_page'))));
       }
       return postsRoute(req);
     };
@@ -2556,8 +2610,8 @@ describe('list_saved_posts', () => {
     routes = { ...base(), [FLAGGED]: byOffset(all) };
     const call = setup();
     const first = await call('list_saved_posts', { limit: 50 });
-    expect(offsets()).toEqual([0, 51, 231, 411, 591, 771, 951]);
-    expect(asked('per_page')).toEqual([71, 200, 200, 200, 200, 200, 49]);
+    expect(offsets()).toEqual([0, 51, 231, 411, 591, 771, 951, 1000]);
+    expect(asked('per_page')).toEqual([71, 200, 200, 200, 200, 200, 49, 20]);
     expect(first).toContain(NOTE);
     const cursor = cursorIn(first);
     expect(cursor).toBeDefined();
@@ -2566,6 +2620,100 @@ describe('list_saved_posts', () => {
     expect(end).toContain(NOTE);
     expect(end).not.toContain('保存した投稿はありません。');
     expect(cursorIn(end)).toBeUndefined();
+  });
+
+  test('does not add the note when nothing comes after row 1000, though it read up to there', async () => {
+    routes = { ...base(), [FLAGGED]: byOffset(Array.from({ length: 990 }, (_, i) => post(pid(i), 5000))) };
+    const out = await setup()('list_saved_posts', { limit: 50 });
+    expect(offsets()).toEqual([0, 51, 231, 411, 591, 771, 951, 1000]);
+    expect(out).not.toContain(NOTE);
+  });
+
+  describe('a cursor carries the row of the last post shown, and the next page starts reading 20 rows before it', () => {
+    const desc = (n: number, from = 0) => Array.from({ length: n }, (_, i) => post(pid(from + i), 100_000 - from - i));
+    const cursorAt = (p: { id: string; create_at: number }, at: number, per = 50) => Buffer.from(JSON.stringify({ create_at: p.create_at, id: p.id, per_page: per, at })).toString('base64url');
+    const atIn = (out: string) => JSON.parse(Buffer.from(cursorIn(out)!, 'base64url').toString()).at;
+
+    test('reads limit + 41 rows from there once, and gives the next cursor the row of its last post', async () => {
+      const all = desc(300);
+      routes = { ...base(), [FLAGGED]: byOffset(all) };
+      const call = setup();
+      const first = await call('list_saved_posts', { limit: 50 });
+      expect(atIn(first)).toBe(49);
+      urls.length = 0;
+      const second = await call('list_saved_posts', { cursor: cursorIn(first) });
+      expect(offsets()).toEqual([29]);
+      expect(asked('per_page')).toEqual([91]);
+      expect(shownIds(second)).toEqual(all.slice(50, 100).map((p) => p.id));
+      expect(atIn(second)).toBe(99);
+    });
+
+    test('pages through every post once, in order, with the row in each cursor', async () => {
+      const all = desc(300);
+      routes = { ...base(), [FLAGGED]: byOffset(all) };
+      const call = setup();
+      const seen: string[] = [];
+      let cursor: string | undefined;
+      do {
+        const out = await call('list_saved_posts', cursor ? { cursor } : { limit: 50 });
+        seen.push(...shownIds(out));
+        cursor = cursorIn(out);
+      } while (cursor);
+      expect(seen).toEqual(all.map((p) => p.id));
+    });
+
+    test('keeps the read when posts saved since put newer posts at its start', async () => {
+      const all = desc(300, 100);
+      routes = { ...base(), [FLAGGED]: byOffset([...desc(30), ...all]) };
+      const out = await setup()('list_saved_posts', { cursor: cursorAt(all[49], 49) });
+      expect(offsets()[0]).toBe(29);
+      expect(shownIds(out)).toEqual(all.slice(50, 100).map((p) => p.id));
+    });
+
+    test.each([
+      ['posts unsaved since moved older posts to its start', 30, desc(270, 30), 49],
+      ['it starts inside a group of the same time as the last post shown', 0, [...desc(10), ...Array.from({ length: 290 }, (_, i) => post(pid(500 + i), 5000))], 49],
+      ['the row is past the last saved post', 0, desc(300), 500],
+    ] as const)('reads again from row 0 when %s', async (_, gone, list, at) => {
+      routes = { ...base(), [FLAGGED]: byOffset([...list]) };
+      const last = gone ? desc(50)[49] : list[49];
+      const out = await setup()('list_saved_posts', { cursor: cursorAt(last, at) });
+      expect(offsets().slice(0, 2)).toEqual([at - 20, 0]);
+      const want = [...list].sort((x, y) => y.create_at - x.create_at || x.id.localeCompare(y.id)).filter((p) => p.create_at < last.create_at || (p.create_at === last.create_at && p.id > last.id)).slice(0, 50);
+      expect(shownIds(out)).toEqual(want.map((p) => p.id));
+    });
+
+    test('reads on from there when the row is far before the last post shown', async () => {
+      const all = desc(300);
+      routes = { ...base(), [FLAGGED]: byOffset(all) };
+      const out = await setup()('list_saved_posts', { cursor: cursorAt(all[149], 25) });
+      expect(offsets()).toEqual([5, 76]);
+      expect(shownIds(out)).toEqual(all.slice(150, 200).map((p) => p.id));
+    });
+
+    test.each([
+      [10, 'row 0, as from the start', 0, 71],
+      [20, 'row 0, as from the start', 0, 71],
+      [21, 'row 1', 1, 91],
+      [1000, 'row 0, as the row is past the 1000 it reads', 0, 71],
+    ])('with the row at %i, reads from %s', async (at, _, from, size) => {
+      const all = desc(1100);
+      routes = { ...base(), [FLAGGED]: byOffset(all) };
+      await setup()('list_saved_posts', { cursor: cursorAt(all[Math.min(at, 999)], at) });
+      expect(offsets()[0]).toBe(from);
+      expect(asked('per_page')[0]).toBe(size);
+    });
+
+    test('near row 1000, reads only up to row 1000 and shows nothing after it', async () => {
+      const all = desc(1100);
+      routes = { ...base(), [FLAGGED]: byOffset(all) };
+      const out = await setup()('list_saved_posts', { cursor: cursorAt(all[990], 990) });
+      expect(offsets()).toEqual([970, 1000]);
+      expect(asked('per_page')).toEqual([30, 20]);
+      expect(shownIds(out)).toEqual(all.slice(991, 1000).map((p) => p.id));
+      expect(out).toContain(NOTE);
+      expect(cursorIn(out)).toBeUndefined();
+    });
   });
 
   test('does not add the note when the last read before row 1000 is not empty and the stop condition holds', async () => {
@@ -2701,6 +2849,12 @@ describe('search_files', () => {
     routes = { ...base(), 'POST /files/search': mmError(501, 'store.sql_file_info.search.disabled') };
     const out = await setup()('search_files', { terms: 'x' }, true);
     expect(out).toBe('この Mattermost ではファイルの検索が無効になっています（システムコンソールの設定）。ファイル名を含む投稿は search_posts で探せます。');
+  });
+
+  test('lists the user\'s channels with archived ones included, as for posts', async () => {
+    routes = base();
+    await setup()('search_files', { terms: 'fff' });
+    expect(urls).toContain('GET /users/me/channels?include_deleted=true');
   });
 
   test('rejects a search_posts cursor, which has the same page and per_page', async () => {
