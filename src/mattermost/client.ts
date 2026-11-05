@@ -213,6 +213,8 @@ export class MmClient {
 
   private async send(at: Attempt, mmUserId: string, access: string, method: string, path: string, body: unknown, extra?: Record<string, string>): Promise<Response> {
     const ms = this.remaining(at);
+    // Not handing an aborted signal to fetch: it rejects before connecting with no error code, which would read as a request that may have gone out.
+    if (at.signal?.aborted) throw new CallAborted('call aborted', at.sent);
     if (at.requests++ > 0) this.limiter.charge(mmUserId);
     const started = this.deps.now();
     const fields = { mm_user_id: mmUserId, method, path: path.split('?')[0].replace(/\/(name|username)\/[^/]+/g, '/$1/:name') };
