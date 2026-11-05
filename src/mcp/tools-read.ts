@@ -399,19 +399,28 @@ export function registerReadTools(server: McpServer, ctx: ToolContext): void {
       }) as unknown as ToolCallback<S>);
   }
 
-  async function withChannels(mm: Mm, shown: MmPost[]): Promise<string[]> {
+  // The channel line of a post or file, and the team its permalink uses (DMs and group DMs have none, so the first team of the user).
+  async function places(mm: Mm): Promise<(channelId: string) => { where: string; team: string }> {
     // Not the default listing: it leaves out archived channels the user is still in, where saved posts can sit.
     const channels = new Map((await mm.call<MmChannel[]>(uid, 'GET', '/users/me/channels?include_deleted=true')).map((x) => [x.id, x]));
     const teams = await myTeams(mm, uid);
     const teamName = new Map(teams.map((t) => [t.id, t.name]));
-    const users = await usernames(mm, uid, shown);
-    return shown.map((p) => {
-      const ch = channels.get(p.channel_id);
+    return (channelId) => {
+      const ch = channels.get(channelId);
       const team = ch?.team_id ? teamName.get(ch.team_id) : undefined;
       const where = ch
         ? channelLines({ id: ch.id, name: ch.name, displayName: ch.display_name, teamId: ch.team_id, teamName: team ?? '' }).join(' | ')
-        : `channel_id: ${p.channel_id}`;
-      return formatPost(p, { baseUrl: base, teamName: team ?? teams[0]?.name ?? '', usernames: users, channel: where });
+        : `channel_id: ${channelId}`;
+      return { where, team: team ?? teams[0]?.name ?? '' };
+    };
+  }
+
+  async function withChannels(mm: Mm, shown: MmPost[]): Promise<string[]> {
+    const placeOf = await places(mm);
+    const users = await usernames(mm, uid, shown);
+    return shown.map((p) => {
+      const { where, team } = placeOf(p.channel_id);
+      return formatPost(p, { baseUrl: base, teamName: team, usernames: users, channel: where });
     });
   }
 
@@ -502,21 +511,18 @@ export function registerReadTools(server: McpServer, ctx: ToolContext): void {
       const shown = all.slice(page * per, (page + 1) * per);
       const lines = [`ファイルの検索: ${terms}`];
       if (shown.length) {
-        const channels = new Map((await mm.call<MmChannel[]>(uid, 'GET', '/users/me/channels')).map((x) => [x.id, x]));
-        const teams = await myTeams(mm, uid);
-        const teamName = new Map(teams.map((t) => [t.id, t.name]));
+        const placeOf = await places(mm);
         // Not looking up the uploader of a channel bookmark file: its user_id is the fixed string "bookmark".
         const ids = [...new Set(shown.filter((f) => f.post_id).map((f) => f.user_id))];
         const users = ids.length ? new Map((await mm.call<UserRef[]>(uid, 'POST', '/users/ids', ids)).map((u) => [u.id, u.username])) : new Map<string, string>();
         for (const f of shown) {
-          const ch = channels.get(f.channel_id);
-          const team = ch?.team_id ? teamName.get(ch.team_id) : undefined;
+          const { where, team } = placeOf(f.channel_id);
           const who = users.get(f.user_id);
           lines.push(
             `--- ${fileLine(f)}`,
             `${f.post_id ? (who ? `@${who}` : `user_id: ${f.user_id}`) : 'チャンネルのブックマークのファイル（投稿なし）'} | ${formatTime(f.create_at)}`,
-            ch ? channelLines({ id: ch.id, name: ch.name, displayName: ch.display_name, teamId: ch.team_id, teamName: team ?? '' }).join(' | ') : `channel_id: ${f.channel_id}`,
-            ...(f.post_id ? [`post_id: ${f.post_id}`, `${base}/${team ?? teams[0]?.name ?? ''}/pl/${f.post_id}`] : []),
+            where,
+            ...(f.post_id ? [`post_id: ${f.post_id}`, `${base}/${team}/pl/${f.post_id}`] : []),
           );
         }
       } else lines.push('一致するファイルはありません。');
