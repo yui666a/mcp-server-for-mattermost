@@ -44,7 +44,7 @@ This project targets the other case:
 | `mark_as_read` | Mark channels and threads read, skipping channels with posts by anyone else after the newest post read |
 | `search_users` | Find users by name or username |
 | `get_user` | A user's profile with time zone, local time, and status |
-| `send_message` | Post to a channel or thread (`@username`, or `@a,b` for a group DM, works even before the DM exists), optionally with small inline files or files uploaded through `prepare_upload`; clears a draft with the same text afterwards unless the draft has attachments |
+| `send_message` | Post to a channel or thread (creates the DM for `@username` or `@a,b` if it does not exist yet), optionally with small inline files or files uploaded through `prepare_upload`; clears a draft with the same text afterwards unless the draft has attachments |
 | `prepare_upload` | Issue a one-time URL for uploading local files (screenshots, PDFs, photos) with `curl` (creates the DM for `@username` or `@a,b` if it does not exist yet); for clients that can run commands on the user's machine, such as Claude Code and Codex CLI |
 | `add_reaction` / `remove_reaction` | Add or remove the user's own reaction |
 | `save_post` / `unsave_post` | Save (flag) a post in a joined channel, or remove it from the saved posts |
