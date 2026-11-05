@@ -407,6 +407,21 @@ test('a 429 from the stored credential after a lost save tells whether the check
   }
 });
 
+test('a call aborted after an earlier request of it reached Mattermost keeps it counted as sent', async () => {
+  store.putMmCred('u1', 'a1', 'r1');
+  const ac = new AbortController();
+  refresh = () => { store.putMmCred('u1', 'aC', 'rC'); return Response.json({ access_token: 'a2', refresh_token: 'r2' }); };
+  api = (access) => {
+    if (access === 'a1') return mmError(401, 'api.context.session_expired.app_error');
+    ac.abort();
+    return mmError(503, 'x');
+  };
+  const e = await failure(client.call('u1', 'POST', '/posts', { message: 'm' }, ac.signal));
+  expect(e).toBeInstanceOf(CallAborted);
+  expect(e.sent).toBe(true);
+  expect(apiCalls.map((c) => c.access)).toEqual(['a1', 'a2']);
+});
+
 test('a plain 429 does not suggest an earlier request was carried out', async () => {
   store.putMmCred('u1', 'a1', 'r1');
   api = () => new Response(null, { status: 429, headers: { 'x-ratelimit-reset': '1' } });
