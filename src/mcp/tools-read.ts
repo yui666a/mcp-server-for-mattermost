@@ -431,23 +431,25 @@ export function registerReadTools(server: McpServer, ctx: ToolContext): void {
   }
 
   // Not the channel's own team for the permalink of a DM or group DM: they have none, so the user's first team.
-  async function places(mm: Mm): Promise<(channelId: string) => { where: string; team: string }> {
-    // Not the default listing: it leaves out archived channels the user is still in, where saved posts and files can sit.
-    const channels = new Map((await mm.call<MmChannel[]>(uid, 'GET', '/users/me/channels?include_deleted=true')).map((x) => [x.id, x]));
+  async function places(mm: Mm, archived = true): Promise<(channelId: string) => { where: string; team: string }> {
+    // Not the default listing unless archived is false: it leaves out archived channels the user is still in, where saved posts can sit.
+    const listed = await mm.call<(MmChannel & { delete_at?: number })[]>(uid, 'GET', archived ? '/users/me/channels?include_deleted=true' : '/users/me/channels');
+    const channels = new Map(listed.map((x) => [x.id, x]));
     const teams = await myTeams(mm, uid);
     const teamName = new Map(teams.map((t) => [t.id, t.name]));
     return (channelId) => {
       const ch = channels.get(channelId);
       const team = ch?.team_id ? teamName.get(ch.team_id) : undefined;
       const where = ch
-        ? channelLines({ id: ch.id, name: ch.name, displayName: ch.display_name, teamId: ch.team_id, teamName: team ?? '' }).join(' | ')
+        ? channelLines({ id: ch.id, name: ch.name, displayName: (ch.display_name || ch.name) + (ch.delete_at ? '（アーカイブ済み）' : ''), teamId: ch.team_id, teamName: team ?? '' }).join(' | ')
         : `channel_id: ${channelId}`;
       return { where, team: team ?? teams[0]?.name ?? '' };
     };
   }
 
-  async function withChannels(mm: Mm, shown: MmPost[]): Promise<string[]> {
-    const placeOf = await places(mm);
+  async function withChannels(mm: Mm, shown: MmPost[], archived = false): Promise<string[]> {
+    // Not always listing archived channels: the post searches leave their posts out, and a user can be in many of them.
+    const placeOf = await places(mm, archived);
     const users = await usernames(mm, uid, shown);
     return shown.map((p) => {
       const { where, team } = placeOf(p.channel_id);
@@ -471,7 +473,7 @@ export function registerReadTools(server: McpServer, ctx: ToolContext): void {
       return render({ lines, posts: shown, next: more ? { page: page + 1, per_page: per } : undefined, notes: [...filtered.notes, ...capNote(all.length, 'これより古い一致')] });
     });
 
-  tool('list_saved_posts', '自分が保存した（フラグを付けた）投稿を新しい順に一覧する。参加しているチャンネルの投稿だけが対象で、アーカイブ済みのチャンネルの投稿も含む',
+  tool('list_saved_posts', '自分が保存した（フラグを付けた）投稿を新しい順に一覧する。参加しているチャンネルの投稿だけが対象で、アーカイブ済みのチャンネルの投稿も含む（チャンネル名に「アーカイブ済み」と付ける）',
     { limit: limitArg(20, 50), cursor: cursorArg },
     async ({ limit, cursor }, mm) => {
       const c = cursorOf(z.object({ create_at: z.number().int(), id: z.string(), per_page: perPage(50), at: z.number().int().min(0).optional() }).strict(), cursor);
@@ -527,7 +529,8 @@ export function registerReadTools(server: McpServer, ctx: ToolContext): void {
       if (capped) capped = (await read(SAVED_SCAN, SAVED_OVERLAP)).length > 0;
       const shown = rest.slice(0, per);
       const last = shown.at(-1);
-      const lines = ['保存した投稿（新しい順）', ...(shown.length ? await withChannels(mm, shown) : c ? [] : ['保存した投稿はありません。'])];
+      // Archived channels too: a saved post can sit in one the user is still in.
+      const lines = ['保存した投稿（新しい順）', ...(shown.length ? await withChannels(mm, shown, true) : c ? [] : ['保存した投稿はありません。'])];
       const notes = capped ? [`（保存した投稿のうち新しい ${SAVED_SCAN} 件だけを見ています）`] : [];
       return render({ lines, posts: shown, notes, next: rest.length > per && last ? { create_at: last.create_at, id: last.id, per_page: per, at: row.get(last.id) } : undefined });
     });
