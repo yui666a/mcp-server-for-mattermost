@@ -14,7 +14,7 @@ type FollowedThread = { id: string; reply_count: number; last_reply_at: number; 
 type ThreadList = { total: number; threads: FollowedThread[] | null };
 type Key = { t: number; id: string };
 
-// Not following before= across pages: its strict < on last_reply_at skips threads that share the boundary's time. One page of Mattermost's maximum per team instead.
+// Not following before= across pages: every call refetches and re-sorts all teams' lists, so paging would repeat the per-team fetches on each call for a team past 200. One page of Mattermost's maximum per team instead, with a note where it stops.
 const THREAD_PAGE = 200;
 
 const CRT_OFF = 'スレッドの折りたたみ（CRT）が無効なため、スレッドのフォローは画面にも通知にも効きません。返信の通知はスレッドごとには止められず、Mattermost の通知の設定（すべてのスレッドに効く）で変えます。';
@@ -141,9 +141,12 @@ export function registerThreadTools(server: McpServer, ctx: ToolContext): void {
       // Not calling PUT for a followed thread: Mattermost marks the thread read on every follow, which would drop unread replies the user has not seen.
       if (following) return [`${label}はすでにフォローしています。`, ...(stateless ? [noReplies] : [])].join('\n');
       await mm.call(uid, 'PUT', `/users/${uid}/teams/${team}/threads/${r.root}/following`);
+      // Not trusting reply_count alone after following: a thread whose replies were all deleted keeps its thread state, so it is listed once followed.
+      // Not failing the call when this check fails: the follow is done, and the check only decides the note.
+      const waits = stateless && await mm.call(uid, 'GET', `/users/${uid}/teams/${team}/threads/${r.root}`).then(() => false, (e) => e instanceof MmError && e.status === 404);
       return [
         `${label}をフォローしました。フォローした時点までの返信は既読になります（Mattermost の動作）。`,
-        ...(stateless ? [noReplies] : []),
+        ...(waits ? [noReplies] : []),
       ].join('\n');
     });
 

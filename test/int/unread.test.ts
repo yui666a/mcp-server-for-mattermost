@@ -160,6 +160,18 @@ describe('read_channel from unread and mark_as_read against the local Mattermost
     expect(r.content[0].text).not.toContain('follow_thread');
   });
 
+  test('read_channel from unread shows every post of the first unread millisecond', async () => {
+    const ch = await newChannel('same-ms');
+    const read = await say(aliceMm, ch, 'already read');
+    // Only an admin's create_at is kept; Mattermost replaces anyone else's with the current time.
+    const t = (await mmApi<{ create_at: number }>(aliceMm, 'GET', `/posts/${read}`)).create_at + 1000;
+    const same: string[] = [];
+    for (const m of ['same a', 'same b']) same.push((await mmApi<{ id: string }>(e.adminToken, 'POST', '/posts', { channel_id: ch, message: `${TAG} ${m}`, create_at: t })).id);
+    const r = await call('read_channel', { channel: ch, from: 'unread', limit: 5 });
+    expect(r.isError, r.content[0].text).toBeFalsy();
+    expect(postIds(r).sort()).toEqual(same.sort());
+  });
+
   describe('a mention on a reply one millisecond after last_post_id', () => {
     type State = { last_viewed_at: number; unread_replies: number; unread_mentions: number };
     const threadState = (root: string) => mmApi<State>(aliceMm, 'GET', `/users/${e.users.alice.id}/teams/${e.teams.a.id}/threads/${root}`);

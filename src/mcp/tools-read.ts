@@ -11,7 +11,7 @@ import { guarded, text, type ToolContext } from './server.ts';
 import { worded, type Wording } from './tools-send.ts';
 import { parseWhen } from './when.ts';
 
-type PostList = { order: string[]; posts: Record<string, MmPost>; has_next?: boolean | null };
+type PostList = { order: string[]; posts: Record<string, MmPost>; has_next?: boolean | null; prev_post_id?: string };
 type Page = { lines: string[]; next?: object; posts?: MmPost[]; notes?: string[] };
 
 type ReadMm = Mm & Pick<MmClient, 'callBytes'>;
@@ -243,13 +243,11 @@ async function filterChannelIds(mm: Mm, userId: string, spec: string, exclude: b
     // No DM means no posts to exclude, so the condition is dropped rather than failing the search.
     if (e instanceof NoDirectChannel && exclude) return [];
     if (e instanceof ChannelFetchError && (e.status === 403 || e.status === 404)) throw new InputError(`チャンネル「${spec}」が見つかりません。`);
-    // 403 too: with view restrictions Mattermost answers 403 for a missing name as well, so the two cannot be told apart.
-    if (spec.startsWith('@') && !spec.includes(',') && e instanceof MmError && (e.status === 403 || e.status === 404)) throw new InputError(`ユーザー「${spec}」が見つかりません。`);
     throw e;
   }
 }
 
-// Not higher: with 10 teams the worst case (1 + names × teams GETs) already takes 201 of the 300 requests a user may send per minute,
+// Not higher: with 10 teams the worst case (1 + flags × (teams + 1) GETs) already takes 221 of the 300 requests a user may send per minute,
 // before anything else the user sends in that minute.
 const MAX_CHANNEL_FILTERS = 20;
 
@@ -264,8 +262,10 @@ export async function resolveInFilters(mm: Mm, userId: string, terms: string): P
   const out = words.map((w) => [w]);
   for (const f of filters) {
     const next = words[f.at + f.span];
-    if (f.value.replace(/^~+/, '').startsWith('@') && /^[,、，]/.test(next ?? '')) {
-      throw new InputError(`in:${f.value} の後の「${next}」: 検索の in: では @a,b のようにカンマの前後に空白を入れずに書いてください。`);
+    // Not treating every 、 as a comma: 、 also starts search words such as 、議事録.
+    if (f.value.replace(/^~+/, '').startsWith('@') && /^[,，]|^、[A-Za-z0-9._,@、，-]*$/.test(next ?? '')) {
+      const fullWidth = /^[、，]/.test(next ?? '') ? '区切りは半角のカンマ（,）で書いてください。' : '';
+      throw new InputError(`in:${f.value} の後の「${next}」: 検索の in: では @a,b のようにカンマの前後に空白を入れずに書いてください。${fullWidth}`);
     }
   }
   // Kept for this search only, not across searches: a channel created or joined in between would stay unseen.
@@ -336,7 +336,7 @@ export async function collapsedThreads(mm: Mm, uid: string): Promise<{ on: boole
   const server = (await mm.call<{ CollapsedThreads?: string }>(uid, 'GET', '/config/client?format=old')).CollapsedThreads ?? '';
   if (server !== 'default_on' && server !== 'default_off') return { on: server === 'always_on', label: `サーバー設定: ${server}` };
   const pref = await mm.call<{ value: string }>(uid, 'GET', CRT_PREF).catch((e) => {
-    // A 400 rather than 404 is how Mattermost answers for a user who never saved the preference.
+    // Not treating the 400 as an error: Mattermost answers 400 rather than 404 for a user who never saved the preference.
     if (e instanceof MmError && e.status === 400 && e.id === 'app.preference.get.app_error') return undefined;
     throw e;
   });
@@ -400,7 +400,8 @@ export function registerReadTools(server: McpServer, ctx: ToolContext): void {
   }
 
   async function withChannels(mm: Mm, shown: MmPost[]): Promise<string[]> {
-    const channels = new Map((await mm.call<MmChannel[]>(uid, 'GET', '/users/me/channels')).map((x) => [x.id, x]));
+    // Not the default listing: it leaves out archived channels the user is still in, where saved posts can sit.
+    const channels = new Map((await mm.call<MmChannel[]>(uid, 'GET', '/users/me/channels?include_deleted=true')).map((x) => [x.id, x]));
     const teams = await myTeams(mm, uid);
     const teamName = new Map(teams.map((t) => [t.id, t.name]));
     const users = await usernames(mm, uid, shown);
@@ -430,7 +431,7 @@ export function registerReadTools(server: McpServer, ctx: ToolContext): void {
       return render({ lines, posts: shown, next: more ? { page: page + 1, per_page: per } : undefined, notes: [...filtered.notes, ...capNote(all.length, 'これより古い一致')] });
     });
 
-  tool('list_saved_posts', '自分が保存した（フラグを付けた）投稿を新しい順に一覧する。参加しているチャンネルの投稿だけが対象で、アーカイブ済みのチャンネルの投稿も含む（そのチャンネルは channel_id だけを出す）',
+  tool('list_saved_posts', '自分が保存した（フラグを付けた）投稿を新しい順に一覧する。参加しているチャンネルの投稿だけが対象で、アーカイブ済みのチャンネルの投稿も含む',
     { limit: limitArg(20, 50), cursor: cursorArg },
     async ({ limit, cursor }, mm) => {
       const c = cursorOf(z.object({ create_at: z.number().int(), id: z.string(), per_page: perPage(50) }).strict(), cursor);
@@ -637,7 +638,13 @@ export function registerReadTools(server: McpServer, ctx: ToolContext): void {
         else {
           const crt = (await collapsedThreads(mm, uid)).on;
           const q = new URLSearchParams({ limit_before: '0', limit_after: String(per + 1), collapsedThreads: String(crt), skipFetchThreads: 'true' });
-          return unreadPage(crt, await mm.call<PostList>(uid, 'GET', `/users/${uid}/channels/${ch.id}/posts/unread?${q}`));
+          const first = await mm.call<PostList>(uid, 'GET', `/users/${uid}/channels/${ch.id}/posts/unread?${q}`);
+          // Not keeping Mattermost's first page: it reads strictly after the first unread post, leaving out others of its millisecond, so it is read again after the post before it.
+          // Not saying there is nothing unread when the second call comes back empty: the post before may have been deleted for good in between.
+          if (!first.order.length || !first.prev_post_id) return unreadPage(crt, first);
+          const after = new URLSearchParams({ after: first.prev_post_id, per_page: String(per + 1), collapsedThreads: String(crt), skipFetchThreads: 'true' });
+          const again = await mm.call<PostList>(uid, 'GET', `/channels/${ch.id}/posts?${after}`);
+          return unreadPage(crt, again.order.length ? again : first);
         }
       }
       // Paging with before=<post_id> rather than page numbers: new posts arriving between calls would shift pages.
@@ -818,7 +825,7 @@ export function registerReadTools(server: McpServer, ctx: ToolContext): void {
           `種類: ${kind[ch.raw.type] ?? ch.raw.type}`,
           `目的: ${ch.raw.purpose || 'なし'}`,
           `ヘッダー: ${ch.raw.header || 'なし'}`,
-          `メンバー数: ${stats ? stats.member_count : '参加していないため取得できません'}`,
+          `メンバー数: ${stats ? stats.member_count : '取得できません（参加していないか、一時的な障害）'}`,
         );
       }
       // Sorting here rather than asking Mattermost for a page: /pinned has neither a limit nor paging.
@@ -834,7 +841,7 @@ export function registerReadTools(server: McpServer, ctx: ToolContext): void {
       return render({ lines, posts: shown, next: rest.length > per && last ? { channel_id: ch.id, create_at: last.create_at, id: last.id, per_page: per } : undefined });
     });
 
-  tool('list_channel_members', 'チャンネルのメンバーをユーザー名の順に一覧する。channel はチャンネル ID、「チーム名/チャンネル名」、チャンネル名、@ユーザー名（DM）、@a,b（グループ DM）のどれか。無効化されたユーザーは含まない。参加していないチャンネルのメンバーは、公開チャンネルでも見られない（システム管理者を除く）。在席状況は get_user で読める',
+  tool('list_channel_members', 'チャンネルのメンバーをユーザー名の順に一覧する。channel はチャンネル ID、「チーム名/チャンネル名」、チャンネル名、@ユーザー名（DM）、@a,b（グループ DM）のどれか。無効化されたユーザーは含まない。参加していないチャンネルのメンバーは、公開チャンネルでも見られない（システム管理者など、チャンネルを読む権限を別に持つ場合を除く）。在席状況は get_user で読める',
     { channel: z.string().min(1), limit: limitArg(50, 200), cursor: cursorArg },
     async ({ channel, limit, cursor }, mm) => {
       const c = cursorOf(z.object({ channel_id: z.string(), page: z.number().int().min(0), per_page: perPage(200) }).strict(), cursor);
@@ -845,13 +852,13 @@ export function registerReadTools(server: McpServer, ctx: ToolContext): void {
       // Not joining /channels/{id}/members with the users: /users?in_channel gives the profiles in one call.
       const q = new URLSearchParams({ in_channel: ch.id, active: 'true', page: String(page), per_page: String(per) });
       // Not rewording the 403 of /users alone: the user may leave the channel before /stats.
-      const notJoined = (e: unknown): never => {
-        if (e instanceof MmError && e.status === 403) throw new InputError('参加していないチャンネルのメンバーは見られません（公開チャンネルでも同じです）。');
+      const refused = (e: unknown): never => {
+        if (e instanceof MmError && e.status === 403) throw new InputError('このチャンネルのメンバーを見る権限がありません。参加していないチャンネルのメンバーは、公開チャンネルでも見られません。参加しているはずなら、Mattermost の一時的な障害の可能性があります。少し待ってから再試行してください。');
         throw e;
       };
-      const users = await mm.call<UserRef[]>(uid, 'GET', `/users?${q}`).catch(notJoined);
+      const users = await mm.call<UserRef[]>(uid, 'GET', `/users?${q}`).catch(refused);
       const lines = channelLines(ch);
-      if (!c) lines.push(`メンバー数: ${(await mm.call<{ member_count: number }>(uid, 'GET', `/channels/${ch.id}/stats?exclude_files_count=true`).catch(notJoined)).member_count}`);
+      if (!c) lines.push(`メンバー数: ${(await mm.call<{ member_count: number }>(uid, 'GET', `/channels/${ch.id}/stats?exclude_files_count=true`).catch(refused)).member_count}`);
       lines.push(...users.map((u) => {
         const name = [u.first_name, u.last_name].filter(Boolean).join(' ');
         return `- @${u.username}（${[name && `名前: ${name}`, u.nickname && `ニックネーム: ${u.nickname}`, u.position && `役職: ${u.position}`, u.is_bot && 'Bot アカウント', `user_id: ${u.id}`].filter(Boolean).join('、')}）`;
