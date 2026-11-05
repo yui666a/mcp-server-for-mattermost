@@ -6,6 +6,8 @@ import { formatPost, formatTime, InputError, postUserIds, type MmPost } from './
 import { pageCursor, paginate } from './paging.ts';
 import { myTeams, type Mm, type MmChannel, type UserRef } from './resolve.ts';
 import { guarded, text, type ToolContext } from './server.ts';
+import { POST_WORDING } from './tools-save-pin.ts';
+import { worded } from './tools-send.ts';
 import { channelLines, collapsedThreads, cursorArg, cursorOf, limitArg, perPage, render } from './tools-read.ts';
 
 type FollowedThread = { id: string; reply_count: number; last_reply_at: number; unread_replies: number; unread_mentions: number; post: MmPost };
@@ -18,8 +20,14 @@ const THREAD_PAGE = 200;
 const CRT_OFF = 'スレッドの折りたたみ（CRT）が無効なため、スレッドのフォローは画面にも通知にも効きません。返信の通知はスレッドごとには止められず、Mattermost の通知の設定（すべてのスレッドに効く）で変えます。';
 
 const POST_ID = z.string().regex(/^[A-Za-z0-9]{26}$/).describe('スレッドの親投稿か、スレッド内の投稿の post_id');
-const missing = (e: unknown) => e instanceof MmError && (e.status === 403 || e.status === 404);
+export const missing = (e: unknown) => e instanceof MmError && (e.status === 403 || e.status === 404);
 const followAnnotations: ToolAnnotations = { readOnlyHint: false, destructiveHint: false, idempotentHint: true };
+
+// Not looking for the team the user has open: no API tells which one is open, and neither the follow API nor the read API checks the team, which only names where Mattermost sends the change event.
+export async function threadTeam(mm: Mm, uid: string, channelId: string, firstTeam = async () => (await myTeams(mm, uid))[0]?.id): Promise<{ team: string | undefined; direct: boolean }> {
+  const ch = await mm.call<{ team_id: string; type: string }>(uid, 'GET', `/channels/${channelId}`);
+  return { team: ch.team_id || await firstTeam(), direct: ch.type === 'D' || ch.type === 'G' };
+}
 
 const newestReplyFirst = (a: Key, b: Key) => b.t - a.t || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
 
@@ -98,19 +106,14 @@ export function registerThreadTools(server: McpServer, ctx: ToolContext): void {
 
   async function rootOf(mm: Mm, postId: string): Promise<{ root: string; channelId: string; replies: number }> {
     if (!(await collapsedThreads(mm, uid)).on) throw new InputError(CRT_OFF);
-    const p = await mm.call<MmPost & { reply_count?: number }>(uid, 'GET', `/posts/${postId}`).catch((e) => {
-      if (missing(e)) throw new InputError('投稿が見つかりません（削除されたか、見る権限がありません）。');
-      throw e;
-    });
+    const p = await worded(mm.call<MmPost & { reply_count?: number }>(uid, 'GET', `/posts/${postId}`), POST_WORDING);
     return { root: p.root_id || p.id, channelId: p.channel_id, replies: p.reply_count ?? 0 };
   }
 
-  // Not looking for the team the user has open: the follow API checks no team, which only names where Mattermost sends the change event.
   async function channelOf(mm: Mm, channelId: string): Promise<{ team: string; direct: boolean }> {
-    const ch = await mm.call<{ team_id: string; type: string }>(uid, 'GET', `/channels/${channelId}`);
-    const team = ch.team_id || (await myTeams(mm, uid))[0]?.id;
+    const { team, direct } = await threadTeam(mm, uid, channelId);
     if (!team) throw new InputError('所属しているチームがないため、スレッドのフォローを変えられません。');
-    return { team, direct: ch.type === 'D' || ch.type === 'G' };
+    return { team, direct };
   }
 
   tool('follow_thread', 'スレッドをフォローする。フォロー中のスレッドの返信は、スレッドの通知の設定に従って通知され、list_followed_threads に出る。post_id はスレッド内のどの投稿でもよい。フォローすると、その時点までの返信が既読になる（Mattermost の動作）。すでにフォロー中なら何もしない。返信がまだないルート投稿は、最初の返信まで list_followed_threads に出ない。参加していないチャンネルのスレッドはフォローできない',

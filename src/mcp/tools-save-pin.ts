@@ -12,14 +12,12 @@ type Args = { post_id: string };
 const GONE = '投稿が見つかりません（削除されたか、存在しません）。';
 const HIDDEN = 'この投稿は見られません（参加していない非公開チャンネルの投稿など）。';
 const PERMISSION = 'api.context.permissions.app_error';
+export const POST_WORDING: Wording = { id: [[404, 'app.post.get.app_error', GONE]], status: [[403, HIDDEN]] };
 
 // Not leaving the membership to Mattermost: it saves and pins posts of public channels the user has not joined,
 // and such a saved post never shows in list_saved_posts.
 async function readPost(mm: Mm, uid: string, postId: string, notMember: string): Promise<{ channel_id: string; is_pinned?: boolean }> {
-  const post = await worded(mm.call<{ channel_id: string; is_pinned?: boolean }>(uid, 'GET', `/posts/${postId}`), {
-    id: [[404, 'app.post.get.app_error', GONE]],
-    status: [[403, HIDDEN]],
-  });
+  const post = await worded(mm.call<{ channel_id: string; is_pinned?: boolean }>(uid, 'GET', `/posts/${postId}`), POST_WORDING);
   await worded(mm.call(uid, 'GET', `/channels/${post.channel_id}/members/me`), { status: [[403, notMember], [404, notMember]] });
   return post;
 }
