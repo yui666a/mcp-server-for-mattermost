@@ -1885,7 +1885,7 @@ describe('list_saved_posts', () => {
       ...Array.from({ length: 21 }, (_, i) => post(pid(1000 + i), 5000)),
       ...Array.from({ length: 30 }, (_, i) => post(pid(2000 + i), 1000 - i)),
     ];
-    // The read that ends inside the group puts its smallest post_id after the end; the next read puts it first, before where that read starts.
+    // The read that ends inside the group puts its smallest post_id after the end; the next read puts it first, where that read starts.
     let reads = 0;
     routes = { ...base(), [FLAGGED]: (req: Request) => {
       const desc = reads++ === descRead;
