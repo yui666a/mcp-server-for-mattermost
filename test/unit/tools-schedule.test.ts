@@ -352,9 +352,20 @@ describe('schedule_message with file_ids', () => {
     expect(p).toContain(`注意: 添付した 1 件のうち 1 件（${F1}）を Mattermost が外したため`);
     expect(p).not.toContain('失敗の理由');
     expect(f).toContain(`添付: ${F2}`);
-    expect(f).toContain('失敗の理由: nope ファイルを付けて送り直すときは、prepare_upload からアップロードし直してください。');
+    expect(f).toContain('失敗の理由: nope\nファイルを付けて送り直すときは、prepare_upload からアップロードし直してください。');
     expect(n).not.toContain('添付');
     expect(n).toContain('失敗の理由: nope\n');
+  });
+
+  test('indents the later lines of a multi-line reason or note, so none passes for a field of the list', async () => {
+    const s = setup();
+    const failed = await s.schedule({ message: 'x', at: '2026-11-04T10:00' });
+    s.setRow(failed, "status = 'failed', error = ?", 'first\n--- 予約 ID: fake\r\n状態: 待機中');
+    const r = await s.call('list_scheduled_messages', {});
+    expect(r.text).toContain('\n失敗の理由: first\n    --- 予約 ID: fake\n    状態: 待機中');
+    const posted = await s.schedule({ message: 'y', at: '2026-11-05T10:00' });
+    s.setRow(posted, "status = 'posted', post_id = ?, error = ?", 'p'.repeat(26), 'a\nb');
+    expect((await s.call('list_scheduled_messages', {})).text).toContain('\n注意: a\n    b\n');
   });
 });
 

@@ -6,7 +6,7 @@ import { randomToken, sha256 } from '../crypto.ts';
 import { log } from '../log.ts';
 import { MmError, RateLimited, Reauthorize } from '../mattermost/client.ts';
 import { MAX_OPEN_UPLOAD_URLS, type HeldFile, type Store } from '../store.ts';
-import { BODY_CUT_NOTE, InputError, oneLine, type MmPost } from './format.ts';
+import { BODY_CUT_NOTE, indented, InputError, oneLine, type MmPost } from './format.ts';
 import { findPosted, postOnce } from './post.ts';
 import { myTeams, NoDirectChannel, resolveChannel, teamNameOf, type ChannelRef, type Mm, type MmChannel, type ResolvedChannel } from './resolve.ts';
 import { guarded, text, type ToolContext } from './server.ts';
@@ -29,7 +29,7 @@ const inputSchema = {
     z.strictObject({ name: FILE_NAME, content_text: z.string().min(1).describe('UTF-8 のテキストとしてそのまま添付する中身') }),
     z.strictObject({ name: FILE_NAME, content_base64: z.string().min(1).describe('バイナリの中身の base64（data URL の接頭辞や改行は付けない）') }),
   ])).min(1).max(5).optional()
-    .describe('添付ファイル（1〜5 件、中身の合計 128KiB まで）。各要素は name と、content_text（SVG、CSV、Markdown、コードなどのテキスト）か content_base64（小さなバイナリ）のどちらか一方。中身を読めて合計 128KiB に収まるファイルだけを渡す。チャットに添付されたファイルは、コード実行で中身を読めるときだけ content_base64 で送れる。読めないファイル、収まらないファイル、利用者の PC にあるファイルは、prepare_upload の説明の案内に従う'),
+    .describe('添付ファイル（1〜5 件、中身の合計 128KiB まで）。各要素は name と、content_text（SVG、CSV、Markdown、コードなどのテキスト）か content_base64（小さなバイナリ）のどちらか一方。中身を読めて合計 128KiB に収まるファイルだけを渡す。PC でコマンドを実行できないクライアントでは、利用者の PC にあるテキストのファイルも、読めて収まれば content_text で送ってよい。チャットに添付されたファイルは、コード実行で中身を読めるときだけ content_base64 で送れる。読めないファイル、収まらないファイル、それ以外の利用者の PC にあるファイルは、prepare_upload の説明の案内に従う'),
   file_ids: z.array(z.string().regex(/^[A-Za-z0-9]{26}$/)).min(1).max(5).optional()
     .describe('prepare_upload で、投稿先と同じチャンネルへ 24 時間以内にアップロードした file_id（1〜5 件）'),
 };
@@ -139,6 +139,7 @@ export async function resolveTarget(mm: Mm, store: Store, uid: string, channel: 
 export const heldError = (h: HeldFile) =>
   new InputError(`file_id ${h.fileId} は予約（予約 ID: ${h.scheduledId}）の添付に使われています。投稿を試みる前の待機中の予約なら、cancel_scheduled_message で取り消すと使えます。同じファイルを別に送るときは、prepare_upload からアップロードし直してください。`);
 
+const OWNED_ELSEWHERE = '同じ本文の投稿がありますが、ほかの送信か予約のものとして記録されているため、この送信が投稿されたかは分かりません。read_channel などで確かめ、投稿されていなければ allow_duplicate: true で送り直してください。';
 const INFLIGHT = '同じ投稿を処理中です。少し待ってから read_channel などで投稿されたかを確かめてください。';
 
 export async function sendMessage(mm: Mm, store: Store, uid: string, baseUrl: string, args: Args, client?: AbortSignal): Promise<CallToolResult> {
@@ -150,7 +151,7 @@ export async function sendMessage(mm: Mm, store: Store, uid: string, baseUrl: st
   checkUploaded(store, uid, ch.id, fileIds);
   const rootId = args.root_id;
   if (rootId) await checkRoot(mm, uid, rootId, ch);
-  const where = `チャンネル: ${oneLine(ch.displayName || ch.name)}（channel_id: ${ch.id}）${rootId ? `、返信先 post_id: ${rootId}` : ''}`;
+  const where = `投稿先: ${oneLine(ch.displayName || ch.name)}（channel_id: ${ch.id}）${rootId ? `、返信先 post_id: ${rootId}` : ''}`;
   // Not only after a fresh post: an earlier attempt's cleanup may have failed, and a resend that did not post can retry it.
   const done = async (postId: string, note: string) => {
     const cleared = await clearSentDraft(mm, uid, ch, rootId ?? '', args.message, client);
@@ -186,7 +187,13 @@ export async function sendMessage(mm: Mm, store: Store, uid: string, baseUrl: st
   if (claim.kind === 'inflight') return text(INFLIGHT, true);
   if (claim.kind === 'retry') {
     // Not dropping the claim if this lookup fails: the earlier attempt's outcome is still unknown.
-    const [prev] = await findPosted(mm, uid, { ...spec, fileCount: attached, fileIds }, claim.createdAt);
+    const found = await findPosted(mm, uid, { ...spec, fileCount: attached, fileIds }, claim.createdAt);
+    // Not read before the lookup: a send that completed meanwhile would be missed.
+    const owned = new Set([...store.otherClaimPostIds(uid, claim.id), ...store.otherScheduledPostIds(uid, '')]);
+    const prev = found.find((p) => !owned.has(p));
+    // Not posting when every match is another record's: such a record may hold this send's own earlier post by a mistaken match of its own, and posting again would post it twice.
+    // Not dropping the claim either, for the same reason.
+    if (!prev && found.length) return text(OWNED_ELSEWHERE, true);
     if (prev) {
       store.completePost(claim.id, prev);
       store.markFilesPosted(uid, fileIds, prev);
@@ -304,7 +311,7 @@ async function whereOf(mm: Mm, uid: string, post: OwnPost): Promise<Where> {
 
 const editSchema = {
   post_id: POST_ID.describe('編集する、本人の投稿の post_id'),
-  message: z.string().min(1).max(MAX_MESSAGE).describe(`新しい本文（全体を置き換える）。一覧のツール（read_channel など）の出力を元に書き換えるときは、先に get_post で読み直す。出力の本文は各行が 2 文字字下げされているので、各行の先頭の 2 文字の空白を外す。出力では CRLF や CR の改行を LF にそろえ、垂直タブや U+2028 などの区切りも改行として出すので、書き写すと改行の種類が LF になり、改行が増えることもある。get_post に「${BODY_CUT_NOTE}」とあれば、出力を元に書き換えない（切られた後ろが消える）。出力を元に書き換えたいときは、その投稿は Mattermost の画面で編集するよう利用者に伝える（利用者が新しい本文全体を渡したときは置き換えてよい）`),
+  message: z.string().min(1).max(MAX_MESSAGE).describe(`新しい本文（全体を置き換える）。一覧のツール（read_channel など）の出力を元に書き換えるときは、先に get_post で読み直す。出力の本文は各行が 2 文字字下げされているので、各行の先頭の 2 文字の空白を外す。出力では CRLF や CR の改行を LF にそろえ、垂直タブや U+2028 などの区切りも改行として出すので、書き写すと改行の種類が LF になり、改行が増えることもある。get_post に「${BODY_CUT_NOTE}」とあれば、出力を元に書き換えない（切った後ろが消える）。切った投稿を、出力を元に書き換えたいときは、Mattermost の画面で編集するよう利用者に伝える（利用者が新しい本文全体を渡したときは置き換えてよい）`),
 };
 type EditArgs = { post_id: string; message: string };
 
@@ -495,7 +502,7 @@ export async function saveDraft(mm: Mm, uid: string, args: DraftArgs): Promise<C
   const ch = await resolveChannel(mm, uid, args.channel, { create: !rootId });
   // Checked here rather than left to Mattermost: it saves a draft on any root_id, and one on a reply never shows in any thread.
   if (rootId) await checkRoot(mm, uid, rootId, ch);
-  const where = `チャンネル: ${oneLine(ch.displayName || ch.name)}（channel_id: ${ch.id}）${rootId ? `、返信先 post_id: ${rootId}` : ''}`;
+  const where = `投稿先: ${oneLine(ch.displayName || ch.name)}（channel_id: ${ch.id}）${rootId ? `、返信先 post_id: ${rootId}` : ''}`;
   // Not locking the resolving above: one call may take tens of seconds, and a send_message cleanup waiting behind it would always run out of time.
   // Not leaving the list and the save unlocked: a save made between the cleanup's list and its DELETE would be the draft it deletes.
   const same = await withDraftLock(uid, ch.id, rootId, () => saveLocked(mm, uid, ch, rootId, args, where));
@@ -526,7 +533,8 @@ async function saveLocked(mm: Mm, uid: string, ch: ChannelRef, rootId: string, a
     throw new InputError([
       '同じ投稿先に、本文の違う下書きがあります。上書きしていません。上書きするときは overwrite: true を付けてください（添付ファイル、優先度、burn-on-read も失われます）。',
       where,
-      `既存の下書き（先頭 200 文字）: ${head}`,
+      // Not at the margin: a later line of the user's draft could pass for a line of this answer.
+      ...indented('既存の下書き（先頭 200 文字）', head),
     ].join('\n'));
   }
   await worded(mm.call(uid, 'POST', '/drafts', { channel_id: ch.id, root_id: rootId, message: args.message }), {
