@@ -144,6 +144,20 @@ describe('search_posts in: filters', () => {
     expect(out).toContain('in:town は複数のチームにあるため、すべてで探しました（team-a、team-b）。');
   });
 
+  test.each([
+    ['x channel:~town', 'channel:~town'],
+    ['x IN: town', 'IN: town'],
+  ])('the note for %j names the flag as written', async (terms, written) => {
+    routes = base();
+    expect(await setup()('search_posts', { terms })).toContain(`${written} は複数のチームにあるため、すべてで探しました（team-a、team-b）。`);
+  });
+
+  test('a U+FEFF before or after the value is dropped, as JavaScript\'s trim does', async () => {
+    routes = base();
+    await setup()('search_posts', { terms: 'x in:\ufeffonly-a\ufeff' });
+    expect(sent()).toBe(`x in:${CX}`);
+  });
+
   test('excludes every channel of a name that several teams have', async () => {
     routes = base();
     await setup()('search_posts', { terms: 'x -in:town' });
@@ -233,8 +247,8 @@ describe('search_posts in: filters', () => {
       ['x in:@bob, carol', 'カンマの前後に空白を入れない'],
       ['x in:@bob ,carol', 'in:@bob の後の「,carol」: 検索の in: では @a,b のようにカンマの前後に空白を入れずに書いてください。'],
       ['x in:@bob , carol', 'in:@bob の後の「,」'],
-      ['x in: @bob ,carol', 'in:@bob の後の「,carol」'],
-      ['x channel:~@bob ,carol', 'in:~@bob の後の「,carol」'],
+      ['x in: @bob ,carol', 'in: @bob の後の「,carol」'],
+      ['x channel:~@bob ,carol', 'channel:~@bob の後の「,carol」'],
       ['x in:@bob 、carol', 'in:@bob の後の「、carol」'],
     ])('%j is an input error without searching', async (terms, message) => {
       routes = withGroup();
