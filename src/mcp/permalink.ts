@@ -1,9 +1,10 @@
 import { InputError } from './format.ts';
+import { unformat } from './resolve.ts';
 
 const ID = /^[A-Za-z0-9]{26}$/;
 
 export function parsePostRef(spec: string, mmBrowserUrl: string): string {
-  const s = spec.trim();
+  const s = unformat(spec);
   if (ID.test(s)) return s;
   const base = new URL(mmBrowserUrl);
   const bad = new InputError(`post は 26 文字の post_id か、${base.origin} のパーマリンク（…/<チーム名>/pl/<post_id>）で指定してください。`);

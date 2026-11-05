@@ -15,6 +15,8 @@ describe('parsePostRef accepts', () => {
     ['a permalink under a base path ending with a slash', `https://h/mm/team-a/pl/${ID}`, 'https://h/mm/'],
     ['a path that new URL normalises into a permalink (dot segments)', `https://h/a/../team-a/pl/${ID}`, 'https://h'],
     ['a path that new URL normalises into a permalink (backslashes)', `https://h/team-a\\pl\\${ID}`, 'https://h'],
+    ['a post_id with format characters around it, as a copy can bring', `\u200b${ID}\ufeff`, 'https://h'],
+    ['a permalink with format characters around it', `\u200e https://h/team-a/pl/${ID}\u200b`, 'https://h'],
   ])('%s', (_, spec, base) => {
     expect(parsePostRef(spec, base)).toBe(ID);
   });
