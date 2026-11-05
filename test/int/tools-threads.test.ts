@@ -119,7 +119,8 @@ describe('followed threads against the local Mattermost', () => {
     }
     const page = pages.find((t) => t.includes(root));
     expect(page).toBeDefined();
-    expect(page).toContain(`（アーカイブ済み）（name: t79-archived-${TAG}、channel_id: ${ch}） | チーム: ${e.teams.a.name}（team_id: ${team}）`);
+    expect(page).toContain(`channel_id: ${ch}、name: t79-archived-${TAG}、表示名: `);
+    expect(page).toContain(`（アーカイブ済み） | チーム: ${e.teams.a.name}（team_id: ${team}）`);
   });
 
   test('follow_thread on a followed thread keeps its unread replies and mentions', async () => {
