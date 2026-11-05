@@ -143,7 +143,6 @@ describe('list_followed_threads', () => {
   });
 
   test('looks up more than 1,000 users in calls of at most 1,000 ids, and names the users of every call', async () => {
-    // 50 threads by 50 authors, each with 2 emoji of 10 users: 1,050 users.
     const user = (i: number, j: number) => `r${String(i * 20 + j).padStart(4, '0')}`;
     const many = Array.from({ length: 50 }, (_, i) => thread(`t${String(i).padStart(25, '0')}`, CH1, 9000 - i, {
       post: { id: `t${String(i).padStart(25, '0')}`, user_id: `a${i}`, channel_id: CH1, root_id: '', message: `m${i}`, create_at: 100,
