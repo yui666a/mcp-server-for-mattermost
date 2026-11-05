@@ -2260,6 +2260,15 @@ describe('get_file', () => {
     expect(out).toContain('a.svg');
   });
 
+  test('when a plugin refuses the preview, returns the information and says the plugin refused it, not that permission is missing', async () => {
+    routes = { [INFO]: info({ name: 'p.png', width: 200, height: 100 }), [PREVIEW]: mmError(403, 'api.file.get_file_preview.rejected_by_plugin') };
+    const out = await setup()('get_file', { file_id: F });
+    expect(image()).toBeUndefined();
+    expect(out).toContain('p.png');
+    expect(out).toContain('Mattermost がプレビューの取得を拒否しました（プラグインによる制限）。');
+    expect(out).not.toContain('見る権限がありません');
+  });
+
   test('when the preview bytes are of no known image format, returns only the information', async () => {
     routes = { [INFO]: info({ width: 200, height: 100 }), [PREVIEW]: preview(bytes([1, 2, 3, 4])) };
     const out = await setup()('get_file', { file_id: F });
@@ -2299,7 +2308,7 @@ describe('get_file', () => {
 
   test('says the caller may not see the file on a 403', async () => {
     routes = { [INFO]: mmError(403, 'api.context.permissions.app_error') };
-    expect(await setup()('get_file', { file_id: F }, true)).toBe('このファイルを見る権限がありません');
+    expect(await setup()('get_file', { file_id: F }, true)).toBe('このファイルを見る権限がありません（参加していないチャンネルのファイルなど）。参加しているはずなら、Mattermost の一時的な障害の可能性があります。少し待ってから再試行してください。続くなら、チャンネルから外されたか、サーバーの権限の設定で読む権限が外されている可能性があるので、管理者に確かめてください。');
   });
 
   test('says the file is not found on a 404', async () => {

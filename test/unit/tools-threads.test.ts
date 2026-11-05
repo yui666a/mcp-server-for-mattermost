@@ -446,7 +446,7 @@ describe('follow_thread and unfollow_thread', () => {
     };
     for (const name of ['follow_thread', 'unfollow_thread']) {
       expect((await setup().call(name, { post_id: GONE })).text, name).toContain('投稿が見つかりません（削除されたか、存在しません）。');
-      expect((await setup().call(name, { post_id: HIDDEN })).text, name).toContain('この投稿は見られません（参加していない非公開チャンネルの投稿など）。参加しているはずなら、Mattermost の一時的な障害の可能性があります。少し待ってから再試行してください。続くなら、チャンネルから外されたか、サーバーの権限の設定で読む権限が外されている可能性があるので、管理者に確かめてください。');
+      expect((await setup().call(name, { post_id: HIDDEN })).text, name).toContain('この投稿を見る権限がありません（参加していない非公開チャンネルなど）。参加しているはずなら、Mattermost の一時的な障害の可能性があります。少し待ってから再試行してください。続くなら、チャンネルから外されたか、サーバーの権限の設定で読む権限が外されている可能性があるので、管理者に確かめてください。');
       expect((await setup().call(name, { post_id: 'bad' })).isError, name).toBe(true);
     }
     expect(writes()).toEqual([]);
