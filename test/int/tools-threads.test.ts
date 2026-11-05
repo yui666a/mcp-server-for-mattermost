@@ -52,7 +52,7 @@ describe('followed threads against the local Mattermost', () => {
     if (!root_id) roots.push(id);
     return id;
   };
-  // Not paging through alice's whole list: the shared server keeps every thread other runs left her following, and paging them all would hit the per-user rate limit. This run's threads have the newest replies, so they are on the first page if followed.
+  // Not paging through alice's whole list: the shared server keeps every thread other runs left her following, and paging them all would hit the per-user rate limit. This run's threads have the newest replies, so they are on the first page if followed; a thread whose replies were all deleted sorts last and is out of reach.
   const followed = async () => {
     const r = await call('list_followed_threads', { limit: 50 });
     expect(r.isError, r.content[0].text).toBeFalsy();
