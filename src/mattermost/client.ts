@@ -269,8 +269,9 @@ export class MmClient {
       throw new MmError(res.status, str(b?.id), str(b?.message));
     }
     if (!res.ok) {
-      await discard(res);
-      throw new UpstreamUnavailable(`Mattermost API failed: ${res.status}`, true);
+      // Reading the body of a 500 only: get_file tells Mattermost's own JSON errors from a storage failure that net/http answers in plain text.
+      const id = res.status === 500 ? str((await res.json().catch(() => undefined))?.id) : (await discard(res), undefined);
+      throw new UpstreamUnavailable(`Mattermost API failed: ${res.status}`, true, res.status, id);
     }
   }
 }
