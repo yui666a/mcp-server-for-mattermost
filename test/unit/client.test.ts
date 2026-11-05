@@ -407,7 +407,7 @@ test('a 429 from the stored credential after a lost save tells whether the check
   }
 });
 
-test('a call aborted after an earlier request of it reached Mattermost keeps it counted as sent', async () => {
+test('a call aborted before a resend, after an earlier request of it reached Mattermost, sends nothing more and stays counted as sent', async () => {
   store.putMmCred('u1', 'a1', 'r1');
   const ac = new AbortController();
   refresh = () => { store.putMmCred('u1', 'aC', 'rC'); return Response.json({ access_token: 'a2', refresh_token: 'r2' }); };
