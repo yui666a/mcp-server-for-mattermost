@@ -113,6 +113,22 @@ describe('followed threads against the local Mattermost', () => {
     expect(await followed()).toContain(root);
   });
 
+  test('a thread in an archived channel is listed with the channel name marked archived', async () => {
+    const ch = await newChannel('archived');
+    const root = await say(bobMm, ch, 'root');
+    await say(aliceMm, ch, 'alice reply', root);
+    await mmApi(e.adminToken, 'DELETE', `/channels/${ch}`);
+    let r = await call('list_followed_threads', { limit: 50 });
+    const pages = [r.content[0].text];
+    for (let i = 0; !pages.at(-1)!.includes(root) && /next_cursor: (\S+)/.test(pages.at(-1)!) && i < 20; i++) {
+      r = await call('list_followed_threads', { cursor: /next_cursor: (\S+)/.exec(pages.at(-1)!)![1] });
+      pages.push(r.content[0].text);
+    }
+    const page = pages.find((t) => t.includes(root));
+    expect(page).toBeDefined();
+    expect(page).toContain(`（アーカイブ済み）（name: t79-archived-${TAG}、channel_id: ${ch}）`);
+  });
+
   test('follow_thread on a followed thread keeps its unread replies and mentions', async () => {
     const ch = await newChannel('keep');
     const root = await say(bobMm, ch, 'root');
