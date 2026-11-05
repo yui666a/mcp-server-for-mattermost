@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto';
 import { describe, expect, onTestFinished, test } from 'vitest';
 import { MmError } from '../../src/mattermost/client.ts';
 import { InputError } from '../../src/mcp/format.ts';
-import { Ambiguous, NoDirectChannel, resolveChannel, resolveUser, type Mm } from '../../src/mcp/resolve.ts';
+import { Ambiguous, ChannelFetchError, NoDirectChannel, resolveChannel, resolveUser, type Mm } from '../../src/mcp/resolve.ts';
 
 const ME = 'a'.repeat(26);
 const BOB = 'b'.repeat(26);
@@ -82,6 +82,65 @@ test('names that are not plain Mattermost names are rejected before any request'
   }
   for (const spec of ['@..', '@.', '@a/b', '@']) await expect(resolveUser(mm, ME, spec), spec).rejects.toBeInstanceOf(InputError);
   expect(calls.filter((c) => !c.endsWith('/users/me/teams'))).toEqual([]);
+});
+
+describe('a missing ID that is the name of a channel (26 lower-case letters and digits)', () => {
+  const NAME = 'n'.repeat(26);
+  const named = ch('f'.repeat(26), NAME, teams[0].id);
+
+  test('is not used in place of the missing ID, but named in the error with its team/channel form', async () => {
+    const { mm, calls } = fake({ ...routes, [`/teams/${teams[0].id}/channels/name/${NAME}`]: named, [`/teams/name/team-a/channels/name/${NAME}`]: named });
+    await expect(resolveChannel(mm, ME, NAME)).rejects.toThrow(new InputError(
+      `チャンネル ID「${NAME}」のチャンネルはありません。ユーザー ID や投稿 ID を渡したのなら、チャンネルの指定ではありません。同じ文字列を名前に持つチャンネルはあります。そのチャンネルを指すときだけ、「team-a/${NAME}」（${NAME.toUpperCase()}）の形で指定してください。`,
+    ));
+    expect(calls).toEqual([`GET /channels/${NAME}`, 'GET /users/me/teams', `GET /teams/${teams[0].id}/channels/name/${NAME}`, `GET /teams/${teams[1].id}/channels/name/${NAME}`]);
+    expect(await resolveChannel(mm, ME, `team-a/${NAME}`)).toMatchObject({ id: named.id, name: NAME });
+  });
+
+  test('keeps the 404 of the ID when no channel has that name either', async () => {
+    const { mm, calls } = fake(routes);
+    const e = await resolveChannel(mm, ME, NAME).catch((x) => x);
+    expect(e).toBeInstanceOf(ChannelFetchError);
+    expect(e.status).toBe(404);
+    expect(calls).toContain(`GET /teams/${teams[0].id}/channels/name/${NAME}`);
+  });
+
+  test('names every team that has that name', async () => {
+    const { mm } = fake({ ...routes, [`/teams/${teams[0].id}/channels/name/${NAME}`]: named, [`/teams/${teams[1].id}/channels/name/${NAME}`]: ch('g'.repeat(26), NAME, teams[1].id) });
+    await expect(resolveChannel(mm, ME, NAME)).rejects.toThrow(`「team-a/${NAME}」（${NAME.toUpperCase()}）か「team-b/${NAME}」（${NAME.toUpperCase()}）の形で指定してください。`);
+  });
+
+  test('is not looked up by name after a 403, which means the ID exists', async () => {
+    const calls: string[] = [];
+    const mm: Mm = { call: async (_u, m, p) => {
+      calls.push(`${m} ${p}`);
+      throw new MmError(403, 'api.context.permissions.app_error', 'x');
+    } };
+    await expect(resolveChannel(mm, ME, NAME)).rejects.toMatchObject({ status: 403 });
+    expect(calls).toEqual([`GET /channels/${NAME}`]);
+  });
+
+  test('is not looked up by name when it has upper case, which a channel name cannot', async () => {
+    const upper = 'N'.repeat(26);
+    const { mm, calls } = fake(routes);
+    await expect(resolveChannel(mm, ME, upper)).rejects.toMatchObject({ status: 404 });
+    expect(calls).toEqual([`GET /channels/${upper}`]);
+  });
+
+  test('an error other than not-found while looking up by name is not swallowed', async () => {
+    const mm: Mm = { call: async <T>(_u: string, _m: string, p: string) => {
+      if (p === '/users/me/teams') return teams as T;
+      if (p === `/channels/${NAME}`) throw new MmError(404, 'x', 'x');
+      throw new MmError(500, 'x', 'boom');
+    } };
+    await expect(resolveChannel(mm, ME, NAME)).rejects.toMatchObject({ status: 500 });
+  });
+
+  test('a channel found by its ID looks up neither the teams nor any name', async () => {
+    const { mm, calls } = fake(routes);
+    await resolveChannel(mm, ME, CH_A);
+    expect(calls).toEqual([`GET /channels/${CH_A}`, `GET /teams/${teams[0].id}`]);
+  });
 });
 
 test.each([
