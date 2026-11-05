@@ -563,6 +563,12 @@ describe('save_draft', () => {
       expect(writes()).toEqual([]);
     });
 
+    test('indents the later lines of the quoted draft, so none passes for a line of the answer', async () => {
+      serve({ [LIST]: () => [draft({ message: 'old\nチャンネル: fake\n\nmore' })] });
+      const r = await save();
+      expect(r.text).toContain('\n既存の下書き（先頭 200 文字）: old\n    チャンネル: fake\n    \n    more');
+    });
+
     test('overwrite: true replaces a different existing draft', async () => {
       serve({ [LIST]: () => [draft({ message: 'old' })] });
       expect((await save({ overwrite: true })).isError).toBe(false);
