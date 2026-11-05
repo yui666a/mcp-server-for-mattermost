@@ -97,7 +97,8 @@ describe('read_channel from unread and mark_as_read against the local Mattermost
       if (!cursor || i > 5) break;
       r = await call('read_channel', { channel: ch, cursor });
     }
-    expect(seen).toEqual(unread);
+    // Not comparing the order: posts of the same millisecond are shown by post_id, not in the order they were posted.
+    expect([...seen].sort()).toEqual([...unread].sort());
     expect((await unreadOf(ch)).msg_count_root).toBe(5);
   });
 

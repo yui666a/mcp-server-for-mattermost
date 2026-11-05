@@ -112,7 +112,8 @@ describe('read tools against the local Mattermost', () => {
       if (pages++ === 0) await mmApi(aliceMm, 'POST', '/posts', { channel_id: channel.id, message: `${TAG} posted while paging` });
     } while (cursor);
     expect(pages).toBeGreaterThan(1);
-    expect(seen).toEqual(all.order);
+    // Not comparing the order: Mattermost orders posts of the same millisecond differently from call to call.
+    expect([...seen].sort()).toEqual([...all.order].sort());
   });
 
   test('read_channel with since and until reads that range oldest first in JST, with replies and attachment-only posts', async () => {

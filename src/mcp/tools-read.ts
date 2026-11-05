@@ -94,6 +94,13 @@ const nextDay = (day: string) => new Date(Date.parse(day) + DAY_MS).toISOString(
 const prevDay = (day: string) => new Date(Date.parse(day) - DAY_MS).toISOString().slice(0, 10);
 const newestFirst = (a: MmPost, b: MmPost) => b.create_at - a.create_at || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
 const oldestFirst = (a: MmPost, b: MmPost) => a.create_at - b.create_at || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
+// Where the posts sharing the last post's create_at begin (0 when all share it, or when empty).
+// Not paging on from the last post itself: Mattermost's after= and before= compare create_at strictly, so the rest of its millisecond would drop out.
+const tieStart = (ps: MmPost[]) => {
+  let k = ps.length - 1;
+  while (k > 0 && ps[k - 1].create_at === ps[k].create_at) k--;
+  return Math.max(k, 0);
+};
 
 export const limitArg = (def: number, max: number) => z.number().int().min(1).max(max).optional()
   .describe(`件数（既定 ${def}、最大 ${max}）。cursor を渡したときは無視する`);
@@ -460,13 +467,16 @@ export function registerReadTools(server: McpServer, ctx: ToolContext): void {
       const rc = c && 'since' in c ? c : undefined;
       const range = rc ?? (!c && (since !== undefined || until !== undefined) ? rangeOf(since, until, from) : undefined);
       const ch = await resolveChannel(mm, uid, channel);
-      const renderPage = async (head: string[], all: MmPost[], next: (last: MmPost) => object, none: string) => {
-        const shown = all.slice(0, per);
+      const GONE = '（カーソルの起点か、その続きの投稿が削除されたため、続きを取りこぼしている可能性があります。';
+      const renderPage = async (head: string[], all: MmPost[], next: (last: MmPost) => object, none: string, gone: string) => {
+        const shown = all.slice(0, all.length > per ? tieStart(all.slice(0, per + 1)) || per : per);
         const users = await usernames(mm, uid, shown);
         const lines = [...channelLines(ch), ...head, ...shown.map((p) => formatPost(p, { baseUrl: base, teamName: ch.teamName, usernames: users }))];
-        if (!shown.length) lines.push(none);
-        return render({ lines, posts: shown, next: all.length > per ? next(shown[shown.length - 1]) : undefined });
+        // Not asking Mattermost whether the cursor's post is gone: GET /posts answers 404 for soft and hard deletes alike, and a cursor is only given while posts remain past it.
+        if (!shown.length) lines.push(none, ...(c ? [GONE + gone] : []));
+        return render({ lines, posts: shown, next: shown.length < all.length ? next(shown[shown.length - 1]) : undefined });
       };
+      const sinceAgain = '前のページの最後の投稿の時刻を since に渡すと、その位置から古い順に読み直せます。その時刻の投稿は重ねて出ることがあり、返信も含みます';
       const unreadPage = (crt: boolean, r: PostList) => renderPage(
         [crt
           ? '未読の先頭から古い順（スレッドの折りたたみ（CRT）が有効なため、ルート投稿だけです。返信は get_unreads の未読のスレッドと read_thread で読めます）'
@@ -474,6 +484,7 @@ export function registerReadTools(server: McpServer, ctx: ToolContext): void {
         r.order.map((id) => r.posts[id]).filter(Boolean).sort(oldestFirst),
         (last) => ({ channel_id: ch.id, after: last.id, per_page: per, crt }),
         c ? '投稿はありません。' : '未読はありません。',
+        `${sinceAgain}）`,
       );
       if (range) {
         if (rc && rc.channel_id !== ch.id) throw new InputError(BAD_CURSOR);
@@ -485,9 +496,11 @@ export function registerReadTools(server: McpServer, ctx: ToolContext): void {
         const forward = async (after: string | undefined, got: MmPost[]) => {
           for (let at = after; at && got.length <= per;) {
             const page = (await posts({ after: at, per_page: String(per + 1) })).sort(oldestFirst);
-            got.push(...page.filter(inRange));
-            if (page.length <= per || page.some((p) => range.until !== undefined && p.create_at >= range.until)) break;
-            at = page.at(-1)!.id;
+            const done = page.length <= per || page.some((p) => range.until !== undefined && p.create_at >= range.until);
+            const n = done ? page.length : tieStart(page) || page.length;
+            got.push(...page.slice(0, n).filter(inRange));
+            if (done) break;
+            at = page[n - 1].id;
           }
           return got;
         };
@@ -515,8 +528,9 @@ export function registerReadTools(server: McpServer, ctx: ToolContext): void {
           if (start) all = await forward(start.id, []);
           else {
             // Not reading on from the oldest post with after= alone: it would skip that post and those of the same millisecond.
-            const seed = [...loPage].sort(oldestFirst);
-            const passed = seed.some((p) => range.until !== undefined && p.create_at >= range.until);
+            const sorted = [...loPage].sort(oldestFirst);
+            const passed = sorted.some((p) => range.until !== undefined && p.create_at >= range.until);
+            const seed = passed ? sorted : sorted.slice(0, tieStart(sorted) || sorted.length);
             all = await forward(passed ? undefined : seed.at(-1)?.id, seed.filter(inRange));
           }
         }
@@ -526,6 +540,7 @@ export function registerReadTools(server: McpServer, ctx: ToolContext): void {
           all,
           (last) => ({ channel_id: ch.id, after: last.id, since: range.since, until: range.until, per_page: per }),
           'この範囲に投稿はありません。',
+          `${sinceAgain}${range.until === undefined ? '' : '。until は前と同じ値を渡してください'}）`,
         );
       }
       let head: string[] = [];
@@ -551,7 +566,7 @@ export function registerReadTools(server: McpServer, ctx: ToolContext): void {
       // Paging with before=<post_id> rather than page numbers: new posts arriving between calls would shift pages.
       const q = new URLSearchParams({ per_page: String(per + 1), ...(c && 'before' in c ? { before: c.before } : {}) });
       const r = await mm.call<PostList>(uid, 'GET', `/channels/${ch.id}/posts?${q}`);
-      return renderPage(head, r.order.map((id) => r.posts[id]).filter(Boolean), (last) => ({ before: last.id, per_page: per }), '投稿はありません。');
+      return renderPage(head, r.order.map((id) => r.posts[id]).filter(Boolean), (last) => ({ before: last.id, per_page: per }), '投稿はありません。', 'cursor を渡さずに呼ぶと、最新から読み直せます）');
     });
 
   tool('read_thread', 'スレッドの親投稿と返信を古い順に読む。post_id はスレッド内のどの投稿でもよい。親投稿は最初のページにだけ含める',
