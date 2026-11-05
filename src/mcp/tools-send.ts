@@ -195,11 +195,11 @@ const POST_ID = z.string().regex(/^[A-Za-z0-9]{26}$/);
 const reactionSchema = {
   post_id: POST_ID.describe('投稿の post_id'),
   // Not a zod regex: a Unicode emoji such as ✅ would get the SDK's generic validation error instead of the emoji-name hint.
-  emoji: z.string().min(1).max(100).describe('Mattermost の絵文字名（例: white_check_mark、+1）。前後のコロンは付けても付けなくてもよい'),
+  emoji: z.string().min(1).max(100).describe('Mattermost の絵文字名（例: white_check_mark、+1）。前後のコロンは付けても付けなくてもよい。カスタム絵文字の名前は search_emoji で調べる'),
 };
 type ReactionArgs = { post_id: string; emoji: string };
 
-const emojiHint = (name: string) => `絵文字「${name}」がありません。Mattermost の絵文字名で指定してください（例: white_check_mark、+1）。`;
+const emojiHint = (name: string) => `絵文字「${name}」がありません。標準の絵文字名（例: white_check_mark、+1）か、search_emoji で調べたカスタム絵文字名を指定してください。`;
 // Checked rather than encoded: the name goes into a path, where "." and ".." survive encoding and fetch would normalise them into another endpoint.
 function emojiName(raw: string): string {
   const name = raw.trim().replace(/^:/, '').replace(/:$/, '');

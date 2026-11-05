@@ -55,11 +55,16 @@ function setup() {
 const POST = 'p'.repeat(26);
 const mmError = (status: number, id: string) => () => Response.json({ id, message: 'm', status_code: status }, { status });
 const ESCAPES = ['..', '.', 'a/b', '%2F', '../../posts/x', '%2e%2e'];
-const EMOJI_HINT = 'Mattermost の絵文字名で指定してください（例: white_check_mark、+1）';
+const EMOJI_HINT = '標準の絵文字名（例: white_check_mark、+1）か、search_emoji で調べたカスタム絵文字名を指定してください';
 const REACT_403 = 'この投稿にリアクションできません（見られない投稿、存在しない投稿、アーカイブ済みチャンネルの投稿）';
 
 describe('add_reaction', () => {
   const ok = { 'POST /reactions': () => ({}) };
+
+  test('the emoji argument points to search_emoji for custom emoji names', async () => {
+    const t = (await setup().tools()).find((x) => x.name === 'add_reaction')! as unknown as { inputSchema: { properties: { emoji: { description: string } } } };
+    expect(t.inputSchema.properties.emoji.description).toContain('カスタム絵文字の名前は search_emoji で調べる');
+  });
 
   test('adds the caller\'s reaction to the post and reports the post_id and emoji name', async () => {
     routes = ok;
