@@ -2,11 +2,12 @@ import type { McpServer, ToolCallback } from '@modelcontextprotocol/sdk/server/m
 import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
 import { z } from 'zod';
 import { MmError, UpstreamUnavailable, type MmClient } from '../mattermost/client.ts';
-import { ASK_ADMIN, BAD_CURSOR, BODY_CUT_NOTE, BODY_MAX_CHARS, decodeCursor, encodeCursor, fileLine, formatPost, formatTime, graphemeCount, indented, InputError, localTime, oneLine, POST_FORBIDDEN, postTruncated, postUserIds, RETRY, RETRY_SOON, truncate, type MmFileInfo, type MmPost } from './format.ts';
+import { idArg } from './args.ts';
+import { ASK_ADMIN, BAD_CURSOR, BODY_CUT_NOTE, BODY_MAX_CHARS, decodeCursor, encodeCursor, fileLine, formatPost, formatTime, graphemeCount, indented, InputError, localTime, oneLine, POST_FORBIDDEN, postTruncated, postUserIds, RETRY, RETRY_SOON, truncate, unformat, type MmFileInfo, type MmPost } from './format.ts';
 import { pageCursor, paginate } from './paging.ts';
 import { mentionsMe, mentionTerms, type MentionUser } from './mentions.ts';
 import { parsePostRef } from './permalink.ts';
-import { Ambiguous, ChannelFetchError, ChannelNotFound, myTeams, NoDirectChannel, resolveChannel, resolveUser, teamNameOf, unformat, type ChannelRef, type Mm, type MmChannel, type MmTeam, type ResolvedChannel, type UserRef } from './resolve.ts';
+import { Ambiguous, ChannelFetchError, ChannelNotFound, myTeams, NoDirectChannel, resolveChannel, resolveUser, teamNameOf, type ChannelRef, type Mm, type MmChannel, type MmTeam, type ResolvedChannel, type UserRef } from './resolve.ts';
 import { guarded, text, type ToolContext } from './server.ts';
 import { worded, type Wording } from './tools-send.ts';
 import { parseWhen } from './when.ts';
@@ -795,7 +796,7 @@ export function registerReadTools(server: McpServer, ctx: ToolContext): void {
     });
 
   tool('read_thread', 'スレッドの親投稿と返信を古い順に読む。post_id はスレッド内のどの投稿でもよい。親投稿は最初のページにだけ含める',
-    { post_id: z.string().regex(/^[A-Za-z0-9]{26}$/), limit: limitArg(50, 200), cursor: cursorArg },
+    { post_id: idArg, limit: limitArg(50, 200), cursor: cursorArg },
     async ({ post_id, limit, cursor }, mm) => {
       const c = cursorOf(z.object({ from_post: z.string().regex(/^[A-Za-z0-9]{26}$/), from_create_at: z.number().int(), per_page: perPage(200) }), cursor);
       const per = c?.per_page ?? limit ?? 50;
@@ -845,7 +846,7 @@ export function registerReadTools(server: McpServer, ctx: ToolContext): void {
     });
 
   tool('get_file', `投稿に添付されたファイルを読む。画像なら縮小版（プレビュー）を画像として返す。テキスト（UTF-8、または拡張子が csv・tsv・txt・log の Shift_JIS か EUC-JP）なら中身を先頭の ${TEXT_MAX_CHARS} 文字まで返す。それ以外（PDF など）は名前・種類・大きさだけを返す。file_id は投稿の「添付:」の行にある`,
-    { file_id: z.string().regex(/^[A-Za-z0-9]{26}$/) },
+    { file_id: idArg },
     async ({ file_id }, mm) => {
       const f = await worded(mm.call<MmFileInfo>(uid, 'GET', `/files/${file_id}/info`), FILE_WORDING);
       const about = `ファイル: ${fileLine(f)}`;

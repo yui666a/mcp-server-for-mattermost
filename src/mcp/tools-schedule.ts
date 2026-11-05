@@ -2,8 +2,8 @@ import type { McpServer, ToolCallback } from '@modelcontextprotocol/sdk/server/m
 import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
 import { z } from 'zod';
 import { FileHeld, MAX_PENDING_SCHEDULED, type Scheduled, type ScheduledStatus, type Store } from '../store.ts';
-import { strictArgs } from './args.ts';
-import { encodeCursor, formatTime, indented, InputError, oneLine, truncate } from './format.ts';
+import { idArg, strictArgs } from './args.ts';
+import { encodeCursor, formatTime, indented, InputError, oneLine, truncate, unformat } from './format.ts';
 import { dmLabel, type Mm, type MmChannel, teamNameOf } from './resolve.ts';
 import { guarded, text, type ToolContext } from './server.ts';
 import { cursorArg, cursorOf, limitArg, perPage } from './tools-read.ts';
@@ -17,10 +17,10 @@ const STATUSES = ['pending', 'sending', 'posted', 'failed'] as const;
 const AT_LIMIT = `待機中の予約が上限の ${MAX_PENDING_SCHEDULED} 件に達しています。不要な予約を cancel_scheduled_message で取り消してください。`;
 const NOT_CHANGEABLE = '予約が見つかりません。または、投稿中か、投稿を試みた後で結果を確かめている途中か、終了済みのため変えられません。';
 
-const POST_ID = z.string().regex(/^[A-Za-z0-9]{26}$/);
+const POST_ID = idArg;
 const MESSAGE = z.string().min(1).max(16383);
 const AT = z.string().describe('予定時刻。ISO 8601 の YYYY-MM-DDTHH:mm（秒は任意）。タイムゾーン（Z、+09:00 など）が無ければ JST。今から 1 分後から 30 日後まで');
-const ID = z.string().min(1).max(100).describe('予約 ID');
+const ID = z.string().overwrite(unformat).min(1).max(100).describe('予約 ID');
 
 function when(at: string): number {
   const ms = parseWhen(at);
@@ -34,7 +34,7 @@ const scheduleShape = {
   message: MESSAGE,
   root_id: POST_ID.optional().describe('返信にするときの、スレッドの親投稿の post_id'),
   at: AT,
-  file_ids: z.array(z.string().regex(/^[A-Za-z0-9]{26}$/)).min(1).max(MAX_UPLOAD_FILES).optional()
+  file_ids: z.array(idArg).min(1).max(MAX_UPLOAD_FILES).optional()
     .describe(`prepare_upload で、投稿先と同じチャンネルへ 24 時間以内にアップロードした file_id（1〜${MAX_UPLOAD_FILES} 件）`),
 };
 const scheduleSchema = strictArgs(scheduleShape, {

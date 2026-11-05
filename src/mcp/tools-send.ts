@@ -6,9 +6,10 @@ import { randomToken, sha256 } from '../crypto.ts';
 import { log } from '../log.ts';
 import { MmError, RateLimited, Reauthorize } from '../mattermost/client.ts';
 import { MAX_OPEN_UPLOAD_URLS, type HeldFile, type Store } from '../store.ts';
-import { BODY_CUT_NOTE, indented, InputError, oneLine, truncate, type MmPost } from './format.ts';
+import { idArg } from './args.ts';
+import { BODY_CUT_NOTE, indented, InputError, oneLine, truncate, unformat, type MmPost } from './format.ts';
 import { lookPosted, postOnce } from './post.ts';
-import { myTeams, NoDirectChannel, resolveChannel, teamNameOf, unformat, type ChannelRef, type Mm, type MmChannel, type ResolvedChannel } from './resolve.ts';
+import { myTeams, NoDirectChannel, resolveChannel, teamNameOf, type ChannelRef, type Mm, type MmChannel, type ResolvedChannel } from './resolve.ts';
 import { guarded, text, type ToolContext } from './server.ts';
 
 type FileArg = { name: string; content_text?: string; content_base64?: string };
@@ -23,14 +24,14 @@ export const FILE_NAME = z.string().min(1).max(100).regex(/^[^/\\\p{Cc}]+$/u, '�
 const inputSchema = {
   channel: z.string().min(1),
   message: z.string().min(1).max(MAX_MESSAGE),
-  root_id: z.string().regex(/^[A-Za-z0-9]{26}$/).optional().describe('返信先のスレッドの親投稿の post_id'),
+  root_id: idArg.optional().describe('返信先のスレッドの親投稿の post_id'),
   allow_duplicate: z.boolean().optional().describe('同じ本文を意図して繰り返し投稿するときに true'),
   files: z.array(z.union([
     z.strictObject({ name: FILE_NAME, content_text: z.string().min(1).describe('UTF-8 のテキストとしてそのまま添付する中身') }),
     z.strictObject({ name: FILE_NAME, content_base64: z.string().min(1).describe('バイナリの中身の base64（data URL の接頭辞や改行は付けない）') }),
   ])).min(1).max(MAX_UPLOAD_FILES).optional()
     .describe(`添付ファイル（1〜${MAX_UPLOAD_FILES} 件、中身の合計 ${MAX_FILES_BYTES / 1024}KiB まで）。各要素は name と、content_text（SVG、CSV、Markdown、コードなどのテキスト）か content_base64（小さなバイナリ）のどちらか一方。中身を読めて合計 ${MAX_FILES_BYTES / 1024}KiB に収まるファイルだけを渡す。PC でコマンドを実行できないクライアントでは、利用者の PC にあるテキストのファイルも、読めて収まれば content_text で送ってよい。ただし content_text は UTF-8 で添付するので、元のファイルと同じバイト列にならないことがある。中身に � や化けた文字が見えるとき、Excel などで作った CSV のように元の文字コードや BOM が要りそうなときは、content_text で送らず prepare_upload の説明の案内に従う。チャットに添付されたファイルは、コード実行で中身を読めるときだけ content_base64 で送れる。読めないファイル、収まらないファイル、それ以外の利用者の PC にあるファイルは、prepare_upload の説明の案内に従う`),
-  file_ids: z.array(z.string().regex(/^[A-Za-z0-9]{26}$/)).min(1).max(MAX_UPLOAD_FILES).optional()
+  file_ids: z.array(idArg).min(1).max(MAX_UPLOAD_FILES).optional()
     .describe(`prepare_upload で、投稿先と同じチャンネルへ 24 時間以内にアップロードした file_id（1〜${MAX_UPLOAD_FILES} 件）`),
 };
 
@@ -246,7 +247,7 @@ export async function worded<T>(p: Promise<T>, w: Wording): Promise<T> {
   }
 }
 
-const POST_ID = z.string().regex(/^[A-Za-z0-9]{26}$/);
+const POST_ID = idArg;
 const reactionSchema = {
   post_id: POST_ID.describe('投稿の post_id'),
   // Not a zod regex: a Unicode emoji such as ✅ would get the SDK's generic validation error instead of the emoji-name hint.
