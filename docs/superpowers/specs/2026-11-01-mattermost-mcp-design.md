@@ -281,7 +281,7 @@ MCP サーバー自身は管理者トークンや Bot アカウントを持た�
 - 読み取り系のツールには MCP のツール注釈 `readOnlyHint: true` を付け、書き込み系のツール（`send_message`、`prepare_upload`、`add_reaction`、`remove_reaction`、`save_post`、`unsave_post`、`pin_post`、`unpin_post`、`edit_message`、`delete_message`、`save_draft`、`schedule_message`、`update_scheduled_message`、`cancel_scheduled_message`、`mark_as_read`、`set_status`、`set_custom_status`、`clear_custom_status`、`follow_thread`、`unfollow_thread`）には付けない。MCP クライアントが書き込みの前に利用者へ確認を求められるようにするため
 - 出力は LLM が読みやすいテキストとし、投稿ごとに投稿者のユーザー名、日時、本文、パーマリンク（`https://mattermost.example.com/<team>/pl/<post_id>`）を含める。読み取り系の出力には、チャンネルとチームの ID と名前も含め、LLM が続く呼び出しで ID を使えるようにする
 - チャンネルの指定は次のどれかとする。名前から候補が 2 つ以上見つかった場合は、どれかを選ばずにエラーとし、候補のチーム名、チャンネル名、チャンネル ID を返す
-  - チャンネル ID（英数字 26 文字）。その ID のチャンネルが無く（404）、指定が小文字だけなら、チャンネル名として引き直す。チャンネル名は小文字だけで、26 文字の英数字の名前もありうるため。403 は ID のチャンネルがあることを示すので引き直さない
+  - チャンネル ID（英数字 26 文字）。その ID のチャンネルが無く（404）、指定が小文字だけで、同じ文字列を名前に持つチャンネルがあれば、「チーム名/チャンネル名」の形で指定するよう案内するエラーにする。チャンネル名は小文字だけで、26 文字の英数字の名前もありうるため。名前で見つかったチャンネルを ID の代わりには使わない。ユーザー ID や投稿 ID を取り違えて渡したとき、その文字列を名前にしたチャンネル（誰でも作れる）へ書き込まないため。403 は ID のチャンネルがあることを示すので名前を引かない
   - `チーム名/チャンネル名`
   - チャンネル名だけ（利用者が参加しているチームから探す）
   - `@ユーザー名`（その相手との DM）
