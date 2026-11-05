@@ -72,6 +72,22 @@ describe('mentionsMe', () => {
     expect(mentionsMe(message, alice)).toBe(false);
   });
 
+  test('a word ending in several marks still counts once the marks are dropped, and a longer prefix does not', () => {
+    const u = { username: 'alice', notify_props: { mention_keys: 'bar-baz' } };
+    expect(mentionsMe('@alice.-:_', u)).toBe(true);
+    expect(mentionsMe('bar-baz..', u)).toBe(true);
+    expect(mentionsMe('@alicex.', u)).toBe(false);
+  });
+
+  test('takes time linear in the length, even for a word ending in a long run of marks', () => {
+    const u = { username: 'alice' };
+    const started = performance.now();
+    expect(mentionsMe(`@alice${'.'.repeat(200_000)}`, u)).toBe(true);
+    expect(mentionsMe(`a${'_:'.repeat(100_000)}`, u)).toBe(false);
+    // Not a tight limit: dropping one mark at a time took about eight seconds here, so a loaded machine still tells them apart.
+    expect(performance.now() - started).toBeLessThan(1000);
+  });
+
   test('an indented line continuing a paragraph or a list item is still text, not code', () => {
     expect(mentionsMe('para\n    @alice', alice)).toBe(true);
     expect(mentionsMe('- item\n\n    @alice', alice)).toBe(true);
