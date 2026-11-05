@@ -133,7 +133,7 @@ async function row(s: Scheduled, name: string | undefined, teamOf: (channelId: s
   ];
   const head = s.message === undefined ? undefined : truncate(s.message, 200);
   // Not leaving the body's later lines at the margin: one could pass for a heading or a field of the list, so they are indented as the reason is.
-  if (!full) out.push(...(head ? indented('本文（先頭 200 文字）', head.text) : ['本文: （復号できません）']));
+  if (!full) out.push(...(head ? indented(head.truncated ? '本文（先頭 200 文字）' : '本文（全文）', head.text) : ['本文: （復号できません）']));
   // Not on the body line itself: a copied body would carry the hint into the post.
   if (!full && head?.truncated) out.push('（本文を先頭 200 文字で切りました。全文は list_scheduled_messages に id を渡すと出ます）');
   if (s.fileIds.length) out.push(`添付: ${s.fileIds.join(', ')}`);
