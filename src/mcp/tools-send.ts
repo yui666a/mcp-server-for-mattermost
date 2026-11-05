@@ -7,7 +7,7 @@ import { log } from '../log.ts';
 import { MmError, RateLimited, Reauthorize } from '../mattermost/client.ts';
 import { MAX_OPEN_UPLOAD_URLS, type HeldFile, type Store } from '../store.ts';
 import { BODY_CUT_NOTE, indented, InputError, oneLine, type MmPost } from './format.ts';
-import { findPosted, postOnce } from './post.ts';
+import { lookPosted, postOnce } from './post.ts';
 import { myTeams, NoDirectChannel, resolveChannel, teamNameOf, type ChannelRef, type Mm, type MmChannel, type ResolvedChannel } from './resolve.ts';
 import { guarded, text, type ToolContext } from './server.ts';
 
@@ -141,6 +141,7 @@ export async function resolveTarget(mm: Mm, store: Store, uid: string, channel: 
 export const heldError = (h: HeldFile) =>
   new InputError(`file_id ${h.fileId} は予約（予約 ID: ${h.scheduledId}）の添付に使われています。投稿を試みる前の待機中の予約なら、cancel_scheduled_message で取り消すと使えます。同じファイルを別に送るときは、prepare_upload からアップロードし直してください。`);
 
+const SIZE_DIFFERS = '同じ本文の投稿がありますが、添付ファイルの大きさが違うため、この送信が投稿されたかは分かりません（アップロードしたファイルを書き換えるプラグインがあるサーバーでは、この送信の投稿でも大きさが変わります）。read_channel などで確かめ、投稿されていなければ allow_duplicate: true で送り直してください。';
 const OWNED_ELSEWHERE = '同じ本文の投稿がありますが、ほかの送信か予約のものとして記録されているため、この送信が投稿されたかは分かりません。read_channel などで確かめ、投稿されていなければ allow_duplicate: true で送り直してください。';
 const INFLIGHT = '同じ投稿を処理中です。少し待ってから read_channel などで投稿されたかを確かめてください。';
 
@@ -189,13 +190,15 @@ export async function sendMessage(mm: Mm, store: Store, uid: string, baseUrl: st
   if (claim.kind === 'inflight') return text(INFLIGHT, true);
   if (claim.kind === 'retry') {
     // Not dropping the claim if this lookup fails: the earlier attempt's outcome is still unknown.
-    const found = await findPosted(mm, uid, { ...spec, fileCount: attached, fileIds }, claim.createdAt);
+    const { found, sizeDiffers } = await lookPosted(mm, uid, { ...spec, fileCount: attached, fileIds, files: files.map((f) => f.bytes.length) }, claim.createdAt);
     // Not read before the lookup: a send that completed meanwhile would be missed.
     const owned = new Set([...store.otherClaimPostIds(uid, claim.id), ...store.otherScheduledPostIds(uid, '')]);
     const prev = found.find((p) => !owned.has(p));
     // Not posting when every match is another record's: such a record may hold this send's own earlier post by a mistaken match of its own, and posting again would post it twice.
     // Not dropping the claim either, for the same reason.
     if (!prev && found.length) return text(OWNED_ELSEWHERE, true);
+    // Not posting either when the only candidates differ in file size: on a server whose plugin rewrites uploads, that is this send's own earlier post.
+    if (!prev && sizeDiffers.some((p) => !owned.has(p))) return text(SIZE_DIFFERS, true);
     if (prev) {
       store.completePost(claim.id, prev);
       store.markFilesPosted(uid, fileIds, prev);

@@ -187,6 +187,61 @@ test('a re-login that Mattermost only answered with 401 leaves no duplicate-guar
   expect(f.created).toHaveLength(1);
 });
 
+describe('a retry with inline files tells posts apart by the size of the files', () => {
+  const FILE = { name: 'a.txt', content_text: 'hello' };
+  const lost = async () => {
+    let first = true;
+    const f = fakeMm({ failPost: () => (first ? ((first = false), 'lost') : undefined) });
+    await expect(f.send({ channel: 'team-a/dup', message: 'hello', files: [FILE] })).rejects.toBeInstanceOf(UpstreamUnavailable);
+    return f;
+  };
+  const withFile = (f: ReturnType<typeof fakeMm>, postId: string, size: number) =>
+    f.posts.push({ id: postId, user_id: UID, channel_id: CH, root_id: '', message: 'hello', create_at: 1_000_001, file_ids: [`f${postId}`], metadata: { files: [{ id: `f${postId}`, size }] } } as MmPost);
+  const resend = (f: ReturnType<typeof fakeMm>) => f.send({ channel: 'team-a/dup', message: 'hello', files: [FILE] });
+
+  test('a post whose file has the same size is taken for the earlier attempt', async () => {
+    const f = await lost();
+    withFile(f, id(7), 5);
+    f.advance(31_000);
+    expect(textOf(await resend(f))).toContain(`post_id: ${id(7)}`);
+    expect(f.created).toHaveLength(1);
+  });
+
+  test('when the only candidate differs in file size, it posts nothing, says it cannot tell, and keeps saying so on a resend', async () => {
+    const f = await lost();
+    withFile(f, id(7), 6);
+    f.advance(31_000);
+    const r = await resend(f);
+    expect(r.isError).toBe(true);
+    expect(textOf(r)).toContain('添付ファイルの大きさが違うため、この送信が投稿されたかは分かりません');
+    expect(textOf(r)).toContain('allow_duplicate: true');
+    f.advance(31_000);
+    expect(textOf(await resend(f))).toContain('添付ファイルの大きさが違うため');
+    expect(f.created).toHaveLength(1);
+  });
+
+  test('a post whose file has the same size is taken even when an older post differs in size', async () => {
+    const f = await lost();
+    withFile(f, id(6), 6);
+    withFile(f, id(7), 5);
+    f.posts[f.posts.length - 2].create_at = 1_000_000;
+    f.advance(31_000);
+    expect(textOf(await resend(f))).toContain(`post_id: ${id(7)}`);
+    expect(f.created).toHaveLength(1);
+  });
+
+  test('a candidate of another size that another send has recorded is left out, and the send posts again', async () => {
+    const f = await lost();
+    withFile(f, id(7), 6);
+    const c = f.store.claimPost({ mmUserId: UID, channelId: CH, bodyHash: 'another send' });
+    if (c.kind !== 'new') throw new Error('claim not new');
+    f.store.completePost(c.id, id(7));
+    f.advance(31_000);
+    await resend(f);
+    expect(f.created).toHaveLength(2);
+  });
+});
+
 describe('a retry does not take a post another record owns for its own earlier post', () => {
   const lost = async () => {
     let first = true;
