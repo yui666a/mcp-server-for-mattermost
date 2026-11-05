@@ -66,7 +66,7 @@ export function registerThreadTools(server: McpServer, ctx: ToolContext): void {
         threads.push(...got.map((x) => ({ ...x, teamName: t.name })));
         total += r.total;
         if (r.total > got.length && got.length) {
-          notes.push(`（${t.name}${i ? '' : ' と DM、グループ DM'} のフォロー中のスレッドは、最終返信の新しい ${got.length} 件だけを取得しています（total: ${r.total}）。最終返信が ${formatTime(got.at(-1)!.last_reply_at)} 以前のスレッドは出ていないことがあります）`);
+          notes.push(`（${t.name}${i ? '' : ' と DM、グループ DM'} のフォロー中のスレッドは、最終返信の新しい ${got.length} 件だけを取得しています（total: ${r.total}）。${got.at(-1)!.last_reply_at ? `最終返信が ${formatTime(got.at(-1)!.last_reply_at)} 以前のスレッド` : '返信がすべて削除されたほかのスレッド'}は出ていないことがあります）`);
         }
       }
       const rows = threads.map((th) => ({ th, updatedAt: th.last_reply_at, key: { t: th.last_reply_at, id: th.id } }));
@@ -88,7 +88,7 @@ export function registerThreadTools(server: McpServer, ctx: ToolContext): void {
         posts.push(th.post);
         return [
           formatPost(th.post, { baseUrl: base, teamName: team ?? th.teamName, usernames: users, channel: at }),
-          `返信: ${th.reply_count}、未読の返信: ${th.unread_replies}、未読のメンション: ${th.unread_mentions}、最終返信: ${formatTime(th.last_reply_at)}`,
+          `返信: ${th.reply_count}、未読の返信: ${th.unread_replies}、未読のメンション: ${th.unread_mentions}、最終返信: ${th.last_reply_at ? formatTime(th.last_reply_at) : 'なし（返信がすべて削除された）'}`,
         ].join('\n');
       };
       const lines = [

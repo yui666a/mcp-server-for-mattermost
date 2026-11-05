@@ -111,6 +111,13 @@ describe('list_followed_threads', () => {
     expect(out).toContain('（続きはありません）');
   });
 
+  test('a thread whose replies were all deleted (last_reply_at 0) shows no last reply rather than 1970', async () => {
+    routes = { ...base(), [`GET /users/u1/teams/${T1}/threads`]: () => page([thread(TH1, CH1, 0, { reply_count: 0 })]), [`GET /users/u1/teams/${T2}/threads`]: () => page([]) };
+    const { text: out } = await setup().call('list_followed_threads', {});
+    expect(out).toContain('最終返信: なし（返信がすべて削除された）');
+    expect(out).not.toContain('最終返信: 1970');
+  });
+
   test('shows a DM thread under the other user\'s name and a thread of a channel missing from the user\'s list by channel_id with the team it came from', async () => {
     routes = base();
     const { text: out } = await setup().call('list_followed_threads', {});
@@ -140,6 +147,10 @@ describe('list_followed_threads', () => {
     expect(out).not.toContain('team-a と DM、グループ DM のフォロー中');
     routes[`GET /users/u1/teams/${T1}/threads`] = () => page([thread(TH1, CH1, 5000)], 9);
     expect((await setup().call('list_followed_threads', {})).text).toContain('（team-a と DM、グループ DM のフォロー中のスレッドは、最終返信の新しい 1 件だけを取得しています（total: 9）。');
+    routes[`GET /users/u1/teams/${T2}/threads`] = () => page([thread(TH2, CH2, 6000), thread(TH_ARCH, ARCHIVED, 0, { reply_count: 0 })], 450);
+    const zero = (await setup().call('list_followed_threads', {})).text;
+    expect(zero).toContain('最終返信の新しい 2 件だけを取得しています（total: 450）。返信がすべて削除されたほかのスレッドは出ていないことがあります）');
+    expect(zero).not.toContain('（total: 450）。最終返信が');
   });
 
   test('looks up more than 1,000 users in calls of at most 1,000 ids, and names the users of every call', async () => {
