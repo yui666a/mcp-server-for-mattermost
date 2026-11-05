@@ -203,7 +203,8 @@ async function filterChannelIds(mm: Mm, userId: string, spec: string, exclude: b
     // No DM means no posts to exclude, so the condition is dropped rather than failing the search.
     if (e instanceof NoDirectChannel && exclude) return [];
     if (e instanceof ChannelFetchError && (e.status === 403 || e.status === 404)) throw new InputError(`チャンネル「${spec}」が見つかりません。`);
-    if (spec.startsWith('@') && e instanceof MmError && e.status === 404) throw new InputError(`ユーザー「${spec}」が見つかりません。`);
+    // 403 too: with view restrictions Mattermost answers 403 for a missing name as well, so the two cannot be told apart.
+    if (spec.startsWith('@') && !spec.includes(',') && e instanceof MmError && (e.status === 403 || e.status === 404)) throw new InputError(`ユーザー「${spec}」が見つかりません。`);
     throw e;
   }
 }
@@ -216,11 +217,15 @@ export async function resolveInFilters(mm: Mm, userId: string, terms: string): P
   if (!filters.length) return { terms, notes: [] };
   const notes: string[] = [];
   const out = words.map((w) => [w]);
+  for (const f of filters) {
+    const next = words[f.at + f.span];
+    if (f.value.replace(/^~+/, '').startsWith('@') && /^[,、，]/.test(next ?? '')) {
+      throw new InputError(`in:${f.value} の後の「${next}」: 検索の in: では @a,b のようにカンマの前後に空白を入れずに書いてください。`);
+    }
+  }
   // Sequential rather than Promise.all: parallel lookups would exceed the per-user concurrency limit.
   for (const f of filters) {
     const spec = f.value.replace(/^~+/, '');
-    // Group DMs are left to Mattermost: it only looks them up (GetGroupChannel) and never creates one.
-    if (spec.startsWith('@') && spec.includes(',')) continue;
     const ids = await filterChannelIds(mm, userId, spec, f.exclude, notes);
     out.splice(f.at, f.span, ids.map((id) => `${f.exclude ? '-' : ''}in:${id}`), ...(f.span === 2 ? [[]] : []));
   }
@@ -351,7 +356,7 @@ export function registerReadTools(server: McpServer, ctx: ToolContext): void {
     });
   }
 
-  tool('search_posts', '参加しているチームのメッセージを検索する。Mattermost の検索構文（from:、in:、before:、after:、on: など）をそのまま使える。in: にはチャンネル ID、「チーム名/チャンネル名」、チャンネル名、@ユーザー名（DM）、@a,b（グループ DM。自分を含む全員のユーザー名を小文字でカンマ区切り）を渡せる。同じ名前が複数のチームにあれば、すべてで探す。見つからなければエラー。参加していないチャンネルは 0 件になる。DM は作らない。日付は日本時間（JST）で解釈する。新しい順。メッセージ添付（Bot や webhook などが付ける整形表示）の中身は検索の対象外（Mattermost の標準のデータベース検索は添付を検索しないため。その中身を探すなら read_channel で読む。read_channel なら since と until で期間を指定して読める）',
+  tool('search_posts', '参加しているチームのメッセージを検索する。Mattermost の検索構文（from:、in:、before:、after:、on: など）をそのまま使える。in: にはチャンネル ID、「チーム名/チャンネル名」、チャンネル名、@ユーザー名（DM）、@a,b（グループ DM。カンマの前後に空白を入れない）を渡せる。同じ名前が複数のチームにあれば、すべてで探す。見つからなければエラー。参加していないチャンネルは 0 件になる。DM は作らない。日付は日本時間（JST）で解釈する。新しい順。メッセージ添付（Bot や webhook などが付ける整形表示）の中身は検索の対象外（Mattermost の標準のデータベース検索は添付を検索しないため。その中身を探すなら read_channel で読む。read_channel なら since と until で期間を指定して読める）',
     { terms: z.string().min(1), limit: limitArg(20, 50), cursor: cursorArg },
     async ({ terms, limit, cursor }, mm) => {
       const c = cursorOf(z.object({ page: z.number().int().min(0), per_page: perPage(50) }), cursor);
@@ -398,7 +403,7 @@ export function registerReadTools(server: McpServer, ctx: ToolContext): void {
       return render({ lines, posts: shown, notes, next: rest.length > per && last ? { create_at: last.create_at, id: last.id, per_page: per } : undefined });
     });
 
-  tool('search_files', 'ファイルを名前で探す（サーバーが中身を抽出していれば中身にも当たる）。参加しているチャンネル、DM、グループ DM のファイルが対象で、参加していない公開チャンネルとアーカイブ済みのチャンネルのファイルは出ない。Mattermost の検索構文（from:、in:、ext:、before:、after:、on: など）を使え、日付は日本時間（JST）で解釈する。in: にはチャンネル ID、「チーム名/チャンネル名」、チャンネル名、@ユーザー名（DM）、@a,b（グループ DM。自分を含む全員のユーザー名を小文字でカンマ区切り）を渡せる。同じ名前が複数のチームにあれば、すべてで探す。見つからなければエラー。DM は作らない。名前は語の単位で当たり、日本語の名前は名前全体か先頭からの前方一致（例: 2026年10月*）でしか当たらない。新しい順。file_id は get_file に、post_id は get_post に渡せる',
+  tool('search_files', 'ファイルを名前で探す（サーバーが中身を抽出していれば中身にも当たる）。参加しているチャンネル、DM、グループ DM のファイルが対象で、参加していない公開チャンネルとアーカイブ済みのチャンネルのファイルは出ない。Mattermost の検索構文（from:、in:、ext:、before:、after:、on: など）を使え、日付は日本時間（JST）で解釈する。in: にはチャンネル ID、「チーム名/チャンネル名」、チャンネル名、@ユーザー名（DM）、@a,b（グループ DM。カンマの前後に空白を入れない）を渡せる。同じ名前が複数のチームにあれば、すべてで探す。見つからなければエラー。DM は作らない。名前は語の単位で当たり、日本語の名前は名前全体か先頭からの前方一致（例: 2026年10月*）でしか当たらない。新しい順。file_id は get_file に、post_id は get_post に渡せる',
     { terms: z.string().min(1), limit: limitArg(20, 50), cursor: cursorArg },
     async ({ terms, limit, cursor }, mm) => {
       const c = cursorOf(z.object({ page: z.number().int().min(0), per_page: perPage(50) }).strict(), cursor);
@@ -599,7 +604,8 @@ export function registerReadTools(server: McpServer, ctx: ToolContext): void {
         `返信数: ${replies}`,
         ...(p.root_id ? [`スレッド内の返信です。親 post_id: ${p.root_id}。read_thread でスレッド全体を読めます。`]
           : replies ? [`返信があります。read_thread に post_id: ${p.id} を渡すと、スレッド全体を読めます。`] : []),
-        ...(postTruncated(p) ? ['（本文かメッセージ添付を 4000 文字で切りました）'] : []),
+        // Not noting cut message attachments again: formatPost already says where it cut them.
+        ...(truncate(p.message).truncated ? ['（本文を 4000 文字で切りました）'] : []),
       ].join('\n');
     });
 
@@ -751,12 +757,14 @@ export function registerReadTools(server: McpServer, ctx: ToolContext): void {
       if (c && c.channel_id !== ch.id) throw new InputError(BAD_CURSOR);
       // Not joining /channels/{id}/members with the users: /users?in_channel gives the profiles in one call.
       const q = new URLSearchParams({ in_channel: ch.id, active: 'true', page: String(page), per_page: String(per) });
-      const users = await mm.call<UserRef[]>(uid, 'GET', `/users?${q}`).catch((e) => {
+      // Not rewording the 403 of /users alone: the user may leave the channel before /stats.
+      const notJoined = (e: unknown): never => {
         if (e instanceof MmError && e.status === 403) throw new InputError('参加していないチャンネルのメンバーは見られません（公開チャンネルでも同じです）。');
         throw e;
-      });
+      };
+      const users = await mm.call<UserRef[]>(uid, 'GET', `/users?${q}`).catch(notJoined);
       const lines = channelLines(ch);
-      if (!c) lines.push(`メンバー数: ${(await mm.call<{ member_count: number }>(uid, 'GET', `/channels/${ch.id}/stats?exclude_files_count=true`)).member_count}`);
+      if (!c) lines.push(`メンバー数: ${(await mm.call<{ member_count: number }>(uid, 'GET', `/channels/${ch.id}/stats?exclude_files_count=true`).catch(notJoined)).member_count}`);
       lines.push(...users.map((u) => {
         const name = [u.first_name, u.last_name].filter(Boolean).join(' ');
         return `- @${u.username}（${[name && `名前: ${name}`, u.nickname && `ニックネーム: ${u.nickname}`, u.position && `役職: ${u.position}`, u.is_bot && 'Bot アカウント', `user_id: ${u.id}`].filter(Boolean).join('、')}）`;
