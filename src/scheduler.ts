@@ -9,7 +9,6 @@ const PER_TICK = 20;
 const LATE_AFTER = 3600_000;
 const UNKNOWN = '投稿されたか不明です。Mattermost の画面で確かめてください。';
 const LATE = '予定時刻を 1 時間過ぎたため投稿していません。';
-const INTERNAL = '内部エラーのため投稿していません。';
 const UNSEALED = '本文を復号できないため投稿していません。予約を入れ直してください。';
 const POST_WORDING: Wording = {
   id: [
@@ -38,7 +37,8 @@ export async function tick(store: Store, mm: Mm, now: number): Promise<void> {
       o = await attempt(store, mm, s, now);
     } catch (e) {
       log('scheduled_post_error', { name: (e as Error)?.name });
-      o = failed(s.firstAttemptAt === null ? INTERNAL : UNKNOWN);
+      // Not "not posted" for an error before the post: what runs before sending reports it as a typed failure, and the lookups of a retry catch their own errors, so only a database fault can throw before sending.
+      o = failed(UNKNOWN);
     }
     store.settleScheduled(id, now, o);
     log('scheduled_post', { mm_user_id: s.mmUserId, outcome: o.status });
@@ -72,6 +72,12 @@ async function attempt(store: Store, mm: Mm, s: ClaimedScheduled, now: number): 
   if (late) return failed(LATE);
   const r = await postOnce(mm, s.mmUserId, { ...spec, fileIds }, s.pendingPostId!);
   if (r.kind === 'posted') {
+    // Not the response's file_ids when Mattermost hid them (ABAC denies the user the download): it empties them and counts the attached files instead, so which ones were dropped is unknown, and keeping them all is the safe side.
+    if (r.redactedFileCount) {
+      const dropped = fileIds.length - r.redactedFileCount;
+      const note = dropped > 0 ? `添付した ${fileIds.length} 件のうち ${dropped} 件を Mattermost が外したため、投稿に付いていません（ファイルをダウンロードする権限が無いため、どれが外れたかは分かりません）。` : undefined;
+      return { status: 'posted', postId: r.postId, fileIds, note };
+    }
     const kept = fileIds.filter((id) => r.fileIds.includes(id));
     const dropped = fileIds.filter((id) => !kept.includes(id));
     const note = dropped.length ? `添付した ${fileIds.length} 件のうち ${dropped.length} 件（${dropped.join(', ')}）を Mattermost が外したため、投稿に付いていません。` : undefined;
