@@ -21,7 +21,7 @@ Mattermost は公式の MCP サーバーを [Mattermost Agents プラグイン](
 - **Team Edition で動く**: Mattermost Team Edition 11.7.8 で開発し、テストしている
 - **利用者ごとの OAuth と、自前の認可サーバー**: MCP クライアントは自分を登録し（Dynamic Client Registration）、このサーバーでだけ使えるトークンを受け取る。利用者の Mattermost のトークンはサーバー側に暗号化して保存し、MCP クライアントには渡さない（token passthrough をしない）。認可のたびに、クライアントのリダイレクト URI を示す同意画面を出す
 - **Team Edition でも予約投稿ができる**: Team Edition では Mattermost の予約投稿の API を使えないので、サーバーが予約を保存し、時刻が来たら本人のトークンで投稿する
-- **LLM が呼ぶ前提の安全策**: クライアントがやり直したときの二重投稿を防ぐ。編集と削除は本人の投稿に限り、返信のあるスレッドの親投稿は消さない。下書きは、本文の違う既存の下書きを指示なしに上書きせず、同じ投稿先へ同じ本文を `send_message` で投稿したら消す（予約投稿では消さない）
+- **LLM が呼ぶ前提の安全策**: クライアントがやり直したときの二重投稿を防ぐ。編集と削除は本人の投稿に限り、返信のあるスレッドの親投稿は消さない。下書きは、本文の違う既存の下書きを指示なしに上書きせず、同じ投稿先へ同じ本文を `send_message` で投稿したら消す（予約投稿と、添付の付いた下書きでは消さない）
 
 ## ツール
 
@@ -45,7 +45,7 @@ Mattermost は公式の MCP サーバーを [Mattermost Agents プラグイン](
 | `mark_as_read` | チャンネルとスレッドを既読にする。読んだ中で最も新しい投稿より後に自分以外の投稿があるチャンネルは既読にしない |
 | `search_users` | 名前やユーザー名でユーザーを探す |
 | `get_user` | ユーザーのプロフィールを、タイムゾーン、現地時刻、在席状況とともに読む |
-| `send_message` | チャンネルやスレッドへ投稿する。`@ユーザー名` や `@a,b`（グループ DM）なら、まだ DM の無い相手にも送れる。小さなファイルと、`prepare_upload` でアップロードしたファイルを添付できる。投稿の後に、同じ本文の下書きを消す |
+| `send_message` | チャンネルやスレッドへ投稿する。`@ユーザー名` や `@a,b`（グループ DM）なら、まだ DM の無い相手にも送れる。小さなファイルと、`prepare_upload` でアップロードしたファイルを添付できる。投稿の後に、同じ本文の下書きを消す（添付の付いた下書きは消さない） |
 | `prepare_upload` | PC のファイル（スクリーンショット、PDF、写真など）を `curl` で送るための使い捨ての URL を発行する。`@ユーザー名` や `@a,b` の DM が無ければ作る。Claude Code や Codex CLI のように PC でコマンドを実行できるクライアント向け |
 | `add_reaction` / `remove_reaction` | 自分のリアクションを付ける、外す |
 | `save_post` / `unsave_post` | 参加しているチャンネルの投稿を保存する（フラグを付ける）、保存から外す |
@@ -53,7 +53,7 @@ Mattermost は公式の MCP サーバーを [Mattermost Agents プラグイン](
 | `edit_message` / `delete_message` | 自分の投稿を編集する、削除する |
 | `save_draft` | 本人が画面から送る Mattermost の下書きとして保存する。`@ユーザー名` や `@a,b` の DM が無ければ作る。同じ本文を `send_message` で送ると消える |
 | `schedule_message` | 投稿を予約する（1 分後から 30 日後まで）。`@ユーザー名` や `@a,b` の DM が無ければ作る。`prepare_upload` でアップロードしたファイルを添付できる |
-| `list_scheduled_messages` | 自分の予約を、状態、添付するファイル、パーマリンクとともに一覧する |
+| `list_scheduled_messages` | 自分の予約を、状態、添付するファイル、パーマリンクとともに一覧する。`id` を渡すとその 1 件を本文を切らずに返す |
 | `update_scheduled_message` / `cancel_scheduled_message` | 待機中の予約を変える、取り消す |
 | `search_emoji` | `add_reaction` や `set_custom_status` に渡すカスタム絵文字を、名前の一部で探す（標準の絵文字は対象外） |
 | `set_status` | 自分の在席状況（オンライン、離席、取り込み中（終了時刻を付けられる）、オフライン）を変える |

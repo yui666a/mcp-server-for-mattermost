@@ -328,10 +328,11 @@ describe('@a,b group DM', () => {
     await expect(resolveChannel(group().mm, ME, '@bob,ghost,nobody')).rejects.toThrow(new InputError('ユーザーが見つかりません: @ghost, @nobody。'));
   });
 
-  test('without a team nothing is looked up or created', async () => {
+  test('without a team, the users are looked up but no group DM is looked up or created', async () => {
     const { mm, calls } = group({ teams: [] });
     await expect(resolveChannel(mm, ME, '@bob,dave', { create: true })).rejects.toThrow('所属しているチームがない');
     expect(calls.filter((c) => c.path.startsWith('/teams/') || c.path === '/channels/group')).toEqual([]);
+    expect(calls.some((c) => c.path === '/users/usernames')).toBe(true);
   });
 
   test('no group DM is created with a deactivated user, while an existing one is still looked up', async () => {
