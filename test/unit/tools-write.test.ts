@@ -960,11 +960,24 @@ describe('a root_id in another channel than the DM or group DM it is sent to', (
       [`GET /teams/t1/channels/name/${CAROL}__u1`]: () => ({ id: DM, name: `${CAROL}__u1`, display_name: '', team_id: '', type: 'D' }),
       [`GET /teams/t1/channels/name/${GM_NAME}`]: () => ({ id: GM, name: GM_NAME, display_name: 'carol, dave, me', team_id: '', type: 'G' }),
       'GET /users/me/preferences/advanced_settings/name/sync_drafts': mmError(400, 'app.preference.get.app_error'),
-      'GET /users/u1/teams/t1/drafts': () => [],
       [`GET /posts/${ROOT}`]: () => ({ id: ROOT, channel_id: 'o'.repeat(26), root_id: '', user_id: 'u2', message: 'root', create_at: 1 }),
     };
     const r = await setup().call(tool, { channel, message: 'hi', root_id: ROOT });
     expect(r.isError).toBe(true);
     expect(r.text).toBe(`root_id ${ROOT} の投稿はチャンネル「${label}」（channel_id: ${chId}）にありません。`);
+  });
+
+  test('save_draft to a DM with root_id reports a wrong root_id before drafts disabled on the server, as for a channel', async () => {
+    routes = {
+      'GET /users/me/teams': () => [{ id: 't1', name: 'team-a' }],
+      'GET /users/username/carol': () => ({ id: CAROL, username: 'carol', delete_at: 0 }),
+      [`GET /teams/t1/channels/name/${CAROL}__u1`]: () => ({ id: DM, name: `${CAROL}__u1`, display_name: '', team_id: '', type: 'D' }),
+      'GET /users/me/preferences/advanced_settings/name/sync_drafts': mmError(400, 'app.preference.get.app_error'),
+      'GET /users/u1/teams/t1/drafts': mmError(501, 'api.drafts.disabled.app_error'),
+      [`GET /posts/${ROOT}`]: () => ({ id: ROOT, channel_id: 'o'.repeat(26), root_id: '', user_id: 'u2', message: 'root', create_at: 1 }),
+    };
+    const r = await setup().call('save_draft', { channel: '@carol', message: 'hi', root_id: ROOT });
+    expect(r.text).toContain(`root_id ${ROOT} の投稿はチャンネル「@carol」`);
+    expect(hits).not.toContain('GET /users/u1/teams/t1/drafts');
   });
 });

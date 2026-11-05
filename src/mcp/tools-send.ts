@@ -388,9 +388,10 @@ export async function saveDraft(mm: Mm, uid: string, args: DraftArgs): Promise<C
     if (!l) throw new InputError('所属しているチームがないため、既存の下書きを確かめられません。');
     return l;
   };
-  // Not listing only after resolving a DM: resolving may create it, and with drafts disabled on the server the call then fails leaving it empty. A DM's drafts are listed on the first team, the same team as after resolving.
+  // Not listing only after resolving a DM it may create: with drafts disabled on the server the call then fails leaving it empty. A DM's drafts are listed on the first team, the same team as after resolving.
+  // Not listing early with root_id: no DM is created then, and a wrong root_id is the mistake to report first.
   // Not listing again after resolving: a draft the user saves in between is missed, the same race as between this list and the save, which Mattermost cannot close.
-  const early = args.channel.trim().startsWith('@') ? await listOf({ teamId: '' }) : undefined;
+  const early = args.channel.trim().startsWith('@') && !rootId ? await listOf({ teamId: '' }) : undefined;
   // Not creating the DM with root_id: a DM not opened yet holds no root post, and the call would fail right after leaving an empty DM.
   const ch = await resolveChannel(mm, uid, args.channel, { create: !rootId });
   // Checked here rather than left to Mattermost: it saves a draft on any root_id, and one on a reply never shows in any thread.
