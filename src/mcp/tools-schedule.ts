@@ -79,6 +79,13 @@ export async function listScheduledMessages(mm: Mm, store: Store, uid: string, b
   const shown = rows.slice(0, per);
   if (!shown.length && !c) return text('予約はありません。');
   // Not failing the list on any of these lookups: it is the only place a user learns a schedule failed, and a channel they have left answers 403.
+  // Not display_name: it names the caller too and differs from resolveGroup's label, so one schedule would read as two destinations.
+  // Not failing the row on the member lookup: display_name still names the group, only in another form.
+  const groupLabel = async (ch: MmChannel) => {
+    const users = await mm.call<UserRef[]>(uid, 'GET', `/users?${new URLSearchParams({ in_channel: ch.id, per_page: '200' })}`).catch(() => []);
+    const others = users.filter((u) => u.id !== uid);
+    return others.length ? others.map((u) => `@${u.username}`).sort().join(', ') : ch.display_name || ch.name;
+  };
   const channels = new Map<string, { label: string; ch?: MmChannel }>();
   const channelOf = async (id: string) => {
     if (!channels.has(id)) {
@@ -86,7 +93,8 @@ export async function listScheduledMessages(mm: Mm, store: Store, uid: string, b
       try {
         const ch = await mm.call<MmChannel>(uid, 'GET', `/channels/${id}`);
         const other = ch.name.split('__').find((x) => x !== uid) ?? uid;
-        const name = ch.type === 'D' ? `@${(await mm.call<UserRef>(uid, 'GET', `/users/${other}`)).username}` : ch.display_name || ch.name;
+        const name = ch.type === 'D' ? `@${(await mm.call<UserRef>(uid, 'GET', `/users/${other}`)).username}`
+          : ch.type === 'G' ? await groupLabel(ch) : ch.display_name || ch.name;
         v = { label: `${name}（channel_id: ${id}）`, ch };
       } catch {}
       channels.set(id, v);
