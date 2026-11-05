@@ -265,10 +265,12 @@ describe('search_posts in: filters', () => {
     const count = (h: string) => hits.filter((x) => x === h).length;
 
     test('each GET is sent once, however many flags need it', async () => {
-      routes = withDm();
-      await setup()('search_posts', { terms: `x in:only-a -in:town in:@bob in:${CX} in:${CX} in:only-a` });
+      const CY = pad('cy');
+      routes = { ...withDm(), [`GET /channels/${CY}`]: () => ch(CY, 'other-a', T1) };
+      await setup()('search_posts', { terms: `x in:only-a -in:town in:@bob in:${CX} in:${CY} in:only-a` });
       expect(count('GET /users/me/teams')).toBe(1);
       expect(count(`GET /channels/${CX}`)).toBe(1);
+      expect(count(`GET /channels/${CY}`)).toBe(1);
       expect(count(`GET /teams/${T1}`)).toBe(1);
       expect(count(`GET /teams/${T1}/channels/name/only-a`)).toBe(1);
       expect(count(`GET /teams/${T2}/channels/name/only-a`)).toBe(1);
@@ -307,7 +309,7 @@ describe('search_posts in: filters', () => {
     const twenty = [...Array(10).fill('in:only-a'), ...Array(9).fill('-in:town'), '-in: town'].join(' ');
     await call('search_posts', { terms: `x ${twenty}` });
     hits = [];
-    expect(await call('search_posts', { terms: `x ${twenty} channel:only-a` }, true)).toContain('in: と channel: は 1 回の検索で 20 個まで指定できます。');
+    expect(await call('search_posts', { terms: `x ${twenty} in:@bob ,carol` }, true)).toContain('in: と channel: は 1 回の検索で 20 個まで指定できます。');
     expect(hits).toEqual([]);
   });
 

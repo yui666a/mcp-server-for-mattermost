@@ -210,7 +210,8 @@ async function filterChannelIds(mm: Mm, userId: string, spec: string, exclude: b
   }
 }
 
-// Not higher: with 10 teams the worst case (1 + names × teams GETs) already takes 201 of the 300 requests a user may send per minute.
+// Not higher: with 10 teams the worst case (1 + names × teams GETs) already takes 201 of the 300 requests a user may send per minute,
+// before anything else the user sends in that minute.
 const MAX_CHANNEL_FILTERS = 20;
 
 // Rewritten here rather than left to Mattermost: a search across all teams looks channel names up without a team and matches nothing,
