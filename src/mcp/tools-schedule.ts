@@ -27,7 +27,11 @@ function when(at: string): number {
   return ms;
 }
 
-const scheduleSchema = {
+// Not the SDK's default of dropping unknown keys: a dropped files or file_ids would schedule or keep a post without the attachment the caller meant.
+const strictArgs = <T extends z.ZodRawShape>(shape: T, hint: string) =>
+  z.strictObject(shape, { error: (iss) => iss.code === 'unrecognized_keys' ? `受けない引数です: ${iss.keys.join(', ')}。${hint}` : undefined });
+
+const scheduleShape = {
   channel: z.string().min(1).describe('チャンネル ID、「チーム名/チャンネル名」、チャンネル名、@ユーザー名（DM）、@a,b（グループ DM）のどれか。DM とグループ DM は無ければ作る'),
   message: MESSAGE,
   root_id: POST_ID.optional().describe('返信にするときの、スレッドの親投稿の post_id'),
@@ -35,6 +39,7 @@ const scheduleSchema = {
   file_ids: z.array(z.string().regex(/^[A-Za-z0-9]{26}$/)).min(1).max(MAX_UPLOAD_FILES).optional()
     .describe('prepare_upload で、投稿先と同じチャンネルへ 24 時間以内にアップロードした file_id（1〜5 件）'),
 };
+const scheduleSchema = strictArgs(scheduleShape, '添付は prepare_upload でアップロードし、その file_id を file_ids に渡してください。');
 type ScheduleArgs = { channel: string; message: string; root_id?: string; at: string; file_ids?: string[] };
 
 export async function scheduleMessage(mm: Mm, store: Store, uid: string, args: ScheduleArgs): Promise<CallToolResult> {
@@ -127,7 +132,8 @@ async function row(s: Scheduled, where: string, teamOf: (channelId: string) => P
   return out;
 }
 
-const updateSchema = { id: ID, message: MESSAGE.optional().describe('新しい本文（全体を置き換える）'), at: AT.optional() };
+const updateSchema = strictArgs({ id: ID, message: MESSAGE.optional().describe('新しい本文（全体を置き換える）'), at: AT.optional() },
+  '変えられるのは本文（message）と予定時刻（at）だけです。投稿先や添付を変えるときは、cancel_scheduled_message で取り消して予約し直してください。');
 
 export function updateScheduledMessage(store: Store, uid: string, args: { id: string; message?: string; at?: string }): CallToolResult {
   if (args.message === undefined && args.at === undefined) throw new InputError('message か at のどちらかを指定してください。');
@@ -168,7 +174,7 @@ export function registerScheduleTools(server: McpServer, ctx: ToolContext): void
 
   const destructive = { readOnlyHint: false, destructiveHint: true, idempotentHint: true };
   server.registerTool('update_scheduled_message', {
-    description: '待機中の本人の予約の本文か予定時刻を変える。投稿先は変えられない。投稿中や投稿を試みた後の予約は変えられない',
+    description: '待機中の本人の予約の本文か予定時刻を変える。投稿先と添付ファイルは変えられない（変えるときは取り消して予約し直す）。投稿中や投稿を試みた後の予約は変えられない',
     inputSchema: updateSchema,
     annotations: destructive,
   }, guarded(ctx, 'update_scheduled_message', async (args: { id: string; message?: string; at?: string }) => updateScheduledMessage(ctx.store, uid, args),
