@@ -128,7 +128,7 @@ describe('list_followed_threads', () => {
     ] };
     const { text: out } = await setup().call('list_followed_threads', {});
     expect(urls).toContain('GET /users/me/channels?include_deleted=true');
-    expect(out).toContain(`チーム: team-b（team_id: ${T2}） | チャンネル: channel_id: ${ARCHIVED}、name: old、アーカイブ済み、表示名: Old`);
+    expect(out).toContain(`チーム: team-b（team_id: ${T2}） | チャンネル: channel_id: ${ARCHIVED}、name: old、アーカイブ済み、表示名: Old\n`);
     expect(out).toContain(`チャンネル: channel_id: ${CH1}、name: one、表示名: One`);
   });
 

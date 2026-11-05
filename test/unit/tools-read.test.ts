@@ -2792,7 +2792,7 @@ describe('list_saved_posts', () => {
       [FLAGGED]: byOffset([{ ...post('x'.repeat(26), 2), channel_id: OLD }, post('y'.repeat(26), 1)]) };
     const out = await setup()('list_saved_posts', {});
     expect(urls).toContain('GET /users/me/channels?include_deleted=true');
-    expect(out).toContain(`チーム: team-b（team_id: ${T2}） | チャンネル: channel_id: ${OLD}、name: old、アーカイブ済み、表示名: Old`);
+    expect(out).toContain(`チーム: team-b（team_id: ${T2}） | チャンネル: channel_id: ${OLD}、name: old、アーカイブ済み、表示名: Old\n`);
     expect(out).toContain(`チーム: team-a（team_id: ${T}） | チャンネル: channel_id: ${C}、name: town、表示名: Town`);
     expect(out).toContain(`https://mm.example/team-b/pl/${'x'.repeat(26)}`);
   });
