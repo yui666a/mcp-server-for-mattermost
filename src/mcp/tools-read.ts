@@ -243,13 +243,11 @@ async function filterChannelIds(mm: Mm, userId: string, spec: string, exclude: b
     // No DM means no posts to exclude, so the condition is dropped rather than failing the search.
     if (e instanceof NoDirectChannel && exclude) return [];
     if (e instanceof ChannelFetchError && (e.status === 403 || e.status === 404)) throw new InputError(`チャンネル「${spec}」が見つかりません。`);
-    // 403 too: with view restrictions Mattermost answers 403 for a missing name as well, so the two cannot be told apart.
-    if (spec.startsWith('@') && !spec.includes(',') && e instanceof MmError && (e.status === 403 || e.status === 404)) throw new InputError(`ユーザー「${spec}」が見つかりません。`);
     throw e;
   }
 }
 
-// Not higher: with 10 teams the worst case (1 + names × teams GETs) already takes 201 of the 300 requests a user may send per minute,
+// Not higher: with 10 teams the worst case (1 + flags × (teams + 1) GETs) already takes 221 of the 300 requests a user may send per minute,
 // before anything else the user sends in that minute.
 const MAX_CHANNEL_FILTERS = 20;
 
@@ -264,8 +262,10 @@ export async function resolveInFilters(mm: Mm, userId: string, terms: string): P
   const out = words.map((w) => [w]);
   for (const f of filters) {
     const next = words[f.at + f.span];
-    if (f.value.replace(/^~+/, '').startsWith('@') && /^[,、，]/.test(next ?? '')) {
-      throw new InputError(`in:${f.value} の後の「${next}」: 検索の in: では @a,b のようにカンマの前後に空白を入れずに書いてください。`);
+    // Not treating every 、 as a comma: 、 also starts search words such as 、議事録.
+    if (f.value.replace(/^~+/, '').startsWith('@') && /^[,，]|^、[A-Za-z0-9._,@、，-]*$/.test(next ?? '')) {
+      const fullWidth = /^[、，]/.test(next ?? '') ? '区切りは半角のカンマ（,）で書いてください。' : '';
+      throw new InputError(`in:${f.value} の後の「${next}」: 検索の in: では @a,b のようにカンマの前後に空白を入れずに書いてください。${fullWidth}`);
     }
   }
   // Kept for this search only, not across searches: a channel created or joined in between would stay unseen.
