@@ -765,6 +765,24 @@ describe('get_unreads', () => {
     expect(out).toContain('team-a の未読スレッドは 200 件までしか取得していません（total_unread_threads: 321）');
   });
 
+  test('takes again the threads whose last reply is at the same millisecond as the last thread of a page, so none of them drops out', async () => {
+    // Like Mattermost: newest reply first, before= by last_reply_at strictly earlier; ties come in no set order, here by id descending.
+    const at = (k: number) => (k < 47 ? 9000 - k : k === 47 ? 5001 : k <= 50 ? 5000 : 4000);
+    const all = Array.from({ length: 52 }, (_, k) => thread(`h${String(k).padStart(25, '0')}`, OLD, at(k)))
+      .sort((a, b) => b.last_reply_at - a.last_reply_at || (a.id < b.id ? 1 : -1));
+    const listed = (req: Request) => {
+      const before = new URL(req.url).searchParams.get('before');
+      const edge = before ? all.find((x) => x.id === before)!.last_reply_at : Infinity;
+      return threadPage(all.filter((x) => x.last_reply_at < edge).slice(0, 50));
+    };
+    routes = { ...base(), [`GET /users/u1/teams/${T1}/threads`]: listed, [`GET /users/u1/teams/${T2}/threads`]: () => threadPage([]) };
+    const out = await setup()('get_unreads', { limit: 100 });
+    const t1 = urls.filter((u) => u.includes(`/teams/${T1}/threads`));
+    expect(t1).toHaveLength(2);
+    expect(new URLSearchParams(t1[1].split('?')[1]).get('before')).toBe(`h${String(47).padStart(25, '0')}`);
+    for (const x of all) expect(out).toContain(x.id);
+  });
+
   test('when the threads API answers 4xx, returns the channel unreads and says the threads could not be fetched', async () => {
     routes = { ...base(), [`GET /users/u1/teams/${T2}/threads`]: () => Response.json({ id: 'x', message: 'nope' }, { status: 403 }) };
     const out = await setup()('get_unreads', {});
