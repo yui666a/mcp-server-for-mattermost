@@ -75,7 +75,7 @@ export async function uploadFile(mm: Mm, uid: string, channelId: string, name: s
 const ATTACHMENTS_OFF = 'このサーバーではファイルの添付が無効です。';
 const tooLarge = (name: string) => `ファイル「${name}」は大きすぎるため添付できません。`;
 
-// Not left to the upload alone when the DM may be created first: a refused upload would leave the new DM empty, and Mattermost cannot delete a DM.
+// Not left to the upload alone when the DM is about to be created: a refused upload would leave the new DM empty, and Mattermost cannot delete a DM.
 // Not checking the image size in pixels, permissions, restricted DMs or plugins: the client config does not tell them, so those refusals can still leave an empty DM.
 async function checkFilesAccepted(mm: Mm, uid: string, files: Upload[]): Promise<void> {
   const c = await mm.call<{ EnableFileAttachments?: string; MaxFileSize?: string }>(uid, 'GET', '/config/client?format=old');
@@ -113,6 +113,19 @@ export function checkUnposted(store: Store, uid: string, fileIds: string[]): voi
 export const createsDirect = (rootId: string | undefined, fileIds: string[]): boolean => !rootId && !fileIds.length;
 
 // Not reporting only the missing DM when file_ids are given: none of them can belong to a DM not opened yet, so the file is the real mistake.
+// Not reading the client config for a DM that is already there: nothing can be left empty then, and a retry of a send that created it must reach the duplicate guard.
+// Not catching InputError: a user not found must be told as it is, without reading the config or creating anything.
+// Not creating in one resolve with the check before it: a wrong destination must be told before a refused attachment. A refusal found only when creating (a deactivated user, no permission) still comes after the check.
+async function resolveCreatingAfter(mm: Mm, uid: string, channel: string, check: () => Promise<void>): Promise<ResolvedChannel> {
+  try {
+    return await resolveChannel(mm, uid, channel, { create: false });
+  } catch (e) {
+    if (!(e instanceof NoDirectChannel)) throw e;
+  }
+  await check();
+  return resolveChannel(mm, uid, channel, { create: true });
+}
+
 export async function resolveTarget(mm: Mm, store: Store, uid: string, channel: string, rootId: string | undefined, fileIds: string[]): Promise<ResolvedChannel> {
   try {
     return await resolveChannel(mm, uid, channel, { create: createsDirect(rootId, fileIds) });
@@ -130,8 +143,9 @@ const INFLIGHT = '同じ投稿を処理中です。少し待ってから read_ch
 export async function sendMessage(mm: Mm, store: Store, uid: string, baseUrl: string, args: Args, client?: AbortSignal): Promise<CallToolResult> {
   const files = decodeFiles(args.files ?? []);
   const fileIds = args.file_ids ?? [];
-  if (files.length && args.channel.trim().startsWith('@') && !args.root_id && !fileIds.length) await checkFilesAccepted(mm, uid, files);
-  const ch = await resolveTarget(mm, store, uid, args.channel, args.root_id, fileIds);
+  const ch = files.length && args.channel.trim().startsWith('@') && !args.root_id && !fileIds.length
+    ? await resolveCreatingAfter(mm, uid, args.channel, () => checkFilesAccepted(mm, uid, files))
+    : await resolveTarget(mm, store, uid, args.channel, args.root_id, fileIds);
   checkUploaded(store, uid, ch.id, fileIds);
   const rootId = args.root_id;
   if (rootId) await checkRoot(mm, uid, rootId, ch);
@@ -507,7 +521,9 @@ export async function prepareUpload(mm: Mm, store: Store, uid: string, publicUrl
   const full = () => new InputError(`使われていないアップロード URL が ${MAX_OPEN_UPLOAD_URLS} 件あります。それを使うか、10 分の期限が切れるのを待ってください。`);
   // Not left to createUploadUrl alone: resolving may create the DM first, and failing after that leaves it empty. A URL issued or released between the two checks still does.
   if (store.openUploadUrlCount(uid) >= MAX_OPEN_UPLOAD_URLS) throw full();
-  const ch = await resolveChannel(mm, uid, args.channel, { create: true });
+  const ch = args.channel.trim().startsWith('@')
+    ? await resolveCreatingAfter(mm, uid, args.channel, () => checkFilesAccepted(mm, uid, []))
+    : await resolveChannel(mm, uid, args.channel, { create: true });
   const token = store.createUploadUrl({ mmUserId: uid, channelId: ch.id });
   if (!token) throw full();
   const limit = maxBytes % MiB ? `${maxBytes} バイト` : `${maxBytes / MiB}MiB`;
