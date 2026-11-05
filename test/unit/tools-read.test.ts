@@ -250,17 +250,35 @@ describe('search_posts in: filters', () => {
     expect(await setup()('search_posts', { terms })).toContain(`${written} は複数のチームにあるため、すべてで探しました（team-a、team-b）。`);
   });
 
+  test.each([
+    ['x in:@bob \ufeff', `x in:${DM} \ufeff`],
+    ['x in:@bob \ufeff y', `x in:${DM} \ufeff y`],
+  ])('a word of format characters only after in:@user, with nothing or a search word next, is searched as it is: %j', async (terms, expected) => {
+    routes = withDm();
+    await setup()('search_posts', { terms });
+    expect(sent()).toBe(expected);
+  });
+
   test('a U+FEFF before or after the value does not change which channel is searched', async () => {
     routes = base();
     await setup()('search_posts', { terms: 'x in:\ufeff~only-a\ufeff' });
+    expect(sent()).toBe(`x in:${CX}`);
+    await setup()('search_posts', { terms: 'x in:only-a\u200b' });
     expect(sent()).toBe(`x in:${CX}`);
     expect(await setup()('search_posts', { terms: 'x in:\ufeff@bob ,carol' }, true)).toContain('の後の「,carol」');
   });
 
   test.each([
     ['x in:~\ufeff@bob ,carol', '「,carol」', false],
+    ['x in:~\u200b@bob ,carol', '「,carol」', false],
+    ['x in:@bob \ufeff ,carol', '「,carol」', false],
+    ['x in:@bob \ufeff \u200b ,carol', '「,carol」', false],
+    ['x in:@bob \u200b ，carol', '「，carol」', true],
+    ['x in:\u200c~@bob ,carol', '「,carol」', false],
+    ['x in:~\u200d\u200e@bob ,carol', '「,carol」', false],
+    ['x in:@bob \u2060，carol', '「\u2060，carol」', true],
     ['x in:@bob \ufeff，carol', '「\ufeff，carol」', true],
-  ])('a U+FEFF after ~ or before the next word does not hide a misplaced comma in %j', async (terms, word, fullWidth) => {
+  ])('a format character after ~ or before the next word does not hide a misplaced comma in %j', async (terms, word, fullWidth) => {
     routes = base();
     const out = await setup()('search_posts', { terms }, true);
     expect(out).toContain(`の後の${word}`);

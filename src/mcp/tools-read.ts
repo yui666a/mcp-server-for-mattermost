@@ -221,6 +221,8 @@ const capNote = (n: number, what: string) => (n >= MM_SEARCH_CAP
   ? [`（Mattermost の検索は ${MM_SEARCH_CAP} 件までしか返さないため、${what}は出ていない可能性があります。条件を絞ってください）`]
   : []);
 
+// Format characters too (zero-width, direction marks, soft hyphen), not only what trim drops: Mattermost does not split words on them, so they stay in a word and hide a ~ or @.
+const unformat = (s: string) => s.replace(/^[\s\p{Cf}]+|[\s\p{Cf}]+$/gu, '');
 // Go's unicode.IsSpace, which Mattermost's strings.Fields splits on. Not JS's \s: it adds U+FEFF and lacks U+0085.
 const SEARCH_SPACE = /[\t\n\v\f\r \u0085\u00a0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000]+/;
 const SEARCH_FLAGS = ['from', 'channel', 'in', 'before', 'after', 'on', 'ext'];
@@ -298,11 +300,14 @@ export async function resolveInFilters(mm: Mm, userId: string, terms: string): P
   const notes: string[] = [];
   const out = words.map((w) => [w]);
   const written = (f: (typeof filters)[number]) => words.slice(f.at, f.at + f.span).join(' ');
-  // Trimmed here, not only in resolveChannel: a U+FEFF in front would otherwise hide a leading ~ or @ from the checks below.
-  const specOf = (f: (typeof filters)[number]) => f.value.trim().replace(/^~+/, '').trim();
+  // Not left to resolveChannel, which only trims: a format character in front would hide a leading ~ or @ from the checks below.
+  const specOf = (f: (typeof filters)[number]) => unformat(unformat(f.value).replace(/^~+/, ''));
   for (const f of filters) {
-    const next = words[f.at + f.span];
-    const word = next?.trim() ?? '';
+    // Not stopping at a word of format characters only: Mattermost keeps it as a word, and it would hide the comma after it.
+    let k = f.at + f.span;
+    while (k < words.length && !unformat(words[k])) k++;
+    const next = words[k];
+    const word = unformat(next ?? '');
     // Not treating every 、 or ， as a comma: they also start search words such as 、議事録.
     if (specOf(f).startsWith('@') && /^,|^[、，][A-Za-z0-9._,@、，-]*$/.test(word)) {
       const fullWidth = /^[、，]/.test(word) ? '区切りは半角のカンマ（,）で書いてください。' : '';
