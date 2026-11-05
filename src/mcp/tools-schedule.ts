@@ -121,13 +121,13 @@ export async function listScheduledMessages(mm: Mm, store: Store, uid: string, b
     }
     return teams.get(id);
   };
-  const lines: string[] = [];
-  for (const s of shown) lines.push(...await row(s, (await channelOf(s.channelId)).label, teamOf, baseUrl, !!one));
+  const out: string[] = [];
+  for (const s of shown) out.push(...await row(s, (await channelOf(s.channelId)).label, teamOf, baseUrl, !!one));
   // Not ending a single schedule with the paging line: its body comes last so that everything after its heading is the body.
-  if (one) return text(lines.join('\n'));
+  if (one) return text(out.join('\n'));
   const last = shown.at(-1);
-  lines.push(rows.length > per && last ? `next_cursor: ${encodeCursor({ at: last.scheduledAt, id: last.id, per_page: per, ...(status ? { status } : {}) })}` : '（続きはありません）');
-  return text(lines.join('\n'));
+  out.push(rows.length > per && last ? `next_cursor: ${encodeCursor({ at: last.scheduledAt, id: last.id, per_page: per, ...(status ? { status } : {}) })}` : '（続きはありません）');
+  return text(out.join('\n'));
 }
 
 async function row(s: Scheduled, where: string, teamOf: (channelId: string) => Promise<string | undefined>, baseUrl: string, full: boolean): Promise<string[]> {
@@ -188,7 +188,7 @@ export function registerScheduleTools(server: McpServer, ctx: ToolContext): void
   ) as unknown as ToolCallback<typeof scheduleSchema>);
 
   const listSchema = {
-    id: ID.optional().describe('この予約 ID の 1 件だけを、本文を切らずに返す。update_scheduled_message で本文を直す前に全文を得るのに使う。status、limit、cursor は無視する（limit は不正な値ならエラー）'),
+    id: ID.optional().describe('この予約 ID の 1 件だけを、本文を切らずに返す。update_scheduled_message で本文を直す前に全文を得るのに使う。status、limit、cursor は値を見ずに無視する（型や範囲が不正ならエラー）'),
     status: z.enum(STATUSES).optional().describe('状態で絞る（pending: 待機中、sending: 投稿中、posted: 投稿済み、failed: 失敗）。cursor を渡したときは無視する'),
     limit: limitArg(20, 50),
     cursor: cursorArg,
