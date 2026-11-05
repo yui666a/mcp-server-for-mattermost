@@ -79,9 +79,12 @@ function decodeText(b: Uint8Array, name: string, whole: boolean): Decoded | unde
     }
   };
   const utf8 = decode('utf-8');
-  if (utf8) return { ...utf8, encoding: 'UTF-8', guessed: false };
+  // ASCII but for a cut last character: its bytes may as well be Latin-1 or a Shift_JIS character, so UTF-8 is only a guess.
+  const asciiButTail = utf8?.cutTail && !/[^\x00-\x7f]/.test(utf8.text);
+  if (utf8 && !asciiButTail) return { ...utf8, encoding: 'UTF-8', guessed: false };
   const ext = name.includes('.') ? name.split('.').pop()!.toLowerCase() : '';
-  if (!SJIS_EXTENSIONS.has(ext)) return undefined;
+  const utf8Guess = utf8 && { ...utf8, encoding: 'UTF-8', guessed: true };
+  if (!SJIS_EXTENSIONS.has(ext)) return utf8Guess;
   const sjis = decode('shift_jis');
   const euc = decode('euc-jp');
   // One counts as not read when it needs its last character dropped and the other reads the whole: kana-less EUC-JP and odd-length half-width kana end that way.
@@ -89,8 +92,9 @@ function decodeText(b: Uint8Array, name: string, whole: boolean): Decoded | unde
   const eucRead = euc && !(euc.cutTail && sjis && !sjis.cutTail) ? euc : undefined;
   // Not EUC-JP for any text with kana: half-width kana Shift_JIS also reads as EUC-JP, though rarely with kana.
   if (eucRead && KANA.test(eucRead.text) && (!sjisRead || HALF_KANA.test(sjisRead.text))) return { ...eucRead, encoding: 'EUC-JP', guessed: true };
+  if (utf8Guess && (!sjisRead || sjisRead.cutTail) && (!eucRead || eucRead.cutTail)) return utf8Guess;
   if (sjisRead) return { ...sjisRead, encoding: 'Shift_JIS', guessed: true };
-  return eucRead && { ...eucRead, encoding: 'EUC-JP', guessed: true };
+  return eucRead ? { ...eucRead, encoding: 'EUC-JP', guessed: true } : utf8Guess;
 }
 
 async function fileText(mm: ReadMm, uid: string, fileId: string, f: MmFileInfo, about: string): Promise<string | CallToolResult> {
@@ -99,24 +103,28 @@ async function fileText(mm: ReadMm, uid: string, fileId: string, f: MmFileInfo, 
   try {
     b = await mm.callBytes(uid, `/files/${fileId}`, undefined, { maxBytes: TEXT_FETCH_BYTES });
   } catch (e) {
-    // Only a 500 without a Mattermost error id: that is net/http failing to seek a file the storage does not have.
-    if (e instanceof UpstreamUnavailable && e.status === 500 && !e.id) {
+    // Only a plain-text 500: that is net/http failing to seek a file the storage does not have, while Mattermost's own errors are JSON (an empty id in hardened mode).
+    if (e instanceof UpstreamUnavailable && e.status === 500 && e.plainBody) {
       return `${about}\n中身を取得できませんでした（HTTP 500）。保存先にファイルの実体が無いか、保存先の一時的な障害です。`;
     }
     if (!(e instanceof MmError)) throw e;
-    return e.id === 'api.file.get_file.rejected_by_plugin'
-      ? `${about}\nMattermost が中身のダウンロードを拒否しました（プラグインによる制限）。`
-      : `${about}\n中身を取得できませんでした（HTTP ${e.status}）。`;
+    if (e.id === 'api.file.get_file.rejected_by_plugin') return `${about}\nMattermost が中身のダウンロードを拒否しました（プラグインによる制限）。`;
+    // Not saying the file is missing for sure: the local store answers any failure to open it (permissions, I/O) with the same 404.
+    if (e.status === 404 && e.id === 'api.file.file_reader.app_error') return `${about}\n中身を取得できませんでした（HTTP 404）。保存先にファイルの実体が無いか、保存先から読めません。`;
+    return `${about}\n中身を取得できませんでした（HTTP ${e.status}）。`;
   }
-  const t = decodeText(b, f.name, b.length >= f.size);
+  // Fewer bytes than asked means the body ended: the file is whole whatever its info says. At the limit only a matching size tells.
+  const whole = b.length < TEXT_FETCH_BYTES || b.length === f.size;
+  const t = decodeText(b, f.name, whole);
   if (!t) return `${about}\nテキストとして読めない形式のため、中身は返しません。`;
   if (!t.text) return `${about}\n${t.cutTail ? 'ファイルの末尾に不完全な文字があり、それを除くと読める中身がありません。' : '中身は空です。'}`;
   const { text: shown, truncated } = truncate(t.text, TEXT_MAX_CHARS);
   const head = [about, `文字コード: ${t.encoding}`];
   if (t.guessed) head.push('文字コードは中身から推定しました。文字化けしているなら、Shift_JIS、EUC-JP、Latin-1 など別の文字コードかもしれません。');
   if (t.cutTail) head.push('ファイルの末尾に不完全な文字があったため、その部分を除きました。');
-  if (truncated || f.size > b.length) {
-    head.push(`先頭の ${graphemeCount(shown)} 文字だけを返しました（ファイル全体は ${f.size} バイト）。`);
+  if (truncated || !whole) {
+    const total = whole ? ` ${b.length} バイト` : f.size > b.length ? ` ${f.size} バイト` : `少なくとも ${b.length} バイト`;
+    head.push(`先頭の ${graphemeCount(shown)} 文字だけを返しました（ファイル全体は${total}）。`);
   }
   return { content: [{ type: 'text', text: head.join('\n') }, { type: 'text', text: shown }] };
 }
@@ -357,18 +365,29 @@ async function unreadThreads(mm: Mm, uid: string, teams: MmTeam[], keep: (channe
   const notes: string[] = [];
   for (const [i, t] of teams.entries()) {
     let before: string | undefined;
+    // Ids before keep and the largest total: total counts the same threads as the list, and deleting the starting thread or its replies only lowers it.
+    const seen = new Set<string>();
+    let total = 0;
     for (let n = 1; ; n++) {
       // Not taking DM and group DM threads from every team: each team's list repeats them.
       const q = new URLSearchParams({ unread: 'true', per_page: String(THREAD_PAGE), ...(i ? { excludeDirect: 'true' } : {}), ...(before ? { before } : {}) });
       const r = await mm.call<ThreadList>(uid, 'GET', `/users/${uid}/teams/${t.id}/threads?${q}`);
       const got = r.threads ?? [];
-      for (const x of got) if (keep(x.post.channel_id) && !threads.has(x.id)) threads.set(x.id, { ...x, teamName: t.name });
-      if (got.length < THREAD_PAGE) break;
-      if (n === THREAD_PAGES) {
-        notes.push(`（${t.name} の未読スレッドは、${THREAD_PAGE} 件ずつ ${THREAD_PAGES} 回の取得で打ち切りました。境目と同じ時刻のスレッドは取り直すので、取得した異なるスレッドは ${THREAD_PAGE * THREAD_PAGES} 件より少ないことがあります（total_unread_threads: ${r.total_unread_threads}））`);
+      total = Math.max(total, r.total_unread_threads);
+      for (const x of got) {
+        seen.add(x.id);
+        if (keep(x.post.channel_id) && !threads.has(x.id)) threads.set(x.id, { ...x, teamName: t.name });
+      }
+      if (got.length < THREAD_PAGE) {
+        // Not trusting a short page as the end: before= compares with the starting thread's last reply, so deleting that thread or its replies in between skips or drops the rest.
+        if (seen.size < total) notes.push(`（${t.name} の未読スレッドを total_unread_threads: ${total} に対して取り切れませんでした。取得の合間にスレッドや返信が削除されたときなどに、続きを取りこぼすことがあります。呼び直すと取り直せます）`);
         break;
       }
-      // Not paging from the last thread alone: before= is strict, so threads sharing its last_reply_at would drop out; they are taken again and the Map drops the repeats.
+      if (n === THREAD_PAGES) {
+        if (seen.size < total) notes.push(`（${t.name} の未読スレッドは、${THREAD_PAGE} 件ずつ ${THREAD_PAGES} 回の取得で打ち切りました。境目と同じ時刻のスレッドは取り直すので、取得した異なるスレッドは ${THREAD_PAGE * THREAD_PAGES} 件より少ないことがあります（total_unread_threads: ${total}））`);
+        break;
+      }
+      // Not paging from the last thread alone: before= is strict, so threads sharing its last_reply_at would drop out.
       const edge = got.at(-1)!.last_reply_at;
       const newer = got.filter((x) => x.last_reply_at > edge);
       before = (newer.length ? newer.reduce((a, b) => (b.last_reply_at < a.last_reply_at ? b : a)) : got.at(-1)!).id;
