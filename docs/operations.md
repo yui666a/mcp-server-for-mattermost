@@ -73,6 +73,11 @@ docker compose logs --no-log-prefix mcp | grep '"event":"tool_call"'
 | `unhandled_error`、`tool_unhandled_error`、`upload_unhandled_error`、`scheduled_post_error`、`scheduler_failed`、`sweep_failed` | 想定外の失敗。エラーの名前とコードだけを持つ |
 | `listening`、`shutting_down` | 起動と停止 |
 
+Mattermost のサーバーログに `error getting channel id by name from in filter` の警告が出ることがある。
+`search_posts` と `search_files` は `in:`（`-in:` を含む）のチャンネルの指定を channel_id に置き換えてから渡すが、Mattermost はその値をまずチャンネル名として引き、引けないとこの警告を出して ID のまま条件に使う。
+検索の結果は正しく、MCP サーバーの不具合ではない。
+`in:` の値ごとに 1 行（通常の語とハッシュタグが混ざると 2 行）出る。
+
 ## 管理コマンド
 
 コンテナの中で `node src/admin.ts` を実行する。
