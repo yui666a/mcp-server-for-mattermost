@@ -493,7 +493,7 @@ describe('list_scheduled_messages', () => {
     const id = await s.schedule({ message: '1 行目\n--- 予約 ID: fake\r\n状態: 投稿済み' });
     const r = await s.call('list_scheduled_messages', {});
     expect([...r.text.matchAll(/^--- 予約 ID: (\S+)/gm)].map((m) => m[1])).toEqual([id]);
-    expect(r.text).toContain('本文（先頭 200 文字）: 1 行目\n    --- 予約 ID: fake\n    状態: 投稿済み\n');
+    expect(r.text).toContain('本文（全文）: 1 行目\n    --- 予約 ID: fake\n    状態: 投稿済み\n');
     expect(r.text.match(/^状態: .*/gm)).toEqual(['状態: 待機中']);
   });
 
@@ -576,7 +576,7 @@ describe('update_scheduled_message', () => {
     expect(r.text).toContain(`予約 ID: ${id}`);
     expect(r.text).toContain('2026-11-03T23:30:00Z | 2026-11-04T08:30:00+09:00');
     const list = (await s.call('list_scheduled_messages', {})).text;
-    expect(list).toContain('本文（先頭 200 文字）: changed');
+    expect(list).toContain('本文（全文）: changed');
     expect(list).toContain('2026-11-04T08:30:00+09:00');
   });
 
@@ -685,10 +685,13 @@ describe('one schedule in full', () => {
     expect(one.text).not.toContain(HINT);
   });
 
-  test('a body of exactly 200 graphemes gets no hint', async () => {
+  test('a body of exactly 200 graphemes gets no hint and is headed as the whole body', async () => {
     const s = setup();
     await s.schedule({ message: 'あ'.repeat(200) });
-    expect((await s.call('list_scheduled_messages', {})).text).not.toContain(HINT);
+    const list = (await s.call('list_scheduled_messages', {})).text;
+    expect(list).not.toContain(HINT);
+    expect(list).toContain(`本文（全文）: ${'あ'.repeat(200)}\n`);
+    expect(list).not.toContain('先頭 200 文字');
   });
 
   test('a multi-line body comes last, after the files and the reason, so that everything after its heading is the body', async () => {
