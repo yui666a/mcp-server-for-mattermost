@@ -859,12 +859,10 @@ export function registerReadTools(server: McpServer, ctx: ToolContext): void {
       // Not the permission wording for a plugin's refusal: the information above was readable, as when a plugin refuses the content.
       const preview = mm.callBytes(uid, `/files/${file_id}/preview`).catch((e) => {
         if (e instanceof MmError && e.status === 403 && e.id === 'api.file.get_file_preview.rejected_by_plugin') return 'refused' as const;
-        throw e;
-      });
-      const b = await worded(preview, FILE_WORDING).catch((e) => {
         if (e instanceof MmError && e.status === 400 && e.id === 'api.file.get_file_preview.no_preview.app_error') return undefined;
         throw e;
       });
+      const b = await worded(preview, FILE_WORDING);
       if (b === 'refused') return `${about}\nMattermost がプレビューの取得を拒否しました（プラグインによる制限）。`;
       if (!b) return `${about}\nMattermost がプレビューを作らない形式のため、画像は返しません。`;
       const mimeType = imageType(b);
