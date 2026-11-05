@@ -322,7 +322,7 @@ async function filterChannelIds(mm: Mm, userId: string, spec: string, written: s
     throw e;
   }
   // Not dropping an -in: of an archived channel: the search leaves it out anyway.
-  // Not searching with include_deleted_channels instead: search_files' description and the listing behind the channel lines assume archived channels stay out.
+  // Not searching with include_deleted_channels instead: the tool descriptions and the listing behind the channel lines assume archived channels stay out.
   if (!exclude && (ch.raw as { delete_at?: number }).delete_at) throw new InputError(`チャンネル「${spec}」はアーカイブ済みで、検索の対象外です。読むなら read_channel に渡します。`);
   return [ch.id];
 }
