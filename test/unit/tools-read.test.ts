@@ -2,8 +2,6 @@ import { createHash } from 'node:crypto';
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 import { BODY_CUT_NOTE } from '../../src/mcp/format.ts';
 import { makeApp } from './helpers.ts';
-// After helpers.ts: loading tools-read.ts first enters the import cycle through its dependants before perPage is defined.
-import { splitWords } from '../../src/mcp/tools-read.ts';
 
 type Route = (req: Request) => unknown;
 let routes: Record<string, Route>;
@@ -184,10 +182,16 @@ describe('search_posts in: filters', () => {
   });
 
   // Not only through search_posts: the MCP body cap (1MB) keeps the terms under about 500,000 words, which a worker thread's larger stack can spread without a RangeError.
-  test('splits 2,000,000 words before a quote', () => {
-    const words = splitWords(`${'w '.repeat(2_000_000)}"a b"`);
+  // Imported here rather than at the top: a static import that sorts before helpers.ts enters src/mcp's import cycle before perPage is defined.
+  // This still relies on helpers.ts having loaded server.ts already; the cycle itself is left to the src side.
+  test.each([
+    { where: 'before', text: (w: string) => `${w}"a b"`, at: -1 },
+    { where: 'after', text: (w: string) => `"a b" ${w}`, at: 0 },
+  ])('splits 2,000,000 words $where a quote', async ({ text, at }) => {
+    const { splitWords } = await import('../../src/mcp/tools-read.ts');
+    const words = splitWords(text('w '.repeat(2_000_000)));
     expect(words).toHaveLength(2_000_001);
-    expect(words.at(-1)).toBe('"a b"');
+    expect(words.at(at)).toBe('"a b"');
   });
 
   test('searches terms with 200,000 words before a quote, replacing in: end to end', async () => {
