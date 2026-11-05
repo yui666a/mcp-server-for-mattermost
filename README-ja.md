@@ -53,7 +53,7 @@ Mattermost は公式の MCP サーバーを [Mattermost Agents プラグイン](
 | `edit_message` / `delete_message` | 自分の投稿を編集する、削除する |
 | `save_draft` | 本人が画面から送る Mattermost の下書きとして保存する。`@ユーザー名` や `@a,b` の DM が無ければ作る。同じ本文を `send_message` で送ると消える |
 | `schedule_message` | 投稿を予約する（1 分後から 30 日後まで）。`@ユーザー名` や `@a,b` の DM が無ければ作る。`prepare_upload` でアップロードしたファイルを添付できる |
-| `list_scheduled_messages` | 自分の予約を、状態、添付するファイル、パーマリンクとともに一覧する |
+| `list_scheduled_messages` | 自分の予約を、状態、添付するファイル、パーマリンクとともに一覧する。`id` を渡すとその 1 件を本文を切らずに返す |
 | `update_scheduled_message` / `cancel_scheduled_message` | 待機中の予約を変える、取り消す |
 | `search_emoji` | `add_reaction` や `set_custom_status` に渡すカスタム絵文字を、名前の一部で探す（標準の絵文字は対象外） |
 | `set_status` | 自分の在席状況（オンライン、離席、取り込み中（終了時刻を付けられる）、オフライン）を変える |
@@ -61,7 +61,7 @@ Mattermost は公式の MCP サーバーを [Mattermost Agents プラグイン](
 
 時刻は JST で扱う。`schedule_message`、`set_status`（`dnd_until`）、`set_custom_status`（`until`）の時刻（`YYYY-MM-DDTHH:mm[:ss[.sss]]`）はオフセットが無ければ `+09:00` として読むので、ほかのタイムゾーンなら `Z` か `+hh:mm`（`-hh:mm`）を付ける。検索の日付（`on:`、`before:`、`after:`）は JST の日として扱い、出力の時刻は UTC と JST を併記する。
 
-読み取り系のツールが出す投稿には、メッセージ添付（Bot や webhook が投稿する整形表示。Mattermost の標準のデータベース検索は対象にしない）、リアクションと付けた人（`get_unreads` と `list_followed_threads` のスレッドは、Mattermost のスレッドの一覧がリアクションを返さないため、通常はリアクションがあることだけ。`get_post` で確かめられる）、編集の時刻、システムメッセージかどうかも含める。
+読み取り系のツールが出す投稿には、メッセージ添付（Bot や webhook が投稿する整形表示。Mattermost の標準のデータベース検索は対象にしない）、リアクションと付けた人、編集の時刻、システムメッセージかどうかも含める。`get_unreads` と `list_followed_threads` のスレッドは、Mattermost のスレッドの一覧が通常はリアクションを返さないため、リアクションがあることだけを出す（返れば付けた人も出す。`get_post` で確かめられる）。
 
 読み取り系のツールには MCP の `readOnlyHint` を付けており、クライアントは書き込みの前に利用者へ確認を求められる。
 
