@@ -487,6 +487,30 @@ describe('a schedule with files', () => {
     expect(s.store.heldScheduledFiles(UID, [F1, F2])).toEqual([{ fileId: F2, scheduledId: id }]);
   });
 
+  test('a post whose files Mattermost hid (ABAC) keeps every file as attached, with no note when all of them are counted', async () => {
+    const s = setup();
+    const marks = uploaded(s);
+    routes['POST /posts'] = () => ({ id: 'p'.repeat(26), file_ids: [], metadata: { redacted_file_count: 2 } });
+    const id = s.make({ fileIds: [F1, F2] });
+    await s.run();
+    expect(s.row(id)).toMatchObject({ status: 'posted', error: null });
+    expect(s.store.listScheduled(UID, { limit: 10 }).find((r) => r.id === id)?.fileIds).toEqual([F1, F2]);
+    expect(marks()).toEqual(['p'.repeat(26), 'p'.repeat(26)]);
+    expect(s.store.heldScheduledFiles(UID, [F1, F2])).toHaveLength(2);
+  });
+
+  test('a post whose files Mattermost hid but counted fewer notes how many were dropped, and still keeps them all', async () => {
+    const s = setup();
+    const marks = uploaded(s);
+    routes['POST /posts'] = () => ({ id: 'p'.repeat(26), file_ids: [], metadata: { redacted_file_count: 1 } });
+    const id = s.make({ fileIds: [F1, F2] });
+    await s.run();
+    expect(s.row(id).error).toBe('添付した 2 件のうち 1 件を Mattermost が外したため、投稿に付いていません（ファイルをダウンロードする権限が無いため、どれが外れたかは分かりません）。');
+    expect(s.store.listScheduled(UID, { limit: 10 }).find((r) => r.id === id)?.fileIds).toEqual([F1, F2]);
+    expect(marks()).toEqual(['p'.repeat(26), 'p'.repeat(26)]);
+    expect(s.store.heldScheduledFiles(UID, [F1, F2])).toHaveLength(2);
+  });
+
   const fileIdsOf = (s: ReturnType<typeof setup>, id: string) => s.store.listScheduled(UID, { limit: 10 }).find((r) => r.id === id)?.fileIds;
 
   test('a first attempt that Mattermost refuses fails, forgets the attempt, and lets its files go', async () => {
