@@ -129,7 +129,7 @@ export function registerThreadTools(server: McpServer, ctx: ToolContext): void {
         throw e;
       });
       // Not taking the thread state's 404 as unfollowed for a root post without replies: Mattermost has no thread state until the first reply, followed or not.
-      // Not keying the note on reply_count alone: a thread whose replies were all deleted keeps its thread state and shows in the list.
+      // Not keying the note on reply_count alone: a followed thread whose replies were all deleted keeps its thread state and shows in the list.
       const stateless = !following && !r.replies;
       if (stateless) {
         const t = await mm.call<{ posts: Record<string, { is_following?: boolean }> }>(uid, 'GET', `/posts/${r.root}/thread?collapsedThreads=true`);
