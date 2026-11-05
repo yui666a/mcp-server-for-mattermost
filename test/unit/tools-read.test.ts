@@ -1263,8 +1263,8 @@ describe('get_unreads', () => {
       expect(out).toContain(SHORT);
     });
 
-    test('a short first page below total, as when total also counts threads whose root post a retention policy removed, says such threads cannot be taken by calling again', async () => {
-      expect(await run([span(0, 10), 11])).toContain('データ保持ポリシーで根の投稿が消えたスレッドは、呼び直しても取得できません）');
+    test('a short first page below total, as when total also counts threads whose root post a retention policy removed, says to stop calling again when a note of threads not all taken keeps coming back, even with another total', async () => {
+      expect(await run([span(0, 10), 11])).toContain('呼び直しても取り切れなかった旨の注記が続くなら（total の数が変わっても）、データ保持ポリシーで根の投稿が消えたスレッドがあるか、最終返信の時刻が同じスレッドが多いためで、それ以上呼び直しても取得できません）');
     });
 
     test('says nothing when every thread was taken, also when the 4th page is full', async () => {
