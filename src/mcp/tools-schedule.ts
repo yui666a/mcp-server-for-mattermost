@@ -3,7 +3,7 @@ import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
 import { z } from 'zod';
 import { FileHeld, MAX_PENDING_SCHEDULED, type Scheduled, type ScheduledStatus, type Store } from '../store.ts';
 import { strictArgs } from './args.ts';
-import { encodeCursor, formatTime, InputError, lines, truncate } from './format.ts';
+import { encodeCursor, formatTime, InputError, lines, oneLine, truncate } from './format.ts';
 import { dmLabel, type Mm, type MmChannel, teamNameOf } from './resolve.ts';
 import { guarded, text, type ToolContext } from './server.ts';
 import { cursorArg, cursorOf, limitArg, perPage } from './tools-read.ts';
@@ -64,7 +64,7 @@ export async function scheduleMessage(mm: Mm, store: Store, uid: string, args: S
   return text([
     '予約しました。',
     `予約 ID: ${id}`,
-    `投稿先: ${ch.displayName || ch.name}（channel_id: ${ch.id}）${args.root_id ? `、返信先 post_id: ${args.root_id}` : ''}`,
+    `投稿先: ${oneLine(ch.displayName || ch.name)}（channel_id: ${ch.id}）${args.root_id ? `、返信先 post_id: ${args.root_id}` : ''}`,
     `予定時刻: ${formatTime(at)}`,
     ...(fileIds.length ? [`添付: ${fileIds.join(', ')}`] : []),
     '結果は list_scheduled_messages で確かめられます。',
@@ -94,7 +94,7 @@ export async function listScheduledMessages(mm: Mm, store: Store, uid: string, b
         const ch = await mm.call<MmChannel>(uid, 'GET', `/channels/${id}`);
         // Not a name of its own for a DM or group DM: resolveChannel's is what the other outputs show, and two forms would read as two destinations.
         // Not letting its re-login or rate limit drop the row's channel and permalink: the name is only for display, and Mattermost's name still names it.
-        const name = (await dmLabel(mm, uid, ch).catch(() => undefined)) ?? (ch.display_name || ch.name);
+        const name = (await dmLabel(mm, uid, ch).catch(() => undefined)) ?? oneLine(ch.display_name || ch.name);
         v = { label: `${name}（channel_id: ${id}）`, ch };
       } catch {}
       channels.set(id, v);
