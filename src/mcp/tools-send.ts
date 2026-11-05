@@ -531,14 +531,17 @@ async function saveLocked(mm: Mm, uid: string, ch: ChannelRef, rootId: string, a
   const existing = list.find((d) => d.channel_id === ch.id && (d.root_id || '') === rootId);
   if (existing?.message === args.message) return text(`同じ下書きがあります。保存し直していません。\n${where}\n${LEFT_BEHIND}`);
   if (existing && !args.overwrite) {
-    const head = [...existing.message].slice(0, 200).join('');
+    const chars = [...existing.message];
+    const head = chars.slice(0, 200).join('');
+    const quoted = indented('既存の下書き（先頭 200 文字）', head);
     throw new InputError([
       '同じ投稿先に、本文の違う下書きがあります。上書きしていません。上書きするときは overwrite: true を付けてください（添付ファイル、優先度、burn-on-read も失われます）。',
       where,
       // Not after the quote: the quote stays last, so nothing written in the draft can pass for a line of this answer.
-      '既存の下書きの 2 行目以降は 4 文字字下げして出しています。書き写すときは、2 行目以降の先頭の 4 文字の空白を外してください。',
+      ...(chars.length > 200 ? ['既存の下書きは 200 文字を超えるので、先頭だけを出しています。書き写すと後ろが消えるので、追記は Mattermost の画面で行うよう利用者に伝えてください。'] : []),
+      ...(quoted.length > 1 ? ['既存の下書きの 2 行目以降は 4 文字字下げし、改行を LF にそろえて出しています。書き写すときは、2 行目以降の先頭の 4 文字の空白を外してください。'] : []),
       // Not at the margin: a later line of the user's draft could pass for a line of this answer.
-      ...indented('既存の下書き（先頭 200 文字）', head),
+      ...quoted,
     ].join('\n'));
   }
   await worded(mm.call(uid, 'POST', '/drafts', { channel_id: ch.id, root_id: rootId, message: args.message }), {
