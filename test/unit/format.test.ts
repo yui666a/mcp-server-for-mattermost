@@ -93,6 +93,27 @@ describe('attachments of a post', () => {
   test('without attachments, adds no attachment line', () => {
     for (const post of [p, { ...p, file_ids: [] }, { ...p, metadata: {} }]) expect(formatPost(post, ctx)).not.toContain('添付');
   });
+
+  describe('files hidden by an ABAC policy (metadata.redacted_file_count)', () => {
+    const HIDDEN = (n: number) => `添付 ${n} 件（Mattermost のアクセス制御の方針（ABAC）により、表示もダウンロードもできません）`;
+
+    test('says how many files are hidden, the files and file_ids being gone', () => {
+      for (const n of [1, 2]) expect(formatPost({ ...p, file_ids: [], metadata: { redacted_file_count: n } }, ctx)).toContain(`\n${HIDDEN(n)}\n`);
+    });
+
+    test('still shows the files Mattermost left, before the hidden count', () => {
+      const lines = formatPost({ ...p, file_ids: [png.id], metadata: { files: [png], redacted_file_count: 2 } }, ctx).split('\n');
+      const at = lines.findIndex((l) => l.startsWith('添付: '));
+      expect(at).toBeGreaterThan(0);
+      expect(lines[at + 1]).toBe(HIDDEN(2));
+    });
+
+    test('says nothing for a count that is not a whole number of 1 or more', () => {
+      for (const n of [0, -1, 1.5, Infinity, NaN, '2']) {
+        expect(formatPost({ ...p, metadata: { redacted_file_count: n as number } }, ctx)).not.toContain('添付');
+      }
+    });
+  });
 });
 
 describe('message attachments (props.attachments) of a bot or webhook post', () => {

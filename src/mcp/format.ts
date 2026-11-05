@@ -7,7 +7,7 @@ export type MmReaction = { user_id: string; emoji_name: string; create_at: numbe
 export type MmPost = {
   id: string; user_id: string; channel_id: string; root_id: string; message: string; create_at: number;
   type?: string; edit_at?: number; has_reactions?: boolean; props?: Record<string, unknown>;
-  file_ids?: string[]; metadata?: { files?: MmFileInfo[]; reactions?: MmReaction[] };
+  file_ids?: string[]; metadata?: { files?: MmFileInfo[]; reactions?: MmReaction[]; redacted_file_count?: number };
 };
 export type PostCtx = { baseUrl: string; teamName: string; usernames: Map<string, string>; channel?: string };
 
@@ -50,8 +50,13 @@ export const fileLine = (f: MmFileInfo): string =>
   `${f.name}（file_id: ${f.id}、種類: ${f.mime_type || '不明'}、${f.size} バイト${f.width && f.height ? `、${f.width}x${f.height}` : ''}）`;
 
 function attachmentLines(p: MmPost): string[] {
-  if (p.metadata?.files?.length) return p.metadata.files.map((f) => `添付: ${fileLine(f)}`);
-  return p.file_ids?.length ? [`添付 ${p.file_ids.length} 件（get_post で確認できます）`] : [];
+  const shown = p.metadata?.files?.length ? p.metadata.files.map((f) => `添付: ${fileLine(f)}`)
+    : p.file_ids?.length ? [`添付 ${p.file_ids.length} 件（get_post で確認できます）`] : [];
+  // Not trusting the type: only a whole count of 1 or more, as Mattermost writes it when an ABAC policy strips the files.
+  const hidden = p.metadata?.redacted_file_count;
+  return Number.isInteger(hidden) && hidden! >= 1
+    ? [...shown, `添付 ${hidden} 件（Mattermost のアクセス制御の方針（ABAC）により、表示もダウンロードもできません）`]
+    : shown;
 }
 
 const REACTION_NAMES = 10;
