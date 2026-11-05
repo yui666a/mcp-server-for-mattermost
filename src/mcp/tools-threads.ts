@@ -8,7 +8,7 @@ import { myTeams, type Mm, type MmChannel } from './resolve.ts';
 import { guarded, text, type ToolContext } from './server.ts';
 import { POST_WORDING } from './tools-save-pin.ts';
 import { worded } from './tools-send.ts';
-import { channelInline, collapsedThreads, cursorArg, cursorOf, limitArg, perPage, render, usernamesOf } from './tools-read.ts';
+import { channelInline, collapsedThreads, cursorArg, cursorOf, dmPartner, limitArg, perPage, render, usernamesOf } from './tools-read.ts';
 
 type FollowedThread = { id: string; reply_count: number; last_reply_at: number; unread_replies: number; unread_mentions: number; post: MmPost };
 type ThreadList = { total: number; threads: FollowedThread[] | null };
@@ -83,7 +83,7 @@ export function registerThreadTools(server: McpServer, ctx: ToolContext): void {
       const line = ({ th }: (typeof rows)[number]): string => {
         const ch = channels.get(th.post.channel_id);
         const team = ch && teamName.get(ch.team_id);
-        const label = ch && (ch.type === 'D' ? `@${users.get(other(ch)) ?? other(ch)}` : ch.display_name || ch.name);
+        const label = ch && (ch.type === 'D' ? dmPartner(users.get(other(ch)), other(ch)) : ch.display_name || ch.name);
         const at = ch ? channelInline({ id: ch.id, name: ch.name, displayName: label ?? '', teamId: ch.team_id, teamName: team ?? '', archived: !!ch.delete_at }) : `channel_id: ${th.post.channel_id}`;
         posts.push(th.post);
         return [
