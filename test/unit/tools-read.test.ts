@@ -332,9 +332,16 @@ describe('get_post', () => {
     expect(out).not.toContain('read_thread');
   });
 
-  test('notes that the message attachments were cut', async () => {
+  test('notes at the end that the message was cut', async () => {
+    routes = { ...base, [`GET /posts/${ROOT}`]: () => post({ id: ROOT, message: 'x'.repeat(4001) }) };
+    expect((await setup()('get_post', { post: ROOT })).split('\n').at(-1)).toBe('（本文を 4000 文字で切りました）');
+  });
+
+  test('notes cut message attachments only where they were cut, not again at the end', async () => {
     routes = { ...base, [`GET /posts/${ROOT}`]: () => post({ id: ROOT, message: '', props: { attachments: [{ text: 'x'.repeat(4001) }] } }) };
-    expect(await setup()('get_post', { post: ROOT })).toContain('（本文かメッセージ添付を 4000 文字で切りました）');
+    const out = await setup()('get_post', { post: ROOT });
+    expect(out.match(/切りました/g)).toHaveLength(1);
+    expect(out).toContain('\n（メッセージ添付をここで切りました。続きは Mattermost の画面で確認してください）\n');
   });
 
   test('accepts a bare post_id', async () => {
@@ -837,6 +844,24 @@ describe('get_unreads', () => {
     expect(t1).toHaveLength(4);
     expect(t1[1]).toBe(`GET /users/u1/teams/${T1}/threads?unread=true&per_page=50&before=t${String(49).padStart(25, '0')}`);
     expect(out).toContain('team-a の未読スレッドは 200 件までしか取得していません（total_unread_threads: 321）');
+  });
+
+  test('takes again the threads whose last reply is at the same millisecond as the last thread of a page, so none of them drops out', async () => {
+    // Like Mattermost: newest reply first, before= by last_reply_at strictly earlier; ties come in no set order, here by id descending.
+    const at = (k: number) => (k < 47 ? 9000 - k : k === 47 ? 5001 : k <= 50 ? 5000 : 4000);
+    const all = Array.from({ length: 52 }, (_, k) => thread(`h${String(k).padStart(25, '0')}`, OLD, at(k)))
+      .sort((a, b) => b.last_reply_at - a.last_reply_at || (a.id < b.id ? 1 : -1));
+    const listed = (req: Request) => {
+      const before = new URL(req.url).searchParams.get('before');
+      const edge = before ? all.find((x) => x.id === before)!.last_reply_at : Infinity;
+      return threadPage(all.filter((x) => x.last_reply_at < edge).slice(0, 50));
+    };
+    routes = { ...base(), [`GET /users/u1/teams/${T1}/threads`]: listed, [`GET /users/u1/teams/${T2}/threads`]: () => threadPage([]) };
+    const out = await setup()('get_unreads', { limit: 100 });
+    const t1 = urls.filter((u) => u.includes(`/teams/${T1}/threads`));
+    expect(t1).toHaveLength(2);
+    expect(new URLSearchParams(t1[1].split('?')[1]).get('before')).toBe(`h${String(47).padStart(25, '0')}`);
+    for (const x of all) expect(out).toContain(x.id);
   });
 
   test('when the threads API answers 4xx, returns the channel unreads and says the threads could not be fetched', async () => {
@@ -2256,6 +2281,14 @@ describe('list_channel_members', () => {
     const out = await setup()('list_channel_members', { channel: C }, true);
     expect(out).toBe('参加していないチャンネルのメンバーは見られません（公開チャンネルでも同じです）。');
     expect(hits).not.toContain(`GET /channels/${C}/stats`);
+  });
+
+  test('says the same when the user leaves the channel between reading the members and the count, and passes other errors of the count through', async () => {
+    routes = { ...base(), [`GET /channels/${C}/stats`]: mmError(403, 'api.context.permissions.app_error') };
+    const call = setup();
+    expect(await call('list_channel_members', { channel: C }, true)).toBe('参加していないチャンネルのメンバーは見られません（公開チャンネルでも同じです）。');
+    routes[`GET /channels/${C}/stats`] = mmError(404);
+    expect(await call('list_channel_members', { channel: C }, true)).toContain('Mattermost がエラーを返しました（404）');
   });
 
   test('words 403 and 404 from fetching the channel as get_channel does', async () => {
