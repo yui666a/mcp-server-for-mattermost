@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 import { describe, expect, onTestFinished, test } from 'vitest';
-import { MmError } from '../../src/mattermost/client.ts';
+import { MmError, RateLimited, Reauthorize, UpstreamUnavailable } from '../../src/mattermost/client.ts';
 import { InputError } from '../../src/mcp/format.ts';
 import { Ambiguous, ChannelFetchError, NoDirectChannel, resolveChannel, resolveUser, type Mm } from '../../src/mcp/resolve.ts';
 
@@ -149,6 +149,81 @@ test.each([
   ['@', 'ユーザー名が空です。'],
 ])('an empty name in %j says which name is empty', async (spec, message) => {
   await expect(resolveChannel(fake(routes).mm, ME, spec)).rejects.toThrow(new InputError(message));
+});
+
+describe('a DM or group DM given by its channel ID is named as when given as @user or @a,b', () => {
+  const GM_ID = 'g'.repeat(26);
+  const CAROL = 'c'.padEnd(26, '1');
+  const gm = { id: GM_ID, name: 'f'.repeat(40), display_name: 'alice, bob, carol', team_id: '', type: 'G' };
+  const members = [{ id: ME, username: 'alice' }, { id: CAROL, username: 'carol' }, { id: BOB, username: 'bob' }];
+  const withGm = (extra: Record<string, unknown> = {}) => fake({ ...routes, [`/channels/${GM_ID}`]: gm, [`/users?in_channel=${GM_ID}&per_page=8`]: members, ...extra });
+
+  test('a DM by the other user', async () => {
+    const { mm, calls } = fake(routes);
+    expect(await resolveChannel(mm, ME, DM)).toMatchObject({ id: DM, displayName: '@bob' });
+    expect(calls).toContain(`GET /users/${BOB}`);
+    const RIGHT = 'r'.repeat(26);
+    const { mm: mm2 } = fake({ ...routes, [`/channels/${RIGHT}`]: ch(RIGHT, `${BOB}__${ME}`, '', 'D') });
+    expect(await resolveChannel(mm2, ME, RIGHT)).toMatchObject({ displayName: '@bob' });
+  });
+
+  test('the DM with oneself by one\'s own name', async () => {
+    const SELF = 's'.repeat(26);
+    const { mm } = fake({ ...routes, [`/channels/${SELF}`]: ch(SELF, `${ME}__${ME}`, '', 'D'), [`/users/${ME}`]: { id: ME, username: 'alice' } });
+    expect(await resolveChannel(mm, ME, SELF)).toMatchObject({ displayName: '@alice' });
+  });
+
+  test('a group DM by the others, sorted, without oneself', async () => {
+    const { mm } = withGm();
+    expect(await resolveChannel(mm, ME, GM_ID)).toMatchObject({ id: GM_ID, displayName: '@bob, @carol' });
+  });
+
+  test('a group DM with no one else keeps its display name', async () => {
+    const { mm } = withGm({ [`/users?in_channel=${GM_ID}&per_page=8`]: [members[0]] });
+    expect(await resolveChannel(mm, ME, GM_ID)).toMatchObject({ displayName: 'alice, bob, carol' });
+  });
+
+  test.each([
+    ['a Mattermost error', () => new MmError(404, 'app.user.missing_account.const', 'x')],
+    ['Mattermost being unreachable', () => new UpstreamUnavailable('Mattermost unreachable', true)],
+  ])('%s while looking the users up keeps the display name, for a DM and a group DM', async (_name, error) => {
+    const failing = (base: Mm): Mm => ({ call: async <T>(u: string, m: string, p: string) => {
+      if (p.startsWith('/users/') && p !== '/users/me/teams' || p.startsWith('/users?')) throw error();
+      return base.call<T>(u, m, p);
+    } });
+    expect(await resolveChannel(failing(fake(routes).mm), ME, DM)).toMatchObject({ id: DM, displayName: dmName.toUpperCase() });
+    expect(await resolveChannel(failing(withGm().mm), ME, GM_ID)).toMatchObject({ displayName: 'alice, bob, carol' });
+  });
+
+  test.each([
+    ['a rate limit', () => new RateLimited(5, false)],
+    ['a reauthorization', () => new Reauthorize(false)],
+  ])('%s while looking the users up is not swallowed', async (_name, error) => {
+    const base = fake(routes).mm;
+    const mm: Mm = { call: async <T>(u: string, m: string, p: string) => {
+      if (p === `/users/${BOB}`) throw error();
+      return base.call<T>(u, m, p);
+    } };
+    await expect(resolveChannel(mm, ME, DM)).rejects.toBeInstanceOf(error().constructor);
+  });
+
+  test('a DM whose name does not hold the caller, or is not a pair of IDs, is not looked up', async () => {
+    const OTHERS = 'x'.repeat(26);
+    const name = `${BOB}__${'z'.repeat(26)}`;
+    const { mm, calls } = fake({ ...routes, [`/channels/${OTHERS}`]: ch(OTHERS, name, '', 'D') });
+    expect(await resolveChannel(mm, ME, OTHERS)).toMatchObject({ displayName: name.toUpperCase() });
+    const SHORT = 'y'.repeat(26);
+    const { mm: mm2, calls: calls2 } = fake({ ...routes, [`/channels/${SHORT}`]: { id: SHORT, display_name: '', team_id: '', type: 'D' } });
+    expect(await resolveChannel(mm2, ME, SHORT)).toMatchObject({ displayName: '' });
+    for (const c of [calls, calls2]) expect(c.filter((x) => x.startsWith('GET /users/') && x !== 'GET /users/me/teams')).toEqual([]);
+  });
+
+  test('a private channel given by its ID looks no user up', async () => {
+    const PRIV = 'p'.repeat(26);
+    const { mm, calls } = fake({ ...routes, [`/channels/${PRIV}`]: ch(PRIV, 'secret', teams[0].id, 'P') });
+    await resolveChannel(mm, ME, PRIV);
+    expect(calls.filter((c) => c.startsWith('GET /users'))).toEqual([]);
+  });
 });
 
 describe('names are looked up in lower case, which is all Mattermost allows', () => {
