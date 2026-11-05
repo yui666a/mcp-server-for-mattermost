@@ -1128,6 +1128,10 @@ describe('get_unreads', () => {
       expect(out).toContain(SHORT);
     });
 
+    test('a short first page below total, as when total also counts threads whose root post a retention policy removed, says such threads cannot be taken by calling again', async () => {
+      expect(await run([span(0, 10), 11])).toContain('データ保持ポリシーで根の投稿が消えたスレッドは、呼び直しても取得できません）');
+    });
+
     test('says nothing when every thread was taken, also when the 4th page is full', async () => {
       expect(await run([span(0, 50), 80], [span(50, 80), 80])).not.toContain(SHORT);
       const full = await run([span(0, 50), 200], [span(50, 100), 200], [span(100, 150), 200], [span(150, 200), 200]);
@@ -1576,10 +1580,9 @@ describe('get_mentions', () => {
       expect(await setup()('get_mentions', { unread_only: true })).toContain('未読スレッドは、50 件ずつ 4 回の取得で打ち切りました。');
     });
 
-    test('notes when a team\'s unread threads were not all taken', async () => {
+    test('notes when a team\'s unread threads were not all taken, as when a full page is followed by nothing', async () => {
       put({ create_at: at(22, 1) });
       routes = unreadBase('always_on', [member(C, at(22, 0), 0, 1)]);
-      // A full first page, then nothing: as when the thread paged from is deleted in between.
       let k = 0;
       routes[`GET /users/u1/teams/${T}/threads`] = () => ({ total_unread_threads: 60, threads: k++ ? [] : Array.from({ length: 50 }, (_, i) => thread(`t${String(i).padStart(25, '0')}`, 0, 0)) });
       expect(await setup()('get_mentions', { unread_only: true })).toContain('未読スレッドを total_unread_threads: 60 に対して取り切れませんでした。');
@@ -1797,7 +1800,7 @@ describe('get_file', () => {
       });
     });
 
-    describe('a whole file without Japanese but for an incomplete last character (UTF-8 is only a guess)', () => {
+    describe('a whole file cut at its last character, otherwise made only of what half-width kana Shift_JIS can pass for in UTF-8 (UTF-8 is only a guess)', () => {
       test.each([
         ['a.txt', [0x61, 0x62, 0x63, 0xc2], 'Shift_JIS', 'abcﾂ', false],
         ['a.txt', [0x61, 0x62, 0x63, 0xe8, 0xa0], 'Shift_JIS', 'abc陟', false],
@@ -1816,15 +1819,42 @@ describe('get_file', () => {
         ['a.txt', [...Buffer.from('abc,'), 0xc3, 0xbd, 0xc4], 'Shift_JIS', 'abc,ﾃｽﾄ', false],
         // Fixing a known wrong guess: Latin UTF-8 with a cut last character also reads whole as Shift_JIS.
         ['a.txt', [...Buffer.from('naïve caf'), 0xc3], 'Shift_JIS', 'naﾃｯve cafﾃ', false],
-        ['a.txt', [...Buffer.from('voilà'), 0xc3], 'UTF-8', 'voilà', true],
         ['a.md', [...Buffer.from('café'), 0xe2], 'UTF-8', 'café', true],
-      ])('reads %s %j, without Japanese and with a cut last character in UTF-8, as %s with the guess noted', async (name, b, encoding, shown, cut) => {
+      ])('reads %s %j, whose UTF-8 half-width kana Shift_JIS could also make, as %s with the guess noted', async (name, b, encoding, shown, cut) => {
         routes = { [INFO]: textInfo(name as string, (b as number[]).length), [FILE]: body(Uint8Array.from(b as number[])) };
         const out = await setup()('get_file', { file_id: F });
         expect(content()).toBe(shown);
         expect(out).toContain(`文字コード: ${encoding}`);
         expect(out).toContain(GUESSED);
         expect(out.includes('末尾に不完全な文字')).toBe(cut);
+      });
+
+      test.each([
+        // à is C3 A0: an A0 trail byte half-width kana Shift_JIS never has, so this cannot be it.
+        ['a.txt', [...Buffer.from('voilà'), 0xc3], 'voilà'],
+        ['a.txt', [...Buffer.from('deploy 🚀 done '), 0xe3, 0x81], 'deploy 🚀 done '],
+        ['a.txt', [...Buffer.from('Grüße'), 0xc3], 'Grüße'],
+        ['a.md', [...Buffer.from('ship it 🚀'), 0xe3], 'ship it 🚀'],
+      ])('keeps UTF-8 without a guess for %s %j, whose characters half-width kana Shift_JIS cannot make', async (name, b, shown) => {
+        routes = { [INFO]: textInfo(name as string, (b as number[]).length), [FILE]: body(Uint8Array.from(b as number[])) };
+        const out = await setup()('get_file', { file_id: F });
+        expect(content()).toBe(shown);
+        expect(out).toContain('文字コード: UTF-8');
+        expect(out).not.toContain('推定');
+        expect(out).toContain('末尾に不完全な文字');
+      });
+
+      test.each([
+        [[0x61, 0x62, 0x63, 0xe3, 0x81], 'abc縺'],
+        [[...Buffer.from('résumé'), 0xc3], 'rﾃｩsumﾃｩﾃ'],
+        // á is C3 A1, the lowest trail byte half-width kana can make.
+        [[...Buffer.from('á'), 0xc3], 'ﾃ｡ﾃ'],
+      ])('reads ASCII or half-width kana look-alikes %j cut at the end as Shift_JIS with the guess noted, the price of not ruling out Latin-1', async (b, shown) => {
+        routes = { [INFO]: textInfo('a.txt', (b as number[]).length), [FILE]: body(Uint8Array.from(b as number[])) };
+        const out = await setup()('get_file', { file_id: F });
+        expect(content()).toBe(shown);
+        expect(out).toContain('文字コード: Shift_JIS');
+        expect(out).toContain(GUESSED);
       });
 
       test('reads a file as not text when Node cannot make a Shift_JIS or EUC-JP decoder, instead of failing', async () => {
