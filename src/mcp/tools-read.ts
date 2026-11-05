@@ -748,7 +748,7 @@ export function registerReadTools(server: McpServer, ctx: ToolContext): void {
     async ({ post }, mm) => {
       const id = parsePostRef(post, base);
       const p = await mm.call<MmPost & { reply_count?: number }>(uid, 'GET', `/posts/${id}`).catch((e) => {
-        if (e instanceof MmError && e.status === 403) throw new InputError('この投稿を見る権限がありません（参加していない非公開チャンネルなど）');
+        if (e instanceof MmError && e.status === 403) throw new InputError('この投稿を見る権限がありません（参加していない非公開チャンネルなど）。参加しているはずなら、Mattermost の一時的な障害の可能性があります。少し待ってから再試行してください。');
         if (e instanceof MmError && e.status === 404) throw new InputError('投稿が見つかりません（削除されたか、存在しません）');
         throw e;
       });
