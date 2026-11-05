@@ -20,7 +20,7 @@ async function readPost(mm: Mm, uid: string, postId: string, notMember: string):
   const post = await worded(mm.call<{ channel_id: string; is_pinned?: boolean }>(uid, 'GET', `/posts/${postId}`), POST_WORDING);
   // Not saying a 403 means not joined: Mattermost also answers 403 when its permission check fails on a transient error.
   await worded(mm.call(uid, 'GET', `/channels/${post.channel_id}/members/me`), {
-    status: [[403, `このチャンネルに参加しているかを確かめられませんでした（参加していないか、Mattermost の一時的な障害）。${notMember}参加しているはずなら、少し待ってから再試行してください。`], [404, notMember]],
+    status: [[403, `このチャンネルに参加しているかを確かめられませんでした（参加していないか、Mattermost の一時的な障害）。${notMember}参加しているはずなら、少し待ってから再試行してください。続くなら、チャンネルから外されたか、サーバーの権限の設定で読む権限が外されている可能性があるので、管理者に確かめてください。`], [404, notMember]],
   });
   return post;
 }

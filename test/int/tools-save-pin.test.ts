@@ -149,7 +149,7 @@ describe('save_post and unsave_post agree with list_saved_posts', () => {
     const id = await bobPost(outside.id);
     const r = await call('save_post', { post_id: id });
     expect(r.isError).toBe(true);
-    expect(r.content[0].text).toBe('このチャンネルに参加しているかを確かめられませんでした（参加していないか、Mattermost の一時的な障害）。参加していないチャンネルの投稿は保存できません。参加しているはずなら、少し待ってから再試行してください。');
+    expect(r.content[0].text).toBe('このチャンネルに参加しているかを確かめられませんでした（参加していないか、Mattermost の一時的な障害）。参加していないチャンネルの投稿は保存できません。参加しているはずなら、少し待ってから再試行してください。続くなら、チャンネルから外されたか、サーバーの権限の設定で読む権限が外されている可能性があるので、管理者に確かめてください。');
     expect(await saved()).not.toContain(id);
     expect(await savedInMattermost()).not.toContain(id);
   });
@@ -181,7 +181,7 @@ describe('pin_post and unpin_post agree with get_channel', () => {
     const id = await bobPost(outside.id);
     const r = await call('pin_post', { post_id: id });
     expect(r.isError).toBe(true);
-    expect(r.content[0].text).toBe('このチャンネルに参加しているかを確かめられませんでした（参加していないか、Mattermost の一時的な障害）。参加していないチャンネルの投稿はピン留めできません。参加しているはずなら、少し待ってから再試行してください。');
+    expect(r.content[0].text).toBe('このチャンネルに参加しているかを確かめられませんでした（参加していないか、Mattermost の一時的な障害）。参加していないチャンネルの投稿はピン留めできません。参加しているはずなら、少し待ってから再試行してください。続くなら、チャンネルから外されたか、サーバーの権限の設定で読む権限が外されている可能性があるので、管理者に確かめてください。');
     const post = await mmApi<{ is_pinned: boolean }>(bobMm, 'GET', `/posts/${id}`);
     expect(post.is_pinned).toBe(false);
   });
@@ -191,7 +191,7 @@ describe('pin_post and unpin_post agree with get_channel', () => {
     await mmApi(bobMm, 'POST', `/posts/${id}/pin`);
     const r = await call('unpin_post', { post_id: id });
     expect(r.isError).toBe(true);
-    expect(r.content[0].text).toBe('このチャンネルに参加しているかを確かめられませんでした（参加していないか、Mattermost の一時的な障害）。参加していないチャンネルの投稿のピン留めは外せません。参加しているはずなら、少し待ってから再試行してください。');
+    expect(r.content[0].text).toBe('このチャンネルに参加しているかを確かめられませんでした（参加していないか、Mattermost の一時的な障害）。参加していないチャンネルの投稿のピン留めは外せません。参加しているはずなら、少し待ってから再試行してください。続くなら、チャンネルから外されたか、サーバーの権限の設定で読む権限が外されている可能性があるので、管理者に確かめてください。');
     const post = await mmApi<{ is_pinned: boolean }>(bobMm, 'GET', `/posts/${id}`);
     expect(post.is_pinned).toBe(true);
   });

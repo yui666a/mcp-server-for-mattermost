@@ -7,7 +7,7 @@ import { log } from '../log.ts';
 import { MmError, RateLimited, Reauthorize } from '../mattermost/client.ts';
 import { MAX_OPEN_UPLOAD_URLS, type HeldFile, type Store } from '../store.ts';
 import { BODY_CUT_NOTE, indented, InputError, oneLine, type MmPost } from './format.ts';
-import { findPosted, postOnce } from './post.ts';
+import { lookPosted, postOnce } from './post.ts';
 import { myTeams, NoDirectChannel, resolveChannel, teamNameOf, unformat, type ChannelRef, type Mm, type MmChannel, type ResolvedChannel } from './resolve.ts';
 import { guarded, text, type ToolContext } from './server.ts';
 
@@ -141,6 +141,7 @@ export async function resolveTarget(mm: Mm, store: Store, uid: string, channel: 
 export const heldError = (h: HeldFile) =>
   new InputError(`file_id ${h.fileId} は予約（予約 ID: ${h.scheduledId}）の添付に使われています。投稿を試みる前の待機中の予約なら、cancel_scheduled_message で取り消すと使えます。同じファイルを別に送るときは、prepare_upload からアップロードし直してください。`);
 
+const SIZE_DIFFERS = '同じ本文の投稿がありますが、添付ファイルの大きさが違うため、この送信が投稿されたかは分かりません（アップロードしたファイルを書き換えるプラグインがあるサーバーでは、この送信の投稿でも大きさが変わります）。read_channel などで確かめ、投稿されていなければ allow_duplicate: true で送り直してください。';
 const OWNED_ELSEWHERE = '同じ本文の投稿がありますが、ほかの送信か予約のものとして記録されているため、この送信が投稿されたかは分かりません。read_channel などで確かめ、投稿されていなければ allow_duplicate: true で送り直してください。';
 const INFLIGHT = '同じ投稿を処理中です。少し待ってから read_channel などで投稿されたかを確かめてください。';
 
@@ -189,13 +190,15 @@ export async function sendMessage(mm: Mm, store: Store, uid: string, baseUrl: st
   if (claim.kind === 'inflight') return text(INFLIGHT, true);
   if (claim.kind === 'retry') {
     // Not dropping the claim if this lookup fails: the earlier attempt's outcome is still unknown.
-    const found = await findPosted(mm, uid, { ...spec, fileCount: attached, fileIds }, claim.createdAt);
+    const { found, sizeDiffers } = await lookPosted(mm, uid, { ...spec, fileCount: attached, fileIds, files: files.map((f) => f.bytes.length) }, claim.createdAt);
     // Not read before the lookup: a send that completed meanwhile would be missed.
     const owned = new Set([...store.otherClaimPostIds(uid, claim.id), ...store.otherScheduledPostIds(uid, '')]);
     const prev = found.find((p) => !owned.has(p));
     // Not posting when every match is another record's: such a record may hold this send's own earlier post by a mistaken match of its own, and posting again would post it twice.
     // Not dropping the claim either, for the same reason.
     if (!prev && found.length) return text(OWNED_ELSEWHERE, true);
+    // Not posting either when the only candidates differ in file size: on a server whose plugin rewrites uploads, that is this send's own earlier post.
+    if (!prev && sizeDiffers.some((p) => !owned.has(p))) return text(SIZE_DIFFERS, true);
     if (prev) {
       store.completePost(claim.id, prev);
       store.markFilesPosted(uid, fileIds, prev);
@@ -216,7 +219,7 @@ export async function sendMessage(mm: Mm, store: Store, uid: string, baseUrl: st
     res = r;
   } catch (e) {
     // Not leaving out InputError: here it can only be a file refused before the post or an upload that Mattermost refused, so nothing was posted.
-    if (e instanceof MmError || e instanceof InputError || e instanceof RateLimited || (e as { sent?: boolean })?.sent === false) store.dropPost(claim.id, claimedAt);
+    if (e instanceof MmError || e instanceof InputError || (e instanceof RateLimited && !e.doubt) || (e as { sent?: boolean })?.sent === false) store.dropPost(claim.id, claimedAt);
     throw e;
   }
   store.completePost(claim.id, res.postId);
@@ -401,7 +404,7 @@ class TooLateToDelete extends Error {
 // ponytail: a fixed wait; a queue in the Limiter if callers other than the cleanup need to wait their turn.
 const LIMITER_WAIT_MS = 100;
 
-// Not waiting on Mattermost's 429 or a per-minute limit further away: neither frees up within the cleanup's 5 seconds.
+// Not waiting on Mattermost's 429 or a per-minute limit more than a second away: the wait would use up most of the 4 seconds left before the 1-second margin kept for DELETE, leaving little time to list and delete the draft.
 async function untilAdmitted<T>(attempt: () => Promise<T>, stop: AbortSignal, before?: () => void): Promise<T> {
   for (;;) {
     before?.();
@@ -531,12 +534,17 @@ async function saveLocked(mm: Mm, uid: string, ch: ChannelRef, rootId: string, a
   const existing = list.find((d) => d.channel_id === ch.id && (d.root_id || '') === rootId);
   if (existing?.message === args.message) return text(`同じ下書きがあります。保存し直していません。\n${where}\n${LEFT_BEHIND}`);
   if (existing && !args.overwrite) {
-    const head = [...existing.message].slice(0, 200).join('');
+    const chars = [...existing.message];
+    const head = chars.slice(0, 200).join('');
+    const quoted = indented('既存の下書き（先頭 200 文字）', head);
     throw new InputError([
       '同じ投稿先に、本文の違う下書きがあります。上書きしていません。上書きするときは overwrite: true を付けてください（添付ファイル、優先度、burn-on-read も失われます）。',
       where,
+      // Not after the quote: the quote stays last, so nothing written in the draft can pass for a line of this answer.
+      ...(chars.length > 200 ? ['既存の下書きは 200 文字を超えるので、先頭だけを出しています。書き写すと後ろが消えるので、追記は Mattermost の画面で行うよう利用者に伝えてください。'] : []),
+      ...(quoted.length > 1 ? ['既存の下書きの 2 行目以降は 4 文字字下げし、改行を LF にそろえて出しています。書き写すときは、2 行目以降の先頭の 4 文字の空白を外してください。'] : []),
       // Not at the margin: a later line of the user's draft could pass for a line of this answer.
-      ...indented('既存の下書き（先頭 200 文字）', head),
+      ...quoted,
     ].join('\n'));
   }
   await worded(mm.call(uid, 'POST', '/drafts', { channel_id: ch.id, root_id: rootId, message: args.message }), {

@@ -3,7 +3,7 @@ import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
 import { z } from 'zod';
 import { FileHeld, MAX_PENDING_SCHEDULED, type Scheduled, type ScheduledStatus, type Store } from '../store.ts';
 import { strictArgs } from './args.ts';
-import { encodeCursor, formatTime, indented, InputError, lines, oneLine, truncate } from './format.ts';
+import { encodeCursor, formatTime, indented, InputError, oneLine, truncate } from './format.ts';
 import { dmLabel, type Mm, type MmChannel, teamNameOf } from './resolve.ts';
 import { guarded, text, type ToolContext } from './server.ts';
 import { cursorArg, cursorOf, limitArg, perPage } from './tools-read.ts';
@@ -131,8 +131,8 @@ async function row(s: Scheduled, where: string, teamOf: (channelId: string) => P
     `予定時刻: ${formatTime(s.scheduledAt)}`,
   ];
   const head = s.message === undefined ? undefined : truncate(s.message, 200);
-  // Not leaving the body's later lines at the margin: one could pass for a heading or a field of the list, so they are indented as formatPost does.
-  if (!full) out.push(head ? `本文（先頭 200 文字）: ${lines(head.text).join('\n  ')}` : '本文: （復号できません）');
+  // Not leaving the body's later lines at the margin: one could pass for a heading or a field of the list, so they are indented as the reason is.
+  if (!full) out.push(...(head ? indented('本文（先頭 200 文字）', head.text) : ['本文: （復号できません）']));
   // Not on the body line itself: a copied body would carry the hint into the post.
   if (!full && head?.truncated) out.push('（本文を先頭 200 文字で切りました。全文は list_scheduled_messages に id を渡すと出ます）');
   if (s.fileIds.length) out.push(`添付: ${s.fileIds.join(', ')}`);
