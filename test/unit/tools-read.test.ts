@@ -2790,6 +2790,12 @@ describe('search_files', () => {
     expect(out).toBe('この Mattermost ではファイルの検索が無効になっています（システムコンソールの設定）。ファイル名を含む投稿は search_posts で探せます。');
   });
 
+  test('lists the user\'s channels with archived ones included, as for posts', async () => {
+    routes = base();
+    await setup()('search_files', { terms: 'fff' });
+    expect(urls).toContain('GET /users/me/channels?include_deleted=true');
+  });
+
   test('rejects a search_posts cursor, which has the same page and per_page', async () => {
     routes = base();
     const out = await setup()('search_files', { terms: 'x', cursor: Buffer.from(JSON.stringify({ page: 1, per_page: 20 })).toString('base64url') }, true);
