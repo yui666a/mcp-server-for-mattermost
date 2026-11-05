@@ -235,7 +235,6 @@ describe('search_posts in: filters', () => {
       ['x in:@bob , carol', 'in:@bob の後の「,」'],
       ['x in: @bob ,carol', 'in:@bob の後の「,carol」'],
       ['x channel:~@bob ,carol', 'in:~@bob の後の「,carol」'],
-      ['x in:@bob 、carol', 'in:@bob の後の「、carol」'],
     ])('%j is an input error without searching', async (terms, message) => {
       routes = withGroup();
       const out = await setup()('search_posts', { terms }, true);
@@ -243,7 +242,7 @@ describe('search_posts in: filters', () => {
       expect(hits).not.toContain('POST /posts/search');
     });
 
-      test.each([
+    test.each([
       ['x in:@bob 、carol', 'in:@bob の後の「、carol」'],
       ['x in:@bob 、@carol', 'in:@bob の後の「、@carol」'],
       ['x in:@bob 、carol、dave', 'in:@bob の後の「、carol、dave」'],
@@ -268,7 +267,7 @@ describe('search_posts in: filters', () => {
       expect(await setup()('search_posts', { terms: 'x in:@bob、carol' }, true)).toContain('@a,b の区切りは半角のカンマ（,）で書いてください。');
     });
 
-  test('the space check runs before any lookup', async () => {
+    test('the space check runs before any lookup', async () => {
       routes = withGroup();
       await setup()('search_posts', { terms: 'x in:only-a in:@bob ,carol' }, true);
       expect(hits).toEqual([]);
@@ -284,6 +283,11 @@ describe('search_posts in: filters', () => {
     routes = { ...base(), 'GET /users/username/bob': () => Response.json({ id: 'api.context.permissions.app_error' }, { status: 403 }) };
     expect(await setup()('search_posts', { terms: 'x in:@bob' }, true)).toContain('ユーザー「@bob」が見つかりません。');
     expect(hits).not.toContain('POST /posts/search');
+  });
+
+  test('a 403 from the teams lookup for in:@user is not reported as a missing user', async () => {
+    routes = { ...base(), 'GET /users/me/teams': () => Response.json({ id: 'api.context.permissions.app_error' }, { status: 403 }) };
+    expect(await setup()('search_posts', { terms: 'x in:@bob' }, true)).not.toContain('ユーザー「@bob」が見つかりません。');
   });
 
   test('in:@ with no name says the user name is empty', async () => {

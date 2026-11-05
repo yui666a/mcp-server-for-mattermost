@@ -218,7 +218,7 @@ export async function resolveInFilters(mm: Mm, userId: string, terms: string): P
   const out = words.map((w) => [w]);
   for (const f of filters) {
     const next = words[f.at + f.span];
-    // A word after 、 is left as a search word unless it can only be more user names: 、 also starts Japanese words such as 、議事録.
+    // Not treating every 、 as a comma: 、 also starts search words such as 、議事録.
     if (f.value.replace(/^~+/, '').startsWith('@') && /^[,，]|^、[A-Za-z0-9._,@、-]*$/.test(next ?? '')) {
       const fullWidth = /^[、，]/.test(next ?? '') ? '区切りは半角のカンマ（,）で書いてください。' : '';
       throw new InputError(`in:${f.value} の後の「${next}」: 検索の in: では @a,b のようにカンマの前後に空白を入れずに書いてください。${fullWidth}`);

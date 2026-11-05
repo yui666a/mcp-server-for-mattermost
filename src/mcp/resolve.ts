@@ -82,7 +82,7 @@ export async function resolveChannel(mm: Mm, userId: string, spec: string, opts:
   const s = spec.trim();
   if (ID.test(s)) {
     const c = await fetchChannel(mm, userId, `/channels/${s}`).catch(async (e) => {
-      // Not on a 403, which means the ID exists. Lowered: channel names are lower case only, while a mistyped ID may not be.
+      // Not on a 403, which means the ID exists. Lowered rather than skipped for upper case: Mattermost IDs are lower case, so upper case points to a mistyped name.
       if (!(e instanceof ChannelFetchError && e.status === 404)) throw e;
       const lower = s.toLowerCase();
       const found = await byName(mm, userId, lower, await myTeams(mm, userId));
@@ -96,7 +96,7 @@ export async function resolveChannel(mm: Mm, userId: string, spec: string, opts:
     return ref(c, await teamNameOf(mm, userId, c.team_id));
   }
   const slash = s.indexOf('/');
-  // Team and channel names are lowered as user names are: Mattermost allows lower case only, and answers 400 to any upper case letter.
+  // Lowered rather than passed as typed, here and for a bare channel name: Mattermost names are lower case only, and it answers 400 to any upper case letter.
   if (slash > 0) {
     const team = plain(s.slice(0, slash), 'チーム名').toLowerCase();
     const c = await fetchChannel(mm, userId, `/teams/name/${team}/channels/name/${plain(s.slice(slash + 1), 'チャンネル名').toLowerCase()}`);

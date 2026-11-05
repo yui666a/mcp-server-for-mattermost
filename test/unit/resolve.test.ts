@@ -173,13 +173,13 @@ describe('@user that cannot be looked up', () => {
   test.each([
     [404, 'app.user.get_by_username.app_error'],
     [403, 'api.context.permissions.app_error'],
-    [400, 'api.context.invalid_url_param.app_error'],
-  ])('a %i from the user lookup says the user is not found', async (status, id) => {
+    [400, 'api.context.invalid_url_param.app_error', '@all'],
+  ])('a %i from the user lookup says the user is not found', async (status, id, spec = '@ghost') => {
     const mm: Mm = { call: async <T>(_u: string, _m: string, p: string) => {
       if (p === '/users/me/teams') return teams as T;
       throw new MmError(status, id, 'x');
     } };
-    await expect(resolveChannel(mm, ME, '@ghost')).rejects.toThrow(new InputError('ユーザー「@ghost」が見つかりません。'));
+    await expect(resolveChannel(mm, ME, spec)).rejects.toThrow(new InputError(`ユーザー「${spec}」が見つかりません。`));
   });
 
   test('a 403 from the teams lookup is not reported as a missing user', async () => {
