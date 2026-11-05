@@ -130,7 +130,7 @@ describe('pin_post and unpin_post', () => {
   });
 
   test.each(['pin_post', 'unpin_post'] as const)('%s leaves a 400 it has no wording for as Mattermost\'s own error', async (name) => {
-    routes = { ...post(), [WRITE[name]]: mmError(400, 'api.post.patch_post.can_not_update_burn_on_read_post.error') };
+    routes = { ...post(name === 'unpin_post'), [WRITE[name]]: mmError(400, 'api.post.patch_post.can_not_update_burn_on_read_post.error') };
     const r = await setup().call(name, { post_id: POST });
     expect(r).toEqual({ isError: true, text: 'Mattermost がエラーを返しました（400）: m' });
   });
