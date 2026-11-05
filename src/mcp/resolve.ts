@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 import { MmError, UpstreamUnavailable, type MmClient } from '../mattermost/client.ts';
-import { InputError } from './format.ts';
+import { InputError, oneLine } from './format.ts';
 
 export type Mm = Pick<MmClient, 'call'>;
 export type ChannelRef = { id: string; name: string; displayName: string; teamId: string; teamName: string };
@@ -83,15 +83,24 @@ export async function resolveChannel(mm: Mm, userId: string, spec: string, opts:
   const s = spec.trim();
   if (ID.test(s)) {
     const c = await fetchChannel(mm, userId, `/channels/${s}`).catch(async (e) => {
-      // Not on a 403, which means the ID exists. Lowered rather than skipped for upper case: Mattermost IDs are lower case, so upper case points to a mistyped name.
+      // Not on a 403, which means the ID exists. Lowered for the name too: a channel name is lower case only.
       if (!(e instanceof ChannelFetchError && e.status === 404)) throw e;
       const lower = s.toLowerCase();
+      // Tried again in lower case before any name: Mattermost IDs are lower case, so an upper case ID is the same ID written differently,
+      // not a name used in place of an ID.
+      if (lower !== s) {
+        const c = await fetchChannel(mm, userId, `/channels/${lower}`).catch((e2) => {
+          if (e2 instanceof ChannelFetchError && e2.status === 404) return undefined;
+          throw e2;
+        });
+        if (c) return c;
+      }
       const found = await byName(mm, userId, lower, await myTeams(mm, userId));
       if (!found.length) throw e;
       // Not used in place of the ID: a user ID or post ID mistaken for a channel would send to whoever named a channel after it.
       throw new InputError([
         `チャンネル ID「${s}」のチャンネルはありません。ユーザー ID や投稿 ID を渡したのなら、チャンネルの指定ではありません。`,
-        `同じ文字列を名前に持つチャンネルはあります。そのチャンネルを指すときだけ、${found.map((f) => `「${f.teamName}/${lower}」（${f.displayName}）`).join('か')}の形で指定してください。`,
+        `同じ文字列を名前に持つチャンネルはあります。そのチャンネルを指すときだけ、${found.map((f) => `「${f.teamName}/${lower}」（${oneLine(f.displayName)}）`).join('か')}の形で指定してください。`,
       ].join(''));
     });
     // Not looked up when only the ID is wanted (in: in a search): a lookup the output does not use could still fail on a rate limit.
@@ -108,7 +117,9 @@ export async function resolveChannel(mm: Mm, userId: string, spec: string, opts:
     return ref(c, team);
   }
   // Only when every part could be a user name: @bob、議事録 is a missing space before a search word, not a separator.
-  if (s.startsWith('@') && /[、，]/.test(s) && s.slice(1).split(/[,、，]/).every((p) => NAME.test(p.trim().replace(/^@/, '')))) throw new InputError('@a,b の区切りは半角のカンマ（,）で書いてください。読点（、）や全角のカンマ（，）は使えません。');
+  const parts = s.slice(1).split(/[,、，]/).map((p) => p.trim().replace(/^@/, '')).filter(Boolean);
+  // Not counting empty parts as names: a trailing 、 as in @bob、 is a separator, not a character a user name cannot have.
+  if (s.startsWith('@') && /[、，]/.test(s) && parts.length && parts.every((p) => NAME.test(p))) throw new InputError('@a,b の区切りは半角のカンマ（,）で書いてください。読点（、）や全角のカンマ（，）は使えません。');
   if (!s.startsWith('@')) plain(s, 'チャンネル名');
   const teams = await myTeams(mm, userId);
   if (s.startsWith('@') && s.includes(',')) return resolveGroup(mm, userId, s, teams, opts.create);
