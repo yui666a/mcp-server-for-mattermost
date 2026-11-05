@@ -535,6 +535,8 @@ async function saveLocked(mm: Mm, uid: string, ch: ChannelRef, rootId: string, a
     throw new InputError([
       '同じ投稿先に、本文の違う下書きがあります。上書きしていません。上書きするときは overwrite: true を付けてください（添付ファイル、優先度、burn-on-read も失われます）。',
       where,
+      // Not after the quote: the quote stays last, so nothing written in the draft can pass for a line of this answer.
+      '既存の下書きの 2 行目以降は 4 文字字下げして出しています。書き写すときは、2 行目以降の先頭の 4 文字の空白を外してください。',
       // Not at the margin: a later line of the user's draft could pass for a line of this answer.
       ...indented('既存の下書き（先頭 200 文字）', head),
     ].join('\n'));
