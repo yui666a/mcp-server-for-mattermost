@@ -1874,30 +1874,26 @@ describe('list_saved_posts', () => {
     expect(shownIds(await setup()('list_saved_posts', {}))).toEqual([a.id, b.id, c.id]);
   });
 
-  test('misses no post of a group of 21 with the same time across the boundary of a read, though each read orders the group differently', async () => {
-    // Two groups at rows 21-41 and 201-221: 20 rows before and 1 after the end of the first read (row 41 for limit 20) and of the second (row 221).
+  // For limit 1 the reads cover rows 0-21, 2-201 and 182-381, so rows 2-22 and 182-202 are 21 rows across the end of a read, 20 before it and 1 after.
+  // The first case needs the second read to start back at row 2, the second case needs the full 20 rows of overlap.
+  test.each([
+    ['the small first read', 2, 0],
+    ['a read of 200', 182, 1],
+  ])('misses no post of a group of 21 with the same time across the end of %s, though the next read orders the group the other way', async (_, before, descRead) => {
     const all = [
-      ...Array.from({ length: 21 }, (_, i) => post(pid(i), 10_000 - i)),
-      ...Array.from({ length: 21 }, (_, i) => post(pid(100 + i), 5000)),
-      ...Array.from({ length: 159 }, (_, i) => post(pid(200 + i), 4000 - i)),
-      ...Array.from({ length: 21 }, (_, i) => post(pid(400 + i), 1000)),
-      ...Array.from({ length: 30 }, (_, i) => post(pid(500 + i), 500 - i)),
+      ...Array.from({ length: before }, (_, i) => post(pid(i), 10_000 - i)),
+      ...Array.from({ length: 21 }, (_, i) => post(pid(1000 + i), 5000)),
+      ...Array.from({ length: 30 }, (_, i) => post(pid(2000 + i), 1000 - i)),
     ];
+    // The read that ends inside the group puts its smallest post_id after the end; the next read puts it first, before where that read starts.
     let reads = 0;
     routes = { ...base(), [FLAGGED]: (req: Request) => {
-      const flip = reads++ % 2 === 1;
-      const ordered = [...all].sort((x, y) => y.create_at - x.create_at || (flip ? y.id.localeCompare(x.id) : x.id.localeCompare(y.id)));
-      return byOffset(ordered)(req);
+      const desc = reads++ === descRead;
+      return byOffset([...all].sort((x, y) => y.create_at - x.create_at || (desc ? y.id.localeCompare(x.id) : x.id.localeCompare(y.id))))(req);
     } };
-    const call = setup();
-    const seen: string[] = [];
-    let cursor: string | undefined;
-    do {
-      const out = await call('list_saved_posts', cursor ? { cursor } : { limit: 20 });
-      seen.push(...shownIds(out));
-      cursor = cursorIn(out);
-    } while (cursor);
-    expect(seen).toEqual([...all].sort((x, y) => y.create_at - x.create_at || x.id.localeCompare(y.id)).map((p) => p.id));
+    const last = all[before - 1];
+    const out = await setup()('list_saved_posts', { cursor: Buffer.from(JSON.stringify({ create_at: last.create_at, id: last.id, per_page: 1 })).toString('base64url') });
+    expect(shownIds(out)).toEqual([pid(1000)]);
   });
 
   test('reads up to row 1000 and then says only the newest 1000 were looked at, on pages with and without a cursor', async () => {
