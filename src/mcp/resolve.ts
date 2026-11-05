@@ -87,7 +87,10 @@ export async function resolveChannel(mm: Mm, userId: string, spec: string, opts:
       const found = await byName(mm, userId, s, await myTeams(mm, userId));
       if (!found.length) throw e;
       // Not used in place of the ID: a user ID or post ID mistaken for a channel would send to whoever named a channel after it.
-      throw new InputError(`チャンネル ID「${s}」のチャンネルはありませんが、その名前のチャンネルがあります。チャンネル名として指定するときは${found.map((f) => `「${f.teamName}/${s}」`).join('か')}の形で指定してください。`);
+      throw new InputError([
+        `チャンネル ID「${s}」のチャンネルはありません。ユーザー ID や投稿 ID を渡したのなら、チャンネルの指定ではありません。`,
+        `同じ文字列を名前に持つチャンネルはあります。そのチャンネルを指すときだけ、${found.map((f) => `「${f.teamName}/${s}」（${f.displayName}）`).join('か')}の形で指定してください。`,
+      ].join(''));
     });
     return ref(c, await teamNameOf(mm, userId, c.team_id));
   }
