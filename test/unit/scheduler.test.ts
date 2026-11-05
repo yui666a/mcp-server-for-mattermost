@@ -40,6 +40,12 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
+// Not a plain 401: a call that got only 401 counts as not sent, so the 503 is what makes this a re-login after Mattermost may have handled the post.
+function sentThenRelogin(store: { putMmCred: (u: string, a: string, r: string) => void }) {
+  routes['POST /oauth/access_token'] = () => { store.putMmCred(UID, 'aC', 'rC'); return Response.json({ access_token: 'a2', refresh_token: 'r2' }); };
+  routes['POST /posts'] = (req) => (req.headers.get('authorization') === 'Bearer a2' ? Response.json({ id: 'x' }, { status: 503 }) : new Response(null, { status: 401 }));
+}
+
 function setup() {
   const ctx = makeApp({}, async (input, init) => {
     const req = new Request(input, init);
@@ -146,12 +152,21 @@ describe('a refusal fails the schedule without retrying, with a reason for the u
     expect(hits).toEqual([]);
   });
 
-  test('re-login needed after the post was sent tells the user it may have been posted', async () => {
+  test('re-login needed after Mattermost may have handled the post tells the user it may have been posted', async () => {
+    const s = setup();
+    sentThenRelogin(s.store);
+    const id = s.make();
+    await s.run();
+    expect(s.row(id)).toMatchObject({ status: 'failed', error: UNKNOWN });
+  });
+
+  test('re-login needed when Mattermost only answered 401 fails with the re-login reason, since nothing was posted', async () => {
     const s = setup();
     routes['POST /posts'] = () => { s.store.revokeUser(UID); return new Response(null, { status: 401 }); };
     const id = s.make();
     await s.run();
-    expect(s.row(id)).toMatchObject({ status: 'failed', error: UNKNOWN });
+    expect(s.row(id)).toMatchObject({ status: 'failed', first_attempt_at: null });
+    expect(s.row(id).error).toContain('再ログイン');
   });
 });
 
@@ -204,6 +219,19 @@ describe('a retry after an unknown outcome looks for the earlier post first', ()
     s.set(id, 'first_attempt_at = ?, pending_post_id = ?', NOW, 'pending-1');
     return id;
   }
+
+  test('a retry whose post gets only 401 before a re-login fails with the re-login reason and keeps the attempt and its files', async () => {
+    const s = setup();
+    routes[`GET /channels/${CH}/posts`] = () => postList();
+    routes['POST /posts'] = () => { s.store.revokeUser(UID); return new Response(null, { status: 401 }); };
+    const F1 = 'f'.repeat(26);
+    const id = attempted(s, { fileIds: [F1] });
+    await s.run();
+    expect(s.row(id)).toMatchObject({ status: 'failed' });
+    expect(s.row(id).error).toContain('再ログイン');
+    expect(s.row(id).first_attempt_at).not.toBeNull();
+    expect(s.store.heldScheduledFiles(UID, [F1])).toEqual([{ fileId: F1, scheduledId: id }]);
+  });
 
   test('finds the earlier post from the first attempt on and records it without posting again', async () => {
     const s = setup();
@@ -533,14 +561,23 @@ describe('a schedule with files', () => {
     expect(s.store.heldScheduledFiles(UID, [F1])).toEqual([]);
   });
 
-  test('a first attempt that needs re-login after sending fails as maybe posted and keeps its files', async () => {
+  test('a first attempt that needs re-login after Mattermost may have handled it fails as maybe posted and keeps its files', async () => {
     const s = setup();
-    routes['POST /posts'] = () => { s.store.revokeUser(UID); return new Response(null, { status: 401 }); };
+    sentThenRelogin(s.store);
     const id = s.make({ fileIds: [F1] });
     await s.run();
     expect(s.row(id)).toMatchObject({ status: 'failed', error: UNKNOWN });
     expect(s.row(id).first_attempt_at).not.toBeNull();
     expect(s.store.heldScheduledFiles(UID, [F1])).toEqual([{ fileId: F1, scheduledId: id }]);
+  });
+
+  test('a first attempt that only got 401 before the re-login fails, forgets the attempt and lets its files go', async () => {
+    const s = setup();
+    routes['POST /posts'] = () => { s.store.revokeUser(UID); return new Response(null, { status: 401 }); };
+    const id = s.make({ fileIds: [F1] });
+    await s.run();
+    expect(s.row(id)).toMatchObject({ status: 'failed', first_attempt_at: null });
+    expect(s.store.heldScheduledFiles(UID, [F1])).toEqual([]);
   });
 
   test('a retry that Mattermost refuses fails but keeps the attempt and its files, since the earlier attempt may have posted', async () => {
