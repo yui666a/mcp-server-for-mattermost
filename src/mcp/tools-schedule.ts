@@ -7,7 +7,7 @@ import { encodeCursor, formatTime, InputError, truncate } from './format.ts';
 import { teamNameOf, type Mm, type MmChannel, type UserRef } from './resolve.ts';
 import { guarded, text, type ToolContext } from './server.ts';
 import { cursorArg, cursorOf, limitArg, perPage } from './tools-read.ts';
-import { checkRoot, checkUnposted, checkUploaded, heldError, MAX_UPLOAD_FILES, resolveTarget } from './tools-send.ts';
+import { checkRoot, checkUnposted, checkUploaded, createsDirect, heldError, MAX_UPLOAD_FILES, resolveTarget } from './tools-send.ts';
 import { parseWhen } from './when.ts';
 
 const MIN_AHEAD = 60_000;
@@ -38,7 +38,7 @@ const scheduleShape = {
     .describe('prepare_upload で、投稿先と同じチャンネルへ 24 時間以内にアップロードした file_id（1〜5 件）'),
 };
 const scheduleSchema = strictArgs(scheduleShape, {
-  files: 'files は予約では使えません。今すぐ送るなら send_message の files を、予約するなら prepare_upload でアップロードし、その file_id を file_ids に渡してください。',
+  files: 'files は予約では使えません。中身を読めて合計 128KiB に収まるファイルを今すぐ送るなら send_message の files を、それ以外や予約では prepare_upload でアップロードし、その file_id を file_ids に渡してください。',
 });
 type ScheduleArgs = { channel: string; message: string; root_id?: string; at: string; file_ids?: string[] };
 
@@ -47,7 +47,7 @@ export async function scheduleMessage(mm: Mm, store: Store, uid: string, args: S
   const fileIds = args.file_ids ?? [];
   // Not left to createScheduled alone when resolving may create a DM: failing after that leaves it empty. A schedule added or put back to pending between the two checks still does.
   // Not checked first for other targets: a wrong channel name or file is the error the caller can act on, and the limit is checked again when the row is made.
-  const mayCreate = args.channel.trim().startsWith('@') && !args.root_id && !fileIds.length;
+  const mayCreate = args.channel.trim().startsWith('@') && createsDirect(args.root_id, fileIds);
   if (mayCreate && store.pendingScheduledCount(uid) >= MAX_PENDING_SCHEDULED) throw new InputError(AT_LIMIT);
   const ch = await resolveTarget(mm, store, uid, args.channel, args.root_id, fileIds);
   if (args.root_id) await checkRoot(mm, uid, args.root_id, ch);
