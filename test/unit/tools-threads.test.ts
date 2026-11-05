@@ -140,17 +140,25 @@ describe('list_followed_threads', () => {
   });
 
   test('says where it stopped when a team follows more threads than one page returns', async () => {
-    routes = { ...base(), [`GET /users/u1/teams/${T2}/threads`]: () => page([thread(TH2, CH2, 6000), thread(TH_ARCH, ARCHIVED, 3000)], 450) };
+    const full = (last: (i: number) => number) => Array.from({ length: 200 }, (_, i) => thread(`f${String(i).padStart(25, '0')}`, CH2, last(i)));
+    routes = { ...base(), [`GET /users/u1/teams/${T2}/threads`]: () => page(full((i) => 9000 - i), 450) };
     const { text: out } = await setup().call('list_followed_threads', {});
     expect(out).toContain('フォロー中のスレッド: 452 件');
-    expect(out).toContain('（team-b のフォロー中のスレッドは、最終返信の新しい 2 件だけを取得しています（total: 450）。最終返信が 1970-01-01T00:00:03Z | 1970-01-01T09:00:03+09:00 以前のスレッドは出ていないことがあります）');
-    expect(out).not.toContain('team-a と DM、グループ DM のフォロー中');
-    routes[`GET /users/u1/teams/${T1}/threads`] = () => page([thread(TH1, CH1, 5000)], 9);
-    expect((await setup().call('list_followed_threads', {})).text).toContain('（team-a と DM、グループ DM のフォロー中のスレッドは、最終返信の新しい 1 件だけを取得しています（total: 9）。');
-    routes[`GET /users/u1/teams/${T2}/threads`] = () => page([thread(TH2, CH2, 6000), thread(TH_ARCH, ARCHIVED, 0, { reply_count: 0 })], 450);
+    expect(out).toContain('（team-b のフォロー中のスレッドは、最終返信の新しい 200 件だけを取得しています（total: 450）。最終返信が 1970-01-01T00:00:08Z | 1970-01-01T09:00:08+09:00 以前のスレッドは出ていないことがあります）');
+    expect(out).not.toContain('team-a と DM、グループ DM の');
+    routes[`GET /users/u1/teams/${T2}/threads`] = () => page(full((i) => (i < 199 ? 9000 - i : 0)), 450);
     const zero = (await setup().call('list_followed_threads', {})).text;
-    expect(zero).toContain('最終返信の新しい 2 件だけを取得しています（total: 450）。返信がすべて削除されたほかのスレッドは出ていないことがあります）');
+    expect(zero).toContain('最終返信の新しい 200 件だけを取得しています（total: 450）。返信がすべて削除されたほかのスレッドは出ていないことがあります）');
     expect(zero).not.toContain('（total: 450）。最終返信が');
+  });
+
+  test('says a short page under a larger total holds follows of threads whose root post is gone, not that it stopped', async () => {
+    routes = { ...base(), [`GET /users/u1/teams/${T1}/threads`]: () => page([thread(TH1, CH1, 5000)], 3) };
+    const out = (await setup().call('list_followed_threads', {})).text;
+    expect(out).toContain('（team-a と DM、グループ DM の total: 3 には、根の投稿がデータ保持ポリシーで消えて一覧に出せないスレッドが 2 件含まれます）');
+    expect(out).not.toContain('だけを取得しています');
+    routes[`GET /users/u1/teams/${T2}/threads`] = () => page([], 4);
+    expect((await setup().call('list_followed_threads', {})).text).toContain('（team-b の total: 4 には、根の投稿がデータ保持ポリシーで消えて一覧に出せないスレッドが 4 件含まれます）');
   });
 
   test('looks up more than 1,000 users in calls of at most 1,000 ids, and names the users of every call', async () => {

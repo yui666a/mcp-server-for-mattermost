@@ -65,8 +65,12 @@ export function registerThreadTools(server: McpServer, ctx: ToolContext): void {
         const got = r.threads ?? [];
         threads.push(...got.map((x) => ({ ...x, teamName: t.name })));
         total += r.total;
-        if (r.total > got.length && got.length) {
-          notes.push(`（${t.name}${i ? '' : ' と DM、グループ DM'} のフォロー中のスレッドは、最終返信の新しい ${got.length} 件だけを取得しています（total: ${r.total}）。${got.at(-1)!.last_reply_at ? `最終返信が ${formatTime(got.at(-1)!.last_reply_at)} 以前のスレッド` : '返信がすべて削除されたほかのスレッド'}は出ていないことがあります）`);
+        const who = `${t.name}${i ? '' : ' と DM、グループ DM'}`;
+        // Not taking a short page with a larger total as cut off: Mattermost counts the follows of threads whose root post is gone, which the list never returns.
+        if (r.total > got.length && got.length < THREAD_PAGE) {
+          notes.push(`（${who} の total: ${r.total} には、根の投稿がデータ保持ポリシーで消えて一覧に出せないスレッドが ${r.total - got.length} 件含まれます）`);
+        } else if (r.total > got.length) {
+          notes.push(`（${who} のフォロー中のスレッドは、最終返信の新しい ${got.length} 件だけを取得しています（total: ${r.total}）。${got.at(-1)!.last_reply_at ? `最終返信が ${formatTime(got.at(-1)!.last_reply_at)} 以前のスレッド` : '返信がすべて削除されたほかのスレッド'}は出ていないことがあります）`);
         }
       }
       const rows = threads.map((th) => ({ th, updatedAt: th.last_reply_at, key: { t: th.last_reply_at, id: th.id } }));
