@@ -43,3 +43,12 @@ test('arguments the check refuses are logged as a tool_call with the outcome inv
   expect(out.join('')).toMatch(/"mm_user_id":"u1","tool":"get_user","outcome":"invalid_args","ms":\d+/);
   expect(out.join('')).not.toContain('alice');
 });
+
+test.each([
+  ['a missing required argument', {}],
+  ['an argument of the wrong type', { user: 1 }],
+])('%s is also logged as invalid_args', async (_, args) => {
+  const client = await connect();
+  expect((await client.callTool({ name: 'get_user', arguments: args })).isError).toBe(true);
+  expect(toolCalls()).toEqual([expect.objectContaining({ tool: 'get_user', outcome: 'invalid_args' })]);
+});
