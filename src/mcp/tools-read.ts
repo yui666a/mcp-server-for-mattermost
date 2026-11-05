@@ -212,11 +212,16 @@ export function channelInline(c: ChannelRef & { archived?: boolean }): string {
   return `${team} | ${channel}`;
 }
 
+// The 404 of looking a channel up by id: /channels/{id} gives it only for a channel that does not exist, whereas a 404 by name may also be a private or archived channel, or a passing failure.
+const BY_ID_404 = 'app.channel.get.existing.app_error';
+
 function channelError(e: unknown): never {
   // Not converting a missing team: /teams/name/{team}/channels/name/{channel} answers it with 404 too.
   if (e instanceof ChannelFetchError && e.id !== 'app.team.get_by_name.missing.app_error') {
     if (e.status === 403) throw new InputError('このチャンネルを見る権限がありません（参加していない非公開チャンネルなど）。参加しているはずなら、Mattermost の一時的な障害の可能性があります。少し待ってから再試行してください。続くなら、チャンネルから外されたか、サーバーの権限の設定で読む権限が外されている可能性があるので、管理者に確かめてください。');
-    if (e.status === 404) throw new InputError(`チャンネルが見つかりません（参加していない非公開チャンネルを名前で指定した場合も、Mattermost はこの結果を返します）。名前や ID の誤りなら search_channels で確かめてください。${RETRY}${ASK_ADMIN}`);
+    // Not keying on the name lookup's ids: a 404 without an id, as a proxy may give, is better read as one by name, which guides to retrying.
+    if (e.status === 404 && e.id !== BY_ID_404) throw new InputError(`チャンネルが見つかりません（参加していない非公開チャンネルとアーカイブ済みのチャンネルは、名前で指定すると Mattermost はこの結果を返します。アーカイブ済みなら、チャンネル ID を利用者に確かめて ID で指定すると読めます）。名前の誤りなら search_channels で確かめてください。${RETRY}${ASK_ADMIN}`);
+    if (e.status === 404) throw new InputError('チャンネルが見つかりません。ID の誤りなら search_channels で確かめてください。');
   }
   throw e;
 }
@@ -778,7 +783,10 @@ export function registerReadTools(server: McpServer, ctx: ToolContext): void {
       const ch: ChannelRef = { id: raw.id, name: raw.name, displayName: raw.display_name, teamId: raw.team_id, teamName: await teamNameOf(mm, uid, raw.team_id) };
       // Asking for one more than needed and dropping the root: Mattermost counts the root in perPage on the first page only.
       const q = new URLSearchParams({ perPage: String(per + 1), direction: 'down', ...(c ? { fromPost: c.from_post, fromCreateAt: String(c.from_create_at) } : {}) });
-      const r = await mm.call<PostList>(uid, 'GET', `/posts/${rootId}/thread?${q}`);
+      const r = await mm.call<PostList>(uid, 'GET', `/posts/${rootId}/thread?${q}`).catch((e) => {
+        if (e instanceof MmError && e.status === 403) throw new InputError(`このスレッドを見る権限がありません。${RETRY}${ASK_ADMIN}`);
+        throw e;
+      });
       const replies = r.order.map((id) => r.posts[id]).filter((x) => x && x.id !== rootId)
         .sort((a, b) => a.create_at - b.create_at || (a.id < b.id ? -1 : 1));
       const shown = [...(c ? [] : [r.posts[rootId]].filter(Boolean)), ...replies.slice(0, per)];
@@ -941,9 +949,12 @@ export function registerReadTools(server: McpServer, ctx: ToolContext): void {
       }
       // Sorting here rather than asking Mattermost for a page: /pinned has neither a limit nor paging.
       const r = await mm.call<PostList>(uid, 'GET', `/channels/${ch.id}/pinned`).catch((e) => {
-        if (e instanceof MmError && e.status === 403) throw new InputError(`このチャンネルのピン留めを見る権限がありません。${RETRY}${ASK_ADMIN}`);
-        throw e;
+        if (!(e instanceof MmError && e.status === 403)) throw e;
+        if (c) throw new InputError(`このチャンネルのピン留めを取得できません（参加していないか、一時的な障害か、権限の設定）。${RETRY}${ASK_ADMIN}`);
+        return undefined;
       });
+      // Not going through render: its closing line would read as no more pinned posts.
+      if (!r) return [...lines, 'ピン留め: 取得できません（参加していないか、一時的な障害か、権限の設定）'].join('\n');
       const all = r.order.map((id) => r.posts[id]).filter(Boolean)
         .sort((a, b) => b.create_at - a.create_at || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
       const rest = c ? all.filter((p) => p.create_at < c.create_at || (p.create_at === c.create_at && p.id > c.id)) : all;
