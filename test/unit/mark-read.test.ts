@@ -322,14 +322,48 @@ describe('mark_as_read for threads', () => {
     expect(puts()).toEqual([`PUT /users/u1/teams/${TEAM}/threads/${ROOT}/read/1006`]);
   });
 
-  test('reports the item as failed when the second write fails, so a retry settles it', async () => {
+  test('reports the item as read, and how to clear the mention, when only the write clearing it fails', async () => {
     routes = threads({
       [`PUT /users/u1/teams/${TEAM}/threads/${ROOT}/read/1006`]: () => read({ unread_mentions: 1 }),
       [`PUT /users/u1/teams/${TEAM}/threads/${ROOT}/read/1007`]: mmError(403, 'api.context.permissions.app_error'),
     });
+    let r = await setup().call({ threads: [{ post_id: ROOT, last_post_id: id(5) }] });
+    expect(r.isError).toBe(false);
+    expect(r.text).toContain(`スレッド（親 post_id: ${ROOT}）: 既読にしました。ただし、位置ちょうどの返信のメンションは消せませんでした。Mattermost がエラーを返しました（403）`);
+    expect(r.text).toContain('このスレッドを同じ last_post_id で再実行すると消せることがあります。');
+    routes[`PUT /users/u1/teams/${TEAM}/threads/${ROOT}/read/1010`] = () => read({ unread_mentions: 1 });
+    routes[`PUT /users/u1/teams/${TEAM}/threads/${ROOT}/read/1011`] = mmError(403, 'api.context.permissions.app_error');
+    r = await setup().call({ threads: [{ post_id: ROOT }] });
+    expect(r.isError).toBe(false);
+    expect(r.text).toContain('呼んだ時点の最終返信までを既読にしました。ただし、位置ちょうどの返信のメンションは消せませんでした。');
+    expect(r.text).toContain('このスレッドを、読んだ最終返信を last_post_id に渡して再実行すると消せることがあります。');
+    expect(r.text).not.toContain('同じ last_post_id で再実行');
+  });
+
+  test('reports a thread already read past the position as read when clearing its mention fails', async () => {
+    routes = threads({
+      [`GET /users/u1/teams/${TEAM}/threads/${ROOT}`]: () => state(1008, { unread_mentions: 1 }),
+      [`PUT /users/u1/teams/${TEAM}/threads/${ROOT}/read/1009`]: mmError(403, 'api.context.permissions.app_error'),
+    });
+    const r = await setup().call({ threads: [{ post_id: ROOT, last_post_id: id(5) }] });
+    expect(r.isError).toBe(false);
+    expect(r.text).toContain('last_post_id までは既読です。ただし、位置ちょうどの返信のメンションは消せませんでした。');
+    routes[`GET /users/u1/teams/${TEAM}/threads/${ROOT}`] = () => state(1010, { unread_mentions: 1 });
+    routes[`PUT /users/u1/teams/${TEAM}/threads/${ROOT}/read/1011`] = mmError(403, 'api.context.permissions.app_error');
+    const all = await setup().call({ threads: [{ post_id: ROOT }] });
+    expect(all.isError).toBe(false);
+    expect(all.text).toContain('すでに既読です。ただし、位置ちょうどの返信のメンションは消せませんでした。');
+    expect(all.text).toContain('このスレッドを、読んだ最終返信を last_post_id に渡して再実行すると消せることがあります。');
+  });
+
+  test('stays a tool error when Mattermost is unavailable while clearing the mention', async () => {
+    routes = threads({
+      [`PUT /users/u1/teams/${TEAM}/threads/${ROOT}/read/1006`]: () => read({ unread_mentions: 1 }),
+      [`PUT /users/u1/teams/${TEAM}/threads/${ROOT}/read/1007`]: mmError(503, 'app.unavailable'),
+    });
     const r = await setup().call({ threads: [{ post_id: ROOT, last_post_id: id(5) }] });
     expect(r.isError).toBe(true);
-    expect(r.text).toContain(`スレッド（親 post_id: ${ROOT}）: 既読にできませんでした。`);
+    expect(r.text).not.toContain('既読にした結果');
   });
 
   test('accepts the root post itself as last_post_id', async () => {
@@ -478,6 +512,19 @@ describe('mark_as_read input and annotations', () => {
     routes = base();
     const r = await setup().call(args);
     expect(r.isError).toBe(true);
+    expect(hits).toEqual([]);
+  });
+
+  test.each([
+    ['channels', { channels: [{ channel: CH, last_post: LAST }] }, 'at channels[0]'],
+    ['threads', { threads: [{ post_id: ROOT, last_post: LAST }] }, 'at threads[0]'],
+    ['a valid item next to one with an unknown key', { channels: [{ channel: CH2 }, { channel: CH, last_post: LAST }], threads: [{ post_id: ROOT }] }, 'at channels[1]'],
+  ])('refuses an item with an unknown key (%s) before marking anything read', async (_, args, at) => {
+    routes = base();
+    const r = await setup().call(args);
+    expect(r.isError).toBe(true);
+    expect(r.text).toContain('受けない引数です: last_post。');
+    expect(r.text).toContain(at);
     expect(hits).toEqual([]);
   });
 

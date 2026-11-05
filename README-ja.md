@@ -61,7 +61,7 @@ Mattermost は公式の MCP サーバーを [Mattermost Agents プラグイン](
 
 時刻は JST で扱う。`schedule_message`、`set_status`（`dnd_until`）、`set_custom_status`（`until`）の時刻（`YYYY-MM-DDTHH:mm[:ss[.sss]]`）はオフセットが無ければ `+09:00` として読むので、ほかのタイムゾーンなら `Z` か `+hh:mm`（`-hh:mm`）を付ける。検索の日付（`on:`、`before:`、`after:`）は JST の日として扱い、出力の時刻は UTC と JST を併記する。
 
-読み取り系のツールが出す投稿には、メッセージ添付（Bot や webhook が投稿する整形表示。Mattermost の標準のデータベース検索は対象にしない）、リアクションと付けた人（`get_unreads` と `list_followed_threads` のスレッドは、Mattermost のスレッドの一覧がリアクションを返さないため、通常はリアクションがあることだけ。`get_post` で確かめられる）、編集の時刻、システムメッセージかどうかも含める。
+読み取り系のツールが出す投稿には、メッセージ添付（Bot や webhook が投稿する整形表示。Mattermost の標準のデータベース検索は対象にしない）、リアクションと付けた人、編集の時刻、システムメッセージかどうかも含める。`get_unreads` と `list_followed_threads` のスレッドは、Mattermost のスレッドの一覧が通常はリアクションを返さないため、リアクションがあることだけを出す（返れば付けた人も出す。`get_post` で確かめられる）。
 
 読み取り系のツールには MCP の `readOnlyHint` を付けており、クライアントは書き込みの前に利用者へ確認を求められる。
 
