@@ -14,7 +14,7 @@ const DM = 'd'.repeat(26);
 const BASE = 'https://mm.example';
 const id = (n: number) => `p${String(n).padStart(25, '0')}`;
 
-type Mode = 'before' | 'after' | 'lost' | 'reject' | 'rate429' | undefined;
+type Mode = 'before' | 'after' | 'lost' | 'reject' | 'rate429' | 'relogin' | undefined;
 
 type Upload = { query: URLSearchParams; type: string; bytes: Uint8Array };
 type FakeOpts = {
@@ -78,6 +78,7 @@ function fakeMm(opts: FakeOpts = {}) {
         await opts.postDelay;
         const mode = opts.failPost?.();
         if (mode === 'before') throw new RateLimited(5, false);
+        if (mode === 'relogin') throw new Reauthorize(false);
         created.push(body);
         if (mode === 'reject') throw new MmError(400, 'bad_request', 'bad');
         if (mode === 'rate429') throw new RateLimited(5, true);
@@ -156,6 +157,15 @@ describe('root_id', () => {
       message: `root_id ${id(0)} の投稿はチャンネル「${UID}__${OTHER}」（channel_id: ${DM}）にありません。`,
     });
   });
+});
+
+test('a re-login that Mattermost only answered with 401 leaves no duplicate-guard record, so the same send posts after reconnecting', async () => {
+  let first = true;
+  const f = fakeMm({ failPost: () => (first ? ((first = false), 'relogin') : undefined) });
+  await expect(f.send({ channel: 'team-a/dup', message: 'hello' })).rejects.toBeInstanceOf(Reauthorize);
+  const r = await f.send({ channel: 'team-a/dup', message: 'hello' });
+  expect(textOf(r)).toContain('投稿しました。');
+  expect(f.created).toHaveLength(1);
 });
 
 test('retry after a lost response does not double post', async () => {
