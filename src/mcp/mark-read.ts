@@ -112,7 +112,7 @@ export async function markAsRead(mm: Mm, uid: string, args: Args): Promise<CallT
       // Not the display name in the label: users write it, and the result sentence after it could then be written into it.
       let tail = '';
       try {
-        const ch = await resolveChannel(mm, uid, item.channel).catch(channelError);
+        const ch = await resolveChannel(mm, uid, item.channel).catch((e) => channelError(e, item.channel));
         label = `チャンネル（channel_id: ${ch.id}${(ch.raw as { delete_at?: number }).delete_at ? '、アーカイブ済み' : ''}）`;
         tail = `（表示名: ${oneLine(ch.displayName || ch.name)}）`;
         if (seen.has(ch.id)) throw new InputError('同じチャンネルがほかの項目と重なっています。1 件にまとめてください。');
