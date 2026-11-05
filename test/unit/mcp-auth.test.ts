@@ -1,4 +1,6 @@
+import { once } from 'node:events';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
+import request from 'supertest';
 import { afterEach, beforeEach, expect, test, vi } from 'vitest';
 import { makeApp } from './helpers.ts';
 
@@ -147,14 +149,26 @@ test('a client disconnect aborts the Mattermost request of the running tool', as
     signal = req.signal;
     return new Promise((_, fail) => req.signal.addEventListener('abort', () => fail(req.signal.reason)));
   };
-  // Not disconnecting after a fixed time: on a busy machine the request may not have reached Mattermost by then.
-  const req = s.rpc(GET_USER);
-  const done = expect(req).rejects.toThrow(/Aborted/);
-  await vi.waitFor(() => expect(signal).toBeDefined(), SLOW);
-  req.abort();
-  await done;
-  await vi.waitFor(() => expect(signal?.aborted).toBe(true), SLOW);
-  await vi.waitFor(() => expect(logged()).toMatch(/"tool":"get_user","outcome":"upstream_unavailable"/), SLOW);
+  // Not s.rpc: supertest closes the server it starts only when a request finishes, and an aborted one never does.
+  // Bound to 127.0.0.1 as supertest does: a wildcard port can be shared with another process on macOS.
+  const server = s.app.listen(0, '127.0.0.1');
+  await once(server, 'listening');
+  try {
+    // Not disconnecting after a fixed time: on a busy machine the request may not have reached Mattermost by then.
+    const req = request(server).post('/mcp')
+      .set({ accept: 'application/json, text/event-stream', 'content-type': 'application/json', authorization: `Bearer ${s.token}` })
+      .send(JSON.stringify(GET_USER));
+    const done = expect(req).rejects.toThrow(/Aborted/);
+    await vi.waitFor(() => expect(signal).toBeDefined(), SLOW);
+    req.abort();
+    await done;
+    await vi.waitFor(() => expect(signal?.aborted).toBe(true), SLOW);
+    await vi.waitFor(() => expect(logged()).toMatch(/"tool":"get_user","outcome":"upstream_unavailable"/), SLOW);
+  } finally {
+    const closed = new Promise((r) => server.close(r));
+    server.closeAllConnections();
+    await closed;
+  }
 }, SLOW_TEST);
 
 test('an error after the response has started is logged by name only and ends the response', async () => {
