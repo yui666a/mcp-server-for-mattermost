@@ -30,6 +30,7 @@ const IMAGE_MAX_SIDE = 3000;
 // Decimal MB rather than MiB: base64 of 3.75e6 bytes is 5e6, inside a 5MB request limit whichever unit it means.
 const IMAGE_MAX_BYTES = 3_750_000;
 const TEXT_MAX_CHARS = 10_000;
+const USER_IDS_CHUNK = 1_000;
 // 4 bytes per code point rather than per grapheme: a grapheme has no byte limit, so text of long graphemes is cut by bytes first.
 const TEXT_FETCH_BYTES = 4 * TEXT_MAX_CHARS;
 // Shift_JIS only for these: its decoder also accepts the head of binary files such as PDF.
@@ -143,9 +144,13 @@ function channelError(e: unknown): never {
 
 async function usernames(mm: Mm, uid: string, posts: MmPost[]): Promise<Map<string, string>> {
   const ids = [...new Set(posts.flatMap(postUserIds))];
-  if (!ids.length) return new Map();
-  const users = await mm.call<UserRef[]>(uid, 'POST', '/users/ids', ids);
-  return new Map(users.map((u) => [u.id, u.username]));
+  const out = new Map<string, string>();
+  // In chunks, one after another: 1,000 ids are about 29KB of JSON, well inside Mattermost's MaximumPayloadSizeBytes (300,000 by default),
+  // and sequential calls stay inside the per-user concurrency limit.
+  for (let i = 0; i < ids.length; i += USER_IDS_CHUNK) {
+    for (const u of await mm.call<UserRef[]>(uid, 'POST', '/users/ids', ids.slice(i, i + USER_IDS_CHUNK))) out.set(u.id, u.username);
+  }
+  return out;
 }
 
 const capNote = (n: number, what: string) => (n >= MM_SEARCH_CAP

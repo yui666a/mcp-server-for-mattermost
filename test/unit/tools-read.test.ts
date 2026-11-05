@@ -288,7 +288,7 @@ test('search_posts looks up the names of the users who reacted, and notes a post
   routes = {
     'POST /posts/search': () => ({ order: [P], posts: { [P]: {
       id: P, user_id: 'u1', channel_id: 'c'.repeat(26), root_id: '', message: '', create_at: 0,
-      props: { attachments: [{ text: 'x'.repeat(4001) }] }, metadata: { reactions: [{ user_id: 'u2', emoji_name: '+1' }] },
+      props: { attachments: [{ text: 'x'.repeat(4001) }] }, metadata: { reactions: [{ user_id: 'u2', emoji_name: '+1', create_at: 1 }] },
     } } }),
     'GET /users/me/channels': () => [{ id: 'c'.repeat(26), name: 'alerts', display_name: 'Alerts', team_id: 't'.repeat(26), type: 'O' }],
     'GET /users/me/teams': () => [{ id: 't'.repeat(26), name: 'team-a' }],
@@ -342,6 +342,19 @@ describe('get_post', () => {
     const out = await setup()('get_post', { post: ROOT });
     expect(out.match(/切りました/g)).toHaveLength(1);
     expect(out).toContain('\n（メッセージ添付をここで切りました。続きは Mattermost の画面で確認してください）\n');
+  });
+
+  test.each([[999, 1], [1000, 2]])('looks up %i reacting users and the author in %i calls to /users/ids of at most 1,000 ids each, and names everyone shown', async (n, calls) => {
+    // 100 two-letter emoji with 10 users each fit the reactions line, so every reacting user may be shown.
+    const reactions = Array.from({ length: n }, (_, i) => ({ user_id: `r${String(i).padStart(4, '0')}`, emoji_name: `e${String(Math.floor(i / 10)).padStart(2, '0')}`.slice(-2), create_at: i }));
+    const asked: string[][] = [];
+    routes = { ...base, [`GET /posts/${ROOT}`]: () => post({ id: ROOT, metadata: { reactions } }),
+      'POST /users/ids': () => { const ids = bodies['/users/ids'] as string[]; asked.push(ids); return ids.map((id) => ({ id, username: `n${id}` })); } };
+    const out = await setup()('get_post', { post: ROOT });
+    expect(asked.map((x) => x.length)).toEqual(calls === 1 ? [1000] : [1000, 1]);
+    // The real names are longer than the shortest estimate, so the last emoji may be summed up instead; every name shown is still known.
+    expect(out).toContain('@nr0000');
+    expect(out).not.toContain('user_id: r');
   });
 
   test('accepts a bare post_id', async () => {
@@ -905,7 +918,7 @@ describe('get_unreads', () => {
       ...base(),
       'GET /users/me/channel_members': () => members().filter((m) => m.channel_id !== DM),
       [`GET /users/u1/teams/${T1}/threads`]: () => threadPage([thread(TH_DM, DM, 4000, { post: {
-        id: TH_DM, user_id: 'u1', channel_id: DM, root_id: '', message: 'mine', create_at: 100, metadata: { reactions: [{ user_id: 'u3', emoji_name: 'eyes' }] },
+        id: TH_DM, user_id: 'u1', channel_id: DM, root_id: '', message: 'mine', create_at: 100, metadata: { reactions: [{ user_id: 'u3', emoji_name: 'eyes', create_at: 1 }] },
       } })]),
       [`GET /users/u1/teams/${T2}/threads`]: () => threadPage([]),
       'POST /users/ids': () => [{ id: 'u1', username: 'alice' }, { id: 'u2', username: 'bob' }, { id: 'u3', username: 'carol' }],
@@ -2151,7 +2164,7 @@ describe('list_saved_posts', () => {
   });
 
   test('looks up the names of the users who reacted, and notes a post whose message attachments were cut, as search_posts does', async () => {
-    const p = { ...post('r'.repeat(26), 1000), props: { attachments: [{ text: 'x'.repeat(4001) }] }, metadata: { reactions: [{ user_id: 'u2', emoji_name: '+1' }] } };
+    const p = { ...post('r'.repeat(26), 1000), props: { attachments: [{ text: 'x'.repeat(4001) }] }, metadata: { reactions: [{ user_id: 'u2', emoji_name: '+1', create_at: 1 }] } };
     routes = { ...base(), [FLAGGED]: byOffset([p]), 'POST /users/ids': () => [{ id: 'u1', username: 'alice' }, { id: 'u2', username: 'bob' }] };
     const out = await setup()('list_saved_posts', {});
     expect(bodies['/users/ids']).toEqual(['u1', 'u2']);
