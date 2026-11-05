@@ -273,6 +273,7 @@ describe('@a,b group DM', () => {
     const { mm, calls } = group({ teams: [] });
     await expect(resolveChannel(mm, ME, '@bob,dave', { create: true })).rejects.toThrow('所属しているチームがない');
     expect(calls.filter((c) => c.path.startsWith('/teams/') || c.path === '/channels/group')).toEqual([]);
+    expect(calls.some((c) => c.path === '/users/usernames')).toBe(true);
   });
 
   test('no group DM is created with a deactivated user, while an existing one is still looked up', async () => {

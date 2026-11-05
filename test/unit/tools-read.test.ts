@@ -140,17 +140,20 @@ describe('search_posts in: filters', () => {
     ['no-break space', '\u00a0'],
     ['em space', '\u2003'],
     ['next line', '\u0085'],
-    ['ideographic space', '\u3000'],
+    ['line separator', '\u2028'],
   ])('splits words on a %s as Go\'s unicode.IsSpace does', async (_name, space) => {
     routes = base();
     await setup()('search_posts', { terms: `x${space}in:only-a` });
     expect(sent()).toBe(`x in:${CX}`);
   });
 
-  test('does not split words on U+FEFF, which Go\'s unicode.IsSpace does not count as a space', async () => {
+  test.each([
+    ['U+FEFF', '\ufeff'],
+    ['U+200B', '\u200b'],
+  ])('does not split words on %s, which Go\'s unicode.IsSpace does not count as a space', async (_name, c) => {
     routes = base();
-    await setup()('search_posts', { terms: 'x\ufeffin:only-a' });
-    expect(sent()).toBe('x\ufeffin:only-a');
+    await setup()('search_posts', { terms: `x${c}in:only-a` });
+    expect(sent()).toBe(`x${c}in:only-a`);
     expect(hits).toEqual(['POST /posts/search']);
   });
 
