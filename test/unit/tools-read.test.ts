@@ -503,7 +503,7 @@ describe('search_posts in: filters', () => {
     const twenty = [...Array(10).fill('in:only-a'), ...Array(9).fill('-in:town'), '-in: town'].join(' ');
     await call('search_posts', { terms: `x ${twenty}` });
     hits = [];
-    expect(await call('search_posts', { terms: `x ${twenty} in:@bob ,carol` }, true)).toContain('in: と channel: は、-in: などの除外も含めて 1 回の検索で 20 個まで指定できます。in: が多いときは検索を分け、除外は分けた各検索に付け直してください（各検索も除外を含めて 20 個まで）。除外が多いときは数を減らしてください（in: があるなら、in: のチャンネルと重ならない除外は効かないので外せます。in: が無いなら、探したいチャンネルを in: で挙げるほうが少なく書けます。除外を別々の検索に分けると、もう一方の検索では効きません）。');
+    expect(await call('search_posts', { terms: `x ${twenty} in:@bob ,carol` }, true)).toContain('in: と channel: は、-in: などの除外も含めて 1 回の検索で 20 個まで指定できます。in: が多いときは検索を分け、除外は分けた各検索に付け直してください（各検索も除外を含めて 20 個まで）。除外が多いときは数を減らしてください（in: があるなら、in: のチャンネルと重ならない除外は効かないので外せます。除外を別々の検索に分けると、もう一方の検索では効きません。in: が無く、探したいチャンネルのほうが少ないなら、それを in: で挙げてください）。');
     expect(hits).toEqual([]);
   });
 
