@@ -114,7 +114,7 @@ function reactionLines(p: MmPost, usernames: Map<string, string>): string[] {
   let k = 1;
   while (k < each.length && (n += 1 + width(each[k])) <= REACTION_MAX_CHARS) k++;
   const left = by.slice(k);
-  const rest = left.length ? `、ほか ${left.length} 種類（${left.reduce((m, r) => m + r.total, 0)} 人）` : '';
+  const rest = left.length ? `、ほか ${left.length} 種類（リアクション ${left.reduce((m, r) => m + r.total, 0)} 件）` : '';
   return [`${head}${each.slice(0, k).join('、')}${rest}`];
 }
 
