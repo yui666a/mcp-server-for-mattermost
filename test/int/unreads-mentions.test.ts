@@ -154,13 +154,14 @@ describe('get_unreads and get_mentions against the local Mattermost', () => {
     }
   });
 
-  test('get_mentions pages back across days past the 100-hit search cap, with every mention once and in order', () => withUsers(async (made) => {
+  test('get_mentions pages back across days past the 100-hit search cap, with every mention once and in order', () => withUsers(async (made, later) => {
     const name = `u6${TAG}`;
     const cred = { id: '', username: name, password: 'Passw0rd!dev123' };
     cred.id = (await mmApi<{ id: string }>(e.adminToken, 'POST', '/users', { username: name, email: `${name}@example.com`, password: cred.password })).id;
     made.push(cred.id);
     await mmApi(e.adminToken, 'POST', `/teams/${e.teams.a.id}/members`, { team_id: e.teams.a.id, user_id: cred.id });
     const room = await mmApi<{ id: string }>(e.adminToken, 'POST', '/channels', { team_id: e.teams.a.id, name: `t6d-${TAG}`, display_name: `t6d ${TAG}`, type: 'O' });
+    later(() => mmApi(e.adminToken, 'DELETE', `/channels/${room.id}`));
     await mmApi(e.adminToken, 'POST', `/channels/${room.id}/members`, { user_id: cred.id });
     const expected: { id: string; create_at: number }[] = [];
     for (const [day, count] of [[20, 50], [21, 60]] as const) {
@@ -173,11 +174,7 @@ describe('get_unreads and get_mentions against the local Mattermost', () => {
       }
     }
     await authorize(cred);
-    try {
-      const seen = (await pageAll(name, 'get_mentions', 50)).flatMap((t) => [...t.matchAll(/^--- post_id: ([a-z0-9]{26})/gm)].map((m) => m[1]));
-      expect(seen).toEqual(expected.sort((a, b) => b.create_at - a.create_at).map((p) => p.id));
-    } finally {
-      await mmApi(e.adminToken, 'DELETE', `/channels/${room.id}`);
-    }
+    const seen = (await pageAll(name, 'get_mentions', 50)).flatMap((t) => [...t.matchAll(/^--- post_id: ([a-z0-9]{26})/gm)].map((m) => m[1]));
+    expect(seen).toEqual(expected.sort((a, b) => b.create_at - a.create_at).map((p) => p.id));
   }));
 });

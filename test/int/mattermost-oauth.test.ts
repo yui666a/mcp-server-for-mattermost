@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, test } from 'vitest';
-import { mmAuthorizeCode, requireMm, mmDeauthorize, mmLoginCookie, type Cred } from './helpers.ts';
+import { mmAuthorizeCode, requireMm, mmDeauthorize, mmLoginCookie, withUsers, type Cred } from './helpers.ts';
 
 const e = await requireMm();
 
@@ -77,18 +77,20 @@ describe('Mattermost OAuth behavior the MCP server relies on', () => {
     expect((await me(t1.access_token)).status).toBe(401);
   });
 
-  test('refresh after the user is deactivated fails', async () => {
+  // In withUsers though the test deactivates the user itself: a failure before that would leave an active user on the shared Mattermost.
+  test('refresh after the user is deactivated fails', () => withUsers(async (made) => {
     const name = `tmp${Date.now().toString(36)}`;
     const cred: Cred = { id: '', username: name, password: e.users.alice.password };
     const created = await adminApi('POST', '/users', { username: name, email: `${name}@example.com`, password: cred.password });
     expect(created.status).toBe(201);
     cred.id = (await created.json()).id;
+    made.push(cred.id);
     const t = await exchange(await mmLoginCookie(cred));
     expect((await adminApi('DELETE', `/users/${cred.id}`)).status).toBe(200);
     const res = await refreshRaw(t.refresh_token);
     const body = await res.json();
     expect({ status: res.status, id: body.id }).toEqual({ status: 404, id: 'api.oauth.get_access_token.refresh_token.app_error' });
-  });
+  }));
 
   test('same pending_post_id within 30s yields one post', async () => {
     const t = await exchange(cookie);
