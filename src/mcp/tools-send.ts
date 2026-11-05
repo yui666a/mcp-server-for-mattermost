@@ -64,12 +64,26 @@ export async function uploadFile(mm: Mm, uid: string, channelId: string, name: s
     {
       id: [
         [400, 'api.file.upload_file.large_image_detailed.app_error', `ファイル「${name}」は画像の画素数が大きすぎるため添付できません。`],
-        [413, 'api.file.upload_file.too_large_detailed.app_error', `ファイル「${name}」は大きすぎるため添付できません。`],
-        [403, 'api.file.attachments.disabled.app_error', 'このサーバーではファイルの添付が無効です。'],
+        [413, 'api.file.upload_file.too_large_detailed.app_error', tooLarge(name)],
+        [403, 'api.file.attachments.disabled.app_error', ATTACHMENTS_OFF],
       ],
     },
   );
   return r.file_infos[0].id;
+}
+
+const ATTACHMENTS_OFF = 'このサーバーではファイルの添付が無効です。';
+const tooLarge = (name: string) => `ファイル「${name}」は大きすぎるため添付できません。`;
+
+// Not left to the upload alone when the DM may be created first: a refused upload would leave the new DM empty, and Mattermost cannot delete a DM.
+// Not checking the image size in pixels, permissions, restricted DMs or plugins: the client config does not tell them, so those refusals can still leave an empty DM.
+async function checkFilesAccepted(mm: Mm, uid: string, files: Upload[]): Promise<void> {
+  const c = await mm.call<{ EnableFileAttachments?: string; MaxFileSize?: string }>(uid, 'GET', '/config/client?format=old');
+  if (c.EnableFileAttachments === 'false') throw new InputError(ATTACHMENTS_OFF);
+  // Not validated with Number(): it reads "" as 0, which would refuse every file.
+  if (!/^\d+$/.test(c.MaxFileSize ?? '')) return;
+  const big = files.find((f) => f.bytes.length > Number(c.MaxFileSize));
+  if (big) throw new InputError(tooLarge(big.name));
 }
 
 const upload = (mm: Mm, uid: string, channelId: string, f: Upload) =>
@@ -114,6 +128,7 @@ const INFLIGHT = '同じ投稿を処理中です。少し待ってから read_ch
 export async function sendMessage(mm: Mm, store: Store, uid: string, baseUrl: string, args: Args, client?: AbortSignal): Promise<CallToolResult> {
   const files = decodeFiles(args.files ?? []);
   const fileIds = args.file_ids ?? [];
+  if (files.length && args.channel.trim().startsWith('@') && !args.root_id && !fileIds.length) await checkFilesAccepted(mm, uid, files);
   const ch = await resolveTarget(mm, store, uid, args.channel, args.root_id, fileIds);
   checkUploaded(store, uid, ch.id, fileIds);
   const rootId = args.root_id;
