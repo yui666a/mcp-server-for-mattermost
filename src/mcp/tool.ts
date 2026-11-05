@@ -5,7 +5,7 @@ import { MmError, RateLimited, Reauthorize, UpstreamUnavailable, type MmClient }
 import type { Store } from '../store.ts';
 import { InputError } from './format.ts';
 
-// Apart from server.ts: the tool modules use these, and server.ts imports every tool module to register it.
+// Apart from server.ts: the tool modules (and post.ts and upload.ts) use these, and server.ts imports every tool module to register it.
 export type ToolContext = { mm: MmClient; mmUserId: string; cfg: Config; store: Store };
 
 export const text = (t: string, isError = false): CallToolResult => ({ content: [{ type: 'text', text: t }], ...(isError ? { isError } : {}) });
