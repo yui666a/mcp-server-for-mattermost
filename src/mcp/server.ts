@@ -4,7 +4,7 @@ import type { Config } from '../config.ts';
 import { log } from '../log.ts';
 import { MmError, RateLimited, Reauthorize, UpstreamUnavailable, type MmClient } from '../mattermost/client.ts';
 import type { Store } from '../store.ts';
-import type { ZodRawShape } from 'zod';
+import { z, type ZodRawShape } from 'zod';
 import { strictArgs } from './args.ts';
 import { InputError } from './format.ts';
 import { registerMarkReadTool } from './mark-read.ts';
@@ -65,7 +65,20 @@ export function buildServer(ctx: ToolContext): McpServer {
   // Not touching a tool without inputSchema: the SDK then calls its handler without arguments, and a shape would change that call.
   const register = server.registerTool.bind(server);
   server.registerTool = ((name: string, config: { inputSchema?: object }, cb: unknown) =>
-    register(name, { ...config, inputSchema: config.inputSchema && !('_zod' in config.inputSchema) ? strictArgs(config.inputSchema as ZodRawShape) : config.inputSchema } as never, cb as never)) as typeof server.registerTool;
+    register(name, { ...config, inputSchema: config.inputSchema && !(config.inputSchema instanceof z.ZodType) ? strictArgs(config.inputSchema as ZodRawShape) : config.inputSchema } as never, cb as never)) as typeof server.registerTool;
+  // Not logged by guarded: the SDK checks the arguments before it calls the tool. Wrapping a private method of the pinned SDK; the unit test fails if it goes away.
+  const validate = server['validateToolInput'] as ((tool: unknown, args: unknown, toolName: string) => Promise<unknown>) | undefined;
+  if (validate) {
+    server['validateToolInput'] = (async (tool: unknown, args: unknown, toolName: string) => {
+      const started = Date.now();
+      try {
+        return await validate.call(server, tool, args, toolName);
+      } catch (e) {
+        log('tool_call', { mm_user_id: ctx.mmUserId, tool: toolName, outcome: 'invalid_args', ms: Date.now() - started });
+        throw e;
+      }
+    }) as never;
+  }
   registerReadTools(server, ctx);
   registerSendTools(server, ctx);
   registerScheduleTools(server, ctx);
