@@ -269,13 +269,13 @@ describe('reactions, edits and system messages', () => {
 
     test('leaves out the item that would make it 4001, and sums up what was left out as kinds and reactions', () => {
       const line = lineOf([...fill(4001), r('z', 'c'), r('x', 'c')]);
-      expect(line).toBe(`リアクション: ${item('a'.repeat(10), 'x')}、ほか 2 種類（3 人）`);
+      expect(line).toBe(`リアクション: ${item('a'.repeat(10), 'x')}、ほか 2 種類（リアクション 3 件）`);
     });
 
     test('always shows the first item, even when it alone is over the limit', () => {
       const long = 'n'.repeat(5000);
       const line = lineOf([r('x', long), r('y', 'b')]);
-      expect(line).toBe(`リアクション: ${item(long, 'x')}、ほか 1 種類（1 人）`);
+      expect(line).toBe(`リアクション: ${item(long, 'x')}、ほか 1 種類（リアクション 1 件）`);
     });
   });
 
