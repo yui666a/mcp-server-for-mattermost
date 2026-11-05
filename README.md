@@ -26,7 +26,7 @@ This project targets the other case:
 
 | Tool | Purpose |
 |---|---|
-| `search_posts` | Search messages in the user's teams with Mattermost search syntax (`from:`, `in:`, `before:`, ...). `in:` accepts channel names and `@username` too, without creating a DM |
+| `search_posts` | Search messages in the user's teams with Mattermost search syntax (`from:`, `in:`, `before:`, ...). `in:` accepts channel names, `@username` and `@a,b` (group DM) too, without creating a DM |
 | `read_channel` | Read a channel's posts, newest first, or oldest first from the first unread post or over a date and time range |
 | `read_thread` | Read a thread's root and replies, oldest first |
 | `get_post` | Read one post by post ID or permalink URL |
