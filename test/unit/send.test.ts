@@ -7,6 +7,10 @@ import type { Mm } from '../../src/mcp/resolve.ts';
 import { sendMessage } from '../../src/mcp/tools-send.ts';
 import { INFLIGHT_GRACE, Store } from '../../src/store.ts';
 
+// Not vitest's defaults (1 s for vi.waitFor, 5 s for a test): on a busy machine the awaited event can take seconds.
+const SLOW = { timeout: 10_000 };
+const SLOW_TEST = 30_000;
+
 const UID = 'u'.repeat(26);
 const CH = 'c'.repeat(26);
 const OTHER = 'o'.repeat(26);
@@ -14,12 +18,12 @@ const DM = 'd'.repeat(26);
 const BASE = 'https://mm.example';
 const id = (n: number) => `p${String(n).padStart(25, '0')}`;
 
-type Mode = 'before' | 'after' | 'lost' | 'reject' | 'rate429' | undefined;
+type Mode = 'before' | 'after' | 'lost' | 'reject' | 'rate429' | 'relogin' | undefined;
 
 type Upload = { query: URLSearchParams; type: string; bytes: Uint8Array };
 type FakeOpts = {
   failPost?: () => Mode; postDelay?: Promise<void>; failSearch?: () => boolean;
-  onUpload?: (n: number) => Promise<void> | void; failUpload?: (n: number) => Mode; keepFiles?: (ids: string[]) => string[];
+  onUpload?: (n: number) => Promise<void> | void; failUpload?: (n: number) => Mode; keepFiles?: (ids: string[]) => string[]; redact?: number;
   drafts?: (signal?: AbortSignal) => unknown; hiddenPost?: string; syncOff?: boolean | (() => unknown); failDelete?: () => Error | undefined; teams?: { id: string; name: string }[];
 };
 
@@ -37,6 +41,7 @@ function fakeMm(opts: FakeOpts = {}) {
       calls.push({ method, path: p, signal });
       if (method === 'GET' && p === '/users/me/teams') return opts.teams ?? [{ id: 'ta', name: 'team-a' }, { id: 'tb', name: 'team-b' }];
       if (method === 'GET' && p === `/channels/${DM}`) return { id: DM, name: `${UID}__${OTHER}`, display_name: '', team_id: '', type: 'D' };
+      if (method === 'GET' && p === `/users/${OTHER}`) return { id: OTHER, username: 'olive' };
       if (method === 'GET' && /^\/users\/[^/]+\/teams\/[^/]+\/drafts$/.test(p)) return opts.drafts ? opts.drafts(signal) : [];
       if (method === 'GET' && p === '/users/me/preferences/advanced_settings/name/sync_drafts') {
         if (typeof opts.syncOff === 'function') return opts.syncOff();
@@ -78,6 +83,7 @@ function fakeMm(opts: FakeOpts = {}) {
         await opts.postDelay;
         const mode = opts.failPost?.();
         if (mode === 'before') throw new RateLimited(5, false);
+        if (mode === 'relogin') throw new Reauthorize(false);
         created.push(body);
         if (mode === 'reject') throw new MmError(400, 'bad_request', 'bad');
         if (mode === 'rate429') throw new RateLimited(5, true);
@@ -86,8 +92,8 @@ function fakeMm(opts: FakeOpts = {}) {
         const kept = body.file_ids && (opts.keepFiles?.(body.file_ids) ?? body.file_ids);
         const post = dup ?? {
           id: id(posts.length), user_id: UID, channel_id: body.channel_id, root_id: body.root_id ?? '', message: body.message, create_at: now,
-          ...(kept?.length ? { file_ids: kept } : {}),
-        };
+          ...(kept?.length ? (opts.redact ? { file_ids: [], metadata: { redacted_file_count: opts.redact } } : { file_ids: kept }) : {}),
+        } as MmPost;
         if (!dup) {
           posts.push(post);
           if (body.pending_post_id) byPending.set(body.pending_post_id, post);
@@ -150,12 +156,31 @@ describe('root_id', () => {
     expect(f.created).toHaveLength(1);
   });
 
-  test('a root_id in another channel than a DM given by its channel_id names the DM by its internal name, which is all Mattermost gives', async () => {
+  test('a root_id in another channel than a DM given by its channel_id names the DM by the other user, as when given as @user', async () => {
     const f = fakeMm();
     await expect(f.send({ channel: DM, message: 'hi', root_id: id(0) })).rejects.toMatchObject({
-      message: `root_id ${id(0)} の投稿はチャンネル「${UID}__${OTHER}」（channel_id: ${DM}）にありません。`,
+      message: `root_id ${id(0)} の投稿はチャンネル「@olive」（channel_id: ${DM}）にありません。`,
     });
+    expect(f.created).toHaveLength(0);
   });
+
+  test('a reply in another channel is refused as being in another channel, which is checked before whether it is a reply', async () => {
+    const f = withRoots();
+    f.posts.push({ id: id(6), user_id: UID, channel_id: OTHER, root_id: id(0), message: 'reply elsewhere', create_at: 0 });
+    await expect(f.send({ channel: 'team-a/dup', message: 'hi', root_id: id(6) })).rejects.toMatchObject({
+      message: `root_id ${id(6)} の投稿はチャンネル「Dup」（channel_id: ${CH}）にありません。`,
+    });
+    expect(f.created).toHaveLength(0);
+  });
+});
+
+test('a re-login that Mattermost only answered with 401 leaves no duplicate-guard record, so the same send posts after reconnecting', async () => {
+  let first = true;
+  const f = fakeMm({ failPost: () => (first ? ((first = false), 'relogin') : undefined) });
+  await expect(f.send({ channel: 'team-a/dup', message: 'hello' })).rejects.toBeInstanceOf(Reauthorize);
+  const r = await f.send({ channel: 'team-a/dup', message: 'hello' });
+  expect(textOf(r)).toContain('投稿しました。');
+  expect(f.created).toHaveLength(1);
 });
 
 test('retry after a lost response does not double post', async () => {
@@ -435,6 +460,28 @@ describe('send_message with file_ids from prepare_upload', () => {
     expect(f.store.uploadedFiles(UID, [F1, F2]).map((x) => x.postId)).toEqual([id(1), null]);
   });
 
+  test.each([
+    [2, 'ファイル 2 件を添付しました'],
+    [1, '添付した 2 件のうち 1 件を Mattermost が外したため、投稿に付いていません（ファイルをダウンロードする権限が無いため、どれが外れたかは分かりません）。'],
+  ])('when Mattermost hides the files (ABAC) and counts %i, it reports by the count and marks every file as posted', async (count, message) => {
+    const f = fakeMm({ redact: count });
+    uploaded(f, [F1, F2]);
+    const r = await f.send({ channel: 'team-a/dup', message: 'hidden', file_ids: [F1, F2] });
+    expect(textOf(r)).toContain(message);
+    expect(f.store.uploadedFiles(UID, [F1, F2]).map((x) => x.postId)).toEqual([id(1), id(1)]);
+  });
+
+  test('a retry after a lost response finds the earlier post whose files Mattermost hid, by their count', async () => {
+    let first = true;
+    const f = fakeMm({ redact: 2, failPost: () => (first ? ((first = false), 'after') : undefined) });
+    uploaded(f, [F1, F2]);
+    await expect(f.send({ channel: 'team-a/dup', message: 'hidden', file_ids: [F1, F2] })).rejects.toBeInstanceOf(UpstreamUnavailable);
+    f.advance(31_000);
+    const r = await f.send({ channel: 'team-a/dup', message: 'hidden', file_ids: [F1, F2] });
+    expect(textOf(r)).toContain('既にあったため');
+    expect(f.created).toHaveLength(1);
+  });
+
   test('marks the kept file by identity, not by position, when Mattermost dropped the first one', async () => {
     const f = fakeMm({ keepFiles: (ids) => ids.slice(1) });
     uploaded(f, [F1, F2]);
@@ -653,6 +700,22 @@ describe('a draft with the sent message is cleared after the post', () => {
     expect(logged.map((l) => JSON.parse(l))).toEqual([expect.objectContaining({ event: 'draft_cleanup_failed', name: 'Reauthorize', channel_id: CH })]);
   });
 
+  test.each([
+    ['less than a second', 4001, false],
+    ['exactly a second', 4000, true],
+  ])('with %s of the 5 seconds left before the DELETE, the DELETE is sent only when a second is left', async (_, at, sent) => {
+    vi.spyOn(performance, 'now').mockReturnValueOnce(0).mockReturnValue(at);
+    const f = fakeMm({ drafts: () => [draft()] });
+    const r = await f.send({ channel: 'team-a/dup', message: 'hello' });
+    expect(deletes(f)).toHaveLength(sent ? 1 : 0);
+    if (sent) {
+      expect(textOf(r)).toContain(CLEARED);
+    } else {
+      expect(textOf(r)).toContain(FAILED);
+      expect(logged.map((l) => JSON.parse(l))).toEqual([expect.objectContaining({ event: 'draft_cleanup_failed', name: 'TimeoutError', skipped: 'delete', channel_id: CH })]);
+    }
+  });
+
   test('a cleanup failure is logged with the channel_id', async () => {
     const f = fakeMm({ drafts: () => [draft()], failDelete: () => new MmError(500, 'app.draft.delete.app_error', 'x') });
     await f.send({ channel: 'team-a/dup', message: 'hello' });
@@ -671,18 +734,18 @@ describe('a draft with the sent message is cleared after the post', () => {
     const gate = new Promise<void>((r) => { open = r; });
     const holder = fakeMm({ drafts: async () => (await gate, []) });
     const holding = holder.send({ channel: 'team-a/dup', message: 'first' });
-    await vi.waitFor(() => expect(paths(holder)).toContain(`GET ${LIST}`));
+    await vi.waitFor(() => expect(paths(holder)).toContain(`GET ${LIST}`), SLOW);
     const client = new AbortController();
     const f = fakeMm({ drafts: () => [draft()] });
     const sending = f.send({ channel: 'team-a/dup', message: 'hello' }, client.signal);
-    await vi.waitFor(() => expect(f.created).toHaveLength(1));
+    await vi.waitFor(() => expect(f.created).toHaveLength(1), SLOW);
     client.abort();
     expect((await sending).isError).toBeFalsy();
     open();
     await holding;
     expect(paths(f).filter((c) => c.endsWith('/drafts'))).toEqual([]);
     expect(logged).toEqual([]);
-  });
+  }, SLOW_TEST);
 
   test('a cleanup whose client has already cancelled does not call Mattermost even with the lock free', async () => {
     const client = new AbortController();
@@ -743,7 +806,7 @@ describe('a draft with the sent message is cleared after the post', () => {
       drafts: (signal) => new Promise((_, reject) => signal!.addEventListener('abort', () => reject(signal!.reason))),
     });
     const sending = f.send({ channel: DM, message: 'hello' });
-    await vi.waitFor(() => expect(paths(f)).toContain(`GET /users/${UID}/teams/ta/drafts`));
+    await vi.waitFor(() => expect(paths(f)).toContain(`GET /users/${UID}/teams/ta/drafts`), SLOW);
     ac.abort(new DOMException('timed out', 'TimeoutError'));
     const r = await sending;
     expect(timeout).toHaveBeenCalledWith(5000);
@@ -752,7 +815,7 @@ describe('a draft with the sent message is cleared after the post', () => {
     expect(cleanup.every((c) => c.signal === ac.signal)).toBe(true);
     expect(r.isError).toBeFalsy();
     expect(textOf(r)).toContain(FAILED);
-  });
+  }, SLOW_TEST);
 
   test('the sync setting and the DELETE get the same deadline signal', async () => {
     const ac = new AbortController();

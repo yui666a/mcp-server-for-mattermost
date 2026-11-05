@@ -182,14 +182,18 @@ describe('set_custom_status', () => {
 
   test('a text of 101 characters is rejected by the schema, 100 is accepted', async () => {
     routes = ok;
-    expect((await setup().call('set_custom_status', { text: 'あ'.repeat(101) })).isError).toBe(true);
+    const over = await setup().call('set_custom_status', { text: 'あ'.repeat(101) });
+    expect(over.isError).toBe(true);
+    expect(over.text).toContain('<=100 characters at text');
     expect(hits).toEqual([]);
     expect((await setup().call('set_custom_status', { text: 'あ'.repeat(100) })).isError).toBe(false);
   });
 
   test('the 100 characters of a text count an emoji outside the BMP as one, as Mattermost counts runes', async () => {
     routes = ok;
-    expect((await setup().call('set_custom_status', { text: '😀'.repeat(101) })).isError).toBe(true);
+    const over = await setup().call('set_custom_status', { text: '😀'.repeat(101) });
+    expect(over.isError).toBe(true);
+    expect(over.text).toContain('<=100 characters at text');
     expect(hits).toEqual([]);
     expect((await setup().call('set_custom_status', { text: '😀'.repeat(100) })).isError).toBe(false);
   });

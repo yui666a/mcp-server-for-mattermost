@@ -98,7 +98,7 @@ describe('read tools against the local Mattermost', () => {
   afterAll(() => vi.restoreAllMocks());
 
   test('read_channel paginates without gaps or duplicates', async () => {
-    const all = await mmApi<{ order: string[] }>(aliceMm, 'GET', `/channels/${channel.id}/posts?per_page=200`);
+    const all = await mmApi<{ order: string[]; posts: Record<string, { create_at: number }> }>(aliceMm, 'GET', `/channels/${channel.id}/posts?per_page=200`);
     const seen: string[] = [];
     let cursor: string | undefined;
     let pages = 0;
@@ -114,6 +114,8 @@ describe('read tools against the local Mattermost', () => {
     expect(pages).toBeGreaterThan(1);
     // Not comparing the order: Mattermost orders posts of the same millisecond differently from call to call.
     expect([...seen].sort()).toEqual([...all.order].sort());
+    const at = seen.map((id) => all.posts[id].create_at);
+    expect(at).toEqual([...at].sort((a, b) => b - a));
   });
 
   test('read_channel with since and until reads that range oldest first in JST, with replies and attachment-only posts', async () => {
@@ -419,7 +421,7 @@ describe('read tools against the local Mattermost', () => {
     test('for a public channel bob has not joined, says the member count is unavailable', async () => {
       const r = await call('bob', 'get_channel', { channel: ch.id });
       expect(r.isError).toBeFalsy();
-      expect(r.content[0].text).toContain('メンバー数: 参加していないため取得できません');
+      expect(r.content[0].text).toContain('メンバー数: 取得できません（参加していないか、一時的な障害）');
       expect(r.content[0].text).toContain(`目的: ${TAG} purpose`);
       expect(postIds(r)).toEqual(pins);
     });
@@ -655,7 +657,7 @@ describe('read tools against the local Mattermost', () => {
     try {
       const refused = await call('bob', 'list_channel_members', { channel: ch.id });
       expect(refused.isError).toBe(true);
-      expect(refused.content[0].text).toBe('参加していないチャンネルのメンバーは見られません（公開チャンネルでも同じです）。');
+      expect(refused.content[0].text).toBe('このチャンネルのメンバーを見る権限がありません。参加していないチャンネルのメンバーは、公開チャンネルでも見られません。参加しているはずなら、Mattermost の一時的な障害の可能性があります。少し待ってから再試行してください。');
       await mmApi(aliceMm, 'POST', `/channels/${ch.id}/members`, { user_id: e.users.bob.id });
       const members = (r: Result) => [...r.content[0].text.matchAll(/^- @(\S+?)（/gm)].map((m) => m[1]);
       const pages: string[][] = [];

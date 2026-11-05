@@ -5,7 +5,7 @@ import { randomToken, sha256 } from '../crypto.ts';
 import { log } from '../log.ts';
 import { MmError, RateLimited, Reauthorize } from '../mattermost/client.ts';
 import { MAX_OPEN_UPLOAD_URLS, type HeldFile, type Store } from '../store.ts';
-import { InputError, type MmPost } from './format.ts';
+import { BODY_CUT_NOTE, InputError, type MmPost } from './format.ts';
 import { findPosted, postOnce } from './post.ts';
 import { myTeams, NoDirectChannel, resolveChannel, teamNameOf, type ChannelRef, type Mm, type MmChannel, type ResolvedChannel } from './resolve.ts';
 import { guarded, text, type ToolContext } from './server.ts';
@@ -46,7 +46,7 @@ function decodeFiles(files: FileArg[]): Upload[] {
     return { name: f.name, bytes };
   });
   const total = out.reduce((n, f) => n + f.bytes.length, 0);
-  if (total > MAX_FILES_BYTES) throw new InputError(`添付ファイルの中身の合計が ${total} バイトで、上限の ${MAX_FILES_BYTES} バイト（128KiB）を超えています。この大きさのファイルは files では送れないので、prepare_upload の説明の案内に従ってください。`);
+  if (total > MAX_FILES_BYTES) throw new InputError(`添付ファイルの中身の合計が ${total} バイトで、上限の ${MAX_FILES_BYTES} バイト（128KiB）を超えています。合計がこの大きさになる添付は files では送れないので、prepare_upload の説明の案内に従ってください。`);
   return out;
 }
 
@@ -64,12 +64,26 @@ export async function uploadFile(mm: Mm, uid: string, channelId: string, name: s
     {
       id: [
         [400, 'api.file.upload_file.large_image_detailed.app_error', `ファイル「${name}」は画像の画素数が大きすぎるため添付できません。`],
-        [413, 'api.file.upload_file.too_large_detailed.app_error', `ファイル「${name}」は大きすぎるため添付できません。`],
-        [403, 'api.file.attachments.disabled.app_error', 'このサーバーではファイルの添付が無効です。'],
+        [413, 'api.file.upload_file.too_large_detailed.app_error', tooLarge(name)],
+        [403, 'api.file.attachments.disabled.app_error', ATTACHMENTS_OFF],
       ],
     },
   );
   return r.file_infos[0].id;
+}
+
+const ATTACHMENTS_OFF = 'このサーバーではファイルの添付が無効です。';
+const tooLarge = (name: string) => `ファイル「${name}」は大きすぎるため添付できません。`;
+
+// Not left to the upload alone when the DM may be created first: a refused upload would leave the new DM empty, and Mattermost cannot delete a DM.
+// Not checking the image size in pixels, permissions, restricted DMs or plugins: the client config does not tell them, so those refusals can still leave an empty DM.
+async function checkFilesAccepted(mm: Mm, uid: string, files: Upload[]): Promise<void> {
+  const c = await mm.call<{ EnableFileAttachments?: string; MaxFileSize?: string }>(uid, 'GET', '/config/client?format=old');
+  if (c.EnableFileAttachments === 'false') throw new InputError(ATTACHMENTS_OFF);
+  // Not validated with Number(): it reads "" as 0, which would refuse every file.
+  if (!/^\d+$/.test(c.MaxFileSize ?? '')) return;
+  const big = files.find((f) => f.bytes.length > Number(c.MaxFileSize));
+  if (big) throw new InputError(tooLarge(big.name));
 }
 
 const upload = (mm: Mm, uid: string, channelId: string, f: Upload) =>
@@ -96,10 +110,12 @@ export function checkUnposted(store: Store, uid: string, fileIds: string[]): voi
 }
 
 // Not creating the DM with root_id or file_ids: a DM not opened yet holds neither, and the call would fail right after leaving an empty DM.
+export const createsDirect = (rootId: string | undefined, fileIds: string[]): boolean => !rootId && !fileIds.length;
+
 // Not reporting only the missing DM when file_ids are given: none of them can belong to a DM not opened yet, so the file is the real mistake.
 export async function resolveTarget(mm: Mm, store: Store, uid: string, channel: string, rootId: string | undefined, fileIds: string[]): Promise<ResolvedChannel> {
   try {
-    return await resolveChannel(mm, uid, channel, { create: !rootId && !fileIds.length });
+    return await resolveChannel(mm, uid, channel, { create: createsDirect(rootId, fileIds) });
   } catch (e) {
     if (e instanceof NoDirectChannel && fileIds.length) checkUploaded(store, uid, '', fileIds);
     throw e;
@@ -114,6 +130,7 @@ const INFLIGHT = '同じ投稿を処理中です。少し待ってから read_ch
 export async function sendMessage(mm: Mm, store: Store, uid: string, baseUrl: string, args: Args, client?: AbortSignal): Promise<CallToolResult> {
   const files = decodeFiles(args.files ?? []);
   const fileIds = args.file_ids ?? [];
+  if (files.length && args.channel.trim().startsWith('@') && !args.root_id && !fileIds.length) await checkFilesAccepted(mm, uid, files);
   const ch = await resolveTarget(mm, store, uid, args.channel, args.root_id, fileIds);
   checkUploaded(store, uid, ch.id, fileIds);
   const rootId = args.root_id;
@@ -127,12 +144,14 @@ export async function sendMessage(mm: Mm, store: Store, uid: string, baseUrl: st
   const spec = { channelId: ch.id, message: args.message, rootId };
   const attached = files.length + fileIds.length;
   // Only the files the post kept: a dropped one may sit on another post, and one left unmarked would pass checkUnposted and be dropped again in silence.
-  const posted = (postId: string, kept: string[]) => {
-    const got = kept.length;
-    store.markFilesPosted(uid, fileIds.filter((id) => kept.includes(id)), postId);
+  // Not the response's file_ids when Mattermost hid them (ABAC denies the user the download): it empties them and counts the attached files instead, so which ones were dropped is unknown, and marking them all is the safe side.
+  const posted = (r: { postId: string; fileIds: string[]; redactedFileCount: number }) => {
+    const hidden = r.redactedFileCount > 0 && !r.fileIds.length;
+    const got = hidden ? r.redactedFileCount : r.fileIds.length;
+    store.markFilesPosted(uid, hidden ? fileIds : fileIds.filter((id) => r.fileIds.includes(id)), r.postId);
     if (!attached) return '投稿しました。';
     if (got === attached) return `投稿しました。ファイル ${attached} 件を添付しました。`;
-    return `投稿しました。ただし、添付した ${attached} 件のうち ${attached - got} 件を Mattermost が外したため、投稿に付いていません。`;
+    return `投稿しました。ただし、添付した ${attached} 件のうち ${attached - got} 件を Mattermost が外したため、投稿に付いていません${hidden ? '（ファイルをダウンロードする権限が無いため、どれが外れたかは分かりません）' : ''}。`;
   };
   const uploadAll = async () => {
     const ids: string[] = [];
@@ -144,7 +163,7 @@ export async function sendMessage(mm: Mm, store: Store, uid: string, baseUrl: st
     checkUnposted(store, uid, fileIds);
     const r = await postOnce(mm, uid, { ...spec, fileIds: await uploadAll() }, randomToken());
     if (r.kind !== 'posted') throw r.error;
-    return done(r.postId, posted(r.postId, r.fileIds));
+    return done(r.postId, posted(r));
   }
 
   const claim = store.claimPost({ mmUserId: uid, channelId: ch.id, rootId, bodyHash: bodyHash(args.message, files, fileIds) });
@@ -160,7 +179,7 @@ export async function sendMessage(mm: Mm, store: Store, uid: string, baseUrl: st
     }
   }
   let claimedAt = claim.claimedAt;
-  let postId: string, kept: string[];
+  let res: Parameters<typeof posted>[0];
   try {
     checkUnposted(store, uid, fileIds);
     const ids = await uploadAll();
@@ -170,14 +189,14 @@ export async function sendMessage(mm: Mm, store: Store, uid: string, baseUrl: st
     claimedAt = again;
     const r = await postOnce(mm, uid, { ...spec, fileIds: ids }, claim.pendingPostId);
     if (r.kind !== 'posted') throw r.error;
-    ({ postId, fileIds: kept } = r);
+    res = r;
   } catch (e) {
     // Not leaving out InputError: here it can only be a file refused before the post or an upload that Mattermost refused, so nothing was posted.
     if (e instanceof MmError || e instanceof InputError || e instanceof RateLimited || (e as { sent?: boolean })?.sent === false) store.dropPost(claim.id, claimedAt);
     throw e;
   }
-  store.completePost(claim.id, postId);
-  return done(postId, posted(postId, kept));
+  store.completePost(claim.id, res.postId);
+  return done(res.postId, posted(res));
 }
 
 export type Wording = { id?: [status: number, id: string, text: string][]; status?: [status: number, text: string][] };
@@ -270,7 +289,7 @@ async function whereOf(mm: Mm, uid: string, post: OwnPost): Promise<Where> {
 
 const editSchema = {
   post_id: POST_ID.describe('編集する、本人の投稿の post_id'),
-  message: z.string().min(1).max(MAX_MESSAGE).describe('新しい本文（全体を置き換える）。一覧のツール（read_channel など）の出力を元に書き換えるときは、先に get_post で読み直す。出力の本文は各行が 2 文字字下げされているので、各行の先頭の 2 文字の空白を外す。get_post に「本文を 4000 文字で切りました」とあれば、出力を元に書き換えない（切られた後ろが消える）'),
+  message: z.string().min(1).max(MAX_MESSAGE).describe(`新しい本文（全体を置き換える）。一覧のツール（read_channel など）の出力を元に書き換えるときは、先に get_post で読み直す。出力の本文は各行が 2 文字字下げされているので、各行の先頭の 2 文字の空白を外す。出力では CRLF や CR の改行を LF にそろえ、垂直タブや U+2028 などの区切りも改行として出すので、書き写すと改行の種類が LF になり、改行が増えることもある。get_post に「${BODY_CUT_NOTE}」とあれば、出力を元に書き換えない（切られた後ろが消える）。出力を元に書き換えたいときは、その投稿は Mattermost の画面で編集するよう利用者に伝える（利用者が新しい本文全体を渡したときは置き換えてよい）`),
 };
 type EditArgs = { post_id: string; message: string };
 
@@ -312,7 +331,7 @@ const draftSchema = {
   // Not counting code points: zod counts UTF-16 units, which can only be stricter than Mattermost's limit.
   message: z.string().min(1).max(MAX_MESSAGE),
   root_id: POST_ID.optional().describe('返信の下書きにするときの、スレッドの親投稿の post_id'),
-  overwrite: z.boolean().optional().describe('同じ投稿先に本文の違う下書きがあるときに、上書きするなら true。元の本文に加えて添付ファイルと優先度も失われ、取り消せない'),
+  overwrite: z.boolean().optional().describe('同じ投稿先に本文の違う下書きがあるときに、上書きするなら true。元の本文に加えて添付ファイル、優先度、burn-on-read（読まれた後に消える設定）も失われ、取り消せない'),
 };
 type DraftArgs = { channel: string; message: string; root_id?: string; overwrite?: boolean };
 type Draft = {
@@ -348,20 +367,27 @@ async function draftsOf(mm: Mm, uid: string, ch: Pick<ChannelRef, 'teamId'>): Pr
 }
 
 const CLEANUP_MS = 5000;
+// ponytail: a guess at what one DELETE needs; a slow Mattermost can still be cut off mid-DELETE, and the lock then let go while it runs on.
+const DELETE_MARGIN_MS = 1000;
+
+class TooLateToDelete extends Error {
+  name = 'TimeoutError';
+}
 
 // Not kept on the server or ctx: app.ts builds a server per request, and a lock there would never be shared between two calls.
-// ponytail: one lock per user over all of their drafts; per-target locks if one user's drafts get busy.
+// Not one lock per user: the race is only between the list and the write of one draft, so sends to other channels or threads need not wait.
 const draftLocks = new Map<string, Promise<void>>();
 
 // Not freeing the place in line when giving up: a later caller would then run alongside the earlier one still holding it.
-async function withDraftLock<T>(uid: string, fn: () => Promise<T>, giveUp?: AbortSignal): Promise<T> {
-  const prev = draftLocks.get(uid) ?? Promise.resolve();
+async function withDraftLock<T>(uid: string, channelId: string, rootId: string, fn: () => Promise<T>, giveUp?: AbortSignal): Promise<T> {
+  const key = `${uid}\n${channelId}\n${rootId}`;
+  const prev = draftLocks.get(key) ?? Promise.resolve();
   let release!: () => void;
   const tail = prev.then(() => new Promise<void>((r) => { release = r; }));
-  draftLocks.set(uid, tail);
+  draftLocks.set(key, tail);
   try {
     if (giveUp) {
-      // Not left to the race alone: with the lock free it settles on prev first, and fn would run for a request already given up.
+      // Not left to the race alone: an already aborted signal fires no abort event, so stop would never settle and fn would run once prev does.
       giveUp.throwIfAborted();
       const stop = new Promise<never>((_, reject) => {
         giveUp.addEventListener('abort', () => reject(giveUp.reason), { once: true });
@@ -375,7 +401,7 @@ async function withDraftLock<T>(uid: string, fn: () => Promise<T>, giveUp?: Abor
   } finally {
     void prev.then(() => {
       release();
-      if (draftLocks.get(uid) === tail) draftLocks.delete(uid);
+      if (draftLocks.get(key) === tail) draftLocks.delete(key);
     });
   }
 }
@@ -384,25 +410,29 @@ async function withDraftLock<T>(uid: string, fn: () => Promise<T>, giveUp?: Abor
 // Not left running past the deadline: a late DELETE could remove a draft the user rewrote after reading that it was not cleared. A DELETE already sent still completes on Mattermost.
 async function clearSentDraft(mm: Mm, uid: string, ch: ChannelRef, rootId: string, message: string, client?: AbortSignal): Promise<string> {
   const deadline = AbortSignal.timeout(CLEANUP_MS);
+  // Not Date.now: the deadline runs on a timer, which a wall clock set back or forward would not match.
+  const until = performance.now() + CLEANUP_MS;
   const quick: Mm = { call: (u, m, p, b) => mm.call(u, m, p, b, deadline) };
   try {
-    return await withDraftLock(uid, () => clearLocked(quick, uid, ch, rootId, message), client ? AbortSignal.any([deadline, client]) : deadline);
+    return await withDraftLock(uid, ch.id, rootId, () => clearLocked(quick, uid, ch, rootId, message, until), client ? AbortSignal.any([deadline, client]) : deadline);
   } catch (e) {
     if (e instanceof MmError && e.status === 501 && e.id === DISABLED[1]) return '';
     // Not logged when the client gave up: the request was cancelled, not the cleanup broken.
     if (client?.aborted) return '';
-    log('draft_cleanup_failed', { mm_user_id: uid, channel_id: ch.id, name: (e as Error)?.name, ...(e instanceof MmError ? { status: e.status, id: e.id } : {}) });
+    log('draft_cleanup_failed', { mm_user_id: uid, channel_id: ch.id, name: (e as Error)?.name, ...(e instanceof TooLateToDelete ? { skipped: 'delete' } : {}), ...(e instanceof MmError ? { status: e.status, id: e.id } : {}) });
     if (e instanceof Reauthorize) return '投稿の後で Mattermost への再ログインが必要になったため、同じ本文の下書きを確かめられませんでした。コネクタを再接続してください。下書きが残っていれば、そのまま送ると同じ投稿が 2 回になります。';
     return '同じ本文の下書きを確かめられなかったか、消せませんでした。下書きが残っていれば、そのまま送ると同じ投稿が 2 回になります。';
   }
 }
 
-async function clearLocked(quick: Mm, uid: string, ch: ChannelRef, rootId: string, message: string): Promise<string> {
+async function clearLocked(quick: Mm, uid: string, ch: ChannelRef, rootId: string, message: string, until: number): Promise<string> {
   const d = (await draftsOf(quick, uid, ch))?.find((x) => x.channel_id === ch.id && (x.root_id || '') === rootId && x.message === message);
   if (!d) return '';
   if (d.file_ids?.length) return '同じ本文の下書きがありますが、添付ファイルが付いているため消していません。そのまま送ると、同じ本文がもう一度投稿されます。';
   // Not deleting with sync off: the webapp clears its stored draft on draft_deleted whatever the setting, wiping unsynced text kept only in the browser.
   if (await syncDraftsOff(quick, uid)) return '同じ本文の下書きがありますが、下書きの同期を切っているため消していません。同期を入れ直すと画面に出るので、送らずに消してください。';
+  // Not sending a DELETE the deadline may cut off: the lock would be let go while Mattermost still runs it, and a save behind could be the draft it deletes.
+  if (until - performance.now() < DELETE_MARGIN_MS) throw new TooLateToDelete('too little time left to delete the draft');
   await quick.call(uid, 'DELETE', `/users/${uid}/channels/${ch.id}/drafts${rootId ? `/${rootId}` : ''}`);
   const p = d.priority;
   return [
@@ -431,7 +461,7 @@ export async function saveDraft(mm: Mm, uid: string, args: DraftArgs): Promise<C
   const where = `チャンネル: ${ch.displayName || ch.name}（channel_id: ${ch.id}）${rootId ? `、返信先 post_id: ${rootId}` : ''}`;
   // Not locking the resolving above: one call may take tens of seconds, and a send_message cleanup waiting behind it would always run out of time.
   // Not leaving the list and the save unlocked: a save made between the cleanup's list and its DELETE would be the draft it deletes.
-  const same = await withDraftLock(uid, () => saveLocked(mm, uid, ch, rootId, args, where));
+  const same = await withDraftLock(uid, ch.id, rootId, () => saveLocked(mm, uid, ch, rootId, args, where));
   if (same) return same;
   // Not claiming the input box for a reply: only channel drafts were checked in the webapp.
   return text(rootId
@@ -457,7 +487,7 @@ async function saveLocked(mm: Mm, uid: string, ch: ChannelRef, rootId: string, a
   if (existing && !args.overwrite) {
     const head = [...existing.message].slice(0, 200).join('');
     throw new InputError([
-      '同じ投稿先に、本文の違う下書きがあります。上書きしていません。上書きするときは overwrite: true を付けてください（添付ファイルと優先度も失われます）。',
+      '同じ投稿先に、本文の違う下書きがあります。上書きしていません。上書きするときは overwrite: true を付けてください（添付ファイル、優先度、burn-on-read も失われます）。',
       where,
       `既存の下書き（先頭 200 文字）: ${head}`,
     ].join('\n'));
@@ -474,12 +504,12 @@ type PrepareArgs = { channel: string };
 const MiB = 1024 * 1024;
 
 export async function prepareUpload(mm: Mm, store: Store, uid: string, publicUrl: string, maxBytes: number, args: PrepareArgs): Promise<CallToolResult> {
-  const full = new InputError(`使われていないアップロード URL が ${MAX_OPEN_UPLOAD_URLS} 件あります。それを使うか、10 分の期限が切れるのを待ってください。`);
+  const full = () => new InputError(`使われていないアップロード URL が ${MAX_OPEN_UPLOAD_URLS} 件あります。それを使うか、10 分の期限が切れるのを待ってください。`);
   // Not left to createUploadUrl alone: resolving may create the DM first, and failing after that leaves it empty. A URL issued or released between the two checks still does.
-  if (store.openUploadUrlCount(uid) >= MAX_OPEN_UPLOAD_URLS) throw full;
+  if (store.openUploadUrlCount(uid) >= MAX_OPEN_UPLOAD_URLS) throw full();
   const ch = await resolveChannel(mm, uid, args.channel, { create: true });
   const token = store.createUploadUrl({ mmUserId: uid, channelId: ch.id });
-  if (!token) throw full;
+  if (!token) throw full();
   const limit = maxBytes % MiB ? `${maxBytes} バイト` : `${maxBytes / MiB}MiB`;
   return text([
     `アップロード用の URL を発行しました。10 分間、1 回だけ使えます（1 回で ${MAX_UPLOAD_FILES} 件まで、送る本文は multipart の枠を含めて ${limit} まで）。`,
@@ -531,7 +561,7 @@ export function registerSendTools(server: McpServer, ctx: ToolContext): void {
   ) as unknown as ToolCallback<typeof draftSchema>);
 
   server.registerTool('prepare_upload', {
-    description: '利用者の PC にあるファイル（スクリーンショット、PDF など）を添付するための、使い捨てのアップロード URL と curl のコマンドを返す。PC でコマンドを実行できるクライアント（Claude Code、Codex CLI など）向けで、パスの分からないファイル（Claude Code に貼り付けた画像など）は利用者にパスを聞き、無ければ下の save_draft の案内に従う。curl を実行する前に、送るファイルのパスと投稿先を利用者に示して確認を取ること。PC でコマンドを実行できないクライアント（claude.ai など）では、save_draft で本文を下書きにし、ファイルは Mattermost の画面から添付するよう案内する',
+    description: '利用者の PC にあるファイル（スクリーンショット、PDF など）を添付するための、使い捨てのアップロード URL と curl のコマンドを返す。PC でコマンドを実行できるクライアント（Claude Code、Codex CLI など）向けで、パスの分からないファイル（Claude Code に貼り付けた画像など）は利用者にパスを聞き、無ければ末尾の案内に従う。curl を実行する前に、送るファイルのパスと投稿先を利用者に示して確認を取ること。PC でコマンドを実行できないクライアント（claude.ai など）とパスの無いファイルでは、save_draft で本文を下書きにし、ファイルは Mattermost の画面から添付するよう案内する',
     inputSchema: prepareSchema,
     annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false },
   }, guarded(ctx, 'prepare_upload', async (args: PrepareArgs, extra: { signal: AbortSignal }) =>

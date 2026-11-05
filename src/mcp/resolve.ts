@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { MmError, type MmClient } from '../mattermost/client.ts';
+import { MmError, UpstreamUnavailable, type MmClient } from '../mattermost/client.ts';
 import { InputError } from './format.ts';
 
 export type Mm = Pick<MmClient, 'call'>;
@@ -82,29 +82,39 @@ export async function resolveChannel(mm: Mm, userId: string, spec: string, opts:
   const s = spec.trim();
   if (ID.test(s)) {
     const c = await fetchChannel(mm, userId, `/channels/${s}`).catch(async (e) => {
-      // Only on 404 and only in lower case: a 403 means the ID exists, and a channel name cannot contain upper case.
-      if (!(e instanceof ChannelFetchError && e.status === 404 && /^[a-z0-9]{26}$/.test(s))) throw e;
-      const found = await byName(mm, userId, s, await myTeams(mm, userId));
+      // Not on a 403, which means the ID exists. Lowered rather than skipped for upper case: Mattermost IDs are lower case, so upper case points to a mistyped name.
+      if (!(e instanceof ChannelFetchError && e.status === 404)) throw e;
+      const lower = s.toLowerCase();
+      const found = await byName(mm, userId, lower, await myTeams(mm, userId));
       if (!found.length) throw e;
       // Not used in place of the ID: a user ID or post ID mistaken for a channel would send to whoever named a channel after it.
       throw new InputError([
         `チャンネル ID「${s}」のチャンネルはありません。ユーザー ID や投稿 ID を渡したのなら、チャンネルの指定ではありません。`,
-        `同じ文字列を名前に持つチャンネルはあります。そのチャンネルを指すときだけ、${found.map((f) => `「${f.teamName}/${s}」（${f.displayName}）`).join('か')}の形で指定してください。`,
+        `同じ文字列を名前に持つチャンネルはあります。そのチャンネルを指すときだけ、${found.map((f) => `「${f.teamName}/${lower}」（${f.displayName}）`).join('か')}の形で指定してください。`,
       ].join(''));
     });
-    return ref(c, await teamNameOf(mm, userId, c.team_id));
+    const r = ref(c, await teamNameOf(mm, userId, c.team_id));
+    const label = await dmLabel(mm, userId, c);
+    return label ? { ...r, displayName: label } : r;
   }
   const slash = s.indexOf('/');
+  // Lowered rather than passed as typed, here and for a bare channel name: Mattermost names are lower case only, and it answers 400 to any upper case letter.
   if (slash > 0) {
-    const team = plain(s.slice(0, slash), 'チーム名');
-    const c = await fetchChannel(mm, userId, `/teams/name/${team}/channels/name/${plain(s.slice(slash + 1), 'チャンネル名')}`);
+    const team = plain(s.slice(0, slash), 'チーム名').toLowerCase();
+    const c = await fetchChannel(mm, userId, `/teams/name/${team}/channels/name/${plain(s.slice(slash + 1), 'チャンネル名').toLowerCase()}`);
     return ref(c, team);
   }
+  // Only when every part could be a user name: @bob、議事録 is a missing space before a search word, not a separator.
+  if (s.startsWith('@') && /[、，]/.test(s) && s.slice(1).split(/[,、，]/).every((p) => NAME.test(p.trim().replace(/^@/, '')))) throw new InputError('@a,b の区切りは半角のカンマ（,）で書いてください。読点（、）や全角のカンマ（，）は使えません。');
   if (!s.startsWith('@')) plain(s, 'チャンネル名');
   const teams = await myTeams(mm, userId);
   if (s.startsWith('@') && s.includes(',')) return resolveGroup(mm, userId, s, teams, opts.create);
   if (s.startsWith('@')) {
-    const other = await resolveUser(mm, userId, s);
+    // 400 and 403 too: a reserved name such as @all fails Mattermost's check with 400, and with view restrictions a missing name gets 403.
+    const other = await resolveUser(mm, userId, s).catch((e) => {
+      if (e instanceof MmError && [400, 403, 404].includes(e.status)) throw new InputError(`ユーザー「${s}」が見つかりません。`);
+      throw e;
+    });
     if (!teams.length) throw new InputError('所属しているチームがないため DM を探せません。');
     // Looked up before POST /channels/direct even when creating: a user without the permission to create can still write to an existing DM.
     const name = [userId, other.id].sort().join('__');
@@ -117,10 +127,32 @@ export async function resolveChannel(mm: Mm, userId: string, spec: string, opts:
     });
     return { ...ref(c, teams[0].name), displayName: `@${other.username}` };
   }
-  const found = await byName(mm, userId, s, teams);
+  const found = await byName(mm, userId, s.toLowerCase(), teams);
   if (found.length > 1) throw new Ambiguous(s, found.map((c) => ({ team: c.teamName, name: c.name, id: c.id })));
   if (!found.length) throw new InputError(`チャンネル「${s}」が見つかりません。`);
   return found[0];
+}
+
+// Not using display_name: Mattermost leaves a DM's empty and puts every member, the caller included, in a group DM's.
+async function dmLabel(mm: Mm, userId: string, c: MmChannelFull): Promise<string | undefined> {
+  // Given up on rather than failing the tool: the name is only for the output, and Mattermost's display_name is left as it was.
+  const giveUp = (e: unknown) => {
+    if (e instanceof MmError || e instanceof UpstreamUnavailable) return undefined;
+    throw e;
+  };
+  if (c.type === 'D') {
+    const ids = /^([a-z0-9]{26})__([a-z0-9]{26})$/.exec(c.name ?? '');
+    if (!ids || (ids[1] !== userId && ids[2] !== userId)) return undefined;
+    const other = ids[1] === userId ? ids[2] : ids[1];
+    const u = await mm.call<UserRef>(userId, 'GET', `/users/${other}`).catch(giveUp);
+    return u && `@${u.username}`;
+  }
+  if (c.type === 'G') {
+    const members = await mm.call<UserRef[]>(userId, 'GET', `/users?in_channel=${c.id}&per_page=8`).catch(giveUp);
+    const others = (members ?? []).filter((u) => u.id !== userId);
+    return others.length ? others.map((u) => `@${u.username}`).sort().join(', ') : undefined;
+  }
+  return undefined;
 }
 
 async function byName(mm: Mm, userId: string, name: string, teams: MmTeam[]): Promise<ResolvedChannel[]> {

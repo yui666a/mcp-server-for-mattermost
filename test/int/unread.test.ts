@@ -99,6 +99,9 @@ describe('read_channel from unread and mark_as_read against the local Mattermost
     }
     // Not comparing the order: posts of the same millisecond are shown by post_id, not in the order they were posted.
     expect([...seen].sort()).toEqual([...unread].sort());
+    const { posts } = await mmApi<{ posts: Record<string, { create_at: number }> }>(aliceMm, 'GET', `/channels/${ch}/posts?per_page=50`);
+    const at = seen.map((id) => posts[id].create_at);
+    expect(at).toEqual([...at].sort((a, b) => a - b));
     expect((await unreadOf(ch)).msg_count_root).toBe(5);
   });
 
@@ -158,6 +161,18 @@ describe('read_channel from unread and mark_as_read against the local Mattermost
     const r = await call('mark_as_read', { threads: [{ post_id: root }] });
     expect(r.content[0].text).toContain('このスレッドのチャンネルに参加していません。');
     expect(r.content[0].text).not.toContain('follow_thread');
+  });
+
+  test('read_channel from unread shows every post of the first unread millisecond', async () => {
+    const ch = await newChannel('same-ms');
+    const read = await say(aliceMm, ch, 'already read');
+    // Only an admin's create_at is kept; Mattermost replaces anyone else's with the current time.
+    const t = (await mmApi<{ create_at: number }>(aliceMm, 'GET', `/posts/${read}`)).create_at + 1000;
+    const same: string[] = [];
+    for (const m of ['same a', 'same b']) same.push((await mmApi<{ id: string }>(e.adminToken, 'POST', '/posts', { channel_id: ch, message: `${TAG} ${m}`, create_at: t })).id);
+    const r = await call('read_channel', { channel: ch, from: 'unread', limit: 5 });
+    expect(r.isError, r.content[0].text).toBeFalsy();
+    expect(postIds(r).sort()).toEqual(same.sort());
   });
 
   describe('a mention on a reply one millisecond after last_post_id', () => {
