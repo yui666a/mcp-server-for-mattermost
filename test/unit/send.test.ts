@@ -23,7 +23,7 @@ type Mode = 'before' | 'after' | 'lost' | 'reject' | 'rate429' | 'relogin' | und
 type Upload = { query: URLSearchParams; type: string; bytes: Uint8Array };
 type FakeOpts = {
   failPost?: () => Mode; postDelay?: Promise<void>; failSearch?: () => boolean;
-  onUpload?: (n: number) => Promise<void> | void; failUpload?: (n: number) => Mode; keepFiles?: (ids: string[]) => string[];
+  onUpload?: (n: number) => Promise<void> | void; failUpload?: (n: number) => Mode; keepFiles?: (ids: string[]) => string[]; redact?: number;
   drafts?: (signal?: AbortSignal) => unknown; hiddenPost?: string; syncOff?: boolean | (() => unknown); failDelete?: () => Error | undefined; teams?: { id: string; name: string }[];
 };
 
@@ -92,8 +92,8 @@ function fakeMm(opts: FakeOpts = {}) {
         const kept = body.file_ids && (opts.keepFiles?.(body.file_ids) ?? body.file_ids);
         const post = dup ?? {
           id: id(posts.length), user_id: UID, channel_id: body.channel_id, root_id: body.root_id ?? '', message: body.message, create_at: now,
-          ...(kept?.length ? { file_ids: kept } : {}),
-        };
+          ...(kept?.length ? (opts.redact ? { file_ids: [], metadata: { redacted_file_count: opts.redact } } : { file_ids: kept }) : {}),
+        } as MmPost;
         if (!dup) {
           posts.push(post);
           if (body.pending_post_id) byPending.set(body.pending_post_id, post);
@@ -458,6 +458,28 @@ describe('send_message with file_ids from prepare_upload', () => {
     const r = await f.send({ channel: 'team-a/dup', message: 'dropped', file_ids: [F1, F2] });
     expect(textOf(r)).toContain('2 件のうち 1 件');
     expect(f.store.uploadedFiles(UID, [F1, F2]).map((x) => x.postId)).toEqual([id(1), null]);
+  });
+
+  test.each([
+    [2, 'ファイル 2 件を添付しました'],
+    [1, '添付した 2 件のうち 1 件を Mattermost が外したため、投稿に付いていません（ファイルをダウンロードする権限が無いため、どれが外れたかは分かりません）。'],
+  ])('when Mattermost hides the files (ABAC) and counts %i, it reports by the count and marks every file as posted', async (count, message) => {
+    const f = fakeMm({ redact: count });
+    uploaded(f, [F1, F2]);
+    const r = await f.send({ channel: 'team-a/dup', message: 'hidden', file_ids: [F1, F2] });
+    expect(textOf(r)).toContain(message);
+    expect(f.store.uploadedFiles(UID, [F1, F2]).map((x) => x.postId)).toEqual([id(1), id(1)]);
+  });
+
+  test('a retry after a lost response finds the earlier post whose files Mattermost hid, by their count', async () => {
+    let first = true;
+    const f = fakeMm({ redact: 2, failPost: () => (first ? ((first = false), 'after') : undefined) });
+    uploaded(f, [F1, F2]);
+    await expect(f.send({ channel: 'team-a/dup', message: 'hidden', file_ids: [F1, F2] })).rejects.toBeInstanceOf(UpstreamUnavailable);
+    f.advance(31_000);
+    const r = await f.send({ channel: 'team-a/dup', message: 'hidden', file_ids: [F1, F2] });
+    expect(textOf(r)).toContain('既にあったため');
+    expect(f.created).toHaveLength(1);
   });
 
   test('marks the kept file by identity, not by position, when Mattermost dropped the first one', async () => {
