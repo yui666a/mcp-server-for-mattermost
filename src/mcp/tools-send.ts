@@ -6,7 +6,7 @@ import { randomToken, sha256 } from '../crypto.ts';
 import { log } from '../log.ts';
 import { MmError, RateLimited, Reauthorize } from '../mattermost/client.ts';
 import { MAX_OPEN_UPLOAD_URLS, type HeldFile, type Store } from '../store.ts';
-import { BODY_CUT_NOTE, InputError, oneLine, type MmPost } from './format.ts';
+import { BODY_CUT_NOTE, indented, InputError, oneLine, type MmPost } from './format.ts';
 import { findPosted, postOnce } from './post.ts';
 import { myTeams, NoDirectChannel, resolveChannel, teamNameOf, type ChannelRef, type Mm, type MmChannel, type ResolvedChannel } from './resolve.ts';
 import { guarded, text, type ToolContext } from './server.ts';
@@ -533,7 +533,8 @@ async function saveLocked(mm: Mm, uid: string, ch: ChannelRef, rootId: string, a
     throw new InputError([
       '同じ投稿先に、本文の違う下書きがあります。上書きしていません。上書きするときは overwrite: true を付けてください（添付ファイル、優先度、burn-on-read も失われます）。',
       where,
-      `既存の下書き（先頭 200 文字）: ${head}`,
+      // Not at the margin: a later line of the user's draft could pass for a line of this answer.
+      ...indented('既存の下書き（先頭 200 文字）', head),
     ].join('\n'));
   }
   await worded(mm.call(uid, 'POST', '/drafts', { channel_id: ch.id, root_id: rootId, message: args.message }), {

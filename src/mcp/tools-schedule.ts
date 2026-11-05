@@ -3,7 +3,7 @@ import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
 import { z } from 'zod';
 import { FileHeld, MAX_PENDING_SCHEDULED, type Scheduled, type ScheduledStatus, type Store } from '../store.ts';
 import { strictArgs } from './args.ts';
-import { encodeCursor, formatTime, InputError, lines, oneLine, truncate } from './format.ts';
+import { encodeCursor, formatTime, indented, InputError, lines, oneLine, truncate } from './format.ts';
 import { dmLabel, type Mm, type MmChannel, teamNameOf } from './resolve.ts';
 import { guarded, text, type ToolContext } from './server.ts';
 import { cursorArg, cursorOf, limitArg, perPage } from './tools-read.ts';
@@ -137,7 +137,10 @@ async function row(s: Scheduled, where: string, teamOf: (channelId: string) => P
   if (!full && head?.truncated) out.push('（本文を先頭 200 文字で切りました。全文は list_scheduled_messages に id を渡すと出ます）');
   if (s.fileIds.length) out.push(`添付: ${s.fileIds.join(', ')}`);
   // Not saving the re-upload hint with the reason: rows fail on several paths (the tick, the late sweep, invalidate-scheduled), and this covers them all.
-  if (s.error) out.push(s.status === 'posted' ? `注意: ${s.error}` : `失敗の理由: ${s.error}${s.fileIds.length ? ' ファイルを付けて送り直すときは、prepare_upload からアップロードし直してください。' : ''}`);
+  // Not at the margin: a reason can quote Mattermost's error text, whose later lines could pass for a field of the list.
+  if (s.error) out.push(...indented(s.status === 'posted' ? '注意' : '失敗の理由', s.error));
+  // Not on the reason's last line: a multi-line reason would make the hint read as part of the quoted error.
+  if (s.error && s.status !== 'posted' && s.fileIds.length) out.push('ファイルを付けて送り直すときは、prepare_upload からアップロードし直してください。');
   if (s.postId) {
     out.push(`post_id: ${s.postId}`);
     const team = s.status === 'posted' ? await teamOf(s.channelId) : undefined;
