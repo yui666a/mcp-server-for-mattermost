@@ -20,7 +20,7 @@ type Upload = { query: URLSearchParams; type: string; bytes: Uint8Array };
 type FakeOpts = {
   failPost?: () => Mode; postDelay?: Promise<void>; failSearch?: () => boolean;
   onUpload?: (n: number) => Promise<void> | void; failUpload?: (n: number) => Mode; keepFiles?: (ids: string[]) => string[];
-  drafts?: (signal?: AbortSignal) => unknown; syncOff?: boolean | (() => unknown); failDelete?: () => Error | undefined; teams?: { id: string; name: string }[];
+  drafts?: (signal?: AbortSignal) => unknown; hiddenPost?: string; syncOff?: boolean | (() => unknown); failDelete?: () => Error | undefined; teams?: { id: string; name: string }[];
 };
 
 function fakeMm(opts: FakeOpts = {}) {
@@ -52,6 +52,7 @@ function fakeMm(opts: FakeOpts = {}) {
       if (method === 'GET' && p === '/teams/tb/channels/name/dup') return { id: OTHER, name: 'dup', display_name: 'Dup', team_id: 'tb', type: 'O' };
       if (method === 'GET' && p === '/teams/name/team-a/channels/name/dup') return { id: CH, name: 'dup', display_name: 'Dup', team_id: 'ta', type: 'O' };
       if (method === 'GET' && p.startsWith('/posts/')) {
+        if (p.slice('/posts/'.length) === opts.hiddenPost) throw new MmError(403, 'api.context.permissions.app_error', 'forbidden');
         const found = posts.find((x) => x.id === p.slice('/posts/'.length));
         if (!found) throw new MmError(404, 'not_found', 'not found');
         return found;
@@ -117,6 +118,44 @@ test('root_id in another channel is rejected', async () => {
   const f = fakeMm();
   await expect(f.send({ channel: 'team-a/dup', message: 'hi', root_id: id(0) })).rejects.toMatchObject({ name: 'InputError' });
   expect(f.created).toHaveLength(0);
+});
+
+describe('root_id', () => {
+  const ROOT = id(7);
+  const REPLY = id(8);
+  const withRoots = (opts: FakeOpts = {}) => {
+    const f = fakeMm(opts);
+    f.posts.push({ id: ROOT, user_id: UID, channel_id: CH, root_id: '', message: 'root', create_at: 0 });
+    f.posts.push({ id: REPLY, user_id: UID, channel_id: CH, root_id: ROOT, message: 'reply', create_at: 0 });
+    return f;
+  };
+
+  test.each([
+    ['missing', id(9), {}, `root_id ${id(9)} の投稿が見つかりません。`],
+    ['not visible', id(9), { hiddenPost: id(9) }, `root_id ${id(9)} の投稿を見られません。`],
+    ['a reply', REPLY, {}, `root_id ${REPLY} は返信です。スレッドの親投稿の post_id を指定してください。`],
+  ])('a root_id that is %s is refused with its reason, posting nothing', async (_, rootId, opts, msg) => {
+    const f = withRoots(opts);
+    await expect(f.send({ channel: 'team-a/dup', message: 'hi', root_id: rootId })).rejects.toMatchObject({ name: 'InputError', message: msg });
+    expect(f.created).toHaveLength(0);
+  });
+
+  test('a refused root_id leaves no duplicate-guard record, so the same send posts once the root can be seen', async () => {
+    const opts: FakeOpts = { hiddenPost: ROOT };
+    const f = withRoots(opts);
+    await expect(f.send({ channel: 'team-a/dup', message: 'hi', root_id: ROOT })).rejects.toMatchObject({ name: 'InputError' });
+    opts.hiddenPost = undefined;
+    const r = await f.send({ channel: 'team-a/dup', message: 'hi', root_id: ROOT });
+    expect(textOf(r)).toContain('投稿しました。');
+    expect(f.created).toHaveLength(1);
+  });
+
+  test('a root_id in another channel than a DM given by its channel_id names the DM by its internal name, which is all Mattermost gives', async () => {
+    const f = fakeMm();
+    await expect(f.send({ channel: DM, message: 'hi', root_id: id(0) })).rejects.toMatchObject({
+      message: `root_id ${id(0)} の投稿はチャンネル「${UID}__${OTHER}」（channel_id: ${DM}）にありません。`,
+    });
+  });
 });
 
 test('retry after a lost response does not double post', async () => {
