@@ -228,14 +228,17 @@ describe('mark_as_read for channels', () => {
 });
 
 describe('mark_as_read for threads', () => {
+  const read = (o: Record<string, unknown> = {}) => ({ id: ROOT, unread_replies: 0, unread_mentions: 0, ...o });
+  const state = (last_viewed_at: number, o: Record<string, unknown> = {}) => ({ id: ROOT, last_viewed_at, last_reply_at: 1009, unread_replies: 0, unread_mentions: 0, ...o });
+  const puts = () => hits.filter((h) => h.startsWith('PUT '));
   const reply = (n: number, o: Record<string, unknown> = {}) => post(n, { root_id: ROOT, ...o });
   const threads = (o: Record<string, Route> = {}, crt = 'always_on'): Record<string, Route> => ({
     ...base(crt),
     [`GET /posts/${ROOT}`]: () => post(0, { id: ROOT }),
     [`GET /posts/${id(5)}`]: () => reply(5),
-    [`GET /users/u1/teams/${TEAM}/threads/${ROOT}`]: () => ({ id: ROOT, last_viewed_at: 1001, last_reply_at: 1009, unread_mentions: 0 }),
-    [`PUT /users/u1/teams/${TEAM}/threads/${ROOT}/read/1006`]: () => ({ id: ROOT }),
-    [`PUT /users/u1/teams/${TEAM}/threads/${ROOT}/read/1010`]: () => ({ id: ROOT }),
+    [`GET /users/u1/teams/${TEAM}/threads/${ROOT}`]: () => state(1001, { unread_replies: 3 }),
+    [`PUT /users/u1/teams/${TEAM}/threads/${ROOT}/read/1006`]: () => read(),
+    [`PUT /users/u1/teams/${TEAM}/threads/${ROOT}/read/1010`]: () => read(),
     ...o,
   });
 
@@ -254,7 +257,7 @@ describe('mark_as_read for threads', () => {
   });
 
   test.each([1006, 1008])('says it is read through last_post_id, without writing or moving the position back, when the position is already %i', async (lva) => {
-    routes = threads({ [`GET /users/u1/teams/${TEAM}/threads/${ROOT}`]: () => ({ id: ROOT, last_viewed_at: lva, last_reply_at: 1009, unread_mentions: 0 }) });
+    routes = threads({ [`GET /users/u1/teams/${TEAM}/threads/${ROOT}`]: () => state(lva, { unread_replies: lva < 1009 ? 1 : 0 }) });
     const r = await setup().call({ threads: [{ post_id: ROOT, last_post_id: id(5) }] });
     expect(r.isError).toBe(false);
     expect(r.text).toContain('last_post_id までは既読です。');
@@ -262,27 +265,72 @@ describe('mark_as_read for threads', () => {
   });
 
   test('says a thread is already read when nothing is left past the last reply', async () => {
-    routes = threads({ [`GET /users/u1/teams/${TEAM}/threads/${ROOT}`]: () => ({ id: ROOT, last_viewed_at: 1010, last_reply_at: 1009, unread_mentions: 0 }) });
+    routes = threads({ [`GET /users/u1/teams/${TEAM}/threads/${ROOT}`]: () => state(1010) });
     const r = await setup().call({ threads: [{ post_id: ROOT }] });
     expect(r.text).toContain('すでに既読です。');
     expect(hits.some((h) => h.startsWith('PUT '))).toBe(false);
   });
 
-  test('rewrites the same position when the mention count may be stale, without moving it back, and says it was already read', async () => {
+  test('leaves the position alone when it is already past last_post_id and replies after it are unread, even with a mention left', async () => {
+    routes = threads({ [`GET /users/u1/teams/${TEAM}/threads/${ROOT}`]: () => state(1008, { unread_replies: 1, unread_mentions: 1 }) });
+    const r = await setup().call({ threads: [{ post_id: ROOT, last_post_id: id(5) }] });
+    expect(r.text).toContain('last_post_id までは既読です。');
+    expect(puts()).toEqual([]);
+  });
+
+  test('moves the position one millisecond on when a mention is left with no unread reply, and says the mention was cleared', async () => {
     routes = threads({
-      [`GET /users/u1/teams/${TEAM}/threads/${ROOT}`]: () => ({ id: ROOT, last_viewed_at: 1008, last_reply_at: 1009, unread_mentions: 1 }),
-      [`PUT /users/u1/teams/${TEAM}/threads/${ROOT}/read/1008`]: () => ({ id: ROOT }),
+      [`GET /users/u1/teams/${TEAM}/threads/${ROOT}`]: () => state(1008, { unread_mentions: 1 }),
+      [`PUT /users/u1/teams/${TEAM}/threads/${ROOT}/read/1009`]: () => read(),
     });
     const r = await setup().call({ threads: [{ post_id: ROOT, last_post_id: id(5) }] });
-    expect(r.text).toContain('last_post_id までは既読です（メンションの数を数え直させました）。');
-    expect(hits).toContain(`PUT /users/u1/teams/${TEAM}/threads/${ROOT}/read/1008`);
-    routes[`GET /users/u1/teams/${TEAM}/threads/${ROOT}`] = () => ({ id: ROOT, last_viewed_at: 1010, last_reply_at: 1009, unread_mentions: 1 });
-    routes[`PUT /users/u1/teams/${TEAM}/threads/${ROOT}/read/1010`] = () => ({ id: ROOT });
-    expect((await setup().call({ threads: [{ post_id: ROOT }] })).text).toContain('すでに既読です（メンションの数を数え直させました）。');
+    expect(r.text).toContain('last_post_id までは既読です（残っていたメンションを消しました）。');
+    expect(puts()).toEqual([`PUT /users/u1/teams/${TEAM}/threads/${ROOT}/read/1009`]);
+    hits = [];
+    routes[`GET /users/u1/teams/${TEAM}/threads/${ROOT}`] = () => state(1010, { unread_mentions: 1 });
+    routes[`PUT /users/u1/teams/${TEAM}/threads/${ROOT}/read/1011`] = () => read();
+    expect((await setup().call({ threads: [{ post_id: ROOT }] })).text).toContain('すでに既読です（残っていたメンションを消しました）。');
+    expect(puts()).toEqual([`PUT /users/u1/teams/${TEAM}/threads/${ROOT}/read/1011`]);
+  });
+
+  test('does not claim the mention was cleared when Mattermost still counts one after moving the position on, and does not move it further', async () => {
+    routes = threads({
+      [`GET /users/u1/teams/${TEAM}/threads/${ROOT}`]: () => state(1010, { unread_mentions: 1 }),
+      [`PUT /users/u1/teams/${TEAM}/threads/${ROOT}/read/1011`]: () => read({ unread_mentions: 1 }),
+    });
+    const r = await setup().call({ threads: [{ post_id: ROOT }] });
+    expect(r.text).toContain('すでに既読です。');
+    expect(puts()).toEqual([`PUT /users/u1/teams/${TEAM}/threads/${ROOT}/read/1011`]);
+  });
+
+  test('writes one millisecond further when a mention is left with no unread reply after marking, so a mention on a reply at the position is cleared', async () => {
+    routes = threads({
+      [`PUT /users/u1/teams/${TEAM}/threads/${ROOT}/read/1006`]: () => read({ unread_mentions: 1 }),
+      [`PUT /users/u1/teams/${TEAM}/threads/${ROOT}/read/1007`]: () => read(),
+    });
+    const r = await setup().call({ threads: [{ post_id: ROOT, last_post_id: id(5) }] });
+    expect(r.text).toContain(`スレッド（親 post_id: ${ROOT}）: 既読にしました。`);
+    expect(puts()).toEqual([`PUT /users/u1/teams/${TEAM}/threads/${ROOT}/read/1006`, `PUT /users/u1/teams/${TEAM}/threads/${ROOT}/read/1007`]);
+  });
+
+  test('writes once when the mention left after marking belongs to a reply that is still unread', async () => {
+    routes = threads({ [`PUT /users/u1/teams/${TEAM}/threads/${ROOT}/read/1006`]: () => read({ unread_replies: 2, unread_mentions: 1 }) });
+    await setup().call({ threads: [{ post_id: ROOT, last_post_id: id(5) }] });
+    expect(puts()).toEqual([`PUT /users/u1/teams/${TEAM}/threads/${ROOT}/read/1006`]);
+  });
+
+  test('reports the item as failed when the second write fails, so a retry settles it', async () => {
+    routes = threads({
+      [`PUT /users/u1/teams/${TEAM}/threads/${ROOT}/read/1006`]: () => read({ unread_mentions: 1 }),
+      [`PUT /users/u1/teams/${TEAM}/threads/${ROOT}/read/1007`]: mmError(403, 'api.context.permissions.app_error'),
+    });
+    const r = await setup().call({ threads: [{ post_id: ROOT, last_post_id: id(5) }] });
+    expect(r.isError).toBe(true);
+    expect(r.text).toContain(`スレッド（親 post_id: ${ROOT}）: 既読にできませんでした。`);
   });
 
   test('accepts the root post itself as last_post_id', async () => {
-    routes = threads({ [`PUT /users/u1/teams/${TEAM}/threads/${ROOT}/read/1001`]: () => ({ id: ROOT }), [`GET /users/u1/teams/${TEAM}/threads/${ROOT}`]: () => ({ id: ROOT, last_viewed_at: 900, last_reply_at: 1009, unread_mentions: 0 }) });
+    routes = threads({ [`PUT /users/u1/teams/${TEAM}/threads/${ROOT}/read/1001`]: () => read(), [`GET /users/u1/teams/${TEAM}/threads/${ROOT}`]: () => state(900, { unread_replies: 3 }) });
     const r = await setup().call({ threads: [{ post_id: ROOT, last_post_id: ROOT }] });
     expect(r.isError).toBe(false);
     expect(hits).toContain(`PUT /users/u1/teams/${TEAM}/threads/${ROOT}/read/1001`);
@@ -319,10 +367,26 @@ describe('mark_as_read for threads', () => {
     expect(r.text).toContain('read_thread で読み直して');
   });
 
-  test('says there is no read state for a thread the user has no membership of', async () => {
-    routes = threads({ [`GET /users/u1/teams/${TEAM}/threads/${ROOT}`]: mmError(404, 'app.user.get_thread_membership_for_user.not_found') });
+  test('points to follow_thread for a thread with replies the user does not follow', async () => {
+    routes = threads({
+      [`GET /posts/${ROOT}`]: () => post(0, { id: ROOT, reply_count: 3 }),
+      [`GET /users/u1/teams/${TEAM}/threads/${ROOT}`]: mmError(404, 'app.user.get_threads_for_user.not_found'),
+    });
     const r = await setup().call({ threads: [{ post_id: ROOT }] });
-    expect(r.text).toContain('このスレッドには既読の状態がありません');
+    expect(r.text).toContain('このスレッドはフォローしていないため、既読の状態がありません');
+    expect(r.text).toContain('follow_thread を使ってください');
+    routes[`GET /posts/${id(5)}`] = () => reply(5);
+    expect((await setup().call({ threads: [{ post_id: id(5) }] })).text).toContain('follow_thread を使ってください');
+  });
+
+  test('says there is nothing to mark for a root post without replies, without pointing to follow_thread', async () => {
+    routes = threads({
+      [`GET /posts/${ROOT}`]: () => post(0, { id: ROOT, reply_count: 0 }),
+      [`GET /users/u1/teams/${TEAM}/threads/${ROOT}`]: mmError(404, 'app.user.get_threads_for_user.not_found'),
+    });
+    const r = await setup().call({ threads: [{ post_id: ROOT }] });
+    expect(r.text).toContain('このスレッドには返信がまだ無いため、既読にするものがありません。');
+    expect(r.text).not.toContain('follow_thread');
   });
 
   test('uses the user\'s first team for a DM thread', async () => {
@@ -330,8 +394,8 @@ describe('mark_as_read for threads', () => {
       [`GET /posts/${ROOT}`]: () => post(0, { id: ROOT, channel_id: DM }),
       [`GET /channels/${DM}`]: () => channel(DM, 'u1__u2', { team_id: '', type: 'D' }),
       'GET /users/me/teams': () => [{ id: TEAM2, name: 'team-b' }, { id: TEAM, name: 'team-a' }],
-      [`GET /users/u1/teams/${TEAM2}/threads/${ROOT}`]: () => ({ id: ROOT, last_viewed_at: 1001, last_reply_at: 1009, unread_mentions: 0 }),
-      [`PUT /users/u1/teams/${TEAM2}/threads/${ROOT}/read/1010`]: () => ({ id: ROOT }),
+      [`GET /users/u1/teams/${TEAM2}/threads/${ROOT}`]: () => state(1001, { unread_replies: 3 }),
+      [`PUT /users/u1/teams/${TEAM2}/threads/${ROOT}/read/1010`]: () => read(),
     });
     const r = await setup().call({ threads: [{ post_id: ROOT }] });
     expect(r.text).toContain('既読にしました。');
