@@ -5,7 +5,8 @@ import { MmError } from '../mattermost/client.ts';
 import { strictArgs } from './args.ts';
 import { InputError, type MmPost } from './format.ts';
 import { myTeams, resolveChannel, type Mm } from './resolve.ts';
-import { failureText, guarded, text, type ToolContext } from './server.ts';
+import { log } from '../log.ts';
+import { failure, failureText, guarded, text, type ToolContext } from './server.ts';
 import { collapsedThreads } from './tools-read.ts';
 import { POST_WORDING } from './tools-save-pin.ts';
 import { worded } from './tools-send.ts';
@@ -15,8 +16,8 @@ const POST_ID = z.string().regex(/^[A-Za-z0-9]{26}$/);
 const MAX_ITEMS = 20;
 const AFTER_PAGE = 200;
 
+// Not leaving the items of channels and threads to zod's z.object, which drops unknown keys: a misspelled last_post_id would mark the item read up to the newest post, which only the user can undo, item by item, in the Mattermost UI.
 const schema = {
-  // Not leaving an item to zod's z.object, which drops unknown keys: a misspelled last_post_id would mark the item read up to the newest post, which only the user can undo, item by item, in the Mattermost UI.
   channels: z.array(strictArgs({
     channel: z.string().min(1).describe('チャンネル ID、「チーム名/チャンネル名」、チャンネル名、@ユーザー名（DM）、@a,b（グループ DM）のどれか'),
     last_post_id: POST_ID.optional().describe('このチャンネルで読んだ投稿のうち最も新しいものの post_id'),
@@ -46,10 +47,19 @@ function lastPost(mm: Mm, uid: string, id: string, reread: string): Promise<Post
   });
 }
 
-// Per item rather than failing the call: one bad item should not keep the others unread. Anything else (re-login, 429, outage) concerns every item.
-function itemFailure(e: unknown): string {
-  if (e instanceof InputError || e instanceof MmError) return failureText(e);
-  throw e;
+const itemError = (e: unknown): e is InputError | MmError => e instanceof InputError || e instanceof MmError;
+
+// Stops the run with the line for the item it stopped in. changed is true when that item may have been marked read.
+class Interrupted extends Error {
+  readonly line: string;
+  readonly changed: boolean;
+  readonly reason: unknown;
+  constructor(line: string, changed: boolean, reason: unknown) {
+    super('interrupted');
+    this.line = line;
+    this.changed = changed;
+    this.reason = reason;
+  }
 }
 
 export async function markAsRead(mm: Mm, uid: string, args: Args): Promise<CallToolResult> {
@@ -59,9 +69,38 @@ export async function markAsRead(mm: Mm, uid: string, args: Args): Promise<CallT
   if (!n || n > MAX_ITEMS) throw new InputError(`channels と threads を合わせて 1〜${MAX_ITEMS} 件を指定してください。`);
   const crt = (await collapsedThreads(mm, uid)).on;
   const results: Result[] = [];
+  const pending = [...channels.map((c) => `チャンネル「${c.channel}」`), ...threads.map((t) => `スレッド（post_id: ${t.post_id}）`)];
+  let started = 0;
+  let writing = false;
+  // Per item rather than failing the call: one bad item should not keep the others unread. Anything else (re-login, 429, outage, a bug) concerns every item, so the run stops there.
+  const failed = (label: string, e: unknown): Result => {
+    if (e instanceof Interrupted) throw e;
+    if (itemError(e)) return { line: `- ${label}: 既読にできませんでした。${failureText(e)}`, ok: false };
+    // Not saying the item stayed unread once its write was sent: it may have reached Mattermost before the timeout or the 5xx.
+    throw new Interrupted(`- ${label}: 処理中に中断しました（${writing ? '既読になったかは分かりません' : '既読にしていません'}）。`, writing, e);
+  };
+  try {
+    await markItems();
+  } catch (e) {
+    if (!(e instanceof Interrupted)) throw e;
+    if (!results.length && !e.changed) throw e.reason;
+    const f = failure(e.reason);
+    log('tool_interrupted', { mm_user_id: uid, tool: 'mark_as_read', outcome: f.outcome });
+    const rest = pending.slice(started);
+    // Not pointing to a plain retry of the whole call: items without last_post_id would also mark read what arrived meanwhile.
+    return text([
+      '既読にした結果:', ...results.map((r) => r.line), e.line,
+      `ここで中断しました。${(f.result.content[0] as { text: string }).text}${rest.length ? `次の ${rest.length} 件は処理していません: ${rest.join('、')}。` : ''}再実行するときは、中断した項目と処理していない項目だけを渡してください。利用者がすべての既読を求めたのでなければ、last_post_id を省いた項目は、渡し直す前に読んで last_post_id を付けてください。`,
+    ].join('\n'), true);
+  }
+  return text(['既読にした結果:', ...results.map((r) => r.line)].join('\n'), !results.some((r) => r.ok));
+
+  async function markItems(): Promise<void> {
   const seen = new Set<string>();
 
   for (const item of channels) {
+    started++;
+    writing = false;
     let label = `チャンネル「${item.channel}」`;
     try {
       const ch = await resolveChannel(mm, uid, item.channel);
@@ -97,16 +136,19 @@ export async function markAsRead(mm: Mm, uid: string, args: Args): Promise<CallT
       }
       // Not using /channels/members/{id}/view: it also switches the user's active channel, which changes what they are notified about.
       // Not batching every channel into one mark_read after all the checks: the gap between a channel's check and its marking would grow to the whole run.
+      writing = true;
       await mm.call(uid, 'POST', `/channels/members/${uid}/mark_read`, [ch.id]);
       results.push({ line: `- ${label}: ${item.last_post_id ? '既読にしました。' : '呼んだ時点までのすべてを既読にしました。'}`, ok: true });
     } catch (e) {
-      results.push({ line: `- ${label}: 既読にできませんでした。${itemFailure(e)}`, ok: false });
+      results.push(failed(label, e));
     }
   }
 
   let anyTeam: string | undefined;
   const firstTeam = async () => (anyTeam ??= (await myTeams(mm, uid))[0]?.id);
   for (const item of threads) {
+    started++;
+    writing = false;
     let label = `スレッド（post_id: ${item.post_id}）`;
     try {
       if (!crt) throw new InputError('スレッドの折りたたみ（CRT）が無効なため、スレッドの既読は画面に出ません。チャンネルを既読にすれば足ります。');
@@ -133,12 +175,16 @@ export async function markAsRead(mm: Mm, uid: string, args: Args): Promise<CallT
         at = last.create_at;
       }
       const upTo = item.last_post_id ? 'last_post_id までは' : 'すでに';
-      const put = (ts: number) => mm.call<ThreadState>(uid, 'PUT', `/users/${uid}/teams/${team}/threads/${root}/read/${ts}`);
+      const put = (ts: number) => {
+        writing = true;
+        return mm.call<ThreadState>(uid, 'PUT', `/users/${uid}/teams/${team}/threads/${root}/read/${ts}`);
+      };
       // Not failing the item when only clearing the mention fails: the position already stands at or past the one to write, so the thread is read.
       // Not pointing a call without last_post_id to a plain retry: it would also mark read the replies that arrived meanwhile.
-      const clearing = (ts: number) => put(ts).catch((e) => {
-        const retry = item.last_post_id ? 'このスレッドを同じ last_post_id で再実行すると消せることがあります。' : 'このスレッドを、読んだ最終返信を last_post_id に渡して再実行すると消せることがあります。';
-        const why = itemFailure(e);
+      const retry = item.last_post_id ? 'このスレッドを同じ last_post_id で再実行すると消せることがあります。' : 'このスレッドを read_thread で読み、読んだ最終返信を last_post_id に渡して再実行すると消せることがあります。';
+      const clearing = (ts: number, read: string) => put(ts).catch((e) => {
+        if (!itemError(e)) throw new Interrupted(`- ${label}: ${read}ただし、位置ちょうどの返信のメンションを消す前に中断しました。${retry}`, true, e);
+        const why = failureText(e);
         return `ただし、位置ちょうどの返信のメンションは消せませんでした。${why}${why.endsWith('。') ? '' : '。'}${retry}`;
       });
       // Not writing the read post's own time: Mattermost counts unread replies after the position but mentions from it, so a mention on that post would stay.
@@ -152,20 +198,21 @@ export async function markAsRead(mm: Mm, uid: string, args: Args): Promise<CallT
           continue;
         }
         // Not rewriting the same position for a mention with no unread reply: Mattermost counts mentions from the position, so one on a reply at it would stay. No reply is after it, so one millisecond on reads none.
-        const r = await clearing(to + 1);
+        const r = await clearing(to + 1, `${upTo}既読です。`);
         done = typeof r === 'string' ? `${upTo}既読です。${r}` : `${upTo}既読です${r.unread_mentions ? '' : '（残っていたメンションを消しました）'}。`;
       } else {
         const r = await put(to);
         // Not leaving a mention with no unread reply: it is on a reply at the position, which already counts as read.
-        const left = r.unread_mentions && !r.unread_replies ? await clearing(to + 1) : undefined;
-        done = (item.last_post_id ? '既読にしました。' : '呼んだ時点の最終返信までを既読にしました。') + (typeof left === 'string' ? left : '');
+        const read = item.last_post_id ? '既読にしました。' : '呼んだ時点の最終返信までを既読にしました。';
+        const left = r.unread_mentions && !r.unread_replies ? await clearing(to + 1, read) : undefined;
+        done = read + (typeof left === 'string' ? left : '');
       }
       results.push({ line: `- ${label}: ${done}`, ok: true });
     } catch (e) {
-      results.push({ line: `- ${label}: 既読にできませんでした。${itemFailure(e)}`, ok: false });
+      results.push(failed(label, e));
     }
   }
-  return text(['既読にした結果:', ...results.map((r) => r.line)].join('\n'), !results.some((r) => r.ok));
+  }
 }
 
 export function registerMarkReadTool(server: McpServer, ctx: ToolContext): void {

@@ -336,7 +336,7 @@ describe('mark_as_read for threads', () => {
     r = await setup().call({ threads: [{ post_id: ROOT }] });
     expect(r.isError).toBe(false);
     expect(r.text).toContain('呼んだ時点の最終返信までを既読にしました。ただし、位置ちょうどの返信のメンションは消せませんでした。');
-    expect(r.text).toContain('このスレッドを、読んだ最終返信を last_post_id に渡して再実行すると消せることがあります。');
+    expect(r.text).toContain('このスレッドを read_thread で読み、読んだ最終返信を last_post_id に渡して再実行すると消せることがあります。');
     expect(r.text).not.toContain('同じ last_post_id で再実行');
   });
 
@@ -353,17 +353,65 @@ describe('mark_as_read for threads', () => {
     const all = await setup().call({ threads: [{ post_id: ROOT }] });
     expect(all.isError).toBe(false);
     expect(all.text).toContain('すでに既読です。ただし、位置ちょうどの返信のメンションは消せませんでした。');
-    expect(all.text).toContain('このスレッドを、読んだ最終返信を last_post_id に渡して再実行すると消せることがあります。');
+    expect(all.text).toContain('このスレッドを read_thread で読み、読んだ最終返信を last_post_id に渡して再実行すると消せることがあります。');
   });
 
-  test('stays a tool error when Mattermost is unavailable while clearing the mention', async () => {
-    routes = threads({
-      [`PUT /users/u1/teams/${TEAM}/threads/${ROOT}/read/1006`]: () => read({ unread_mentions: 1 }),
-      [`PUT /users/u1/teams/${TEAM}/threads/${ROOT}/read/1007`]: mmError(503, 'app.unavailable'),
-    });
+  const unavailable = () => new Response('oops', { status: 503 });
+  const once = (first: Route, then: Route): Route => { let n = 0; return (req) => (n++ ? then : first)(req); };
+
+  test.each([
+    ['after marking it', { [`PUT /users/u1/teams/${TEAM}/threads/${ROOT}/read/1006`]: () => read({ unread_mentions: 1 }), [`PUT /users/u1/teams/${TEAM}/threads/${ROOT}/read/1007`]: unavailable }, '既読にしました。'],
+    ['when already read past the position', { [`GET /users/u1/teams/${TEAM}/threads/${ROOT}`]: () => state(1008, { unread_mentions: 1 }), [`PUT /users/u1/teams/${TEAM}/threads/${ROOT}/read/1009`]: unavailable }, 'last_post_id までは既読です。'],
+  ])('reports the thread as read and stops when Mattermost is unavailable while clearing the mention (%s)', async (_, o, read) => {
+    routes = threads(o);
     const r = await setup().call({ threads: [{ post_id: ROOT, last_post_id: id(5) }] });
     expect(r.isError).toBe(true);
-    expect(r.text).not.toContain('既読にした結果');
+    expect(r.text).toContain(`スレッド（親 post_id: ${ROOT}）: ${read}ただし、位置ちょうどの返信のメンションを消す前に中断しました。このスレッドを同じ last_post_id で再実行すると消せることがあります。`);
+    expect(r.text).toContain('ここで中断しました。Mattermost に一時的に接続できません。');
+    expect(r.text).not.toContain('処理していません');
+  });
+
+  test('stops at an unavailable write, keeping the items before it and listing the ones not started', async () => {
+    routes = threads({ 'POST /channels/members/u1/mark_read': once(() => ({ status: 'OK', last_viewed_at_times: {} }), unavailable) });
+    const r = await setup().call({ channels: [{ channel: CH }, { channel: CH2 }], threads: [{ post_id: ROOT }] });
+    expect(r.isError).toBe(true);
+    expect(r.text).toContain(`（channel_id: ${CH}）: 呼んだ時点までのすべてを既読にしました。`);
+    expect(r.text).toContain(`（channel_id: ${CH2}）: 処理中に中断しました（既読になったかは分かりません）。`);
+    expect(r.text).toContain(`ここで中断しました。Mattermost に一時的に接続できません。しばらくしてから再試行してください。次の 1 件は処理していません: スレッド（post_id: ${ROOT}）。再実行するときは、中断した項目と処理していない項目だけを渡してください。`);
+    expect(hits.filter((h) => h.startsWith('GET /users/u1/teams/'))).toEqual([]);
+  });
+
+  test('stops at a rate limit in the threads before writing, saying that thread was not marked', async () => {
+    routes = threads({ [`GET /users/u1/teams/${TEAM}/threads/${ROOT}`]: () => new Response(null, { status: 429, headers: { 'x-ratelimit-reset': '7' } }) });
+    const r = await setup().call({ channels: [{ channel: CH }], threads: [{ post_id: ROOT }] });
+    expect(r.isError).toBe(true);
+    expect(r.text).toContain(`（channel_id: ${CH}）: 呼んだ時点までのすべてを既読にしました。`);
+    expect(r.text).toContain(`スレッド（親 post_id: ${ROOT}）: 処理中に中断しました（既読にしていません）。`);
+    expect(r.text).toContain('ここで中断しました。呼び出しが多すぎます。7 秒後に再試行してください。再実行するときは');
+  });
+
+  test('stops with the results so far even when they are all failures', async () => {
+    routes = threads({ 'POST /channels/members/u1/mark_read': once(mmError(400, 'app.channel.update_last_viewed_at.app_error'), unavailable) });
+    const r = await setup().call({ channels: [{ channel: CH }, { channel: CH2 }] });
+    expect(r.isError).toBe(true);
+    expect(r.text).toContain(`（channel_id: ${CH}）: 既読にできませんでした。`);
+    expect(r.text).toContain(`（channel_id: ${CH2}）: 処理中に中断しました（既読になったかは分かりません）。`);
+  });
+
+  test('stops on an unexpected failure too, with the results so far', async () => {
+    routes = threads({ [`GET /channels/${CH}/posts`]: () => ({}) });
+    const r = await setup().call({ channels: [{ channel: CH2 }, { channel: CH, last_post_id: LAST }] });
+    expect(r.isError).toBe(true);
+    expect(r.text).toContain(`（channel_id: ${CH2}）: 呼んだ時点までのすべてを既読にしました。`);
+    expect(r.text).toContain(`（channel_id: ${CH}）: 処理中に中断しました（既読にしていません）。`);
+    expect(r.text).toContain('ここで中断しました。ツールの実行中に予期しないエラーが発生しました。');
+  });
+
+  test('reports the first item when its write was sent before Mattermost became unavailable', async () => {
+    routes = threads({ 'POST /channels/members/u1/mark_read': unavailable });
+    const r = await setup().call({ channels: [{ channel: CH }] });
+    expect(r.isError).toBe(true);
+    expect(r.text).toContain(`（channel_id: ${CH}）: 処理中に中断しました（既読になったかは分かりません）。`);
   });
 
   test('accepts the root post itself as last_post_id', async () => {
