@@ -87,13 +87,15 @@ function fakeMm(opts: FakeOpts = {}) {
         if (mode === 'lost') throw new UpstreamUnavailable('Mattermost unreachable', true);
         const dup = body.pending_post_id ? byPending.get(body.pending_post_id) : undefined;
         const kept = body.file_ids && (opts.keepFiles?.(body.file_ids) ?? body.file_ids);
-        const post = dup ?? {
+        const fresh = {
           id: id(posts.length), user_id: UID, channel_id: body.channel_id, root_id: body.root_id ?? '', message: body.message, create_at: now,
-          ...(kept?.length ? (opts.redact ? { file_ids: [], metadata: { redacted_file_count: opts.redact } } : { file_ids: kept }) : {}),
+          ...(kept?.length ? { file_ids: kept } : {}),
         } as MmPost;
+        // Not redacting the pending_post_id answer: v11.7.15's createPost returns deduplicateCreatePost's post without SanitizePostMetadataForUser, so its file_ids stay.
+        const post = dup ?? (kept?.length && opts.redact ? { ...fresh, file_ids: [], metadata: { redacted_file_count: opts.redact } } as MmPost : fresh);
         if (!dup) {
           posts.push(post);
-          if (body.pending_post_id) byPending.set(body.pending_post_id, post);
+          if (body.pending_post_id) byPending.set(body.pending_post_id, fresh);
         }
         if (mode === 'after') throw new UpstreamUnavailable('Mattermost unreachable', true);
         return post;
