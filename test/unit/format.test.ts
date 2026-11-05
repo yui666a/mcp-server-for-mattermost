@@ -98,7 +98,10 @@ describe('attachments of a post', () => {
     const HIDDEN = (n: number) => `添付 ${n} 件（Mattermost のアクセス制御の方針（ABAC）により、表示もダウンロードもできません）`;
 
     test('says how many files are hidden, the files and file_ids being gone', () => {
-      for (const n of [1, 2]) expect(formatPost({ ...p, file_ids: [], metadata: { redacted_file_count: n } }, ctx)).toContain(`\n${HIDDEN(n)}\n`);
+      for (const n of [1, 2]) {
+        const lines = formatPost({ ...p, file_ids: [], metadata: { redacted_file_count: n } }, ctx).split('\n');
+        expect(lines.filter((l) => l.startsWith('添付'))).toEqual([HIDDEN(n)]);
+      }
     });
 
     test('still shows the files Mattermost left, before the hidden count', () => {
