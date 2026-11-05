@@ -37,19 +37,23 @@ export async function requireMm(): Promise<Env> {
   }
 }
 
-// Not stopping at the first failed deactivation: every user made has to go, and the test's own failure must not be replaced by the cleanup's.
-export async function withUsers(run: (made: string[]) => Promise<void>): Promise<void> {
+// Not stopping at the first failed cleanup: every user made has to go, and the test's own failure must not be replaced by the cleanup's.
+// Other cleanups given to later run before the users are deactivated, since they may need them (a channel the user is in).
+export async function withUsers(run: (made: string[], later: (cleanup: () => Promise<unknown>) => void) => Promise<void>): Promise<void> {
   const { mmUrl, adminToken } = env();
   const made: string[] = [];
+  const cleanups: (() => Promise<unknown>)[] = [];
   let ok = false;
   try {
-    await run(made);
+    await run(made, (cleanup) => cleanups.push(cleanup));
     ok = true;
   } finally {
-    const failed = (await Promise.allSettled(made.map(async (id) => {
+    const done = await Promise.allSettled(cleanups.map((f) => f()));
+    done.push(...await Promise.allSettled(made.map(async (id) => {
       const res = await fetch(`${mmUrl}/api/v4/users/${id}`, { method: 'DELETE', headers: { authorization: `Bearer ${adminToken}` } });
       if (!res.ok) throw new Error(`DELETE /users/${id} -> ${res.status} ${await res.text()}`);
-    }))).find((r) => r.status === 'rejected');
+    })));
+    const failed = done.find((r) => r.status === 'rejected');
     if (ok && failed) throw failed.reason;
   }
 }
