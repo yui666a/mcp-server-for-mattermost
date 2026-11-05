@@ -248,10 +248,49 @@ describe('follow_thread and unfollow_thread', () => {
     }
   });
 
-  test('follow_thread says a thread without replies shows up in the list only after its first reply', async () => {
-    routes = { ...base(), [`GET /posts/${ROOT}`]: () => ({ id: ROOT, user_id: 'u2', channel_id: CH1, root_id: '', message: 'root', create_at: 1, reply_count: 0 }) };
+  const noReplies = (isFollowing?: boolean): Record<string, Route> => ({
+    ...base(),
+    [`GET /posts/${ROOT}`]: () => ({ id: ROOT, user_id: 'u2', channel_id: CH1, root_id: '', message: 'root', create_at: 1, reply_count: 0 }),
+    [`GET /posts/${ROOT}/thread`]: () => ({ order: [ROOT], posts: { [ROOT]: { id: ROOT, ...(isFollowing === undefined ? {} : { is_following: isFollowing }) } } }),
+  });
+
+  test('follow_thread follows a root post without replies the user does not follow, and says it shows up in the list only after its first reply', async () => {
+    for (const isFollowing of [undefined, false]) {
+      routes = noReplies(isFollowing);
+      hits = [];
+      urls = [];
+      const r = await setup().call('follow_thread', { post_id: ROOT });
+      expect(r.text).toBe(`スレッド（親 post_id: ${ROOT}）をフォローしました。フォローした時点までの返信は既読になります（Mattermost の動作）。\n返信がまだないため、最初の返信があるまで list_followed_threads には出ません。`);
+      expect(writes(), String(isFollowing)).toEqual([`PUT /users/u1/teams/${T1}/threads/${ROOT}/following`]);
+      expect(urls, String(isFollowing)).toContain(`GET /posts/${ROOT}/thread?collapsedThreads=true`);
+    }
+  });
+
+  test('follow_thread leaves a followed root post without replies alone, telling it from the thread\'s is_following', async () => {
+    routes = noReplies(true);
     const r = await setup().call('follow_thread', { post_id: ROOT });
-    expect(r.text).toContain('返信がまだないため、最初の返信があるまで list_followed_threads には出ません。');
+    expect(r.text).toBe(`スレッド（親 post_id: ${ROOT}）はすでにフォローしています。\n返信がまだないため、最初の返信があるまで list_followed_threads には出ません。`);
+    expect(writes()).toEqual([]);
+  });
+
+  test('follow_thread does not say a followed thread whose replies were all deleted waits for its first reply', async () => {
+    routes = { ...noReplies(), [`GET /users/u1/teams/${T1}/threads/${ROOT}`]: () => ({ id: ROOT, unread_replies: 0 }) };
+    const r = await setup().call('follow_thread', { post_id: ROOT });
+    expect(r.text).toBe(`スレッド（親 post_id: ${ROOT}）はすでにフォローしています。`);
+    expect(hits).not.toContain(`GET /posts/${ROOT}/thread`);
+  });
+
+  test('follow_thread does not fetch the thread when it has replies', async () => {
+    routes = base();
+    await setup().call('follow_thread', { post_id: ROOT });
+    expect(hits).not.toContain(`GET /posts/${ROOT}/thread`);
+  });
+
+  test('follow_thread passes on a failure to fetch the thread of a root post without replies instead of following', async () => {
+    routes = { ...noReplies(), [`GET /posts/${ROOT}/thread`]: () => Response.json({ id: 'app.post.get.app_error' }, { status: 404 }) };
+    const r = await setup().call('follow_thread', { post_id: ROOT });
+    expect(r.isError).toBe(true);
+    expect(writes()).toEqual([]);
   });
 
   test('a DM thread uses the user\'s first team, and is refused when the user has no team', async () => {
