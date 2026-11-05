@@ -838,10 +838,8 @@ export function registerReadTools(server: McpServer, ctx: ToolContext): void {
       }
       const mine = await mm.call<MmChannel[]>(uid, 'GET', '/users/me/channels');
       const dms = mine.filter((x) => x.type === 'D');
-      const partners = dms.length
-        ? new Map((await mm.call<UserRef[]>(uid, 'POST', '/users/ids', [...new Set(dms.map((x) => x.name.split('__').find((id) => id !== uid) ?? uid))]))
-          .map((u) => [u.id, u.username]))
-        : new Map<string, string>();
+      // Not giving up on the names as list_my_channels does: a DM is matched by its partner's username, so it would silently drop out of the results.
+      const partners = await usernamesOf(mm, uid, dms.map((x) => x.name.split('__').find((id) => id !== uid) ?? uid));
       for (const x of mine) {
         if (x.type === 'D') {
           const other = partners.get(x.name.split('__').find((id) => id !== uid) ?? uid);
@@ -882,9 +880,11 @@ export function registerReadTools(server: McpServer, ctx: ToolContext): void {
       const shown = [...p.updated, ...p.body];
       const other = (x: MmChannel) => x.name.split('__').find((id) => id !== uid) ?? uid;
       const dms = shown.filter((x) => x.type === 'D');
-      const partners = dms.length
-        ? new Map((await mm.call<UserRef[]>(uid, 'POST', '/users/ids', [...new Set(dms.map(other))])).map((u) => [u.id, u.username]))
-        : new Map<string, string>();
+      // Not failing the list when the partners' names cannot be read: they only label the DMs, which then show the partner's user_id, as dmLabel gives up.
+      const partners = await usernamesOf(mm, uid, dms.map(other)).catch((e) => {
+        if (e instanceof MmError || e instanceof UpstreamUnavailable) return new Map<string, string>();
+        throw e;
+      });
       const kind: Record<string, string> = { O: '公開', P: '非公開', D: 'DM', G: 'グループ DM' };
       const line = (x: (typeof shown)[number]) => {
         const team = teamName.get(x.team_id);
