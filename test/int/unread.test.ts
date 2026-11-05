@@ -159,7 +159,7 @@ describe('read_channel from unread and mark_as_read against the local Mattermost
     const root = await say(bobMm, ch, 'root');
     await say(bobMm, ch, 'reply', root);
     const r = await call('mark_as_read', { threads: [{ post_id: root }] });
-    expect(r.content[0].text).toContain('このスレッドのチャンネルに参加していません。');
+    expect(r.content[0].text).toContain('このスレッドのチャンネルに参加しているかを確かめられませんでした');
     expect(r.content[0].text).not.toContain('follow_thread');
   });
 
