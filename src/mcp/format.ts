@@ -60,7 +60,7 @@ const isRecord = (x: unknown): x is Record<string, unknown> => typeof x === 'obj
 const str = (x: unknown): string => (typeof x === 'string' ? x : typeof x === 'number' || typeof x === 'boolean' ? String(x) : '');
 const records = (x: unknown): Record<string, unknown>[] => (Array.isArray(x) ? x.filter(isRecord) : []);
 
-const lines = (s: string): string[] => s.split(/\r\n|[\r\n\v\f\x1c-\x1e\u0085\u2028\u2029]/);
+export const lines = (s: string): string[] => s.split(/\r\n|[\r\n\v\f\x1c-\x1e\u0085\u2028\u2029]/);
 
 // Indenting every line rather than quoting: attachments are written by whoever posts, and a line at the margin could pass for a post, file or heading line.
 function item(label: string, value: string): string[] {
