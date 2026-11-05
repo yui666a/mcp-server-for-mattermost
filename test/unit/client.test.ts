@@ -472,7 +472,6 @@ test('a resend after a 401 is not made once the caller has aborted, and the call
   store.putMmCred('u1', 'a1', 'r1');
   const ac = new AbortController();
   api = () => {
-    // Another login replaced the pair meanwhile, so the resend goes straight out with it, without a refresh.
     store.putMmCred('u1', 'a9', 'r9');
     ac.abort();
     return mmError(401, 'api.context.session_expired.app_error');
