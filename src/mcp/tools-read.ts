@@ -11,7 +11,7 @@ import { guarded, text, type ToolContext } from './server.ts';
 import { worded, type Wording } from './tools-send.ts';
 import { parseWhen } from './when.ts';
 
-type PostList = { order: string[]; posts: Record<string, MmPost>; has_next?: boolean | null };
+type PostList = { order: string[]; posts: Record<string, MmPost>; has_next?: boolean | null; prev_post_id?: string };
 type Page = { lines: string[]; next?: object; posts?: MmPost[]; notes?: string[] };
 
 type ReadMm = Mm & Pick<MmClient, 'callBytes'>;
@@ -251,13 +251,11 @@ async function filterChannelIds(mm: Mm, userId: string, spec: string, exclude: b
     // No DM means no posts to exclude, so the condition is dropped rather than failing the search.
     if (e instanceof NoDirectChannel && exclude) return [];
     if (e instanceof ChannelFetchError && (e.status === 403 || e.status === 404)) throw new InputError(`チャンネル「${spec}」が見つかりません。`);
-    // 403 too: with view restrictions Mattermost answers 403 for a missing name as well, so the two cannot be told apart.
-    if (spec.startsWith('@') && !spec.includes(',') && e instanceof MmError && (e.status === 403 || e.status === 404)) throw new InputError(`ユーザー「${spec}」が見つかりません。`);
     throw e;
   }
 }
 
-// Not higher: with 10 teams the worst case (1 + names × teams GETs) already takes 201 of the 300 requests a user may send per minute,
+// Not higher: with 10 teams the worst case (1 + flags × (teams + 1) GETs) already takes 221 of the 300 requests a user may send per minute,
 // before anything else the user sends in that minute.
 const MAX_CHANNEL_FILTERS = 20;
 
@@ -272,8 +270,10 @@ export async function resolveInFilters(mm: Mm, userId: string, terms: string): P
   const out = words.map((w) => [w]);
   for (const f of filters) {
     const next = words[f.at + f.span];
-    if (f.value.replace(/^~+/, '').startsWith('@') && /^[,、，]/.test(next ?? '')) {
-      throw new InputError(`in:${f.value} の後の「${next}」: 検索の in: では @a,b のようにカンマの前後に空白を入れずに書いてください。`);
+    // Not treating every 、 as a comma: 、 also starts search words such as 、議事録.
+    if (f.value.replace(/^~+/, '').startsWith('@') && /^[,，]|^、[A-Za-z0-9._,@、，-]*$/.test(next ?? '')) {
+      const fullWidth = /^[、，]/.test(next ?? '') ? '区切りは半角のカンマ（,）で書いてください。' : '';
+      throw new InputError(`in:${f.value} の後の「${next}」: 検索の in: では @a,b のようにカンマの前後に空白を入れずに書いてください。${fullWidth}`);
     }
   }
   // Kept for this search only, not across searches: a channel created or joined in between would stay unseen.
@@ -646,7 +646,13 @@ export function registerReadTools(server: McpServer, ctx: ToolContext): void {
         else {
           const crt = (await collapsedThreads(mm, uid)).on;
           const q = new URLSearchParams({ limit_before: '0', limit_after: String(per + 1), collapsedThreads: String(crt), skipFetchThreads: 'true' });
-          return unreadPage(crt, await mm.call<PostList>(uid, 'GET', `/users/${uid}/channels/${ch.id}/posts/unread?${q}`));
+          const first = await mm.call<PostList>(uid, 'GET', `/users/${uid}/channels/${ch.id}/posts/unread?${q}`);
+          // Not keeping Mattermost's first page: it reads strictly after the first unread post, leaving out others of its millisecond, so it is read again after the post before it.
+          // Not saying there is nothing unread when the second call comes back empty: the post before may have been deleted for good in between.
+          if (!first.order.length || !first.prev_post_id) return unreadPage(crt, first);
+          const after = new URLSearchParams({ after: first.prev_post_id, per_page: String(per + 1), collapsedThreads: String(crt), skipFetchThreads: 'true' });
+          const again = await mm.call<PostList>(uid, 'GET', `/channels/${ch.id}/posts?${after}`);
+          return unreadPage(crt, again.order.length ? again : first);
         }
       }
       // Paging with before=<post_id> rather than page numbers: new posts arriving between calls would shift pages.
