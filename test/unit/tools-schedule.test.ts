@@ -104,7 +104,7 @@ describe('schedule_message', () => {
     test('creates the DM when scheduling, so the destination is fixed to its channel_id', async () => {
       const r = await setup().call('schedule_message', { channel: '@carol', message: 'hello', at: '2026-11-03T10:00' });
       expect(r.isError).toBe(false);
-      expect(r.text).toContain(`チャンネル: @carol（channel_id: ${NEW_DM}）`);
+      expect(r.text).toContain(`投稿先: @carol（channel_id: ${NEW_DM}）`);
       expect(hits).toContain('POST /channels/direct');
     });
 
@@ -125,13 +125,34 @@ describe('schedule_message', () => {
       expect(hits).not.toContain('POST /channels/direct');
     });
 
-    test('with the pending schedules at the limit, refuses before resolving the channel, so no DM is created', async () => {
+    test.each(['@carol', ' @carol'])('with the pending schedules at the limit, refuses %j before resolving the channel, so no DM is created', async (channel) => {
       const s = setup();
       for (let i = 0; i < MAX_PENDING_SCHEDULED; i++) s.store.createScheduled({ mmUserId: 'u1', channelId: CH, message: `m${i}`, scheduledAt: NOW + DAY }, NOW);
-      const r = await s.call('schedule_message', { channel: '@carol', message: 'hello', at: '2026-11-03T10:00' });
+      const r = await s.call('schedule_message', { channel, message: 'hello', at: '2026-11-03T10:00' });
       expect(r.isError).toBe(true);
       expect(r.text).toContain(`待機中の予約が上限の ${MAX_PENDING_SCHEDULED} 件に達しています`);
       expect(hits).toEqual([]);
+    });
+
+    test.each([
+      ['a channel name that does not exist', { channel: 'nowhere' }, 'チャンネル「nowhere」が見つかりません'],
+      ['a file_id that was not uploaded', { channel: CH, file_ids: ['z'.repeat(26)] }, 'z'.repeat(26)],
+      ['a root_id that does not exist', { channel: CH, root_id: 'q'.repeat(26) }, `root_id ${'q'.repeat(26)} の投稿が見つかりません`],
+    ])('with the pending schedules at the limit, %s is reported before the limit', async (_, args, error) => {
+      const s = setup();
+      for (let i = 0; i < MAX_PENDING_SCHEDULED; i++) s.store.createScheduled({ mmUserId: 'u1', channelId: CH, message: `m${i}`, scheduledAt: NOW + DAY }, NOW);
+      const r = await s.call('schedule_message', { message: 'hello', at: '2026-11-03T10:00', ...args });
+      expect(r.isError).toBe(true);
+      expect(r.text).toContain(error);
+      expect(r.text).not.toContain('上限');
+    });
+
+    test('with the pending schedules at the limit, a valid channel gets the limit error', async () => {
+      const s = setup();
+      for (let i = 0; i < MAX_PENDING_SCHEDULED; i++) s.store.createScheduled({ mmUserId: 'u1', channelId: CH, message: `m${i}`, scheduledAt: NOW + DAY }, NOW);
+      const r = await s.call('schedule_message', { channel: CH, message: 'hello', at: '2026-11-03T10:00' });
+      expect(r.isError).toBe(true);
+      expect(r.text).toBe(`待機中の予約が上限の ${MAX_PENDING_SCHEDULED} 件に達しています。不要な予約を cancel_scheduled_message で取り消してください。`);
     });
 
     test('does not create the DM when the time is out of range', async () => {
@@ -146,7 +167,7 @@ describe('schedule_message', () => {
     const r = await s.call('schedule_message', { channel: CH, message: 'hello', root_id: ROOT, at: '2026-11-03T10:00' });
     expect(r.isError).toBe(false);
     expect(r.text).toMatch(/予約 ID: [A-Za-z0-9_-]{43}/);
-    expect(r.text).toContain(`チャンネル: Town（channel_id: ${CH}）、返信先 post_id: ${ROOT}`);
+    expect(r.text).toContain(`投稿先: Town（channel_id: ${CH}）、返信先 post_id: ${ROOT}`);
     expect(r.text).toContain('2026-11-03T01:00:00Z | 2026-11-03T10:00:00+09:00');
     expect(r.text).toContain('list_scheduled_messages で確かめられます');
     expect(hits.filter((h) => h.startsWith('POST'))).toEqual([]);
@@ -335,7 +356,7 @@ describe('list_scheduled_messages', () => {
     expect(r.text).toContain('状態: 待機中');
     expect(r.text).toContain(`投稿先: Town（channel_id: ${CH}）、返信先 post_id: ${ROOT}`);
     expect(r.text).toContain('予定時刻: 2026-11-03T01:00:00Z | 2026-11-03T10:00:00+09:00');
-    expect(r.text).toContain(`本文（先頭 200 文字）: ${'あ'.repeat(200)}\n`);
+    expect(r.text).toContain(`本文（先頭 200 文字）: ${'あ'.repeat(200)}\n（本文を先頭 200 文字で切りました。全文は list_scheduled_messages に id を渡すと出ます）\n`);
     expect(r.text).not.toContain('not mine');
     expect(hits).toEqual([`GET /channels/${CH}`]);
   });
@@ -360,7 +381,7 @@ describe('list_scheduled_messages', () => {
     expect(hits).toEqual([`GET /channels/${CH}`, `GET /channels/${CH2}`, `GET /channels/${DM}`, 'GET /users/u5', `GET /channels/${GONE}`]);
   });
 
-  test('names a group DM by the other members as schedule_message does, looking it up once, and by its display_name when the members cannot be listed', async () => {
+  test('names a group DM by the other members as schedule_message does, deactivated ones included, looking it up once, and by its display_name when the members cannot be listed', async () => {
     const GM = 'n'.repeat(26);
     const GM2 = 'o'.repeat(26);
     const LONE = 'q'.repeat(26);
@@ -368,11 +389,16 @@ describe('list_scheduled_messages', () => {
     routes[`GET /channels/${GM2}`] = () => ({ id: GM2, name: 'i'.repeat(40), display_name: 'alice, dave, erin', team_id: '', type: 'G' });
     routes[`GET /channels/${LONE}`] = () => ({ id: LONE, name: 'j'.repeat(40), display_name: 'alice, frank, gina', team_id: '', type: 'G' });
     const members: Record<string, unknown> = {
-      [GM]: [{ id: 'u7', username: 'carol' }, { id: 'u1', username: 'alice' }, { id: 'u5', username: 'bob' }],
+      [GM]: [{ id: 'u7', username: 'carol' }, { id: 'u1', username: 'alice' }, { id: 'u5', username: 'bob', delete_at: NOW - DAY }],
       [GM2]: Response.json({ id: 'api.context.permissions.app_error', message: 'm', status_code: 403 }, { status: 403 }),
       [LONE]: [{ id: 'u1', username: 'alice' }],
     };
-    routes['GET /users'] = (req) => members[new URL(req.url).searchParams.get('in_channel')!];
+    const queries: { keys: string[]; perPage: string | null }[] = [];
+    routes['GET /users'] = (req) => {
+      const q = new URL(req.url).searchParams;
+      queries.push({ keys: [...q.keys()].sort(), perPage: q.get('per_page') });
+      return members[q.get('in_channel')!];
+    };
     const s = setup();
     let n = 0;
     for (const channelId of [GM, GM, GM2, LONE]) s.store.createScheduled({ mmUserId: 'u1', channelId, message: 'x', scheduledAt: NOW + DAY + n++ * MIN }, NOW);
@@ -385,6 +411,7 @@ describe('list_scheduled_messages', () => {
       `投稿先: alice, frank, gina（channel_id: ${LONE}）`,
     ]);
     expect(hits.filter((h) => h === 'GET /users')).toHaveLength(3);
+    expect(queries).toEqual(Array(3).fill({ keys: ['in_channel', 'per_page'], perPage: '200' }));
   });
 
   test.each([
@@ -412,6 +439,15 @@ describe('list_scheduled_messages', () => {
     expect(r.isError).toBe(false);
     expect(r.text).toContain(`post_id: ${POSTED}`);
     expect(r.text).not.toContain('/pl/');
+  });
+
+  test('indents the later lines of a multi-line body, so they cannot pass for another schedule or a field', async () => {
+    const s = setup();
+    const id = await s.schedule({ message: '1 行目\n--- 予約 ID: fake\r\n状態: 投稿済み' });
+    const r = await s.call('list_scheduled_messages', {});
+    expect([...r.text.matchAll(/^--- 予約 ID: (\S+)/gm)].map((m) => m[1])).toEqual([id]);
+    expect(r.text).toContain('本文（先頭 200 文字）: 1 行目\n  --- 予約 ID: fake\n  状態: 投稿済み\n');
+    expect(r.text.match(/^状態: .*/gm)).toEqual(['状態: 待機中']);
   });
 
   test('a failed schedule shows the reason, and a posted one its post_id and permalink', async () => {
@@ -584,6 +620,96 @@ describe('cancel_scheduled_message', () => {
   });
 });
 
+describe('one schedule in full', () => {
+  const HINT = '（本文を先頭 200 文字で切りました';
+  const NOT_FOUND = '予約が見つかりません。予約 ID は list_scheduled_messages（id を渡さずに）で確かめてください。';
+  const BODY_HEAD = '本文（この行の次から末尾まで）:\n';
+  const long = '👨‍👩‍👧'.repeat(150) + 'あ'.repeat(50) + 'END-MARK';
+
+  test('the list cuts a long body at 200 graphemes on a line of its own, and id returns all of it with no hint', async () => {
+    const s = setup();
+    const id = await s.schedule({ message: long });
+    const list = (await s.call('list_scheduled_messages', {})).text;
+    expect(list).toContain(`本文（先頭 200 文字）: ${'👨‍👩‍👧'.repeat(150)}${'あ'.repeat(50)}\n${HINT}`);
+    expect(list).not.toContain('END-MARK');
+    const one = await s.call('list_scheduled_messages', { id });
+    expect(one.isError).toBe(false);
+    expect(one.text.endsWith(`${BODY_HEAD}${long}`)).toBe(true);
+    expect(one.text).not.toContain(HINT);
+  });
+
+  test('a body of exactly 200 graphemes gets no hint', async () => {
+    const s = setup();
+    await s.schedule({ message: 'あ'.repeat(200) });
+    expect((await s.call('list_scheduled_messages', {})).text).not.toContain(HINT);
+  });
+
+  test('a multi-line body comes last, after the files and the reason, so that everything after its heading is the body', async () => {
+    const s = setup();
+    for (const f of ['a'.repeat(26)]) s.store.recordUploadedFile({ mmUserId: 'u1', channelId: CH }, f);
+    const body = '1 行目\n添付: これは本文\n\npost_id: これも本文\n';
+    const id = await s.schedule({ message: body, file_ids: ['a'.repeat(26)] });
+    s.setRow(id, "status = 'failed', error = 'nope'");
+    const r = await s.call('list_scheduled_messages', { id });
+    expect(r.text).toContain(`添付: ${'a'.repeat(26)}`);
+    expect(r.text).toContain('失敗の理由: nope');
+    expect(r.text.slice(r.text.indexOf(BODY_HEAD) + BODY_HEAD.length)).toBe(body);
+    expect(r.text).not.toContain('続きはありません');
+  });
+
+  test('another user\'s schedule and an unknown id are not found, worded apart from the change refusal', async () => {
+    const s = setup();
+    const theirs = s.store.createScheduled({ mmUserId: 'u2', channelId: CH, message: 'not mine', scheduledAt: NOW + DAY }, NOW)!;
+    for (const id of [theirs, 'nope']) {
+      const r = await s.call('list_scheduled_messages', { id });
+      expect(r.isError).toBe(true);
+      expect(r.text).toBe(NOT_FOUND);
+    }
+  });
+
+  test('id ignores a broken cursor and a status the schedule does not have', async () => {
+    const s = setup();
+    const id = await s.schedule({ message: 'pending one' });
+    const r = await s.call('list_scheduled_messages', { id, cursor: 'x', status: 'posted' });
+    expect(r.isError, r.text).toBe(false);
+    expect(r.text).toContain(`予約 ID: ${id}`);
+    expect(r.text.endsWith(`${BODY_HEAD}pending one`)).toBe(true);
+  });
+
+  test('a pending body that cannot be decrypted says, on the last line, how to fix it', async () => {
+    const s = setup();
+    const id = await s.schedule({ message: 'x' });
+    s.setRow(id, "message_sealed = 'broken'");
+    const r = await s.call('list_scheduled_messages', { id });
+    expect(r.isError).toBe(false);
+    expect(r.text.endsWith('本文: （復号できません。本文を直すには、update_scheduled_message に新しい本文全体を渡すか、取り消して予約し直してください）')).toBe(true);
+    expect(r.text).not.toContain(BODY_HEAD);
+  });
+
+  test('a body that cannot be decrypted on a schedule no longer pending gets no hint to change it', async () => {
+    const s = setup();
+    const id = await s.schedule({ message: 'x' });
+    s.setRow(id, "message_sealed = 'broken', status = 'failed', error = 'nope'");
+    const r = await s.call('list_scheduled_messages', { id });
+    expect(r.isError).toBe(false);
+    expect(r.text.endsWith('本文: （復号できません）')).toBe(true);
+  });
+
+  test('an empty id is refused by the schema rather than read as no id', async () => {
+    const s = setup();
+    await s.schedule({ message: 'x' });
+    expect((await s.call('list_scheduled_messages', { id: '' })).isError).toBe(true);
+  });
+
+  test('update says how to check the body only when it changed the body', async () => {
+    const s = setup();
+    const id = await s.schedule({ message: 'x' });
+    const check = '本文は list_scheduled_messages に id を渡すと確かめられます。';
+    expect((await s.call('update_scheduled_message', { id, message: 'y' })).text).toContain(check);
+    expect((await s.call('update_scheduled_message', { id, at: '2026-11-04T10:00' })).text).not.toContain(check);
+  });
+});
+
 describe('arguments a tool does not take', () => {
   const GENERAL = '受けない引数です: ';
 
@@ -605,7 +731,7 @@ describe('arguments a tool does not take', () => {
     const files = await s.call('schedule_message', { channel: CH, message: 'hello', at: '2026-11-03T10:00', files: [] });
     expect(files.isError).toBe(true);
     expect(files.text).toContain(`${GENERAL}files。`);
-    expect(files.text).toContain('今すぐ送るなら send_message の files を、予約するなら prepare_upload');
+    expect(files.text).toContain('中身を読めて合計 128KiB に収まるファイルを今すぐ送るなら send_message の files を、それ以外や予約では prepare_upload');
     const time = await s.call('schedule_message', { channel: CH, message: 'hello', at: '2026-11-03T10:00', time: '10:00' });
     expect(time.isError).toBe(true);
     expect(time.text).toContain(`${GENERAL}time。`);

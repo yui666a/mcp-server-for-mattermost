@@ -14,7 +14,7 @@ type FollowedThread = { id: string; reply_count: number; last_reply_at: number; 
 type ThreadList = { total: number; threads: FollowedThread[] | null };
 type Key = { t: number; id: string };
 
-// Not following before= across pages: its strict < on last_reply_at skips threads that share the boundary's time. One page of Mattermost's maximum per team instead.
+// Not following before= across pages: every call refetches and re-sorts all teams' lists, so paging would repeat the per-team fetches on each call for a team past 200. One page of Mattermost's maximum per team instead, with a note where it stops.
 const THREAD_PAGE = 200;
 
 const CRT_OFF = 'スレッドの折りたたみ（CRT）が無効なため、スレッドのフォローは画面にも通知にも効きません。返信の通知はスレッドごとには止められず、Mattermost の通知の設定（すべてのスレッドに効く）で変えます。';
@@ -43,7 +43,7 @@ export function registerThreadTools(server: McpServer, ctx: ToolContext): void {
       }) as unknown as ToolCallback<S>);
   }
 
-  tool('list_followed_threads', 'フォロー中のスレッドを、最終返信の新しい順に一覧する。全チームと DM、グループ DM が対象。アーカイブ済みのチャンネルのスレッドも含む（そのチャンネルは channel_id だけを出す）。返信がまだないルート投稿は、フォローしていても最初の返信まで出ない。スレッドの折りたたみ（CRT）が無効な利用者には使えない。読むだけで、既読にはしない',
+  tool('list_followed_threads', 'フォロー中のスレッドを、最終返信の新しい順に一覧する。全チームと DM、グループ DM が対象。アーカイブ済みのチャンネルのスレッドも含む（チャンネル名に「アーカイブ済み」と付ける）。返信がまだないルート投稿は、フォローしていても最初の返信まで出ない。スレッドの折りたたみ（CRT）が無効な利用者には使えない。読むだけで、既読にはしない',
     { limit: limitArg(20, 50), cursor: cursorArg }, { readOnlyHint: true },
     async ({ limit, cursor }, mm) => {
       const startedAt = Date.now();
@@ -53,7 +53,7 @@ export function registerThreadTools(server: McpServer, ctx: ToolContext): void {
       if (!crt.on) throw new InputError(CRT_OFF);
       const teams = await myTeams(mm, uid);
       if (!teams.length) throw new InputError('所属しているチームがないため、フォロー中のスレッドを一覧できません（DM のスレッドもチームを指定して引く API のため）。');
-      const channels = new Map((await mm.call<MmChannel[]>(uid, 'GET', '/users/me/channels')).map((x) => [x.id, x]));
+      const channels = new Map((await mm.call<(MmChannel & { delete_at: number })[]>(uid, 'GET', '/users/me/channels?include_deleted=true')).map((x) => [x.id, x]));
       const teamName = new Map(teams.map((t) => [t.id, t.name]));
       const threads: (FollowedThread & { teamName: string })[] = [];
       const notes: string[] = [];
@@ -85,7 +85,7 @@ export function registerThreadTools(server: McpServer, ctx: ToolContext): void {
       const line = ({ th }: (typeof rows)[number]): string => {
         const ch = channels.get(th.post.channel_id);
         const team = ch && teamName.get(ch.team_id);
-        const label = ch && (ch.type === 'D' ? `@${users.get(other(ch)) ?? other(ch)}` : ch.display_name || ch.name);
+        const label = ch && (ch.type === 'D' ? `@${users.get(other(ch)) ?? other(ch)}` : ch.display_name || ch.name) + (ch.delete_at ? '（アーカイブ済み）' : '');
         const at = ch ? channelLines({ id: ch.id, name: ch.name, displayName: label ?? '', teamId: ch.team_id, teamName: team ?? '' }).join(' | ') : `channel_id: ${th.post.channel_id}`;
         posts.push(th.post);
         return [
@@ -141,9 +141,12 @@ export function registerThreadTools(server: McpServer, ctx: ToolContext): void {
       // Not calling PUT for a followed thread: Mattermost marks the thread read on every follow, which would drop unread replies the user has not seen.
       if (following) return [`${label}はすでにフォローしています。`, ...(stateless ? [noReplies] : [])].join('\n');
       await mm.call(uid, 'PUT', `/users/${uid}/teams/${team}/threads/${r.root}/following`);
+      // Not trusting reply_count alone after following: a thread whose replies were all deleted keeps its thread state, so it is listed once followed.
+      // Not failing the call when this check fails: the follow is done, and the check only decides the note.
+      const waits = stateless && await mm.call(uid, 'GET', `/users/${uid}/teams/${team}/threads/${r.root}`).then(() => false, (e) => e instanceof MmError && e.status === 404);
       return [
         `${label}をフォローしました。フォローした時点までの返信は既読になります（Mattermost の動作）。`,
-        ...(stateless ? [noReplies] : []),
+        ...(waits ? [noReplies] : []),
       ].join('\n');
     });
 

@@ -7,7 +7,7 @@ export type MmReaction = { user_id: string; emoji_name: string; create_at: numbe
 export type MmPost = {
   id: string; user_id: string; channel_id: string; root_id: string; message: string; create_at: number;
   type?: string; edit_at?: number; has_reactions?: boolean; props?: Record<string, unknown>;
-  file_ids?: string[]; metadata?: { files?: MmFileInfo[]; reactions?: MmReaction[] };
+  file_ids?: string[]; metadata?: { files?: MmFileInfo[]; reactions?: MmReaction[]; redacted_file_count?: number };
 };
 export type PostCtx = { baseUrl: string; teamName: string; usernames: Map<string, string>; channel?: string };
 
@@ -17,7 +17,11 @@ const segmenter = new Intl.Segmenter();
 
 export const graphemeCount = (s: string): number => [...segmenter.segment(s)].length;
 
-export function truncate(s: string, max = 4000): { text: string; truncated: boolean } {
+// Not written out in each tool description: the guidance quoting the note would fall behind when the limit changes.
+export const BODY_MAX_CHARS = 4000;
+export const BODY_CUT_NOTE = `本文を ${BODY_MAX_CHARS} 文字で切りました`;
+
+export function truncate(s: string, max = BODY_MAX_CHARS): { text: string; truncated: boolean } {
   let n = 0;
   for (const { index } of segmenter.segment(s)) {
     if (n++ === max) return { text: s.slice(0, index), truncated: true };
@@ -46,21 +50,33 @@ export function localTime(tz: string, nowMs: number): string | undefined {
   return `${p.year}-${p.month}-${p.day}T${p.hour}:${p.minute}:${p.second}${offset}`;
 }
 
+const LINE_BREAK = /\r\n|[\r\n\v\f\x1c-\x1e\u0085\u2028\u2029]/;
+// A space rather than nothing: the words on either side of a break would otherwise run together into another word.
+export const oneLine = (s: string): string => s.split(LINE_BREAK).join(' ');
+
 export const fileLine = (f: MmFileInfo): string =>
-  `${f.name}（file_id: ${f.id}、種類: ${f.mime_type || '不明'}、${f.size} バイト${f.width && f.height ? `、${f.width}x${f.height}` : ''}）`;
+  `${oneLine(f.name)}（file_id: ${f.id}、種類: ${oneLine(f.mime_type) || '不明'}、${f.size} バイト${f.width && f.height ? `、${f.width}x${f.height}` : ''}）`;
 
 function attachmentLines(p: MmPost): string[] {
-  if (p.metadata?.files?.length) return p.metadata.files.map((f) => `添付: ${fileLine(f)}`);
-  return p.file_ids?.length ? [`添付 ${p.file_ids.length} 件（get_post で確認できます）`] : [];
+  const shown = p.metadata?.files?.length ? p.metadata.files.map((f) => `添付: ${fileLine(f)}`)
+    : p.file_ids?.length ? [`添付 ${p.file_ids.length} 件（get_post で確認できます）`] : [];
+  // Not trusting the type: only a whole count of 1 or more, as Mattermost writes it when an ABAC policy strips the files.
+  const hidden = p.metadata?.redacted_file_count;
+  return Number.isInteger(hidden) && hidden! >= 1
+    ? [...shown, `添付 ${hidden} 件（Mattermost のアクセス制御の方針（ABAC）により、表示もダウンロードもできません）`]
+    : shown;
 }
 
 const REACTION_NAMES = 10;
-const REACTION_MAX_CHARS = 4000;
+const REACTION_MAX_CHARS = BODY_MAX_CHARS;
 const isRecord = (x: unknown): x is Record<string, unknown> => typeof x === 'object' && x !== null && !Array.isArray(x);
 const str = (x: unknown): string => (typeof x === 'string' ? x : typeof x === 'number' || typeof x === 'boolean' ? String(x) : '');
 const records = (x: unknown): Record<string, unknown>[] => (Array.isArray(x) ? x.filter(isRecord) : []);
 
-const lines = (s: string): string[] => s.split(/\r\n|[\r\n\v\f\x1c-\x1e\u0085\u2028\u2029]/);
+export const lines = (s: string): string[] => s.split(LINE_BREAK);
+
+// A value that may span lines, kept readable (a channel header holds Markdown tables and lists): its continuation lines are indented by 4.
+export const indented = (label: string, value: string): string[] => lines(`${label}: ${value}`).map((l, i) => (i ? `    ${l}` : l));
 
 // Indenting every line rather than quoting: attachments are written by whoever posts, and a line at the margin could pass for a post, file or heading line.
 function item(label: string, value: string): string[] {
@@ -132,7 +148,7 @@ function reactionLines(p: MmPost, usernames: Map<string, string>): string[] {
   const name = (id: string) => (usernames.has(id) ? `@${usernames.get(id)}` : `user_id: ${id}`);
   const { each, k } = fitReactions(by, name);
   const left = by.slice(k);
-  const rest = left.length ? `、ほか ${left.length} 種類（${left.reduce((m, r) => m + r.total, 0)} 人）` : '';
+  const rest = left.length ? `、ほか ${left.length} 種類（リアクション ${left.reduce((m, r) => m + r.total, 0)} 件）` : '';
   return [`${REACTION_HEAD}${each.slice(0, k).join('、')}${rest}`];
 }
 
