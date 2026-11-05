@@ -94,7 +94,9 @@ function decodeText(b: Uint8Array, name: string, whole: boolean): Decoded | unde
   const utf8 = decode('utf-8');
   // A cut last character after text half-width kana Shift_JIS could also make: it may as well be that or Latin-1, so UTF-8 is only a guess.
   // Not for any text without Japanese: emoji or Hangul would then read as Shift_JIS, one character swapped for another unnoticed.
-  const utf8Unsure = utf8?.cutTail && fromHalfKana(utf8.text);
+  // Not when the file starts with a UTF-8 BOM: TextDecoder drops it from the text, but it is the strongest sign the file is UTF-8.
+  const bom = b[0] === 0xef && b[1] === 0xbb && b[2] === 0xbf;
+  const utf8Unsure = utf8?.cutTail && !bom && fromHalfKana(utf8.text);
   if (utf8 && !utf8Unsure) return { ...utf8, encoding: 'UTF-8', guessed: false };
   const ext = name.includes('.') ? name.split('.').pop()!.toLowerCase() : '';
   const utf8AsGuess = utf8 && { ...utf8, encoding: 'UTF-8', guessed: true };
