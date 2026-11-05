@@ -184,6 +184,17 @@ function rawPost(port: number, path: string, body: Buffer, opts: { chunked?: boo
   });
 }
 
+// Not the describe's 30 s: it would fail first, with vitest's message that does not say what was awaited. Not shorter: on a busy machine the event can take seconds.
+const EVENT_DEADLINE = 20_000;
+async function byDeadline<T>(p: Promise<T>, what: string): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([p, new Promise<never>((_, fail) => { timer = setTimeout(() => fail(new Error(`${what} within ${EVENT_DEADLINE / 1000} s`)), EVENT_DEADLINE); })]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 // Not vitest's 5 s: these send megabytes over a real socket, which takes seconds on a busy machine.
 describe('replies before the whole body has arrived', { timeout: 30_000 }, () => {
   let close: () => void;
@@ -210,7 +221,7 @@ describe('replies before the whole body has arrived', { timeout: 30_000 }, () =>
     const entered = new Promise<void>((r) => { enter = r; });
     onUpload = (n) => (n === 0 ? (enter(), held) : undefined);
     const first = rawPost(s.port, s.url(), Buffer.from('first'));
-    await entered;
+    await byDeadline(entered, 'the first upload never reached Mattermost');
     const url = s.url();
     const second = await rawPost(s.port, url, Buffer.alloc(9 * 1024 * 1024));
     expect([second.status, second.error]).toEqual([429, undefined]);
@@ -233,7 +244,7 @@ describe('replies before the whole body has arrived', { timeout: 30_000 }, () =>
     const within = await rawPost(s.port, s.url(), Buffer.alloc(1024 * 1024 + 512 * 1024), { chunked: true });
     expect([within.status, within.connection]).toEqual([413, 'keep-alive']);
     // Not checking what the client got: with the body left unread, its write can fail and drop the connection before it reads the reply.
-    let sent: unknown[] = [];
+    let sent: [status: number, connection: unknown] | [] = [];
     s.server.on('request', (_, res) => res.on('finish', () => { sent = [res.statusCode, res.getHeader('connection')]; }));
     await rawPost(s.port, s.url(), Buffer.alloc(2 * 1024 * 1024 + 512 * 1024), { chunked: true });
     expect(sent).toEqual([413, 'close']);
@@ -245,7 +256,7 @@ describe('replies before the whole body has arrived', { timeout: 30_000 }, () =>
     // Not made after rawPost: the log can come before it resolves.
     const loggedOnce = new Promise<void>((r) => vi.spyOn(process.stdout, 'write').mockImplementation((line) => { out.push(String(line)); if (String(line).includes('"event":"upload"')) r(); return true; }));
     await rawPost(s.port, url, Buffer.alloc(1024 * 1024), { chunked: true, stopAfter: 100_000 });
-    await loggedOnce;
+    await byDeadline(loggedOnce, 'the upload (event: upload) was never logged');
     expect(logged()).toHaveLength(1);
     expect(logged()[0]).toMatchObject({ outcome: 'client_gone', files: 0 });
     expect(out.join('')).not.toContain('upload_unhandled_error');

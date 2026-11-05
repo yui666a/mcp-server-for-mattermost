@@ -217,7 +217,9 @@ export class MmClient {
       log('mm_api_failed', { ...fields, error: (e as Error)?.name, ms: this.deps.now() - started });
       throw new UpstreamUnavailable('Mattermost unreachable', at.sent);
     }
-    at.sent = true;
+    // Not counting a 401 as sent: Mattermost refuses an invalid session before calling the handler, so nothing was done.
+    // This does not hold for an API whose handler returns 401 itself (deleteChannel, deleteUser); recheck before using one.
+    if (res.status !== 401) at.sent = true;
     log('mm_api', { ...fields, status: res.status, ms: this.deps.now() - started });
     if (res.status >= 300 && res.status < 400) {
       await discard(res);
@@ -270,8 +272,19 @@ export class MmClient {
     }
     if (!res.ok) {
       // Reading the body of a 500 only: get_file tells Mattermost's own JSON errors from a storage failure that net/http answers in plain text.
-      const id = res.status === 500 ? str((await res.json().catch(() => undefined))?.id) : (await discard(res), undefined);
-      throw new UpstreamUnavailable(`Mattermost API failed: ${res.status}`, true, res.status, id);
+      if (res.status !== 500) {
+        await discard(res);
+        throw new UpstreamUnavailable(`Mattermost API failed: ${res.status}`, true, res.status);
+      }
+      const text = await res.text().catch(() => undefined);
+      let json: unknown;
+      try {
+        json = text === undefined ? undefined : JSON.parse(text);
+      } catch {
+        json = undefined;
+      }
+      const plain = text !== undefined && json === undefined && (res.headers.get('content-type') ?? '').toLowerCase().startsWith('text/plain');
+      throw new UpstreamUnavailable(`Mattermost API failed: ${res.status}`, true, res.status, str((json as { id?: unknown } | undefined)?.id), plain);
     }
   }
 }
