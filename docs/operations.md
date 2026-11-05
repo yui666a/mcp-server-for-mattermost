@@ -60,7 +60,7 @@ docker compose logs --no-log-prefix mcp | grep '"event":"tool_call"'
 
 | `event` | 内容 |
 |---|---|
-| `tool_call` | ツールの呼び出し。`mm_user_id`、`tool`、`outcome`（`ok`、`tool_error`、`input_error`、`reauthorize`、`rate_limited`、`upstream_unavailable`、`mm_error`、`error`）、`ms` |
+| `tool_call` | ツールの呼び出し。`mm_user_id`、`tool`、`outcome`（`ok`、`tool_error`、`input_error`、`invalid_args`（ツールを呼ぶ前に MCP SDK が引数の検査で断った。受けない引数、型の誤り、必須の欠け。`input_error` はツールが中身を見て断ったもの）、`reauthorize`、`rate_limited`、`upstream_unavailable`、`mm_error`、`error`）、`ms` |
 | `scheduled_post` | 予約の投稿の結果。`mm_user_id`、`outcome` |
 | `upload` | `prepare_upload` の URL へのアップロード。`mm_user_id`、`outcome`（`ok`、`too_large`、`client_gone`（本文の途中で接続が切れた）、`stalled`（本文を待つ間に 15 秒データが来なかった）、`InputError`、`MmError`、`RateLimited`、`UpstreamUnavailable` など）、`files`（Mattermost へ送れた件数）、`bytes`（受け取ったファイルの合計）、`ms`。URL が無効なときと、同時に処理できる件数を超えたときは出ない |
 | `token_issued`、`token_refreshed` | MCP のトークンの発行とリフレッシュ。`client_id`、`mm_user_id` |
