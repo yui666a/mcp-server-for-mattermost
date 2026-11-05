@@ -187,7 +187,7 @@ describe('replies before the whole body has arrived', () => {
     const server = s.app.listen(0);
     await new Promise((r) => server.once('listening', r));
     close = () => server.close();
-    return { ...s, port: (server.address() as AddressInfo).port };
+    return { ...s, server, port: (server.address() as AddressInfo).port };
   }
 
   test('an unknown URL reads the body to the end before its 404, so a client still sending gets the reply', async () => {
@@ -225,8 +225,11 @@ describe('replies before the whole body has arrived', () => {
     const s = await listen({ UPLOAD_MAX_BYTES: String(1024 * 1024) });
     const within = await rawPost(s.port, s.url(), Buffer.alloc(1024 * 1024 + 512 * 1024), { chunked: true });
     expect([within.status, within.connection]).toEqual([413, 'keep-alive']);
-    const over = await rawPost(s.port, s.url(), Buffer.alloc(2 * 1024 * 1024 + 512 * 1024), { chunked: true });
-    expect([over.status, over.connection]).toEqual([413, 'close']);
+    // Not checking what the client got: with the body left unread, its write can fail and drop the connection before it reads the reply.
+    let sent: unknown[] = [];
+    s.server.on('request', (_, res) => res.on('finish', () => { sent = [res.statusCode, res.getHeader('connection')]; }));
+    await rawPost(s.port, s.url(), Buffer.alloc(2 * 1024 * 1024 + 512 * 1024), { chunked: true });
+    expect(sent).toEqual([413, 'close']);
   });
 
   test('a client that goes away mid-body leaves the URL usable and is not logged as an unexpected error', async () => {
