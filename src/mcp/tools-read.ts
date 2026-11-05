@@ -41,7 +41,7 @@ const FILE_WORDING: Wording = {
     [404, 'app.file_info.get.app_error', 'ファイルが見つかりません（投稿が削除されたか、存在しません）'],
     [403, 'api.file.get_file.abac_denied.app_error', 'Mattermost のアクセス制御の方針（ABAC）により、このファイルを見られません'],
   ],
-  status: [[403, `このファイルを見る権限がありません（参加していないチャンネルのファイルなど）。${RETRY}${ASK_ADMIN}`]],
+  status: [[403, `このファイルを見る権限がありません（参加していない非公開チャンネルのファイルなど）。${RETRY}${ASK_ADMIN}`]],
 };
 
 // Not trusting Content-Type: Mattermost labels every preview image/jpeg, PNG ones included.
