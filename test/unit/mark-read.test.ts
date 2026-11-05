@@ -104,7 +104,31 @@ describe('mark_as_read for channels', () => {
     routes = base();
     const r = await setup().call({ channels: [{ channel: '\u200bnowhere\u200b' }] });
     expect(r.text).toContain('チャンネル「nowhere」');
+    expect((await setup().call({ channels: [{ channel: 'no\nwhere' }] })).text).toContain('チャンネル「no where」');
     expect(r.text).not.toContain('\u200b');
+  });
+
+  test.each([[403, 'api.context.permissions.app_error', 'このチャンネルを見る権限がありません'], [404, 'app.channel.get_by_name.missing.app_error', 'チャンネルが見つかりません']])('words a channel spec Mattermost answers with %i, as get_channel does', async (status, mmId, wording) => {
+    routes = { ...base(), 'GET /teams/name/team-a/channels/name/nowhere': mmError(status, mmId) };
+    const r = await setup().call({ channels: [{ channel: 'team-a/nowhere' }] });
+    expect(r.text).toContain(wording);
+  });
+
+  test('words a channel id Mattermost does not know apart from a name it cannot find, so only the name points to an id', async () => {
+    const GONE = 'g'.repeat(26);
+    routes = { ...base(), 'GET /users/me/teams': () => [{ id: TEAM, name: 'team-a' }], [`GET /channels/${GONE}`]: mmError(404, 'app.channel.get.existing.app_error'), [`GET /teams/${TEAM}/channels/name/${GONE}`]: mmError(404, 'app.channel.get_by_name.missing.app_error') };
+    const byId = (await setup().call({ channels: [{ channel: GONE }] })).text;
+    expect(byId).toContain('チャンネルが見つかりません。ID の誤りなら');
+    expect(byId).not.toContain('アーカイブ済みなら');
+    routes = { ...base(), 'GET /teams/name/team-a/channels/name/nowhere': mmError(404, 'app.channel.get_by_name.missing.app_error') };
+    expect((await setup().call({ channels: [{ channel: 'team-a/nowhere' }] })).text).toContain('アーカイブ済みなら、チャンネル ID を利用者に確かめて ID で指定すると');
+  });
+
+  test('marks an archived channel given by id, saying it is archived', async () => {
+    routes = { ...base(), [`GET /channels/${CH}`]: () => channel(CH, 'town', { delete_at: 5 }), [`GET /channels/${CH}/members/me`]: () => ({ msg_count: 3, msg_count_root: 6, mention_count: 2, mention_count_root: 0 }) };
+    expect((await setup().call({ channels: [{ channel: CH }] })).text).toContain(`チャンネル（channel_id: ${CH}、アーカイブ済み、表示名: TOWN）`);
+    routes = base();
+    expect((await setup().call({ channels: [{ channel: CH }] })).text).toContain(`チャンネル（channel_id: ${CH}、表示名: TOWN）`);
   });
 
   test('marks each channel read right after checking it when nothing but the user\'s own posts (sent through this app) follow last_post_id', async () => {
@@ -425,6 +449,13 @@ describe('mark_as_read for threads', () => {
     const logged = vi.mocked(process.stdout.write).mock.calls.map(([l]) => JSON.parse(String(l)));
     expect(logged).toContainEqual(expect.objectContaining({ event: 'tool_interrupted', mm_user_id: 'u1', tool: 'mark_as_read', outcome: 'upstream_unavailable' }));
     expect(logged).toContainEqual(expect.objectContaining({ event: 'tool_call', tool: 'mark_as_read', outcome: 'tool_error' }));
+  });
+
+  test('lists a channel not started without the format characters around its spec', async () => {
+    routes = threads({ 'POST /channels/members/u1/mark_read': unavailable });
+    const r = await setup().call({ channels: [{ channel: CH }, { channel: `\u200b${CH2}\u200b` }] });
+    expect(r.text).toContain(`次の 1 件は処理していません: チャンネル「${CH2}」`);
+    expect(r.text).not.toContain('\u200b');
   });
 
   test('stops at a rate limit in the threads before writing, saying that thread was not marked', async () => {

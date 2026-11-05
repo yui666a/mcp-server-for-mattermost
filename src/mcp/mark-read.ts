@@ -7,7 +7,7 @@ import { ASK_ADMIN, InputError, oneLine, RETRY_SOON, type MmPost } from './forma
 import { myTeams, resolveChannel, unformat, type Mm } from './resolve.ts';
 import { log } from '../log.ts';
 import { failure, failureText, guarded, text, type ToolContext } from './server.ts';
-import { collapsedThreads } from './tools-read.ts';
+import { channelError, collapsedThreads } from './tools-read.ts';
 import { POST_WORDING } from './tools-save-pin.ts';
 import { worded } from './tools-send.ts';
 import { missing, threadTeam } from './tools-threads.ts';
@@ -75,7 +75,7 @@ export async function markAsRead(mm: Mm, uid: string, args: Args): Promise<CallT
   if (!n || n > MAX_ITEMS) throw new InputError(`channels と threads を合わせて 1〜${MAX_ITEMS} 件を指定してください。`);
   const crt = (await collapsedThreads(mm, uid)).on;
   const results: Result[] = [];
-  const pending = [...channels.map((c) => `チャンネル「${c.channel}」`), ...threads.map((t) => `スレッド（post_id: ${t.post_id}）`)];
+  const pending = [...channels.map((c) => `チャンネル「${oneLine(unformat(c.channel))}」`), ...threads.map((t) => `スレッド（post_id: ${t.post_id}）`)];
   let started = 0;
   let writing = false;
   // Per item rather than failing the call: one bad item should not keep the others unread. Anything else (re-login, 429, outage, a bug) concerns every item, so the run stops there.
@@ -108,10 +108,10 @@ export async function markAsRead(mm: Mm, uid: string, args: Args): Promise<CallT
     for (const item of channels) {
       started++;
       writing = false;
-      let label = `チャンネル「${unformat(item.channel)}」`;
+      let label = `チャンネル「${oneLine(unformat(item.channel))}」`;
       try {
-        const ch = await resolveChannel(mm, uid, item.channel);
-        label = `チャンネル（channel_id: ${ch.id}、表示名: ${oneLine(ch.displayName || ch.name)}）`;
+        const ch = await resolveChannel(mm, uid, item.channel).catch(channelError);
+        label = `チャンネル（channel_id: ${ch.id}${(ch.raw as { delete_at?: number }).delete_at ? '、アーカイブ済み' : ''}、表示名: ${oneLine(ch.displayName || ch.name)}）`;
         if (seen.has(ch.id)) throw new InputError('同じチャンネルがほかの項目と重なっています。1 件にまとめてください。');
         seen.add(ch.id);
         const me = await mm.call<Member>(uid, 'GET', `/channels/${ch.id}/members/me`).catch((e) => {

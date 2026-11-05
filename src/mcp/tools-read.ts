@@ -6,7 +6,7 @@ import { ASK_ADMIN, BAD_CURSOR, BODY_CUT_NOTE, BODY_MAX_CHARS, decodeCursor, enc
 import { pageCursor, paginate } from './paging.ts';
 import { mentionsMe, mentionTerms, type MentionUser } from './mentions.ts';
 import { parsePostRef } from './permalink.ts';
-import { Ambiguous, ChannelFetchError, myTeams, NoDirectChannel, resolveChannel, resolveUser, teamNameOf, unformat, type ChannelRef, type Mm, type MmChannel, type MmTeam, type UserRef } from './resolve.ts';
+import { Ambiguous, ChannelFetchError, ChannelNotFound, myTeams, NoDirectChannel, resolveChannel, resolveUser, teamNameOf, unformat, type ChannelRef, type Mm, type MmChannel, type MmTeam, type ResolvedChannel, type UserRef } from './resolve.ts';
 import { guarded, text, type ToolContext } from './server.ts';
 import { worded, type Wording } from './tools-send.ts';
 import { parseWhen } from './when.ts';
@@ -180,6 +180,9 @@ export function render({ lines, next, posts = [], notes = [] }: Page): string {
   ].join('\n');
 }
 
+// Not writing an unknown partner as @<user_id>: it would be taken for a username and passed to tools that look users up by name.
+export const dmPartner = (username: string | undefined, userId: string) => (username ? `@${username}` : `ユーザー名不明（user_id: ${userId}）`);
+
 // archived is a field rather than words added to the display name: a display name written as "（アーカイブ済み）" would otherwise pass for one.
 export function channelLines(c: ChannelRef & { archived?: boolean }): string[] {
   return [
@@ -188,6 +191,8 @@ export function channelLines(c: ChannelRef & { archived?: boolean }): string[] {
     c.teamId ? `チーム: ${c.teamName}（team_id: ${c.teamId}）` : 'チーム: なし（DM またはグループ DM）',
   ];
 }
+
+const resolvedLines = (ch: ResolvedChannel) => channelLines({ ...ch, archived: !!(ch.raw as ResolvedChannel['raw'] & { delete_at?: number }).delete_at });
 
 // For a post fetched by id: get_post and read_thread word its 403 and 404 alike.
 function postError(e: unknown): never {
@@ -212,7 +217,7 @@ export function channelInline(c: ChannelRef & { archived?: boolean }): string {
 // The 404 of looking a channel up by id: /channels/{id} gives it only for a channel that does not exist, whereas a 404 by name may also be a private or archived channel, or a passing failure.
 const BY_ID_404 = 'app.channel.get.existing.app_error';
 
-function channelError(e: unknown): never {
+export function channelError(e: unknown): never {
   // Not converting a missing team: /teams/name/{team}/channels/name/{channel} answers it with 404 too.
   if (e instanceof ChannelFetchError && e.id !== 'app.team.get_by_name.missing.app_error') {
     if (e.status === 403) throw new InputError(`このチャンネルを見る権限がありません（参加していない非公開チャンネルなど）。${RETRY}${ASK_ADMIN}`);
@@ -261,7 +266,8 @@ function splitWords(text: string): string[] {
       start = i + 1;
     } else {
       const from = i > 0 && text[i - 1] === '-' ? i - 1 : i;
-      words.push(...fields(text.slice(start, from)));
+      // Not push(...): spreading the words as arguments throws a RangeError past a limit that depends on the stack size.
+      for (const w of fields(text.slice(start, from))) words.push(w);
       quoted = true;
       start = from;
     }
@@ -301,7 +307,17 @@ async function filterChannelIds(mm: Mm, userId: string, spec: string, written: s
     }
     // No DM means no posts to exclude, so the condition is dropped rather than failing the search.
     if (e instanceof NoDirectChannel && exclude) return [];
-    if (e instanceof ChannelFetchError && (e.status === 403 || e.status === 404)) throw new InputError(`チャンネル「${spec}」が見つかりません。`);
+    // Not the read tools' wording: a search leaves out archived channels, so an ID would find nothing there either.
+    const byName = `チャンネル「${spec}」が見つかりません。名前の誤りなら search_channels で確かめてください。参加していない非公開チャンネルとアーカイブ済みのチャンネルは名前では見つからず、アーカイブ済みのチャンネルは検索の対象外です（読むなら、利用者に ID を確かめて read_channel に渡します）。${RETRY}${ASK_ADMIN}`;
+    if (e instanceof ChannelNotFound) throw new InputError(byName);
+    if (e instanceof ChannelFetchError && e.id === 'app.team.get_by_name.missing.app_error') {
+      throw new InputError(`チャンネル「${spec}」のチームが見つかりません。チーム名の誤りなら、list_my_channels で参加しているチームを確かめてください（チーム名はチャンネルの行の先頭に出ます）。`);
+    }
+    if (e instanceof ChannelFetchError && e.status === 403) throw new InputError(`チャンネル「${spec}」を見る権限がありません（参加していない非公開チャンネルなど）。${RETRY}${ASK_ADMIN}`);
+    // Told apart by the form of the spec, not by Mattermost's id: a 404 without an id, as a proxy may give, still gets a fitting message.
+    if (e instanceof ChannelFetchError && e.status === 404) {
+      throw new InputError(spec.includes('/') ? byName : `チャンネル「${spec}」が見つかりません。ID の誤りなら search_channels で確かめてください。`);
+    }
     throw e;
   }
 }
@@ -317,7 +333,7 @@ export async function resolveInFilters(mm: Mm, userId: string, terms: string): P
   const words = splitWords(terms);
   const filters = channelFilters(words);
   if (!filters.length) return { terms, notes: [] };
-  if (filters.length > MAX_CHANNEL_FILTERS) throw new InputError(`in: と channel: は、-in: などの除外も含めて 1 回の検索で ${MAX_CHANNEL_FILTERS} 個まで指定できます。in: が多いときは検索を分け、除外は分けた各検索に付け直してください（各検索も除外を含めて ${MAX_CHANNEL_FILTERS} 個まで）。除外が多いときは数を減らしてください（in: があるなら、in: のチャンネルと重ならない除外は効かないので外せます。除外を別々の検索に分けると、もう一方の検索では効きません。in: が無く、探したいチャンネルのほうが少ないなら、それを in: で挙げてください）。`);
+  if (filters.length > MAX_CHANNEL_FILTERS) throw new InputError(`in: と channel: は、-in: などの除外も含めて 1 回の検索で ${MAX_CHANNEL_FILTERS} 個まで指定できます。in: が多いときは検索を分け、除外は分けた各検索に付け直してください（各検索も除外を含めて ${MAX_CHANNEL_FILTERS} 個まで）。除外が多いときは数を減らしてください（in: があるなら、in: のチャンネルと重ならない除外は効かないので外せます。除外を別々の検索に分けると、もう一方の検索では効きません。in: が無く、探したいチャンネルのほうが少ないなら、それを in: で挙げてください）。in: で挙げると、検索の範囲は挙げたチャンネルだけになります。`);
   const notes: string[] = [];
   const out = words.map((w) => [w]);
   const written = (f: (typeof filters)[number]) => words.slice(f.at, f.at + f.span).join(' ');
@@ -439,7 +455,7 @@ async function unreadThreads(mm: Mm, uid: string, teams: MmTeam[], keep: (channe
       }
       if (got.length < THREAD_PAGE) {
         // Not trusting a short page as the end: before= compares with the starting thread's last reply, so deleting that thread or its replies in between skips or drops the rest.
-        if (seen.size < total) notes.push(`（${t.name} の未読スレッドを total_unread_threads: ${total} に対して取り切れませんでした。取得の合間にスレッドが削除・更新されたときなどは、呼び直すと取り直せます。呼び直しても取り切れなかった旨の注記が続くなら（total の数が変わっても）、データ保持ポリシーで根の投稿が消えたスレッドがあるか、最終返信の時刻が同じスレッドが多いためで、それ以上呼び直しても取得できません）`);
+        if (seen.size < total) notes.push(`（${t.name} の未読スレッドを total_unread_threads: ${total} に対して取り切れませんでした。取得の合間にスレッドが削除・更新されたときなどは、呼び直すと取り直せます。呼び直しても取り切れなかった旨の注記が続くなら（total の数が変わっても）、データ保持ポリシーでルート投稿が消えたスレッドがあるか、最終返信の時刻が同じスレッドが多い可能性があり、その場合はそれ以上呼び直しても取得できません）`);
         break;
       }
       if (n === THREAD_PAGES) {
@@ -664,7 +680,7 @@ export function registerReadTools(server: McpServer, ctx: ToolContext): void {
       const renderPage = async (head: string[], all: MmPost[], next: (last: MmPost) => object, none: string, gone: string) => {
         const shown = all.slice(0, all.length > per ? tieStart(all.slice(0, per + 1)) || per : per);
         const users = await usernames(mm, uid, shown);
-        const lines = [...channelLines(ch), ...head, ...shown.map((p) => formatPost(p, { baseUrl: base, teamName: ch.teamName, usernames: users }))];
+        const lines = [...resolvedLines(ch), ...head, ...shown.map((p) => formatPost(p, { baseUrl: base, teamName: ch.teamName, usernames: users }))];
         // Not asking Mattermost whether the cursor's post is gone: GET /posts answers 404 for soft and hard deletes alike, and a cursor is only given while posts remain past it.
         if (!shown.length) lines.push(none, ...(c ? [GONE + gone] : []));
         return render({ lines, posts: shown, next: shown.length < all.length ? next(shown[shown.length - 1]) : undefined });
@@ -777,12 +793,13 @@ export function registerReadTools(server: McpServer, ctx: ToolContext): void {
       const per = c?.per_page ?? limit ?? 50;
       const p = await mm.call<MmPost>(uid, 'GET', `/posts/${post_id}`).catch(postError);
       const rootId = p.root_id || p.id;
-      const raw = await mm.call<MmChannel>(uid, 'GET', `/channels/${p.channel_id}`).catch(postChannelError);
-      const ch: ChannelRef = { id: raw.id, name: raw.name, displayName: raw.display_name, teamId: raw.team_id, teamName: await teamNameOf(mm, uid, raw.team_id) };
+      const raw = await mm.call<MmChannel & { delete_at?: number }>(uid, 'GET', `/channels/${p.channel_id}`).catch(postChannelError);
+      const ch: ChannelRef & { archived: boolean } = { id: raw.id, name: raw.name, displayName: raw.display_name, teamId: raw.team_id, teamName: await teamNameOf(mm, uid, raw.team_id), archived: !!raw.delete_at };
       // Asking for one more than needed and dropping the root: Mattermost counts the root in perPage on the first page only.
       const q = new URLSearchParams({ perPage: String(per + 1), direction: 'down', ...(c ? { fromPost: c.from_post, fromCreateAt: String(c.from_create_at) } : {}) });
       const r = await mm.call<PostList>(uid, 'GET', `/posts/${rootId}/thread?${q}`).catch((e) => {
         if (e instanceof MmError && e.status === 403) throw new InputError(`このスレッドを見る権限がありません。${RETRY}${ASK_ADMIN}`);
+        if (e instanceof MmError && e.status === 404) throw new InputError('このスレッドが見つかりません（取得の合間に削除されたなど）。');
         throw e;
       });
       const replies = r.order.map((id) => r.posts[id]).filter((x) => x && x.id !== rootId)
@@ -803,8 +820,8 @@ export function registerReadTools(server: McpServer, ctx: ToolContext): void {
     async ({ post }, mm) => {
       const id = parsePostRef(post, base);
       const p = await mm.call<MmPost & { reply_count?: number }>(uid, 'GET', `/posts/${id}`).catch(postError);
-      const raw = await mm.call<MmChannel>(uid, 'GET', `/channels/${p.channel_id}`).catch(postChannelError);
-      const ch: ChannelRef = { id: raw.id, name: raw.name, displayName: raw.display_name, teamId: raw.team_id, teamName: await teamNameOf(mm, uid, raw.team_id) };
+      const raw = await mm.call<MmChannel & { delete_at?: number }>(uid, 'GET', `/channels/${p.channel_id}`).catch(postChannelError);
+      const ch: ChannelRef & { archived: boolean } = { id: raw.id, name: raw.name, displayName: raw.display_name, teamId: raw.team_id, teamName: await teamNameOf(mm, uid, raw.team_id), archived: !!raw.delete_at };
       const users = await usernames(mm, uid, [p]);
       const replies = p.reply_count ?? 0;
       // Not using render(): its "no more pages" line means nothing for a single post.
@@ -902,7 +919,7 @@ export function registerReadTools(server: McpServer, ctx: ToolContext): void {
       const shown = [...p.updated, ...p.body];
       const other = (x: MmChannel) => x.name.split('__').find((id) => id !== uid) ?? uid;
       const dms = shown.filter((x) => x.type === 'D');
-      // Not failing the list when the partners' names cannot be read: they only label the DMs, which then show the partner's user_id, as dmLabel gives up.
+      // Not failing the list when the partners' names cannot be read: they only label the DMs, which then show the partner's user_id marked as one, as dmLabel gives up.
       const partners = await usernamesOf(mm, uid, dms.map(other)).catch((e) => {
         if (e instanceof MmError || e instanceof UpstreamUnavailable) return new Map<string, string>();
         throw e;
@@ -910,7 +927,7 @@ export function registerReadTools(server: McpServer, ctx: ToolContext): void {
       const kind: Record<string, string> = { O: '公開', P: '非公開', D: 'DM', G: 'グループ DM' };
       const line = (x: (typeof shown)[number]) => {
         const team = teamName.get(x.team_id);
-        const label = x.type === 'D' ? `@${partners.get(other(x)) ?? other(x)}` : oneLine(x.display_name) || x.name;
+        const label = x.type === 'D' ? dmPartner(partners.get(other(x)), other(x)) : oneLine(x.display_name) || x.name;
         const where = team ? `${team}/${x.name}` : x.type === 'D' || x.type === 'G' ? label : x.name;
         return `- ${where}（channel_id: ${x.id}${x.team_id ? `、team_id: ${x.team_id}` : ''}、種類: ${kind[x.type] ?? x.type}、最終投稿: ${x.last_post_at ? formatTime(x.last_post_at) : '投稿なし'}、表示名: ${label}）`;
       };
@@ -934,7 +951,7 @@ export function registerReadTools(server: McpServer, ctx: ToolContext): void {
       const ch = await resolveChannel(mm, uid, channel).catch(channelError);
       if (c && c.channel_id !== ch.id) throw new InputError(BAD_CURSOR);
       const kind: Record<string, string> = { O: '公開', P: '非公開', D: 'DM', G: 'グループ DM' };
-      const lines = channelLines(ch);
+      const lines = resolvedLines(ch);
       if (!c) {
         const stats = await mm.call<{ member_count: number }>(uid, 'GET', `/channels/${ch.id}/stats?exclude_files_count=true`).catch((e) => {
           if (e instanceof MmError && e.status === 403) return undefined;
@@ -982,7 +999,7 @@ export function registerReadTools(server: McpServer, ctx: ToolContext): void {
         throw e;
       };
       const users = await mm.call<UserRef[]>(uid, 'GET', `/users?${q}`).catch(refused);
-      const lines = channelLines(ch);
+      const lines = resolvedLines(ch);
       if (!c) lines.push(`メンバー数: ${(await mm.call<{ member_count: number }>(uid, 'GET', `/channels/${ch.id}/stats?exclude_files_count=true`).catch(refused)).member_count}`);
       lines.push(...users.map((u) => {
         const name = [u.first_name, u.last_name].filter(Boolean).join(' ');
@@ -1042,7 +1059,7 @@ export function registerReadTools(server: McpServer, ctx: ToolContext): void {
       const userIds = shown.flatMap((r) => (r.kind === 'thread' ? [...postUserIds(r.th.post), ...dmOf(r.th.post.channel_id)] : dmOf(r.ch.id)));
       const users = await usernamesOf(mm, uid, userIds);
       const where = (x: MmChannel) => {
-        const label = x.type === 'D' ? `@${users.get(other(x)) ?? other(x)}` : oneLine(x.display_name || x.name);
+        const label = x.type === 'D' ? dmPartner(users.get(other(x)), other(x)) : oneLine(x.display_name || x.name);
         const team = teamName.get(x.team_id);
         return { label, path: team ? `${team}/${x.name}` : x.type === 'D' || x.type === 'G' ? label : x.name };
       };
