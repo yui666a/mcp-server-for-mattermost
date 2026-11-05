@@ -184,7 +184,7 @@ function rawPost(port: number, path: string, body: Buffer, opts: { chunked?: boo
   });
 }
 
-// Not the describe's 30 s: it would fail first, with vitest's message that does not say what was awaited. Not shorter: on a busy machine the event can take seconds.
+// Not as long as the describe's limit: that would fail first, with vitest's message that does not say what was awaited. Not shorter: on a busy machine the event can take seconds.
 const EVENT_DEADLINE = 20_000;
 async function byDeadline<T>(p: Promise<T>, what: string): Promise<T> {
   let timer: ReturnType<typeof setTimeout> | undefined;
@@ -196,7 +196,8 @@ async function byDeadline<T>(p: Promise<T>, what: string): Promise<T> {
 }
 
 // Not vitest's 5 s: these send megabytes over a real socket, which takes seconds on a busy machine.
-describe('replies before the whole body has arrived', { timeout: 30_000 }, () => {
+// Not less than 10 s over EVENT_DEADLINE: after the awaited event the test still sends a 9 MiB body.
+describe('replies before the whole body has arrived', { timeout: EVENT_DEADLINE + 10_000 }, () => {
   let close: () => void;
   afterEach(() => close?.());
   async function listen(env: Record<string, string> = {}) {
