@@ -121,7 +121,7 @@ describe('pin_post and unpin_post', () => {
     [name, 400, 'api.post.update_post.system_message.app_error', 'システムメッセージはピン留めできません。'],
     [name, 400, 'api.post.patch_post.can_not_update_post_in_deleted.error', 'アーカイブ済みのチャンネルの投稿のピン留めは変えられません。'],
     [name, 400, 'api.post.update_post.permissions_time_limit.app_error', '投稿から時間が経った投稿のピン留めは変えられません'],
-    [name, 403, 'api.context.permissions.app_error', 'この投稿のピン留めを変えられません（見られない投稿か、削除された投稿）。参加しているはずなら、Mattermost の一時的な障害の可能性があります。少し待ってから再試行してください。続くなら、チャンネルから外されたか、サーバーの権限の設定で読む権限が外されている可能性があるので、管理者に確かめてください。'],
+    [name, 403, 'api.context.permissions.app_error', 'この投稿のピン留めを変えられません（投稿を確かめた直後に削除されたか、見る権限が無くなったか、Mattermost の一時的な障害）。削除されたなら、変えるものはありません。参加しているはずなら、少し待ってから再試行してください。続くなら、チャンネルから外されたか、サーバーの権限の設定で読む権限が外されている可能性があるので、管理者に確かめてください。'],
   ] as const))('%s words a %i %s', async (name, status, id, want) => {
     routes = { ...post(), [WRITE[name]]: mmError(status, id) };
     const r = await setup().call(name, { post_id: POST });

@@ -2352,7 +2352,7 @@ describe('get_file', () => {
 
   test('says the caller may not see the file on a 403', async () => {
     routes = { [INFO]: mmError(403, 'api.context.permissions.app_error') };
-    expect(await setup()('get_file', { file_id: F }, true)).toBe('このファイルを見る権限がありません（参加していないチャンネルのファイルなど）。参加しているはずなら、Mattermost の一時的な障害の可能性があります。少し待ってから再試行してください。続くなら、チャンネルから外されたか、サーバーの権限の設定で読む権限が外されている可能性があるので、管理者に確かめてください。');
+    expect(await setup()('get_file', { file_id: F }, true)).toBe('このファイルを見る権限がありません（参加していない非公開チャンネルのファイルなど）。参加しているはずなら、Mattermost の一時的な障害の可能性があります。少し待ってから再試行してください。続くなら、チャンネルから外されたか、サーバーの権限の設定で読む権限が外されている可能性があるので、管理者に確かめてください。');
   });
 
   test('says the file is not found on a 404', async () => {

@@ -559,7 +559,7 @@ describe('read tools against the local Mattermost', () => {
       await mmApi(aliceMm, 'POST', '/posts', { channel_id: priv, message: `${TAG} private png`, file_ids: [fileId] });
       const r = await call('bob', 'get_file', { file_id: fileId });
       expect(r.isError).toBe(true);
-      expect(r.content[0].text).toBe('このファイルを見る権限がありません（参加していないチャンネルのファイルなど）。参加しているはずなら、Mattermost の一時的な障害の可能性があります。少し待ってから再試行してください。続くなら、チャンネルから外されたか、サーバーの権限の設定で読む権限が外されている可能性があるので、管理者に確かめてください。');
+      expect(r.content[0].text).toBe('このファイルを見る権限がありません（参加していない非公開チャンネルのファイルなど）。参加しているはずなら、Mattermost の一時的な障害の可能性があります。少し待ってから再試行してください。続くなら、チャンネルから外されたか、サーバーの権限の設定で読む権限が外されている可能性があるので、管理者に確かめてください。');
     });
   });
 
