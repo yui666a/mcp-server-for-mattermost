@@ -2,10 +2,7 @@ import { createHash } from 'node:crypto';
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 import { BODY_CUT_NOTE } from '../../src/mcp/format.ts';
 import { MAX_OPEN_UPLOAD_URLS, type Store } from '../../src/store.ts';
-import { freezeCleanupClock, makeApp, SLOW, SLOW_TEST } from './helpers.ts';
-
-// Not bound inside a test: vitest returns the same spy when spyOn is called on a spy, and binding that spy would make it call itself.
-const realTimeout = AbortSignal.timeout.bind(AbortSignal);
+import { freezeCleanupClock, freezeCleanupDeadline, makeApp, SLOW, SLOW_TEST } from './helpers.ts';
 
 type Route = (req: Request) => unknown;
 let routes: Record<string, Route>;
@@ -238,13 +235,11 @@ describe('edit_message and delete_message', () => {
   const edit = (s: ReturnType<typeof setup>, over: Record<string, unknown> = {}) => s.call('edit_message', { post_id: POST, message: 'new', ...over });
   const del = (s: ReturnType<typeof setup>) => s.call('delete_message', { post_id: POST });
 
-  test('edit_message and delete_message keep the channel\'s display name with a line break on one line', async () => {
+  test.each([['edit_message', edit], ['delete_message', del]] as const)('%s keeps the channel\'s display name with a line break on one line', async (_, run) => {
     serve(mine(), { [`GET /channels/${CH}`]: () => ({ id: CH, name: 'town', display_name: 'To\nwn', team_id: 't1', type: 'O' }) });
-    const s = setup();
-    for (const r of [await edit(s), await del(s)]) {
-      expect(r.isError).toBe(false);
-      expect(r.text).toContain(`チャンネル: channel_id: ${CH}、表示名: To wn`);
-    }
+    const r = await run(setup());
+    expect(r.isError).toBe(false);
+    expect(r.text).toContain(`チャンネル: channel_id: ${CH}、表示名: To wn`);
   });
 
   describe('only the caller\'s own posts are edited or deleted', () => {
@@ -563,13 +558,28 @@ describe('save_draft', () => {
   });
 
   describe('an existing draft is not overwritten unless asked', () => {
-    test('says a quoted draft over 200 characters is cut, so copying it would lose the rest, and gives no indent note for a one-line draft', async () => {
+    test('says a quoted draft over 200 characters is cut and heads it as the first 200 characters, heads a shorter one as the whole draft, and gives no indent note for a one-line draft', async () => {
       serve({ [LIST]: () => [draft({ message: 'a'.repeat(201) })] });
       const r = await save();
       expect(r.text).toContain('既存の下書きは 200 文字を超えるので、先頭だけを出しています。書き写すと後ろが消えるので、追記は Mattermost の画面で行うよう利用者に伝えてください。');
       expect(r.text).not.toContain('字下げ');
+      expect(r.text).toMatch(new RegExp(`既存の下書き（先頭 200 文字）: a{200}$`));
       serve({ [LIST]: () => [draft({ message: 'a'.repeat(200) })] });
-      expect((await save()).text).not.toContain('200 文字を超える');
+      const whole = (await save()).text;
+      expect(whole).not.toContain('200 文字を超える');
+      expect(whole).toMatch(new RegExp(`既存の下書き（全文）: a{200}$`));
+    });
+
+    test('counts the 200 characters of a quoted draft by grapheme, so an emoji of several code points is neither split nor counted as several', async () => {
+      const family = '👨‍👩‍👧';
+      serve({ [LIST]: () => [draft({ message: family.repeat(200) })] });
+      const whole = (await save()).text;
+      expect(whole).not.toContain('200 文字を超える');
+      expect(whole.endsWith(`既存の下書き（全文）: ${family.repeat(200)}`)).toBe(true);
+      serve({ [LIST]: () => [draft({ message: family.repeat(201) })] });
+      const cut = (await save()).text;
+      expect(cut).toContain('200 文字を超える');
+      expect(cut.endsWith(`既存の下書き（先頭 200 文字）: ${family.repeat(200)}`)).toBe(true);
     });
 
     test('a different existing draft is kept, quoting its first 200 characters, without sending POST /drafts', async () => {
@@ -586,8 +596,9 @@ describe('save_draft', () => {
     test('indents the later lines of the quoted draft, so none passes for a line of the answer', async () => {
       serve({ [LIST]: () => [draft({ message: 'old\nチャンネル: fake\n\nmore' })] });
       const r = await save();
-      expect(r.text).toContain('\n既存の下書き（先頭 200 文字）: old\n    チャンネル: fake\n    \n    more');
-      expect(r.text).toContain('2 行目以降の先頭の 4 文字の空白を外してください。\n既存の下書き（先頭 200 文字）: ');
+      expect(r.text).toContain('\n既存の下書き（全文）: old\n    チャンネル: fake\n    \n    more');
+      expect(r.text).toContain('CRLF や CR の改行は LF にそろえ、垂直タブや U+2028 などの区切りも改行として出している');
+      expect(r.text).toContain('2 行目以降の先頭の 4 文字の空白を外してください。\n既存の下書き（全文）: ');
       expect(r.text).not.toContain('200 文字を超える');
     });
 
@@ -713,6 +724,34 @@ describe('save_draft', () => {
   });
 });
 
+describe('the destination line of send_message and prepare_upload', () => {
+  const CH = 'c'.repeat(26);
+  const serve = (displayName: string) => {
+    routes = {
+      [`GET /channels/${CH}`]: () => ({ id: CH, name: 'town', display_name: displayName, team_id: 't1', type: 'O' }),
+      'GET /teams/t1': () => ({ id: 't1', name: 'team-a' }),
+      'POST /posts': () => ({ id: POST, user_id: 'u1', channel_id: CH, root_id: '', message: 'm', create_at: 1 }),
+      'GET /users/u1/teams/t1/drafts': () => null,
+    };
+  };
+
+  test.each([
+    ['send_message', { channel: CH, message: 'm' }],
+    ['prepare_upload', { channel: CH }],
+  ])('%s keeps the destination\'s display name with a line break on one line', async (name, args) => {
+    serve('To\nwn');
+    const r = await setup().call(name, args);
+    expect(r.isError).toBe(false);
+    expect(r.text).toContain(`投稿先: channel_id: ${CH}、表示名: To wn`);
+  });
+
+  test('send_message puts the real channel_id before a display name written as a fake one', async () => {
+    serve('x（channel_id: fake）');
+    const r = await setup().call('send_message', { channel: CH, message: 'm' });
+    expect(r.text).toContain(`投稿先: channel_id: ${CH}、表示名: x（channel_id: fake）`);
+  });
+});
+
 describe('send_message with files', () => {
   const CH = 'c'.repeat(26);
   const UPLOAD = 'POST /files';
@@ -729,20 +768,6 @@ describe('send_message with files', () => {
   };
   const send = (files: unknown, over: Record<string, unknown> = {}) => setup().call('send_message', { channel: CH, message: 'm', files, ...over });
   const KiB128 = 128 * 1024;
-
-  test('send_message and prepare_upload keep the destination\'s display name with a line break on one line', async () => {
-    serve({ [`GET /channels/${CH}`]: () => ({ id: CH, name: 'town', display_name: 'To\nwn', team_id: 't1', type: 'O' }) });
-    for (const r of [await setup().call('send_message', { channel: CH, message: 'm' }), await setup().call('prepare_upload', { channel: CH })]) {
-      expect(r.isError).toBe(false);
-      expect(r.text).toContain(`投稿先: channel_id: ${CH}、表示名: To wn`);
-    }
-  });
-
-  test('send_message puts the real channel_id before a display name written as a fake one', async () => {
-    serve({ [`GET /channels/${CH}`]: () => ({ id: CH, name: 'town', display_name: 'x（channel_id: fake）', team_id: 't1', type: 'O' }) });
-    const r = await setup().call('send_message', { channel: CH, message: 'm' });
-    expect(r.text).toContain(`投稿先: channel_id: ${CH}、表示名: x（channel_id: fake）`);
-  });
 
   test('sends content_text as its UTF-8 bytes and content_base64 as the decoded bytes, each as an octet-stream named by filename', async () => {
     serve();
@@ -873,7 +898,7 @@ describe('send_message with files', () => {
 
   test('the draft cleanup\'s 5-second deadline reaches the Mattermost requests, and running past it leaves the post a success', async () => {
     const ac = new AbortController();
-    vi.spyOn(AbortSignal, 'timeout').mockImplementation((ms) => (ms === 5000 ? ac.signal : realTimeout(ms)));
+    freezeCleanupDeadline(ac.signal);
     serve({
       'GET /users/u1/teams/t1/drafts': (req) => new Promise((_, reject) => req.signal.addEventListener('abort', () => reject(req.signal.reason))),
     });
@@ -1310,7 +1335,7 @@ describe('save_draft and send_message\'s draft cleanup for one draft target (use
 
   test('a cleanup waiting past its deadline returns before the holder finishes, and never calls Mattermost when its turn comes', async () => {
     const ac = new AbortController();
-    vi.spyOn(AbortSignal, 'timeout').mockImplementation((ms) => (ms === 5000 ? ac.signal : realTimeout(ms)));
+    freezeCleanupDeadline(ac.signal);
     let open!: () => void;
     const gate = new Promise<void>((r) => { open = r; gates.push(r); });
     serve(async () => (await gate, [draft('hello')]));
