@@ -160,6 +160,12 @@ describe('set_custom_status', () => {
     expect(r.text).toContain('期限: 期限なし');
   });
 
+  test('spaces inside the colons of the emoji are dropped', async () => {
+    routes = ok;
+    await setup().call('set_custom_status', { emoji: ': palm_tree :' });
+    expect(bodies[CUSTOM]).toMatchObject({ emoji: 'palm_tree' });
+  });
+
   test('an emoji alone is enough', async () => {
     routes = ok;
     const r = await setup().call('set_custom_status', { emoji: ' palm_tree ' });
@@ -179,6 +185,13 @@ describe('set_custom_status', () => {
     expect((await setup().call('set_custom_status', { text: 'あ'.repeat(101) })).isError).toBe(true);
     expect(hits).toEqual([]);
     expect((await setup().call('set_custom_status', { text: 'あ'.repeat(100) })).isError).toBe(false);
+  });
+
+  test('the 100 characters of a text count an emoji outside the BMP as one, as Mattermost counts runes', async () => {
+    routes = ok;
+    expect((await setup().call('set_custom_status', { text: '😀'.repeat(101) })).isError).toBe(true);
+    expect(hits).toEqual([]);
+    expect((await setup().call('set_custom_status', { text: '😀'.repeat(100) })).isError).toBe(false);
   });
 
   test.each([
