@@ -864,8 +864,10 @@ export function registerReadTools(server: McpServer, ctx: ToolContext): void {
       const lines = [`チャンネルの検索: ${query}`, ...shown.map((x) => {
         const team = teamName.get(x.team_id);
         const shown = oneLine(x.display_name ?? '');
-        const where = team ? `${team}/${x.name}` : (x.label ?? (x.display_name === undefined ? x.name : shown));
-        return `- ${where}（表示名: ${shown || x.label || x.name}、種類: ${kind[x.type] ?? x.type}、channel_id: ${x.id}${team ? `、team_id: ${x.team_id}` : ''}）`;
+        // Not the display name at the head of a channel whose team is unknown: users write it. A group DM's is the member list, which they cannot change.
+        const where = team ? `${team}/${x.name}` : (x.label ?? (x.type === 'G' && shown ? shown : x.name));
+        // Not the display name first: one written as "表示名: …、channel_id: …" would then come before the real id.
+        return `- ${where}（channel_id: ${x.id}${team ? `、team_id: ${x.team_id}` : ''}、種類: ${kind[x.type] ?? x.type}、表示名: ${shown || x.label || x.name}）`;
       })];
       if (!shown.length) lines.push('一致するチャンネルはありません。');
       return render({ lines, next, notes: capNote(capped, 'ほかの公開チャンネル') });
@@ -901,7 +903,7 @@ export function registerReadTools(server: McpServer, ctx: ToolContext): void {
         const team = teamName.get(x.team_id);
         const label = x.type === 'D' ? `@${partners.get(other(x)) ?? other(x)}` : oneLine(x.display_name) || x.name;
         const where = team ? `${team}/${x.name}` : x.type === 'D' || x.type === 'G' ? label : x.name;
-        return `- ${where}（表示名: ${label}、種類: ${kind[x.type] ?? x.type}、channel_id: ${x.id}${x.team_id ? `、team_id: ${x.team_id}` : ''}、最終投稿: ${x.last_post_at ? formatTime(x.last_post_at) : '投稿なし'}）`;
+        return `- ${where}（channel_id: ${x.id}${x.team_id ? `、team_id: ${x.team_id}` : ''}、種類: ${kind[x.type] ?? x.type}、最終投稿: ${x.last_post_at ? formatTime(x.last_post_at) : '投稿なし'}、表示名: ${label}）`;
       };
       const lines = [
         '参加しているチャンネル（最終投稿の新しい順）',
@@ -972,7 +974,7 @@ export function registerReadTools(server: McpServer, ctx: ToolContext): void {
       if (!c) lines.push(`メンバー数: ${(await mm.call<{ member_count: number }>(uid, 'GET', `/channels/${ch.id}/stats?exclude_files_count=true`).catch(refused)).member_count}`);
       lines.push(...users.map((u) => {
         const name = [u.first_name, u.last_name].filter(Boolean).join(' ');
-        return `- @${u.username}（${[name && `名前: ${oneLine(name)}`, u.nickname && `ニックネーム: ${oneLine(u.nickname)}`, u.position && `役職: ${oneLine(u.position)}`, u.is_bot && 'Bot アカウント', `user_id: ${u.id}`].filter(Boolean).join('、')}）`;
+        return `- @${u.username}（${[`user_id: ${u.id}`, u.is_bot && 'Bot アカウント', name && `名前: ${oneLine(name)}`, u.nickname && `ニックネーム: ${oneLine(u.nickname)}`, u.position && `役職: ${oneLine(u.position)}`].filter(Boolean).join('、')}）`;
       }));
       if (!users.length && !c) lines.push('メンバーはいません。');
       // Not asking for one more row to tell the last page: Mattermost pages by page * per_page, so a full last page is followed by an empty one.
@@ -1036,7 +1038,7 @@ export function registerReadTools(server: McpServer, ctx: ToolContext): void {
       const line = (r: (typeof rows)[number]): string => {
         if (r.kind === 'channel') {
           const w = where(r.ch);
-          return `- ${w.path}（表示名: ${w.label}、channel_id: ${r.ch.id}${r.ch.team_id ? `、team_id: ${r.ch.team_id}` : ''}）未読: ${r.count}、メンション: ${r.mentions}、${crt.on ? '最終のルート投稿' : '最終投稿'}: ${formatTime(r.updatedAt)}`;
+          return `- ${w.path}（channel_id: ${r.ch.id}${r.ch.team_id ? `、team_id: ${r.ch.team_id}` : ''}、表示名: ${w.label}）未読: ${r.count}、メンション: ${r.mentions}、${crt.on ? '最終のルート投稿' : '最終投稿'}: ${formatTime(r.updatedAt)}`;
         }
         const ch = channels.get(r.th.post.channel_id);
         const team = ch && teamName.get(ch.team_id);
@@ -1153,7 +1155,7 @@ export function registerReadTools(server: McpServer, ctx: ToolContext): void {
       const { shown, next } = listed(all, c, limit ?? 20);
       const lines = [`ユーザーの検索: ${query}`, ...shown.map((u) => {
         const name = [u.first_name, u.last_name].filter(Boolean).join(' ');
-        return `- @${u.username}（${[name && `名前: ${oneLine(name)}`, u.nickname && `ニックネーム: ${oneLine(u.nickname)}`, `user_id: ${u.id}`].filter(Boolean).join('、')}）`;
+        return `- @${u.username}（${[`user_id: ${u.id}`, name && `名前: ${oneLine(name)}`, u.nickname && `ニックネーム: ${oneLine(u.nickname)}`].filter(Boolean).join('、')}）`;
       })];
       if (!shown.length) lines.push('一致するユーザーはいません。');
       return render({ lines, next, notes: capNote(all.length, 'ほかのユーザー') });
