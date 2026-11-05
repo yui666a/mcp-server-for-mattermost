@@ -604,7 +604,8 @@ export function registerReadTools(server: McpServer, ctx: ToolContext): void {
         `返信数: ${replies}`,
         ...(p.root_id ? [`スレッド内の返信です。親 post_id: ${p.root_id}。read_thread でスレッド全体を読めます。`]
           : replies ? [`返信があります。read_thread に post_id: ${p.id} を渡すと、スレッド全体を読めます。`] : []),
-        ...(postTruncated(p) ? ['（本文かメッセージ添付を 4000 文字で切りました）'] : []),
+        // Not noting cut message attachments again: formatPost already says where it cut them.
+        ...(truncate(p.message).truncated ? ['（本文を 4000 文字で切りました）'] : []),
       ].join('\n');
     });
 
