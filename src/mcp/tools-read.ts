@@ -6,7 +6,7 @@ import { BAD_CURSOR, BODY_CUT_NOTE, BODY_MAX_CHARS, decodeCursor, encodeCursor, 
 import { pageCursor, paginate } from './paging.ts';
 import { mentionsMe, mentionTerms, type MentionUser } from './mentions.ts';
 import { parsePostRef } from './permalink.ts';
-import { Ambiguous, ChannelFetchError, myTeams, NoDirectChannel, resolveChannel, resolveUser, teamNameOf, unformat, type ChannelRef, type Mm, type MmChannel, type MmTeam, type UserRef } from './resolve.ts';
+import { Ambiguous, ChannelFetchError, myTeams, NoDirectChannel, resolveChannel, resolveUser, teamNameOf, unformat, type ChannelRef, type Mm, type MmChannel, type MmTeam, type ResolvedChannel, type UserRef } from './resolve.ts';
 import { guarded, text, type ToolContext } from './server.ts';
 import { worded, type Wording } from './tools-send.ts';
 import { parseWhen } from './when.ts';
@@ -184,6 +184,8 @@ export function render({ lines, next, posts = [], notes = [] }: Page): string {
 const dmPartner = (username: string | undefined, userId: string) => (username ? `@${username}` : `ユーザー名不明（user_id: ${userId}）`);
 
 // archived is a field rather than words added to the display name: a display name written as "（アーカイブ済み）" would otherwise pass for one.
+const resolvedLines = (ch: ResolvedChannel) => channelLines({ ...ch, archived: !!(ch.raw as ResolvedChannel['raw'] & { delete_at?: number }).delete_at });
+
 export function channelLines(c: ChannelRef & { archived?: boolean }): string[] {
   return [
     // Not the display name first: a name written as "（name: …、channel_id: …）" would then come before the real id.
@@ -215,11 +217,16 @@ export function channelInline(c: ChannelRef & { archived?: boolean }): string {
   return `${team} | ${channel}`;
 }
 
+// The 404 of looking a channel up by id: /channels/{id} gives it only for a channel that does not exist, whereas a 404 by name may also be a private or archived channel, or a passing failure.
+const BY_ID_404 = 'app.channel.get.existing.app_error';
+
 function channelError(e: unknown): never {
   // Not converting a missing team: /teams/name/{team}/channels/name/{channel} answers it with 404 too.
   if (e instanceof ChannelFetchError && e.id !== 'app.team.get_by_name.missing.app_error') {
     if (e.status === 403) throw new InputError('このチャンネルを見る権限がありません（参加していない非公開チャンネルなど）。参加しているはずなら、Mattermost の一時的な障害の可能性があります。少し待ってから再試行してください。続くなら、チャンネルから外されたか、サーバーの権限の設定で読む権限が外されている可能性があるので、管理者に確かめてください。');
-    if (e.status === 404) throw new InputError(`チャンネルが見つかりません（参加していない非公開チャンネルを名前で指定した場合も、Mattermost はこの結果を返します）。名前や ID の誤りなら search_channels で確かめてください。${RETRY}${ASK_ADMIN}`);
+    // Not keying on the name lookup's ids: a 404 without an id, as a proxy may give, is better read as one by name, which guides to retrying.
+    if (e.status === 404 && e.id !== BY_ID_404) throw new InputError(`チャンネルが見つかりません（参加していない非公開チャンネルとアーカイブ済みのチャンネルは、名前で指定すると Mattermost はこの結果を返します。アーカイブ済みなら、チャンネル ID を利用者に確かめて ID で指定すると読めます）。名前の誤りなら search_channels で確かめてください。${RETRY}${ASK_ADMIN}`);
+    if (e.status === 404) throw new InputError('チャンネルが見つかりません。ID の誤りなら search_channels で確かめてください。');
   }
   throw e;
 }
@@ -440,7 +447,7 @@ async function unreadThreads(mm: Mm, uid: string, teams: MmTeam[], keep: (channe
       }
       if (got.length < THREAD_PAGE) {
         // Not trusting a short page as the end: before= compares with the starting thread's last reply, so deleting that thread or its replies in between skips or drops the rest.
-        if (seen.size < total) notes.push(`（${t.name} の未読スレッドを total_unread_threads: ${total} に対して取り切れませんでした。取得の合間にスレッドが削除・更新されたときなどは、呼び直すと取り直せます。呼び直しても取り切れなかった旨の注記が続くなら（total の数が変わっても）、データ保持ポリシーで根の投稿が消えたスレッドがあるか、最終返信の時刻が同じスレッドが多いためで、それ以上呼び直しても取得できません）`);
+        if (seen.size < total) notes.push(`（${t.name} の未読スレッドを total_unread_threads: ${total} に対して取り切れませんでした。取得の合間にスレッドが削除・更新されたときなどは、呼び直すと取り直せます。呼び直しても取り切れなかった旨の注記が続くなら（total の数が変わっても）、データ保持ポリシーで根の投稿が消えたスレッドがあるか、最終返信の時刻が同じスレッドが多い可能性があり、その場合はそれ以上呼び直しても取得できません）`);
         break;
       }
       if (n === THREAD_PAGES) {
@@ -665,7 +672,7 @@ export function registerReadTools(server: McpServer, ctx: ToolContext): void {
       const renderPage = async (head: string[], all: MmPost[], next: (last: MmPost) => object, none: string, gone: string) => {
         const shown = all.slice(0, all.length > per ? tieStart(all.slice(0, per + 1)) || per : per);
         const users = await usernames(mm, uid, shown);
-        const lines = [...channelLines(ch), ...head, ...shown.map((p) => formatPost(p, { baseUrl: base, teamName: ch.teamName, usernames: users }))];
+        const lines = [...resolvedLines(ch), ...head, ...shown.map((p) => formatPost(p, { baseUrl: base, teamName: ch.teamName, usernames: users }))];
         // Not asking Mattermost whether the cursor's post is gone: GET /posts answers 404 for soft and hard deletes alike, and a cursor is only given while posts remain past it.
         if (!shown.length) lines.push(none, ...(c ? [GONE + gone] : []));
         return render({ lines, posts: shown, next: shown.length < all.length ? next(shown[shown.length - 1]) : undefined });
@@ -778,11 +785,14 @@ export function registerReadTools(server: McpServer, ctx: ToolContext): void {
       const per = c?.per_page ?? limit ?? 50;
       const p = await mm.call<MmPost>(uid, 'GET', `/posts/${post_id}`).catch(postError);
       const rootId = p.root_id || p.id;
-      const raw = await mm.call<MmChannel>(uid, 'GET', `/channels/${p.channel_id}`).catch(postChannelError);
-      const ch: ChannelRef = { id: raw.id, name: raw.name, displayName: raw.display_name, teamId: raw.team_id, teamName: await teamNameOf(mm, uid, raw.team_id) };
+      const raw = await mm.call<MmChannel & { delete_at?: number }>(uid, 'GET', `/channels/${p.channel_id}`).catch(postChannelError);
+      const ch: ChannelRef & { archived: boolean } = { id: raw.id, name: raw.name, displayName: raw.display_name, teamId: raw.team_id, teamName: await teamNameOf(mm, uid, raw.team_id), archived: !!raw.delete_at };
       // Asking for one more than needed and dropping the root: Mattermost counts the root in perPage on the first page only.
       const q = new URLSearchParams({ perPage: String(per + 1), direction: 'down', ...(c ? { fromPost: c.from_post, fromCreateAt: String(c.from_create_at) } : {}) });
-      const r = await mm.call<PostList>(uid, 'GET', `/posts/${rootId}/thread?${q}`);
+      const r = await mm.call<PostList>(uid, 'GET', `/posts/${rootId}/thread?${q}`).catch((e) => {
+        if (e instanceof MmError && e.status === 403) throw new InputError(`このスレッドを見る権限がありません。${RETRY}${ASK_ADMIN}`);
+        throw e;
+      });
       const replies = r.order.map((id) => r.posts[id]).filter((x) => x && x.id !== rootId)
         .sort((a, b) => a.create_at - b.create_at || (a.id < b.id ? -1 : 1));
       const shown = [...(c ? [] : [r.posts[rootId]].filter(Boolean)), ...replies.slice(0, per)];
@@ -801,8 +811,8 @@ export function registerReadTools(server: McpServer, ctx: ToolContext): void {
     async ({ post }, mm) => {
       const id = parsePostRef(post, base);
       const p = await mm.call<MmPost & { reply_count?: number }>(uid, 'GET', `/posts/${id}`).catch(postError);
-      const raw = await mm.call<MmChannel>(uid, 'GET', `/channels/${p.channel_id}`).catch(postChannelError);
-      const ch: ChannelRef = { id: raw.id, name: raw.name, displayName: raw.display_name, teamId: raw.team_id, teamName: await teamNameOf(mm, uid, raw.team_id) };
+      const raw = await mm.call<MmChannel & { delete_at?: number }>(uid, 'GET', `/channels/${p.channel_id}`).catch(postChannelError);
+      const ch: ChannelRef & { archived: boolean } = { id: raw.id, name: raw.name, displayName: raw.display_name, teamId: raw.team_id, teamName: await teamNameOf(mm, uid, raw.team_id), archived: !!raw.delete_at };
       const users = await usernames(mm, uid, [p]);
       const replies = p.reply_count ?? 0;
       // Not using render(): its "no more pages" line means nothing for a single post.
@@ -932,7 +942,7 @@ export function registerReadTools(server: McpServer, ctx: ToolContext): void {
       const ch = await resolveChannel(mm, uid, channel).catch(channelError);
       if (c && c.channel_id !== ch.id) throw new InputError(BAD_CURSOR);
       const kind: Record<string, string> = { O: '公開', P: '非公開', D: 'DM', G: 'グループ DM' };
-      const lines = channelLines(ch);
+      const lines = resolvedLines(ch);
       if (!c) {
         const stats = await mm.call<{ member_count: number }>(uid, 'GET', `/channels/${ch.id}/stats?exclude_files_count=true`).catch((e) => {
           if (e instanceof MmError && e.status === 403) return undefined;
@@ -947,9 +957,12 @@ export function registerReadTools(server: McpServer, ctx: ToolContext): void {
       }
       // Sorting here rather than asking Mattermost for a page: /pinned has neither a limit nor paging.
       const r = await mm.call<PostList>(uid, 'GET', `/channels/${ch.id}/pinned`).catch((e) => {
-        if (e instanceof MmError && e.status === 403) throw new InputError(`このチャンネルのピン留めを見る権限がありません。${RETRY}${ASK_ADMIN}`);
-        throw e;
+        if (!(e instanceof MmError && e.status === 403)) throw e;
+        if (c) throw new InputError(`このチャンネルのピン留めを取得できません（参加していないか、一時的な障害か、権限の設定）。${RETRY}${ASK_ADMIN}`);
+        return undefined;
       });
+      // Not going through render: its closing line would read as no more pinned posts.
+      if (!r) return [...lines, 'ピン留め: 取得できません（参加していないか、一時的な障害か、権限の設定）'].join('\n');
       const all = r.order.map((id) => r.posts[id]).filter(Boolean)
         .sort((a, b) => b.create_at - a.create_at || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
       const rest = c ? all.filter((p) => p.create_at < c.create_at || (p.create_at === c.create_at && p.id > c.id)) : all;
@@ -977,7 +990,7 @@ export function registerReadTools(server: McpServer, ctx: ToolContext): void {
         throw e;
       };
       const users = await mm.call<UserRef[]>(uid, 'GET', `/users?${q}`).catch(refused);
-      const lines = channelLines(ch);
+      const lines = resolvedLines(ch);
       if (!c) lines.push(`メンバー数: ${(await mm.call<{ member_count: number }>(uid, 'GET', `/channels/${ch.id}/stats?exclude_files_count=true`).catch(refused)).member_count}`);
       lines.push(...users.map((u) => {
         const name = [u.first_name, u.last_name].filter(Boolean).join(' ');
