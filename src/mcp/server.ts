@@ -65,7 +65,7 @@ export function buildServer(ctx: ToolContext): McpServer {
   // Not touching a tool without inputSchema: the SDK then calls its handler without arguments, and a shape would change that call.
   const register = server.registerTool.bind(server);
   server.registerTool = ((name: string, config: { inputSchema?: object }, cb: unknown) =>
-    register(name, { ...config, inputSchema: config.inputSchema && !(config.inputSchema instanceof z.ZodType) ? strictArgs(config.inputSchema as ZodRawShape) : config.inputSchema } as never, cb as never)) as typeof server.registerTool;
+    register(name, { ...config, inputSchema: config.inputSchema && !(config.inputSchema instanceof z.core.$ZodType) ? strictArgs(config.inputSchema as ZodRawShape) : config.inputSchema } as never, cb as never)) as typeof server.registerTool;
   // Not logged by guarded: the SDK checks the arguments before it calls the tool. Wrapping a private method of the pinned SDK; the unit test fails if it goes away.
   const validate = server['validateToolInput'] as ((tool: unknown, args: unknown, toolName: string) => Promise<unknown>) | undefined;
   if (validate) {
