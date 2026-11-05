@@ -139,6 +139,7 @@ describe('save_post and unsave_post agree with list_saved_posts', () => {
     expect((await call('save_post', { post_id: id })).isError).toBeFalsy();
     await mmApi(bobMm, 'DELETE', `/channels/${left.id}/members/${alice}`);
     expect(await savedInMattermost()).toContain(id);
+    expect(await saved()).not.toContain(id);
 
     expect((await call('unsave_post', { post_id: id })).isError).toBeFalsy();
     expect(await savedInMattermost()).not.toContain(id);
