@@ -1137,6 +1137,10 @@ describe('get_unreads', () => {
       expect(out).toContain(SHORT);
     });
 
+    test('a short first page below total, as when total also counts threads whose root post a retention policy removed, says such threads cannot be taken by calling again', async () => {
+      expect(await run([span(0, 10), 11])).toContain('データ保持ポリシーで根の投稿が消えたスレッドは、呼び直しても取得できません）');
+    });
+
     test('says nothing when every thread was taken, also when the 4th page is full', async () => {
       expect(await run([span(0, 50), 80], [span(50, 80), 80])).not.toContain(SHORT);
       const full = await run([span(0, 50), 200], [span(50, 100), 200], [span(100, 150), 200], [span(150, 200), 200]);
@@ -1585,10 +1589,9 @@ describe('get_mentions', () => {
       expect(await setup()('get_mentions', { unread_only: true })).toContain('未読スレッドは、50 件ずつ 4 回の取得で打ち切りました。');
     });
 
-    test('notes when a team\'s unread threads were not all taken', async () => {
+    test('notes when a team\'s unread threads were not all taken, as when a full page is followed by nothing', async () => {
       put({ create_at: at(22, 1) });
       routes = unreadBase('always_on', [member(C, at(22, 0), 0, 1)]);
-      // A full first page, then nothing: as when the thread paged from is deleted in between.
       let k = 0;
       routes[`GET /users/u1/teams/${T}/threads`] = () => ({ total_unread_threads: 60, threads: k++ ? [] : Array.from({ length: 50 }, (_, i) => thread(`t${String(i).padStart(25, '0')}`, 0, 0)) });
       expect(await setup()('get_mentions', { unread_only: true })).toContain('未読スレッドを total_unread_threads: 60 に対して取り切れませんでした。');
