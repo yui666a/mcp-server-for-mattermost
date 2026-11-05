@@ -269,7 +269,8 @@ function splitWords(text: string): string[] {
       start = i + 1;
     } else {
       const from = i > 0 && text[i - 1] === '-' ? i - 1 : i;
-      words.push(...fields(text.slice(start, from)));
+      // Not push(...): spreading the words as arguments throws a RangeError past about 100,000 of them.
+      for (const w of fields(text.slice(start, from))) words.push(w);
       quoted = true;
       start = from;
     }
