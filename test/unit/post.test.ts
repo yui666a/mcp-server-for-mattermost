@@ -60,18 +60,15 @@ describe('postOnce は 1 回だけ投稿し、結果を構造で返す', () => {
     expect(r).toEqual({ kind: 'failed', reason: expect.stringContaining('Mattermost への再ログインが必要'), error: e });
   });
 
-  test('レート制限は、Mattermost の 429 でも Limiter でも、投稿されていないやり直しにする', async () => {
-    for (const sent of [true, false]) {
-      const e = new RateLimited(3, sent);
-      expect(await postOnce(fails(e), UID, { channelId: CH, message: 'hi', fileIds: [] }, PENDING))
-        .toEqual({ kind: 'retryable', sent: false, error: e });
-    }
-  });
-
-  test('先の要求が処理されたかもしれない後の 429 は、投稿されたかもしれないやり直しにする', async () => {
-    const e = new RateLimited(3, true, true);
+  // Not [false, true]: doubt is set only after a request went out.
+  test.each([
+    { from: 'Mattermost の 429', sent: true, doubt: false, mayHavePosted: false },
+    { from: 'Limiter', sent: false, doubt: false, mayHavePosted: false },
+    { from: '先の要求が処理されたかもしれない後の 429', sent: true, doubt: true, mayHavePosted: true },
+  ])('レート制限はやり直しにし、先の要求が処理されたかもしれないときだけ投稿されたかもしれないとする（$from）', async ({ sent, doubt, mayHavePosted }) => {
+    const e = new RateLimited(3, sent, doubt);
     expect(await postOnce(fails(e), UID, { channelId: CH, message: 'hi', fileIds: [] }, PENDING))
-      .toEqual({ kind: 'retryable', sent: true, error: e });
+      .toEqual({ kind: 'retryable', sent: mayHavePosted, error: e });
   });
 
   test('接続できない失敗は、届いたかどうかを sent に持たせてやり直しにする', async () => {
