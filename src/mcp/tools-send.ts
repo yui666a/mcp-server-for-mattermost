@@ -8,7 +8,7 @@ import { MmError, RateLimited, Reauthorize } from '../mattermost/client.ts';
 import { MAX_OPEN_UPLOAD_URLS, type HeldFile, type Store } from '../store.ts';
 import { BODY_CUT_NOTE, indented, InputError, oneLine, type MmPost } from './format.ts';
 import { findPosted, postOnce } from './post.ts';
-import { myTeams, NoDirectChannel, resolveChannel, teamNameOf, type ChannelRef, type Mm, type MmChannel, type ResolvedChannel } from './resolve.ts';
+import { myTeams, NoDirectChannel, resolveChannel, teamNameOf, unformat, type ChannelRef, type Mm, type MmChannel, type ResolvedChannel } from './resolve.ts';
 import { guarded, text, type ToolContext } from './server.ts';
 
 type FileArg = { name: string; content_text?: string; content_base64?: string };
@@ -113,7 +113,7 @@ export function checkUnposted(store: Store, uid: string, fileIds: string[]): voi
 // Not creating the DM with root_id or file_ids: a DM not opened yet holds neither, and the call would fail right after leaving an empty DM.
 export const createsDirect = (rootId: string | undefined, fileIds: string[]): boolean => !rootId && !fileIds.length;
 // Not repeating the "@" test at each caller: the checks run before resolving have to agree with when resolveChannel may create the DM.
-export const mayCreateDirect = (channel: string, rootId: string | undefined, fileIds: string[]): boolean => channel.trim().startsWith('@') && createsDirect(rootId, fileIds);
+export const mayCreateDirect = (channel: string, rootId: string | undefined, fileIds: string[]): boolean => unformat(channel).startsWith('@') && createsDirect(rootId, fileIds);
 
 // Not reporting only the missing DM when file_ids are given: none of them can belong to a DM not opened yet, so the file is the real mistake.
 // Not reading the client config for a DM that is already there: nothing can be left empty then, and a retry of a send that created it must reach the duplicate guard.

@@ -6,7 +6,7 @@ import { BAD_CURSOR, BODY_CUT_NOTE, BODY_MAX_CHARS, decodeCursor, encodeCursor, 
 import { pageCursor, paginate } from './paging.ts';
 import { mentionsMe, mentionTerms, type MentionUser } from './mentions.ts';
 import { parsePostRef } from './permalink.ts';
-import { Ambiguous, ChannelFetchError, myTeams, NoDirectChannel, resolveChannel, resolveUser, teamNameOf, type ChannelRef, type Mm, type MmChannel, type MmTeam, type UserRef } from './resolve.ts';
+import { Ambiguous, ChannelFetchError, myTeams, NoDirectChannel, resolveChannel, resolveUser, teamNameOf, unformat, type ChannelRef, type Mm, type MmChannel, type MmTeam, type UserRef } from './resolve.ts';
 import { guarded, text, type ToolContext } from './server.ts';
 import { worded, type Wording } from './tools-send.ts';
 import { parseWhen } from './when.ts';
@@ -221,8 +221,6 @@ const capNote = (n: number, what: string) => (n >= MM_SEARCH_CAP
   ? [`（Mattermost の検索は ${MM_SEARCH_CAP} 件までしか返さないため、${what}は出ていない可能性があります。条件を絞ってください）`]
   : []);
 
-// Format characters too (zero-width, direction marks, soft hyphen), not only what trim drops: Mattermost does not split words on them, so they stay in a word and hide a ~ or @.
-const unformat = (s: string) => s.replace(/^[\s\p{Cf}]+|[\s\p{Cf}]+$/gu, '');
 // Go's unicode.IsSpace, which Mattermost's strings.Fields splits on. Not JS's \s: it adds U+FEFF and lacks U+0085.
 const SEARCH_SPACE = /[\t\n\v\f\r \u0085\u00a0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000]+/;
 const SEARCH_FLAGS = ['from', 'channel', 'in', 'before', 'after', 'on', 'ext'];
@@ -286,8 +284,8 @@ async function filterChannelIds(mm: Mm, userId: string, spec: string, written: s
   }
 }
 
-// Not higher: with 10 teams the worst case (1 + flags × (teams + 2) GETs) already takes 241 of the 300 requests a user may send per minute,
-// before anything else the user sends in that minute.
+// Not higher: with 10 teams the worst case (1 + flags × (teams + 1) GETs, 221) with the search and the 3 calls for its output take 225 of the 300
+// requests a user may send per minute, before anything else the user sends in that minute.
 const MAX_CHANNEL_FILTERS = 20;
 
 // Rewritten here rather than left to Mattermost: a search across all teams looks channel names up without a team and matches nothing,
@@ -300,7 +298,7 @@ export async function resolveInFilters(mm: Mm, userId: string, terms: string): P
   const notes: string[] = [];
   const out = words.map((w) => [w]);
   const written = (f: (typeof filters)[number]) => words.slice(f.at, f.at + f.span).join(' ');
-  // Not left to resolveChannel, which only trims: a format character in front would hide a leading ~ or @ from the checks below.
+  // Not left to resolveChannel, which removes them too: the checks for ~ and @ below run before it.
   const specOf = (f: (typeof filters)[number]) => unformat(unformat(f.value).replace(/^~+/, ''));
   for (const f of filters) {
     // Not stopping at a word of format characters only: Mattermost keeps it as a word, and it would hide the comma after it.
