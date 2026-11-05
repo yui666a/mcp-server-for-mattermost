@@ -441,10 +441,20 @@ export function registerReadTools(server: McpServer, ctx: ToolContext): void {
   }
 
   // Not the channel's own team for the permalink of a DM or group DM: they have none, so the user's first team.
-  async function places(mm: Mm, archived = true): Promise<(channelId: string) => { where: string; team: string }> {
+  async function places(mm: Mm, ids: string[], archived: boolean): Promise<(channelId: string) => { where: string; team: string }> {
     // Not the default listing unless archived is false: it leaves out archived channels the user is still in, where saved posts can sit.
     const listed = await mm.call<(MmChannel & { delete_at?: number })[]>(uid, 'GET', archived ? '/users/me/channels?include_deleted=true' : '/users/me/channels');
     const channels = new Map(listed.map((x) => [x.id, x]));
+    // Looked up one by one only for channels the listing lacks (archived after the search, say): not always listing archived channels,
+    // and not falling back to the first team, which would give a permalink of another team to a user in several.
+    for (const id of new Set(ids)) {
+      if (channels.has(id)) continue;
+      const ch = await mm.call<MmChannel & { delete_at?: number }>(uid, 'GET', `/channels/${id}`).catch((e) => {
+        if (e instanceof MmError && (e.status === 403 || e.status === 404)) return undefined;
+        throw e;
+      });
+      if (ch) channels.set(id, ch);
+    }
     const teams = await myTeams(mm, uid);
     const teamName = new Map(teams.map((t) => [t.id, t.name]));
     return (channelId) => {
@@ -456,10 +466,9 @@ export function registerReadTools(server: McpServer, ctx: ToolContext): void {
       return { where, team: team ?? teams[0]?.name ?? '' };
     };
   }
-
   async function withChannels(mm: Mm, shown: MmPost[], archived = false): Promise<string[]> {
     // Not always listing archived channels: the post searches leave their posts out, and a user can be in many of them.
-    const placeOf = await places(mm, archived);
+    const placeOf = await places(mm, shown.map((p) => p.channel_id), archived);
     const users = await usernames(mm, uid, shown);
     return shown.map((p) => {
       const { where, team } = placeOf(p.channel_id);
@@ -573,7 +582,7 @@ export function registerReadTools(server: McpServer, ctx: ToolContext): void {
       const shown = all.slice(page * per, (page + 1) * per);
       const lines = [`ファイルの検索: ${terms}`];
       if (shown.length) {
-        const placeOf = await places(mm);
+        const placeOf = await places(mm, shown.map((f) => f.channel_id), false);
         // Not looking up the uploader of a channel bookmark file: its user_id is the fixed string "bookmark".
         const ids = [...new Set(shown.filter((f) => f.post_id).map((f) => f.user_id))];
         const users = ids.length ? new Map((await mm.call<UserRef[]>(uid, 'POST', '/users/ids', ids)).map((u) => [u.id, u.username])) : new Map<string, string>();
