@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto';
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
+import { BODY_CUT_NOTE } from '../../src/mcp/format.ts';
 import { MAX_OPEN_UPLOAD_URLS, type Store } from '../../src/store.ts';
 import { makeApp } from './helpers.ts';
 
@@ -290,10 +291,14 @@ describe('edit_message and delete_message', () => {
       for (const s of ['2 文字字下げ', '4000 文字を超える本文は切って出す', '字下げを外し', '出力を元に書き換えない']) expect(d).toContain(s);
     });
 
-    test('the message argument says to reread the post with get_post, drop the 2-space indent, and not rewrite a cut post from the output', async () => {
+    test('the message argument says to reread the post with get_post, drop the 2-space indent, expect line breaks to become LF, and leave a cut post to the Mattermost screen', async () => {
       const t = (await setup().tools()).find((x) => x.name === 'edit_message')! as unknown as { description: string; inputSchema: { properties: { message: { description: string } } } };
       const d = t.inputSchema.properties.message.description;
-      for (const s of ['先に get_post で読み直す', '2 文字字下げ', '先頭の 2 文字の空白を外す', '本文を 4000 文字で切りました', '出力を元に書き換えない']) expect(d).toContain(s);
+      for (const s of ['先に get_post で読み直す', '2 文字字下げ', '先頭の 2 文字の空白を外す', '出力を元に書き換えない']) expect(d).toContain(s);
+      // Not a literal: a changed limit or note would otherwise leave this guidance quoting a note get_post no longer writes.
+      expect(d).toContain(`「${BODY_CUT_NOTE}」`);
+      expect(d).toContain('LF になり');
+      expect(d).toContain('Mattermost の画面で編集するよう利用者に伝える');
       expect(t.description).toBe('本人の投稿の本文を書き換える。他人、webhook、Bot の投稿とシステムメッセージは扱わない。元の本文は上書きされる。編集で足したメンションは通知されない');
     });
 
@@ -551,6 +556,7 @@ describe('save_draft', () => {
       expect(r.text).toContain('a'.repeat(200));
       expect(r.text).not.toContain('B');
       expect(r.text).toContain('overwrite');
+      expect(r.text).toContain('添付ファイル、優先度、burn-on-read も失われます');
       expect(writes()).toEqual([]);
     });
 
@@ -665,15 +671,14 @@ describe('save_draft', () => {
     });
   });
 
-  test('is marked destructive and idempotent, says that sending the same text with send_message clears the draft, and overwrite warns that attachments and priority are lost too', async () => {
+  test('is marked destructive and idempotent, says that sending the same text with send_message clears the draft, and overwrite warns that attachments, priority and burn-on-read are lost too', async () => {
     const list = await setup().tools() as unknown as { name: string; description: string; annotations: object; inputSchema: { properties: Record<string, { description?: string }> } }[];
     const t = list.find((x) => x.name === 'save_draft')!;
     expect(t.annotations).toMatchObject({ readOnlyHint: false, destructiveHint: true, idempotentHint: true });
     expect(t.description).toContain('この下書きと同じ本文を send_message で送ると、投稿の後に下書きを消す');
     expect(t.description).toContain('添付の付いた下書きは消さない');
     const d = t.inputSchema.properties.overwrite.description!;
-    expect(d).toContain('添付');
-    expect(d).toContain('優先度');
+    expect(d).toContain('添付ファイル、優先度、burn-on-read（読まれた後に消える設定）も失われ');
   });
 });
 
@@ -810,7 +815,8 @@ describe('send_message with files', () => {
     const t = (await setup().tools()).find((x) => x.name === 'prepare_upload')!;
     expect(t.description).toContain('curl を実行する前に、送るファイルのパスと投稿先を利用者に示して確認を取ること');
     expect(t.description).toContain('save_draft で本文を下書きにし、ファイルは Mattermost の画面から添付するよう案内する');
-    expect(t.description).toContain('パスの分からないファイル（Claude Code に貼り付けた画像など）は利用者にパスを聞き、無ければ下の save_draft の案内に従う');
+    expect(t.description).toContain('パスの分からないファイル（Claude Code に貼り付けた画像など）は利用者にパスを聞き、無ければ末尾の案内に従う');
+    expect(t.description).toContain('PC でコマンドを実行できないクライアント（claude.ai など）とパスの無いファイルでは、save_draft');
   });
 
   test('file_ids of send_message takes files uploaded to the same channel within 24 hours', async () => {
@@ -948,6 +954,82 @@ describe('a DM not opened yet', () => {
     expect(hits.indexOf(list)).toBeLessThan(hits.indexOf(CREATE));
     expect(hits.lastIndexOf(list)).toBeGreaterThan(hits.indexOf(CREATE));
     expect(hits.lastIndexOf(list)).toBeLessThan(hits.indexOf('POST /drafts'));
+  });
+
+  describe('send_message with files to a DM it may create', () => {
+    const CONFIG = 'GET /config/client';
+    const file = (bytes: number) => ({ name: 'a.txt', content_text: 'a'.repeat(bytes) });
+    const serveWith = (config: Route) => {
+      serve();
+      routes[CONFIG] = config;
+      routes['POST /files'] = () => ({ file_infos: [{ id: FILE }] });
+      routes['POST /posts'] = () => ({ id: POST, channel_id: NEW_DM, root_id: '', user_id: 'u1', message: 'hi', create_at: 1, file_ids: [FILE] });
+    };
+
+    test.each([
+      ['@carol', CREATE],
+      ['  @carol ', CREATE],
+      ['@carol,dave', 'POST /channels/group'],
+    ])('to %j on a server with attachments off is refused before resolving, so no DM is created', async (channel, create) => {
+      serveWith(() => ({ EnableFileAttachments: 'false', MaxFileSize: '100' }));
+      const r = await setup().call('send_message', { channel, message: 'hi', files: [file(1)] });
+      expect(r.isError).toBe(true);
+      expect(r.text).toBe('このサーバーではファイルの添付が無効です。');
+      expect(hits).toEqual([CONFIG]);
+      expect(hits).not.toContain(create);
+    });
+
+    test.each([
+      [4, true],
+      [3, false],
+    ])('a file of %i bytes against MaxFileSize 3, refused before the DM is created: %s', async (bytes, refused) => {
+      serveWith(() => ({ EnableFileAttachments: 'true', MaxFileSize: '3' }));
+      const r = await setup().call('send_message', { channel: '@carol', message: 'hi', files: [{ name: 'small.txt', content_text: 'a' }, { name: 'b.txt', content_text: 'b'.repeat(bytes) }] });
+      if (refused) {
+        expect(r.text).toBe('ファイル「b.txt」は大きすぎるため添付できません。');
+        expect(hits).not.toContain(CREATE);
+      } else {
+        expect(r.text).toContain('投稿しました。');
+        expect(hits).toContain(CREATE);
+      }
+    });
+
+    test.each([
+      ['missing', {}],
+      ['empty', { MaxFileSize: '' }],
+      ['not a whole number', { MaxFileSize: '1e3' }],
+    ])('a MaxFileSize that is %s skips the size check, and the DM is created as before', async (_, config) => {
+      serveWith(() => config);
+      const r = await setup().call('send_message', { channel: '@carol', message: 'hi', files: [file(10)] });
+      expect(r.text).toContain('投稿しました。');
+      expect(hits).toContain(CREATE);
+    });
+
+    test('a failure to read the client config fails the send without creating the DM', async () => {
+      serveWith(mmError(500, 'app.config.get.app_error'));
+      const r = await setup().call('send_message', { channel: '@carol', message: 'hi', files: [file(1)] });
+      expect(r.isError).toBe(true);
+      expect(r.text).toContain('Mattermost に一時的に接続できません');
+      expect(hits).toEqual([CONFIG]);
+    });
+
+    test('to a channel given by its channel_id, which never creates a DM, the client config is not read', async () => {
+      serveWith(() => ({ EnableFileAttachments: 'false' }));
+      routes[`GET /channels/${NEW_DM}`] = () => ({ id: NEW_DM, name: `${CAROL}__u1`, display_name: '', team_id: '', type: 'D' });
+      await setup().call('send_message', { channel: NEW_DM, message: 'hi', files: [file(1)] });
+      expect(hits).not.toContain(CONFIG);
+    });
+
+    test.each([
+      ['root_id', { root_id: ROOT }],
+      ['file_ids', { file_ids: [FILE] }],
+    ])('with %s, which never creates the DM, the client config is not read', async (_, extra) => {
+      serveWith(() => ({ EnableFileAttachments: 'false' }));
+      const r = await setup().call('send_message', { channel: '@carol', message: 'hi', files: [file(1)], ...extra });
+      expect(r.isError).toBe(true);
+      expect(hits).not.toContain(CONFIG);
+      expect(hits).not.toContain(CREATE);
+    });
   });
 
   test('send_message with files it cannot read does not create the DM', async () => {

@@ -2,7 +2,7 @@ import type { McpServer, ToolCallback } from '@modelcontextprotocol/sdk/server/m
 import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
 import { z } from 'zod';
 import { MmError, UpstreamUnavailable, type MmClient } from '../mattermost/client.ts';
-import { BAD_CURSOR, decodeCursor, encodeCursor, fileLine, formatPost, formatTime, graphemeCount, InputError, localTime, postTruncated, postUserIds, truncate, type MmFileInfo, type MmPost } from './format.ts';
+import { BAD_CURSOR, BODY_CUT_NOTE, BODY_MAX_CHARS, decodeCursor, encodeCursor, fileLine, formatPost, formatTime, graphemeCount, InputError, localTime, postTruncated, postUserIds, truncate, type MmFileInfo, type MmPost } from './format.ts';
 import { pageCursor, paginate } from './paging.ts';
 import { mentionsMe, mentionTerms, type MentionUser } from './mentions.ts';
 import { parsePostRef } from './permalink.ts';
@@ -159,7 +159,7 @@ export function render({ lines, next, posts = [], notes = [] }: Page): string {
   return [
     ...lines,
     ...notes,
-    ...(posts.some(postTruncated) ? ['（本文かメッセージ添付を 4000 文字で切った投稿があります）'] : []),
+    ...(posts.some(postTruncated) ? [`（本文かメッセージ添付を ${BODY_MAX_CHARS} 文字で切った投稿があります）`] : []),
     next ? `next_cursor: ${encodeCursor(next)}` : '（続きはありません）',
   ].join('\n');
 }
@@ -239,13 +239,13 @@ function channelFilters(words: string[]): { at: number; span: number; value: str
   return found;
 }
 
-async function filterChannelIds(mm: Mm, userId: string, spec: string, exclude: boolean, notes: string[]): Promise<string[]> {
+async function filterChannelIds(mm: Mm, userId: string, spec: string, written: string, exclude: boolean, notes: string[]): Promise<string[]> {
   try {
     return [(await resolveChannel(mm, userId, spec)).id];
   } catch (e) {
     if (e instanceof Ambiguous) {
       const ids = [...new Set(e.candidates.map((c) => c.id))];
-      if (ids.length > 1 && !exclude) notes.push(`in:${spec} は複数のチームにあるため、すべてで探しました（${e.candidates.map((c) => c.team).join('、')}）。`);
+      if (ids.length > 1 && !exclude) notes.push(`${written} は複数のチームにあるため、すべてで探しました（${e.candidates.map((c) => c.team).join('、')}）。`);
       return ids;
     }
     // No DM means no posts to exclude, so the condition is dropped rather than failing the search.
@@ -268,12 +268,15 @@ export async function resolveInFilters(mm: Mm, userId: string, terms: string): P
   if (filters.length > MAX_CHANNEL_FILTERS) throw new InputError(`in: と channel: は 1 回の検索で ${MAX_CHANNEL_FILTERS} 個まで指定できます。`);
   const notes: string[] = [];
   const out = words.map((w) => [w]);
+  const written = (f: (typeof filters)[number]) => words.slice(f.at, f.at + f.span).join(' ');
+  // Trimmed here, not only in resolveChannel: a U+FEFF in front would otherwise hide a leading ~ or @ from the checks below.
+  const specOf = (f: (typeof filters)[number]) => f.value.trim().replace(/^~+/, '');
   for (const f of filters) {
     const next = words[f.at + f.span];
     // Not treating every 、 as a comma: 、 also starts search words such as 、議事録.
-    if (f.value.replace(/^~+/, '').startsWith('@') && /^[,，]|^、[A-Za-z0-9._,@、，-]*$/.test(next ?? '')) {
+    if (specOf(f).startsWith('@') && /^[,，]|^、[A-Za-z0-9._,@、，-]*$/.test(next ?? '')) {
       const fullWidth = /^[、，]/.test(next ?? '') ? '区切りは半角のカンマ（,）で書いてください。' : '';
-      throw new InputError(`in:${f.value} の後の「${next}」: 検索の in: では @a,b のようにカンマの前後に空白を入れずに書いてください。${fullWidth}`);
+      throw new InputError(`${written(f)} の後の「${next}」: 検索の条件では @a,b のようにカンマの前後に空白を入れずに書いてください。${fullWidth}`);
     }
   }
   // Kept for this search only, not across searches: a channel created or joined in between would stay unseen.
@@ -288,8 +291,8 @@ export async function resolveInFilters(mm: Mm, userId: string, terms: string): P
   };
   // Sequential rather than Promise.all: parallel lookups would exceed the per-user concurrency limit.
   for (const f of filters) {
-    const spec = f.value.replace(/^~+/, '');
-    const ids = await filterChannelIds(cached, userId, spec, f.exclude, notes);
+    const spec = specOf(f);
+    const ids = await filterChannelIds(cached, userId, spec, written(f), f.exclude, notes);
     out.splice(f.at, f.span, ids.map((id) => `${f.exclude ? '-' : ''}in:${id}`), ...(f.span === 2 ? [[]] : []));
   }
   const rewritten = out.flat().join(' ');
@@ -418,20 +421,30 @@ export function registerReadTools(server: McpServer, ctx: ToolContext): void {
       }) as unknown as ToolCallback<S>);
   }
 
-  async function withChannels(mm: Mm, shown: MmPost[], archived = false): Promise<string[]> {
-    // Not always listing archived channels: the searches leave their posts out, and a user can be in many of them.
+  // Not the channel's own team for the permalink of a DM or group DM: they have none, so the user's first team.
+  async function places(mm: Mm, archived = true): Promise<(channelId: string) => { where: string; team: string }> {
+    // Not the default listing: it leaves out archived channels the user is still in, where saved posts and files can sit.
     const listed = await mm.call<(MmChannel & { delete_at?: number })[]>(uid, 'GET', archived ? '/users/me/channels?include_deleted=true' : '/users/me/channels');
     const channels = new Map(listed.map((x) => [x.id, x]));
     const teams = await myTeams(mm, uid);
     const teamName = new Map(teams.map((t) => [t.id, t.name]));
-    const users = await usernames(mm, uid, shown);
-    return shown.map((p) => {
-      const ch = channels.get(p.channel_id);
+    return (channelId) => {
+      const ch = channels.get(channelId);
       const team = ch?.team_id ? teamName.get(ch.team_id) : undefined;
       const where = ch
         ? channelLines({ id: ch.id, name: ch.name, displayName: (ch.display_name || ch.name) + (ch.delete_at ? '（アーカイブ済み）' : ''), teamId: ch.team_id, teamName: team ?? '' }).join(' | ')
-        : `channel_id: ${p.channel_id}`;
-      return formatPost(p, { baseUrl: base, teamName: team ?? teams[0]?.name ?? '', usernames: users, channel: where });
+        : `channel_id: ${channelId}`;
+      return { where, team: team ?? teams[0]?.name ?? '' };
+    };
+  }
+
+  async function withChannels(mm: Mm, shown: MmPost[], archived = false): Promise<string[]> {
+    // Not always listing archived channels: the post searches leave their posts out, and a user can be in many of them.
+    const placeOf = await places(mm, archived);
+    const users = await usernames(mm, uid, shown);
+    return shown.map((p) => {
+      const { where, team } = placeOf(p.channel_id);
+      return formatPost(p, { baseUrl: base, teamName: team, usernames: users, channel: where });
     });
   }
 
@@ -454,20 +467,33 @@ export function registerReadTools(server: McpServer, ctx: ToolContext): void {
   tool('list_saved_posts', '自分が保存した（フラグを付けた）投稿を新しい順に一覧する。参加しているチャンネルの投稿だけが対象で、アーカイブ済みのチャンネルの投稿も含む（チャンネル名に「アーカイブ済み」と付ける）',
     { limit: limitArg(20, 50), cursor: cursorArg },
     async ({ limit, cursor }, mm) => {
-      const c = cursorOf(z.object({ create_at: z.number().int(), id: z.string(), per_page: perPage(50) }).strict(), cursor);
+      const c = cursorOf(z.object({ create_at: z.number().int(), id: z.string(), per_page: perPage(50), at: z.number().int().min(0).optional() }).strict(), cursor);
       const per = c?.per_page ?? limit ?? 20;
       const older = (p: MmPost) => !c || p.create_at < c.create_at || (p.create_at === c.create_at && p.id > c.id);
       const found = new Map<string, MmPost>();
+      const row = new Map<string, number>();
       let rest: MmPost[] = [];
       let capped = false;
-      // Not putting Mattermost's offset in the cursor: saving or unsaving between pages would shift it.
       // Not reading 200 rows from the start: the first page is the common call, and Mattermost adds metadata to every row it returns.
       let at = 0;
       let size = Math.min(SAVED_PAGE, per + SAVED_OVERLAP + 1);
+      // Not sending a page number: Mattermost uses page as the row offset.
+      const read = async (from: number, n: number) => {
+        const r = await mm.call<PostList>(uid, 'GET', `/users/${uid}/posts/flagged?page=${from}&per_page=${n}`);
+        return r.order.map((id) => r.posts[id]).filter(Boolean);
+      };
+      // Not trusting the cursor's row: saving or unsaving between pages shifts it, and Mattermost drops and reorders posts after counting.
+      // The read is kept only when a post in it is strictly newer than the cursor; the rows before it are then newer still, as Mattermost orders by create_at.
+      let ahead: MmPost[] | undefined;
+      const start = (c?.at ?? 0) - SAVED_OVERLAP;
+      if (c && start > 0 && start < SAVED_SCAN - SAVED_OVERLAP) {
+        const n = Math.min(SAVED_PAGE, per + 2 * SAVED_OVERLAP + 1, SAVED_SCAN - start);
+        const got = await read(start, n);
+        if (got.some((p) => p.create_at > c.create_at)) [ahead, at, size] = [got, start, n];
+      }
       for (;;) {
-        // Not sending a page number: Mattermost uses page as the row offset.
-        const r = await mm.call<PostList>(uid, 'GET', `/users/${uid}/posts/flagged?page=${at}&per_page=${size}`);
-        const got = r.order.map((id) => r.posts[id]).filter(Boolean);
+        const got = ahead ?? await read(at, size);
+        ahead = undefined;
         // Not stopping at a short page: Mattermost drops posts the user may not read after counting the page.
         // Not taking an empty first read as the end: the first read is small, and all of its rows may be ones the user may not read.
         if (!got.length && at === 0 && size < SAVED_PAGE) {
@@ -475,7 +501,10 @@ export function registerReadTools(server: McpServer, ctx: ToolContext): void {
           continue;
         }
         if (!got.length) break;
-        for (const p of got) found.set(p.id, p);
+        got.forEach((p, i) => {
+          found.set(p.id, p);
+          row.set(p.id, at + i);
+        });
         rest = [...found.values()].filter(older).sort(newestFirst);
         if (rest.length > per && Math.min(...got.map((p) => p.create_at)) < rest[per - 1].create_at) break;
         // Not starting where the last read ended: Mattermost orders only by create_at, so posts of the same time can swap places between reads and one at the boundary would come in neither.
@@ -487,12 +516,14 @@ export function registerReadTools(server: McpServer, ctx: ToolContext): void {
         }
         size = Math.min(SAVED_PAGE, SAVED_SCAN - at);
       }
+      // Not more than SAVED_OVERLAP rows past the limit: if all of them are posts the user may not read, the note is left out, which takes that many in a row.
+      if (capped) capped = (await read(SAVED_SCAN, SAVED_OVERLAP)).length > 0;
       const shown = rest.slice(0, per);
       const last = shown.at(-1);
       // Archived channels too: a saved post can sit in one the user is still in.
       const lines = ['保存した投稿（新しい順）', ...(shown.length ? await withChannels(mm, shown, true) : c ? [] : ['保存した投稿はありません。'])];
       const notes = capped ? [`（保存した投稿のうち新しい ${SAVED_SCAN} 件だけを見ています）`] : [];
-      return render({ lines, posts: shown, notes, next: rest.length > per && last ? { create_at: last.create_at, id: last.id, per_page: per } : undefined });
+      return render({ lines, posts: shown, notes, next: rest.length > per && last ? { create_at: last.create_at, id: last.id, per_page: per, at: row.get(last.id) } : undefined });
     });
 
   tool('search_files', 'ファイルを名前で探す（サーバーが中身を抽出していれば中身にも当たる）。参加しているチャンネル、DM、グループ DM のファイルが対象で、参加していない公開チャンネルとアーカイブ済みのチャンネルのファイルは出ない。Mattermost の検索構文（from:、in:、ext:、before:、after:、on: など）を使え、日付は日本時間（JST）で解釈する。in: にはチャンネル ID、「チーム名/チャンネル名」、チャンネル名、@ユーザー名（DM）、@a,b（グループ DM。カンマの前後に空白を入れない）を渡せる。同じ名前が複数のチームにあれば、すべてで探す。見つからなければエラー（見る権限の無い非公開チャンネルも見つからない扱い）。DM は作らない。名前は語の単位で当たり、日本語の名前は名前全体か先頭からの前方一致（例: 2026年10月*）でしか当たらない。新しい順。file_id は get_file に、post_id は get_post に渡せる',
@@ -523,21 +554,18 @@ export function registerReadTools(server: McpServer, ctx: ToolContext): void {
       const shown = all.slice(page * per, (page + 1) * per);
       const lines = [`ファイルの検索: ${terms}`];
       if (shown.length) {
-        const channels = new Map((await mm.call<MmChannel[]>(uid, 'GET', '/users/me/channels')).map((x) => [x.id, x]));
-        const teams = await myTeams(mm, uid);
-        const teamName = new Map(teams.map((t) => [t.id, t.name]));
+        const placeOf = await places(mm);
         // Not looking up the uploader of a channel bookmark file: its user_id is the fixed string "bookmark".
         const ids = [...new Set(shown.filter((f) => f.post_id).map((f) => f.user_id))];
         const users = ids.length ? new Map((await mm.call<UserRef[]>(uid, 'POST', '/users/ids', ids)).map((u) => [u.id, u.username])) : new Map<string, string>();
         for (const f of shown) {
-          const ch = channels.get(f.channel_id);
-          const team = ch?.team_id ? teamName.get(ch.team_id) : undefined;
+          const { where, team } = placeOf(f.channel_id);
           const who = users.get(f.user_id);
           lines.push(
             `--- ${fileLine(f)}`,
             `${f.post_id ? (who ? `@${who}` : `user_id: ${f.user_id}`) : 'チャンネルのブックマークのファイル（投稿なし）'} | ${formatTime(f.create_at)}`,
-            ch ? channelLines({ id: ch.id, name: ch.name, displayName: ch.display_name, teamId: ch.team_id, teamName: team ?? '' }).join(' | ') : `channel_id: ${f.channel_id}`,
-            ...(f.post_id ? [`post_id: ${f.post_id}`, `${base}/${team ?? teams[0]?.name ?? ''}/pl/${f.post_id}`] : []),
+            where,
+            ...(f.post_id ? [`post_id: ${f.post_id}`, `${base}/${team}/pl/${f.post_id}`] : []),
           );
         }
       } else lines.push('一致するファイルはありません。');
@@ -582,7 +610,7 @@ export function registerReadTools(server: McpServer, ctx: ToolContext): void {
         r.order.map((id) => r.posts[id]).filter(Boolean).sort(oldestFirst),
         (last) => ({ channel_id: ch.id, after: last.id, per_page: per, crt }),
         c ? '投稿はありません。' : '未読はありません。',
-        `${sinceAgain}）`,
+        `${sinceAgain}。同じミリ秒の投稿が多いときは、limit を大きくして読み直すと抜けにくくなります）`,
       );
       if (range) {
         if (rc && rc.channel_id !== ch.id) throw new InputError(BAD_CURSOR);
@@ -593,10 +621,10 @@ export function registerReadTools(server: McpServer, ctx: ToolContext): void {
         };
         const forward = async (after: string | undefined, got: MmPost[]) => {
           for (let at = after; at && got.length <= per;) {
-            // Not taking per+1 as for a page shown: the posts of the last millisecond are left to the next fetch, which would then always be needed.
-            const page = (await posts({ after: at, per_page: String(per + 2) })).sort(oldestFirst);
-            const done = page.length <= per + 1 || page.some((p) => range.until !== undefined && p.create_at >= range.until);
-            const n = done ? page.length : tieStart(page) || page.length;
+            const page = (await posts({ after: at, per_page: String(per + 1) })).sort(oldestFirst);
+            const done = page.length <= per || page.some((p) => range.until !== undefined && p.create_at >= range.until);
+            // Not leaving the last millisecond to the next fetch when the page fills the result: renderPage moves it to the next page, and leaving it always would cost a second fetch.
+            const n = done || got.length + page.filter(inRange).length > per ? page.length : tieStart(page) || page.length;
             got.push(...page.slice(0, n).filter(inRange));
             if (done) break;
             at = page[n - 1].id;
@@ -639,7 +667,7 @@ export function registerReadTools(server: McpServer, ctx: ToolContext): void {
           all,
           (last) => ({ channel_id: ch.id, after: last.id, since: range.since, until: range.until, per_page: per }),
           'この範囲に投稿はありません。',
-          `${sinceAgain}${range.until === undefined ? '' : '。until は前と同じ値を渡してください'}）`,
+          `${sinceAgain}${range.until === undefined ? '' : '。until は前と同じ値を渡してください'}。同じミリ秒の投稿が多いときは、limit を大きくして読み直すと抜けにくくなります）`,
         );
       }
       let head: string[] = [];
@@ -671,7 +699,7 @@ export function registerReadTools(server: McpServer, ctx: ToolContext): void {
       // Paging with before=<post_id> rather than page numbers: new posts arriving between calls would shift pages.
       const q = new URLSearchParams({ per_page: String(per + 1), ...(c && 'before' in c ? { before: c.before } : {}), skipFetchThreads: 'true' });
       const r = await mm.call<PostList>(uid, 'GET', `/channels/${ch.id}/posts?${q}`);
-      return renderPage(head, r.order.map((id) => r.posts[id]).filter(Boolean), (last) => ({ before: last.id, per_page: per }), '投稿はありません。', 'cursor を渡さずに呼ぶと、最新から読み直せます）');
+      return renderPage(head, r.order.map((id) => r.posts[id]).filter(Boolean), (last) => ({ before: last.id, per_page: per }), '投稿はありません。', 'cursor を渡さずに呼ぶと、最新から読み直せます。同じミリ秒の投稿が多いときは、limit を大きくして読み直すと抜けにくくなります）');
     });
 
   tool('read_thread', 'スレッドの親投稿と返信を古い順に読む。post_id はスレッド内のどの投稿でもよい。親投稿は最初のページにだけ含める',
@@ -699,7 +727,7 @@ export function registerReadTools(server: McpServer, ctx: ToolContext): void {
       });
     });
 
-  tool('get_post', '1 件の投稿を読む。post は post_id か、パーマリンクの URL（…/<チーム名>/pl/<post_id>）。本文は各行を 2 文字字下げし、4000 文字を超える本文は切って出す（edit_message で書き換えるときは字下げを外し、切った投稿は出力を元に書き換えない）',
+  tool('get_post', `1 件の投稿を読む。post は post_id か、パーマリンクの URL（…/<チーム名>/pl/<post_id>）。本文は各行を 2 文字字下げし、${BODY_MAX_CHARS} 文字を超える本文は切って出す（edit_message で書き換えるときは字下げを外し、切った投稿は出力を元に書き換えない）`,
     { post: z.string().min(1) },
     async ({ post }, mm) => {
       const id = parsePostRef(post, base);
@@ -720,7 +748,7 @@ export function registerReadTools(server: McpServer, ctx: ToolContext): void {
         ...(p.root_id ? [`スレッド内の返信です。親 post_id: ${p.root_id}。read_thread でスレッド全体を読めます。`]
           : replies ? [`返信があります。read_thread に post_id: ${p.id} を渡すと、スレッド全体を読めます。`] : []),
         // Not noting cut message attachments again: formatPost already says where it cut them.
-        ...(truncate(p.message).truncated ? ['（本文を 4000 文字で切りました）'] : []),
+        ...(truncate(p.message).truncated ? [`（${BODY_CUT_NOTE}）`] : []),
       ].join('\n');
     });
 

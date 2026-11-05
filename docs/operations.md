@@ -60,9 +60,10 @@ docker compose logs --no-log-prefix mcp | grep '"event":"tool_call"'
 
 | `event` | 内容 |
 |---|---|
-| `tool_call` | ツールの呼び出し。`mm_user_id`、`tool`、`outcome`（`ok`、`tool_error`、`input_error`、`reauthorize`、`rate_limited`、`upstream_unavailable`、`mm_error`、`error`）、`ms` |
+| `tool_call` | ツールの呼び出し。`mm_user_id`、`tool`、`outcome`（`ok`、`tool_error`、`input_error`、`invalid_args`（ツールを呼ぶ前に MCP SDK が、inputSchema に合わない引数を断った。受けない引数、型・形式・長さ・範囲の誤り、必須の欠け。`input_error` は、スキーマには合うがツールが処理の中で断ったもの）、`reauthorize`、`rate_limited`、`upstream_unavailable`、`mm_error`、`error`）、`ms` |
 | `scheduled_post` | 予約の投稿の結果。`mm_user_id`、`outcome` |
 | `upload` | `prepare_upload` の URL へのアップロード。`mm_user_id`、`outcome`（`ok`、`too_large`、`client_gone`（本文の途中で接続が切れた）、`stalled`（本文を待つ間に 15 秒データが来なかった）、`InputError`、`MmError`、`RateLimited`、`UpstreamUnavailable` など）、`files`（Mattermost へ送れた件数）、`bytes`（受け取ったファイルの合計）、`ms`。URL が無効なときと、同時に処理できる件数を超えたときは出ない |
+| `draft_cleanup_failed` | `send_message` の投稿の後の、同じ本文の下書きの確認か削除の失敗。投稿は成功している。`mm_user_id`、`channel_id`、`name`（エラーの名前）、Mattermost のエラーなら `status` と `id`。`skipped` が `delete` なら、打ち切りまでの残りが短いため削除を送っておらず、下書きは残っている。`skipped` が無いときは、順番待ち、確認、削除のどこかで失敗したか打ち切られたので、消えたかは下書きの一覧で確かめる。サーバーで下書きの同期が無効なときと、クライアントが要求を取り消したときは出ない |
 | `token_issued`、`token_refreshed` | MCP のトークンの発行とリフレッシュ。`client_id`、`mm_user_id` |
 | `token_reuse_detected` | 使用済みの認可コードかリフレッシュトークンが再び提示され、その grant を失効させた。`client_id`。そのクライアントは再ログインになる。同じクライアントで繰り返すなら、トークンの漏えいか、クライアントが同じリフレッシュトークンを並行して送っていることを疑う |
 | `mm_refresh_config_error` | Mattermost が、再ログインで直るもの以外の 4xx でリフレッシュを断った。`status`、`id`。`model.oauth.validate_grant.credentials.app_error`（401）なら `MM_OAUTH_CLIENT_SECRET` が OAuth アプリと合っていない（シークレットを作り直した場合など）。ツールは一時的なエラーを返し続ける |
