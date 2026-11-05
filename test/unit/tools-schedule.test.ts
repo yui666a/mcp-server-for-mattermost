@@ -1,6 +1,8 @@
 import type { DatabaseSync } from 'node:sqlite';
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 import { MAX_PENDING_SCHEDULED } from '../../src/store.ts';
+import { CallAborted, UpstreamUnavailable } from '../../src/mattermost/client.ts';
+import { listScheduledMessages } from '../../src/mcp/tools-schedule.ts';
 import { makeApp } from './helpers.ts';
 
 type Route = (req: Request) => unknown;
@@ -834,5 +836,55 @@ describe('arguments a tool does not take', () => {
     const body = await s.rpc('tools/call', { name: 'list_scheduled_messages', arguments: {}, _meta: { progressToken: 1 } });
     expect(body.result.isError ?? false).toBe(false);
     expect(body.result.content[0].text).toContain('予約はありません');
+  });
+});
+
+describe('list_scheduled_messages when the caller aborts', () => {
+  const FIRST = 'a'.repeat(26);
+  const DM = 'd'.repeat(26);
+  const LAST = 'z'.repeat(26);
+  const PARTNER = 'p'.repeat(26);
+  const channel = (id: string) => (id === DM
+    ? { id: DM, name: `${PARTNER}__${UID}`, display_name: '', team_id: '', type: 'D' }
+    : { id, name: `n${id.slice(1)}`, display_name: 'Town', team_id: TEAM, type: 'O' });
+  const rows = (s: ReturnType<typeof setup>) => {
+    const posted = s.store.createScheduled({ mmUserId: UID, channelId: FIRST, message: 'posted', scheduledAt: NOW + DAY }, NOW)!;
+    s.setRow(posted, "status = 'posted', post_id = ?", 'q'.repeat(26));
+    s.store.createScheduled({ mmUserId: UID, channelId: DM, message: 'dm', scheduledAt: NOW + 2 * DAY }, NOW);
+    s.store.createScheduled({ mmUserId: UID, channelId: LAST, message: 'last', scheduledAt: NOW + 3 * DAY }, NOW);
+  };
+  const failingAt = (fails: (p: string) => boolean, error: () => Error) => {
+    const asked: string[] = [];
+    const mm = { call: async <T>(_u: string, _m: string, p: string): Promise<T> => {
+      asked.push(p);
+      if (fails(p)) throw error();
+      if (p.startsWith('/channels/')) return channel(p.split('/')[2]) as T;
+      if (p.startsWith('/teams/')) return { id: TEAM, name: 'team-a' } as T;
+      return { id: PARTNER, username: 'carol' } as T;
+    } };
+    return { mm, asked };
+  };
+  const at = [
+    ['fetching a channel', (p: string) => p === `/channels/${FIRST}`],
+    ['naming a team', (p: string) => p === `/teams/${TEAM}`],
+    ['naming a DM', (p: string) => p === `/users/${PARTNER}`],
+  ] as const;
+
+  test.each(at)('stops at %s rather than going on to the other rows', async (_, fails) => {
+    const s = setup();
+    rows(s);
+    const { mm, asked } = failingAt(fails, () => new CallAborted('call aborted', true));
+    await expect(listScheduledMessages(mm, s.store, UID, 'https://mm.example', {})).rejects.toBeInstanceOf(CallAborted);
+    expect(asked).not.toContain(`/channels/${LAST}`);
+  });
+
+  // A 5xx rather than a 4xx: CallAborted is an UpstreamUnavailable, so a check widened to its parent would pass a 4xx and fail on this.
+  test.each(at)('still lists through the last row when Mattermost fails at %s', async (_, fails) => {
+    const s = setup();
+    rows(s);
+    const { mm } = failingAt(fails, () => new UpstreamUnavailable('Mattermost API failed: 500', true, 500));
+    const r = await listScheduledMessages(mm, s.store, UID, 'https://mm.example', {});
+    expect(r.isError).toBeFalsy();
+    expect((r.content[0] as { text: string }).text).toContain('last');
   });
 });
