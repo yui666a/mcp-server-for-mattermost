@@ -382,7 +382,7 @@ async function unreadThreads(mm: Mm, uid: string, teams: MmTeam[], keep: (channe
   const notes: string[] = [];
   for (const [i, t] of teams.entries()) {
     let before: string | undefined;
-    // Ids before keep and the largest total: total counts the same threads as the list, and deleting the starting thread or its replies only lowers it.
+    // Ids before keep and the largest total: total counts the list's threads before keep (and also ones whose root post a retention policy removed), and deletes and reads only lower it.
     const seen = new Set<string>();
     let total = 0;
     for (let n = 1; ; n++) {
@@ -397,7 +397,7 @@ async function unreadThreads(mm: Mm, uid: string, teams: MmTeam[], keep: (channe
       }
       if (got.length < THREAD_PAGE) {
         // Not trusting a short page as the end: before= compares with the starting thread's last reply, so deleting that thread or its replies in between skips or drops the rest.
-        if (seen.size < total) notes.push(`（${t.name} の未読スレッドを total_unread_threads: ${total} に対して取り切れませんでした。取得の合間にスレッドや返信が削除されたときなどに、続きを取りこぼすことがあります。呼び直すと取り直せます）`);
+        if (seen.size < total) notes.push(`（${t.name} の未読スレッドを total_unread_threads: ${total} に対して取り切れませんでした。取得の合間にスレッドが削除・更新されたときなどは、呼び直すと取り直せます。データ保持ポリシーで根の投稿が消えたスレッドは、呼び直しても取得できません）`);
         break;
       }
       if (n === THREAD_PAGES) {
