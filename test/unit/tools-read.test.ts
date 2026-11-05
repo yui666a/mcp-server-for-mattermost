@@ -307,7 +307,8 @@ describe('search_posts in: filters', () => {
       ['x in:@bob 、@carol', 'in:@bob の後の「、@carol」'],
       ['x in:@bob 、carol、dave', 'in:@bob の後の「、carol、dave」'],
       ['x in:@bob 、', 'in:@bob の後の「、」'],
-      ['x in:@bob ，議事録', 'in:@bob の後の「，議事録」'],
+      ['x in:@bob ，carol', 'in:@bob の後の「，carol」'],
+      ['x in:@bob ，', 'in:@bob の後の「，」'],
       ['x in:@bob 、carol，dave', 'in:@bob の後の「、carol，dave」'],
     ])('%j is a separator error that asks for a half-width comma', async (terms, message) => {
       routes = withGroup();
@@ -321,6 +322,17 @@ describe('search_posts in: filters', () => {
       routes = { ...withGroup(), [`GET /teams/${T1}/channels/name/${DM_NAME}`]: () => ch(DM, DM_NAME, '', 'D') };
       await setup()('search_posts', { terms: 'x in:@bob 、議事録' });
       expect(sent()).toBe(`x in:${DM} 、議事録`);
+    });
+
+    test('a search word after the DM that starts with ， is kept as a search word', async () => {
+      routes = { ...withGroup(), [`GET /teams/${T1}/channels/name/${DM_NAME}`]: () => ch(DM, DM_NAME, '', 'D') };
+      await setup()('search_posts', { terms: 'x in:@bob ，議事録' });
+      expect(sent()).toBe(`x in:${DM} ，議事録`);
+    });
+
+    test('in:@bob、 is refused for its separator', async () => {
+      routes = withGroup();
+      expect(await setup()('search_posts', { terms: 'x in:@bob、' }, true)).toContain('@a,b の区切りは半角のカンマ（,）で書いてください。');
     });
 
     test('in:@bob、carol is refused for its separator', async () => {

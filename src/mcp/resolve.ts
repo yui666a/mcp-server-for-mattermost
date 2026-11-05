@@ -85,6 +85,15 @@ export async function resolveChannel(mm: Mm, userId: string, spec: string, opts:
       // Not on a 403, which means the ID exists. Lowered rather than skipped for upper case: Mattermost IDs are lower case, so upper case points to a mistyped name.
       if (!(e instanceof ChannelFetchError && e.status === 404)) throw e;
       const lower = s.toLowerCase();
+      // Tried again in lower case before any name: Mattermost IDs are lower case, so an upper case ID is the same ID written differently,
+      // not a name used in place of an ID.
+      if (lower !== s) {
+        const c = await fetchChannel(mm, userId, `/channels/${lower}`).catch((e2) => {
+          if (e2 instanceof ChannelFetchError && e2.status === 404) return undefined;
+          throw e2;
+        });
+        if (c) return c;
+      }
       const found = await byName(mm, userId, lower, await myTeams(mm, userId));
       if (!found.length) throw e;
       // Not used in place of the ID: a user ID or post ID mistaken for a channel would send to whoever named a channel after it.
@@ -103,7 +112,9 @@ export async function resolveChannel(mm: Mm, userId: string, spec: string, opts:
     return ref(c, team);
   }
   // Only when every part could be a user name: @bob、議事録 is a missing space before a search word, not a separator.
-  if (s.startsWith('@') && /[、，]/.test(s) && s.slice(1).split(/[,、，]/).every((p) => NAME.test(p.trim().replace(/^@/, '')))) throw new InputError('@a,b の区切りは半角のカンマ（,）で書いてください。読点（、）や全角のカンマ（，）は使えません。');
+  const parts = s.slice(1).split(/[,、，]/).map((p) => p.trim().replace(/^@/, '')).filter(Boolean);
+  // Empty parts left out, so that a trailing 、 as in @bob、 is called a separator too, not a character a user name cannot have.
+  if (s.startsWith('@') && /[、，]/.test(s) && parts.length && parts.every((p) => NAME.test(p))) throw new InputError('@a,b の区切りは半角のカンマ（,）で書いてください。読点（、）や全角のカンマ（，）は使えません。');
   if (!s.startsWith('@')) plain(s, 'チャンネル名');
   const teams = await myTeams(mm, userId);
   if (s.startsWith('@') && s.includes(',')) return resolveGroup(mm, userId, s, teams, opts.create);
