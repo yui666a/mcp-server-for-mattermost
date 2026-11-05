@@ -10,7 +10,7 @@ const schema = { post_id: POST_ID.describe('投稿の post_id') };
 type Args = { post_id: string };
 
 const GONE = '投稿が見つかりません（削除されたか、存在しません）。';
-const HIDDEN = 'この投稿は見られません（参加していない非公開チャンネルの投稿など）。';
+const HIDDEN = 'この投稿は見られません（参加していない非公開チャンネルの投稿など）。参加しているはずなら、Mattermost の一時的な障害の可能性があります。少し待ってから再試行してください。';
 const PERMISSION = 'api.context.permissions.app_error';
 export const POST_WORDING: Wording = { id: [[404, 'app.post.get.app_error', GONE]], status: [[403, HIDDEN]] };
 
@@ -18,7 +18,10 @@ export const POST_WORDING: Wording = { id: [[404, 'app.post.get.app_error', GONE
 // and such a saved post never shows in list_saved_posts.
 async function readPost(mm: Mm, uid: string, postId: string, notMember: string): Promise<{ channel_id: string; is_pinned?: boolean }> {
   const post = await worded(mm.call<{ channel_id: string; is_pinned?: boolean }>(uid, 'GET', `/posts/${postId}`), POST_WORDING);
-  await worded(mm.call(uid, 'GET', `/channels/${post.channel_id}/members/me`), { status: [[403, notMember], [404, notMember]] });
+  // Not saying a 403 means not joined: Mattermost also answers 403 when its permission check fails on a transient error.
+  await worded(mm.call(uid, 'GET', `/channels/${post.channel_id}/members/me`), {
+    status: [[403, `このチャンネルに参加しているかを確かめられませんでした（参加していないか、Mattermost の一時的な障害）。${notMember}参加しているはずなら、少し待ってから再試行してください。`], [404, notMember]],
+  });
   return post;
 }
 
