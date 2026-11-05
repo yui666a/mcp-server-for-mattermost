@@ -3,7 +3,7 @@ import { sha256 } from '../../src/crypto.ts';
 import type { Store } from '../../src/store.ts';
 import type request from 'supertest';
 import { afterAll, beforeAll, describe, expect, test, vi } from 'vitest';
-import { intApp, mcpAuthorize, requireMm, mmDeauthorize, mmLoginCookie } from './helpers.ts';
+import { intApp, mcpAuthorize, requireMm, mmDeauthorize, mmLoginCookie, withUsers } from './helpers.ts';
 
 const e = await requireMm();
 
@@ -22,18 +22,6 @@ async function mmApi<T>(token: string, method: string, path: string, body?: unkn
 }
 
 // Not stopping at the first failed deactivation: every user made has to go, and the test's own failure must not be replaced by the cleanup's.
-async function withUsers(run: (made: string[]) => Promise<void>): Promise<void> {
-  const made: string[] = [];
-  let ok = false;
-  try {
-    await run(made);
-    ok = true;
-  } finally {
-    const failed = (await Promise.allSettled(made.map((id) => mmApi(e.adminToken, 'DELETE', `/users/${id}`)))).find((r) => r.status === 'rejected');
-    if (ok && failed) throw failed.reason;
-  }
-}
-
 describe('send_message against the local Mattermost', () => {
   let req: ReturnType<typeof request>;
   let access: string;

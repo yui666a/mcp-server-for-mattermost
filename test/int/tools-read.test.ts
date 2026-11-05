@@ -4,7 +4,7 @@ import type request from 'supertest';
 import { afterAll, beforeAll, describe, expect, test, vi } from 'vitest';
 import type { Limiter } from '../../src/mattermost/limiter.ts';
 import { LAG_MS } from '../../src/mcp/paging.ts';
-import { intApp, mcpAuthorize, requireMm, mmDeauthorize, mmLoginCookie, type Cred } from './helpers.ts';
+import { intApp, mcpAuthorize, requireMm, mmDeauthorize, mmLoginCookie, withUsers, type Cred } from './helpers.ts';
 
 const e = await requireMm();
 
@@ -51,18 +51,6 @@ const nextCursor = (r: Result) => /next_cursor: (\S+)/.exec(r.content[0].text)?.
 const postIds = (r: Result) => [...r.content[0].text.matchAll(/^--- post_id: ([a-z0-9]{26})/gm)].map((m) => m[1]);
 
 // Not stopping at the first failed deactivation: every user made has to go, and the test's own failure must not be replaced by the cleanup's.
-async function withUsers(run: (made: string[]) => Promise<void>): Promise<void> {
-  const made: string[] = [];
-  let ok = false;
-  try {
-    await run(made);
-    ok = true;
-  } finally {
-    const failed = (await Promise.allSettled(made.map((id) => mmApi(e.adminToken, 'DELETE', `/users/${id}`)))).find((r) => r.status === 'rejected');
-    if (ok && failed) throw failed.reason;
-  }
-}
-
 describe('read tools against the local Mattermost', () => {
   let req: ReturnType<typeof request>;
   let limiter: Limiter;
