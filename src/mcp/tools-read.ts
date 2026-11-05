@@ -549,7 +549,7 @@ export function registerReadTools(server: McpServer, ctx: ToolContext): void {
         }
       }
       // Paging with before=<post_id> rather than page numbers: new posts arriving between calls would shift pages.
-      const q = new URLSearchParams({ per_page: String(per + 1), ...(c && 'before' in c ? { before: c.before } : {}) });
+      const q = new URLSearchParams({ per_page: String(per + 1), ...(c && 'before' in c ? { before: c.before } : {}), skipFetchThreads: 'true' });
       const r = await mm.call<PostList>(uid, 'GET', `/channels/${ch.id}/posts?${q}`);
       return renderPage(head, r.order.map((id) => r.posts[id]).filter(Boolean), (last) => ({ before: last.id, per_page: per }), '投稿はありません。');
     });
