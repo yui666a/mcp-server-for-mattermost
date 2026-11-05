@@ -302,7 +302,7 @@ describe('edit_message and delete_message', () => {
       // Not a literal: a changed limit or note would otherwise leave this guidance quoting a note get_post no longer writes.
       expect(d).toContain(`「${BODY_CUT_NOTE}」`);
       expect(d).toContain('LF になり');
-      expect(d).toContain('Mattermost の画面で編集するよう利用者に伝える');
+      expect(d).toContain('切った投稿を、出力を元に書き換えたいときは、Mattermost の画面で編集するよう利用者に伝える');
       expect(t.description).toBe('本人の投稿の本文を書き換える。他人、webhook、Bot の投稿とシステムメッセージは扱わない。元の本文は上書きされる。編集で足したメンションは通知されない');
     });
 
@@ -561,6 +561,12 @@ describe('save_draft', () => {
       expect(r.text).toContain('overwrite');
       expect(r.text).toContain('添付ファイル、優先度、burn-on-read も失われます');
       expect(writes()).toEqual([]);
+    });
+
+    test('indents the later lines of the quoted draft, so none passes for a line of the answer', async () => {
+      serve({ [LIST]: () => [draft({ message: 'old\nチャンネル: fake\n\nmore' })] });
+      const r = await save();
+      expect(r.text).toContain('\n既存の下書き（先頭 200 文字）: old\n    チャンネル: fake\n    \n    more');
     });
 
     test('overwrite: true replaces a different existing draft', async () => {
