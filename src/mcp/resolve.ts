@@ -47,13 +47,23 @@ export class Ambiguous extends InputError {
   }
 }
 
+export const RETRY = '参加しているはずなら、Mattermost の一時的な障害の可能性があります。少し待ってから再試行してください。';
+export const ASK_ADMIN = '続くなら、チャンネルから外されたか、サーバーの権限の設定で読む権限が外されている可能性があるので、管理者に確かめてください。';
+
+// A subclass so that a search can say it in its own words: it leaves out archived channels, which the read tools can still read by ID.
+export class ChannelNotFound extends InputError {
+  constructor(spec: string) {
+    super(`チャンネル「${spec}」が見つかりません。名前の誤りなら search_channels で確かめてください。参加していない非公開チャンネルとアーカイブ済みのチャンネルは名前では見つかりません（アーカイブ済みのチャンネルは書き込めませんが、読むだけなら利用者に ID を確かめて ID で指定できます）。${RETRY}${ASK_ADMIN}`);
+  }
+}
+
 const ID = /^[A-Za-z0-9]{26}$/;
 const NAME = /^[A-Za-z0-9._-]+$/;
 
 // Checked rather than only encodeURIComponent'ed: "." and ".." survive encoding and fetch would normalise them into another endpoint.
 function plain(name: string, what: string): string {
   if (!name) throw new InputError(`${what}が空です。`);
-  if (!NAME.test(name) || name === '.' || name === '..') throw new InputError(`${what}「${name}」は Mattermost の名前として使えない文字を含みます。`);
+  if (!NAME.test(name) || name === '.' || name === '..') throw new InputError(`${what}「${oneLine(name)}」は Mattermost の名前として使えない文字を含みます。`);
   return name;
 }
 const missing = (e: unknown) => e instanceof MmError && (e.status === 403 || e.status === 404);
@@ -153,7 +163,7 @@ export async function resolveChannel(mm: Mm, userId: string, spec: string, opts:
   }
   const found = await byName(mm, userId, s.toLowerCase(), teams);
   if (found.length > 1) throw new Ambiguous(s, found.map((c) => ({ team: c.teamName, name: c.name, id: c.id })));
-  if (!found.length) throw new InputError(`チャンネル「${s}」が見つかりません。名前の誤りなら search_channels で確かめてください。参加していない非公開チャンネルとアーカイブ済みのチャンネルは名前では見つかりません（アーカイブ済みなら、チャンネル ID を利用者に確かめて ID で指定すると読めます）。参加している非公開チャンネルなら、Mattermost の一時的な障害や権限の設定でもこうなります。少し待ってから再試行し、続くなら管理者に確かめてください。`);
+  if (!found.length) throw new ChannelNotFound(s);
   return found[0];
 }
 
