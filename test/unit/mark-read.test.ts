@@ -392,6 +392,44 @@ describe('mark_as_read for threads', () => {
     expect(r.text).not.toContain('follow_thread');
   });
 
+  const unfollowed = (o: Record<string, Route> = {}) => threads({
+    [`GET /posts/${ROOT}`]: () => post(0, { id: ROOT, reply_count: 3 }),
+    [`GET /users/u1/teams/${TEAM}/threads/${ROOT}`]: mmError(404, 'app.user.get_thread_membership_for_user.not_found'),
+    ...o,
+  });
+
+  test.each([[403, 'api.context.permissions.app_error'], [404, 'app.channel.get_member.missing.app_error']] as const)('does not point to follow_thread for a thread in a channel the user has not joined (members/me answers %i)', async (status, errorId) => {
+    routes = unfollowed({ [`GET /channels/${CH}/members/me`]: mmError(status, errorId) });
+    for (const postId of [ROOT, id(5)]) {
+      const r = await setup().call({ threads: [{ post_id: postId }] });
+      expect(r.text, postId).toContain('このスレッドのチャンネルに参加していません。参加していないチャンネルのスレッドは未読に数えられないので、既読にするものがありません。');
+      expect(r.text, postId).not.toContain('follow_thread');
+    }
+  });
+
+  test('checks the membership only when the thread has no state and replies', async () => {
+    routes = unfollowed();
+    await setup().call({ threads: [{ post_id: ROOT }] });
+    expect(hits).toContain(`GET /channels/${CH}/members/me`);
+    for (const r of [threads(), threads({
+      [`GET /posts/${ROOT}`]: () => post(0, { id: ROOT, reply_count: 0 }),
+      [`GET /users/u1/teams/${TEAM}/threads/${ROOT}`]: mmError(404, 'app.user.get_threads_for_user.not_found'),
+    })]) {
+      routes = r;
+      hits = [];
+      await setup().call({ threads: [{ post_id: ROOT }] });
+      expect(hits).not.toContain(`GET /channels/${CH}/members/me`);
+    }
+  });
+
+  test('passes on an outage while checking the membership instead of pointing to follow_thread', async () => {
+    routes = unfollowed({ [`GET /channels/${CH}/members/me`]: mmError(500, 'app.channel.get_member.app_error') });
+    const r = await setup().call({ threads: [{ post_id: ROOT }] });
+    expect(r.isError).toBe(true);
+    expect(r.text).not.toContain('follow_thread');
+    expect(r.text).not.toContain('既読にした結果');
+  });
+
   test('uses the user\'s first team for a DM thread', async () => {
     routes = threads({
       [`GET /posts/${ROOT}`]: () => post(0, { id: ROOT, channel_id: DM }),
