@@ -3,6 +3,10 @@ import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 import { every, tick } from '../../src/scheduler.ts';
 import { makeApp } from './helpers.ts';
 
+// Not 2 s, nor vitest's 5 s for a test: on a busy machine the awaited event can take seconds.
+const SLOW = { timeout: 10_000 };
+const SLOW_TEST = 30_000;
+
 type Route = (req: Request, body: any) => unknown;
 let routes: Record<string, Route>;
 let hits: string[];
@@ -472,12 +476,12 @@ test('the timer and a tool request share one refresh of the user\'s Mattermost t
   const id = s.make();
   const ticking = s.run();
   const request = s.mm.call(UID, 'GET', '/users/me');
-  await vi.waitFor(() => expect(refreshes).toBe(1), { timeout: 2000, interval: 5 });
+  await vi.waitFor(() => expect(refreshes).toBe(1), { ...SLOW, interval: 5 });
   release();
   await Promise.all([ticking, request]);
   expect(refreshes).toBe(1);
   expect(s.row(id)).toMatchObject({ status: 'posted' });
-});
+}, SLOW_TEST);
 
 describe('a schedule with files', () => {
   const F1 = 'f'.repeat(26);
@@ -673,12 +677,12 @@ describe('every', () => {
       active--;
       if (runs === 1) throw new TypeError('boom');
     });
-    await vi.waitFor(() => expect(runs).toBeGreaterThanOrEqual(3), { timeout: 2000, interval: 5 });
+    await vi.waitFor(() => expect(runs).toBeGreaterThanOrEqual(3), { ...SLOW, interval: 5 });
     stop();
     const after = runs;
     await new Promise((r) => setTimeout(r, 50));
     expect(most).toBe(1);
     expect(runs).toBe(after);
     expect(writes.join('')).toContain('"name":"TypeError"');
-  });
+  }, SLOW_TEST);
 });
