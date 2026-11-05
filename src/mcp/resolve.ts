@@ -139,7 +139,7 @@ export async function resolveChannel(mm: Mm, userId: string, spec: string, opts:
   }
   const found = await byName(mm, userId, s.toLowerCase(), teams);
   if (found.length > 1) throw new Ambiguous(s, found.map((c) => ({ team: c.teamName, name: c.name, id: c.id })));
-  if (!found.length) throw new InputError(`チャンネル「${s}」が見つかりません。`);
+  if (!found.length) throw new InputError(`チャンネル「${s}」が見つかりません。名前の誤りなら search_channels で確かめてください。参加していない非公開チャンネルとアーカイブ済みのチャンネルは名前では見つかりません（アーカイブ済みなら、チャンネル ID を利用者に確かめて ID で指定すると読めます）。参加している非公開チャンネルなら、Mattermost の一時的な障害や権限の設定でもこうなります。少し待ってから再試行し、続くなら管理者に確かめてください。`);
   return found[0];
 }
 
