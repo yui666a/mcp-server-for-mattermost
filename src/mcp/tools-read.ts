@@ -314,7 +314,10 @@ async function unreadThreads(mm: Mm, uid: string, teams: MmTeam[], keep: (channe
         notes.push(`（${t.name} の未読スレッドは ${THREAD_PAGE * THREAD_PAGES} 件までしか取得していません（total_unread_threads: ${r.total_unread_threads}））`);
         break;
       }
-      before = got.at(-1)!.id;
+      // Not paging from the last thread alone: before= is strict, so threads sharing its last_reply_at would drop out; they are taken again and the Map drops the repeats.
+      const edge = got.at(-1)!.last_reply_at;
+      const newer = got.filter((x) => x.last_reply_at > edge);
+      before = (newer.length ? newer.reduce((a, b) => (b.last_reply_at < a.last_reply_at ? b : a)) : got.at(-1)!).id;
     }
   }
   return { threads, notes };

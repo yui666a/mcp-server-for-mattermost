@@ -64,6 +64,7 @@ describe('search_emoji', () => {
 
   test.each([
     [' :party: ', 'party'],
+    [': party :', 'party'],
     ['Party', 'Party'],
     ['a'.repeat(64), 'a'.repeat(64)],
     [`:${'a'.repeat(64)}:`, 'a'.repeat(64)],
