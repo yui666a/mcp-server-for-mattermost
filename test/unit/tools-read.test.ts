@@ -503,7 +503,7 @@ describe('search_posts in: filters', () => {
     const twenty = [...Array(10).fill('in:only-a'), ...Array(9).fill('-in:town'), '-in: town'].join(' ');
     await call('search_posts', { terms: `x ${twenty}` });
     hits = [];
-    expect(await call('search_posts', { terms: `x ${twenty} in:@bob ,carol` }, true)).toContain('in: と channel: は、-in: などの除外も含めて 1 回の検索で 20 個まで指定できます。in: が多いときは検索を分け、除外が多いときは数を減らしてください（除外は検索を分けると効きません）。');
+    expect(await call('search_posts', { terms: `x ${twenty} in:@bob ,carol` }, true)).toContain('in: と channel: は、-in: などの除外も含めて 1 回の検索で 20 個まで指定できます。in: が多いときは検索を分け、除外は分けた各検索に付け直してください（各検索も除外を含めて 20 個まで）。除外が多いときは数を減らしてください（in: があるなら、in: のチャンネルと重ならない除外は効かないので外せます。除外を別々の検索に分けると、もう一方の検索では効きません）。');
     expect(hits).toEqual([]);
   });
 
@@ -1924,6 +1924,24 @@ describe('get_file', () => {
         expect(content()).toBe(shown);
         expect(out).toContain('文字コード: Shift_JIS');
         expect(out).toContain(GUESSED);
+      });
+
+      test('keeps UTF-8 without a guess for a file with a UTF-8 BOM, even when it is ASCII but for a cut last character', async () => {
+        const b = Uint8Array.from([0xef, 0xbb, 0xbf, ...Buffer.from('abc'), 0xc2]);
+        routes = { [INFO]: textInfo('a.txt', b.length), [FILE]: body(b) };
+        const out = await setup()('get_file', { file_id: F });
+        expect(content()).toBe('abc');
+        expect(out).toContain('文字コード: UTF-8');
+        expect(out).not.toContain('推定');
+        expect(out).toContain('末尾に不完全な文字');
+      });
+
+      test('says nothing readable is left for a UTF-8 BOM followed only by a cut character, instead of reading it as EUC-JP', async () => {
+        const b = Uint8Array.from([0xef, 0xbb, 0xbf, 0xc2]);
+        routes = { [INFO]: textInfo('a.txt', b.length), [FILE]: body(b) };
+        const out = await setup()('get_file', { file_id: F });
+        expect(out).toContain('ファイルの末尾に不完全な文字があり、それを除くと読める中身がありません。');
+        expect(out).not.toContain('文字コード');
       });
 
       test('reads a file as not text when Node cannot make a Shift_JIS or EUC-JP decoder, instead of failing', async () => {

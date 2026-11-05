@@ -94,7 +94,9 @@ function decodeText(b: Uint8Array, name: string, whole: boolean): Decoded | unde
   const utf8 = decode('utf-8');
   // A cut last character after text half-width kana Shift_JIS could also make: it may as well be that or Latin-1, so UTF-8 is only a guess.
   // Not for any text without Japanese: emoji or Hangul would then read as Shift_JIS, one character swapped for another unnoticed.
-  const utf8Unsure = utf8?.cutTail && fromHalfKana(utf8.text);
+  // Not when the file starts with a UTF-8 BOM: TextDecoder drops it from the text, but it is the strongest sign the file is UTF-8.
+  const bom = b[0] === 0xef && b[1] === 0xbb && b[2] === 0xbf;
+  const utf8Unsure = utf8?.cutTail && !bom && fromHalfKana(utf8.text);
   if (utf8 && !utf8Unsure) return { ...utf8, encoding: 'UTF-8', guessed: false };
   const ext = name.includes('.') ? name.split('.').pop()!.toLowerCase() : '';
   const utf8AsGuess = utf8 && { ...utf8, encoding: 'UTF-8', guessed: true };
@@ -286,8 +288,8 @@ async function filterChannelIds(mm: Mm, userId: string, spec: string, written: s
   }
 }
 
-// Not higher: with 10 teams the worst case (1 + flags × (teams + 2) GETs) already takes 241 of the 300 requests a user may send per minute,
-// before anything else the user sends in that minute.
+// Not higher: with 10 teams the worst case (1 + flags × (teams + 2) GETs, 241) with the search and the 3 calls for its output take 245 of the 300
+// requests a user may send per minute, before anything else the user sends in that minute.
 const MAX_CHANNEL_FILTERS = 20;
 
 // Rewritten here rather than left to Mattermost: a search across all teams looks channel names up without a team and matches nothing,
@@ -296,7 +298,7 @@ export async function resolveInFilters(mm: Mm, userId: string, terms: string): P
   const words = splitWords(terms);
   const filters = channelFilters(words);
   if (!filters.length) return { terms, notes: [] };
-  if (filters.length > MAX_CHANNEL_FILTERS) throw new InputError(`in: と channel: は、-in: などの除外も含めて 1 回の検索で ${MAX_CHANNEL_FILTERS} 個まで指定できます。in: が多いときは検索を分け、除外が多いときは数を減らしてください（除外は検索を分けると効きません）。`);
+  if (filters.length > MAX_CHANNEL_FILTERS) throw new InputError(`in: と channel: は、-in: などの除外も含めて 1 回の検索で ${MAX_CHANNEL_FILTERS} 個まで指定できます。in: が多いときは検索を分け、除外は分けた各検索に付け直してください（各検索も除外を含めて ${MAX_CHANNEL_FILTERS} 個まで）。除外が多いときは数を減らしてください（in: があるなら、in: のチャンネルと重ならない除外は効かないので外せます。除外を別々の検索に分けると、もう一方の検索では効きません）。`);
   const notes: string[] = [];
   const out = words.map((w) => [w]);
   const written = (f: (typeof filters)[number]) => words.slice(f.at, f.at + f.span).join(' ');
