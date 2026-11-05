@@ -424,4 +424,3 @@ describe('follow_thread and unfollow_thread', () => {
     }
   });
 });
-
