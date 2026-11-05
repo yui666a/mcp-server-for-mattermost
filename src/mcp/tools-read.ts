@@ -15,7 +15,7 @@ import { parseWhen } from './when.ts';
 type PostList = { order: string[]; posts: Record<string, MmPost>; has_next?: boolean | null; prev_post_id?: string };
 type Page = { lines: string[]; next?: object; posts?: MmPost[]; notes?: string[] };
 
-type ReadMm = Mm & Pick<MmClient, 'callBytes'>;
+type ReadMm = Mm & Pick<MmClient, 'callBytes'> & { signal: AbortSignal };
 type FoundFile = MmFileInfo & { user_id: string; post_id: string; channel_id: string; create_at: number };
 type FileList = { order: string[]; file_infos: Record<string, FoundFile> };
 
@@ -226,7 +226,7 @@ export function channelError(e: unknown, spec: string): never {
   if (e instanceof ChannelFetchError && e.id !== 'app.team.get_by_name.missing.app_error') {
     if (e.status === 403) throw new InputError(`このチャンネルを見る権限がありません（${forbiddenExample(spec)}）。${RETRY}${ASK_ADMIN}`);
     // Not keying on the name lookup's ids: a 404 without an id, as a proxy may give, is better read as one by name, which guides to retrying.
-    if (e.status === 404 && e.id !== BY_ID_404) throw new InputError(`チャンネルが見つかりません（参加していない非公開チャンネルとアーカイブ済みのチャンネルは、名前で指定すると Mattermost はこの結果を返します。アーカイブ済みなら、チャンネル ID を利用者に確かめて ID で指定すると読めます）。名前の誤りなら search_channels で確かめてください。${RETRY}${ASK_ADMIN}`);
+    if (e.status === 404 && e.id !== BY_ID_404) throw new InputError(`チャンネルが見つかりません（参加していない非公開チャンネルとアーカイブ済みのチャンネルは、名前で指定すると Mattermost はこの結果を返します。アーカイブ済みなら、チャンネル ID を利用者に確かめて ID で指定してください）。名前の誤りなら search_channels で確かめてください。${RETRY}${ASK_ADMIN}`);
     if (e.status === 404) throw new InputError('チャンネルが見つかりません。ID の誤りなら search_channels で確かめてください。');
   }
   throw e;
@@ -495,7 +495,7 @@ export function registerReadTools(server: McpServer, ctx: ToolContext): void {
   function tool<S extends z.ZodRawShape>(name: string, description: string, inputSchema: S, fn: (args: z.infer<z.ZodObject<S>>, mm: ReadMm) => Promise<string | CallToolResult>) {
     server.registerTool(name, { description, inputSchema, annotations: { readOnlyHint: true } },
       guarded(ctx, name, async (args: z.infer<z.ZodObject<S>>, extra: { signal: AbortSignal }) => {
-        const mm: ReadMm = { call: (u, m, p, b) => ctx.mm.call(u, m, p, b, extra.signal), callBytes: (u, p, _s, o) => ctx.mm.callBytes(u, p, extra.signal, o) };
+        const mm: ReadMm = { call: (u, m, p, b) => ctx.mm.call(u, m, p, b, extra.signal), callBytes: (u, p, _s, o) => ctx.mm.callBytes(u, p, extra.signal, o), signal: extra.signal };
         const r = await fn(args, mm);
         return typeof r === 'string' ? text(r) : r;
       // Cast rather than typed directly: the SDK's callback type is a conditional type TypeScript cannot resolve for a generic shape.
@@ -936,7 +936,8 @@ export function registerReadTools(server: McpServer, ctx: ToolContext): void {
       const dms = shown.filter((x) => x.type === 'D');
       // Not failing the list when the partners' names cannot be read: they only label the DMs, which then show the partner's user_id marked as one, as dmLabel gives up.
       const partners = await usernamesOf(mm, uid, dms.map(other)).catch((e) => {
-        if (e instanceof MmError || e instanceof UpstreamUnavailable) return new Map<string, string>();
+        // Not giving up on a call the user aborted: there is no one left to read the list.
+        if (!mm.signal.aborted && (e instanceof MmError || e instanceof UpstreamUnavailable)) return new Map<string, string>();
         throw e;
       });
       const kind: Record<string, string> = { O: '公開', P: '非公開', D: 'DM', G: 'グループ DM' };
