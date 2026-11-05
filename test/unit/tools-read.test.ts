@@ -545,7 +545,7 @@ describe('get_channel', () => {
   test('when /stats is refused (a public channel the user has not joined), says the member count is unavailable and returns the rest', async () => {
     routes = { ...base(), [`GET /channels/${C}/stats`]: mmError(403) };
     const out = await setup()('get_channel', { channel: C });
-    expect(out).toContain('メンバー数: 参加していないため取得できません');
+    expect(out).toContain('メンバー数: 取得できません（参加していないか、一時的な障害）');
     expect(out).toContain('目的: 雑談用');
     expect(pinIds(out)).toEqual([P1.id, P2.id, P3.id]);
   });
@@ -2536,14 +2536,14 @@ describe('list_channel_members', () => {
   test('says members of a channel the user has not joined cannot be seen, without asking for the count', async () => {
     routes = { ...base(), 'GET /users': mmError(403, 'api.context.permissions.app_error') };
     const out = await setup()('list_channel_members', { channel: C }, true);
-    expect(out).toBe('参加していないチャンネルのメンバーは見られません（公開チャンネルでも同じです）。');
+    expect(out).toBe('このチャンネルのメンバーを見る権限がありません。参加していないチャンネルのメンバーは、公開チャンネルでも見られません。参加しているはずなら、Mattermost の一時的な障害の可能性があります。少し待ってから再試行してください。');
     expect(hits).not.toContain(`GET /channels/${C}/stats`);
   });
 
   test('says the same when the user leaves the channel between reading the members and the count, and passes other errors of the count through', async () => {
     routes = { ...base(), [`GET /channels/${C}/stats`]: mmError(403, 'api.context.permissions.app_error') };
     const call = setup();
-    expect(await call('list_channel_members', { channel: C }, true)).toBe('参加していないチャンネルのメンバーは見られません（公開チャンネルでも同じです）。');
+    expect(await call('list_channel_members', { channel: C }, true)).toBe('このチャンネルのメンバーを見る権限がありません。参加していないチャンネルのメンバーは、公開チャンネルでも見られません。参加しているはずなら、Mattermost の一時的な障害の可能性があります。少し待ってから再試行してください。');
     routes[`GET /channels/${C}/stats`] = mmError(404);
     expect(await call('list_channel_members', { channel: C }, true)).toContain('Mattermost がエラーを返しました（404）');
   });
