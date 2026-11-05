@@ -96,23 +96,41 @@ const reactionOrder = (a: MmReaction, b: MmReaction) =>
 
 function reactionsByEmoji(p: MmPost): { emoji: string; shown: string[]; total: number }[] {
   const by = new Map<string, string[]>();
-  for (const r of [...(p.metadata?.reactions ?? [])].sort(reactionOrder)) by.set(r.emoji_name, [...(by.get(r.emoji_name) ?? []), r.user_id]);
+  for (const r of [...(p.metadata?.reactions ?? [])].sort(reactionOrder)) {
+    const ids = by.get(r.emoji_name);
+    if (ids) ids.push(r.user_id);
+    else by.set(r.emoji_name, [r.user_id]);
+  }
   return [...by].map(([emoji, ids]) => ({ emoji, shown: ids.slice(0, REACTION_NAMES), total: ids.length }));
 }
 
-export const postUserIds = (p: MmPost): string[] => [...new Set([p.user_id, ...reactionsByEmoji(p).flatMap((r) => r.shown)])];
+const REACTION_HEAD = 'リアクション: ';
+
+// One place for how the reactions line is built and cut, so the users looked up always cover the users shown.
+function fitReactions(by: ReturnType<typeof reactionsByEmoji>, name: (id: string) => string): { each: string[]; k: number } {
+  const each = by.map(({ emoji, shown, total }) =>
+    `:${emoji}: ${total}（${shown.map(name).join('、')}${total > shown.length ? `、ほか ${total - shown.length} 人` : ''}）`);
+  let n = width(REACTION_HEAD) + width(each[0] ?? '');
+  let k = Math.min(1, each.length);
+  while (k < each.length && (n += 1 + width(each[k])) <= REACTION_MAX_CHARS) k++;
+  return { each, k };
+}
+
+// The cut depends on the names, unknown before the lookup, so it is made with the shortest name a user can have ('@' and one letter).
+// Every emoji shown with the real names is then kept, since longer names only cut earlier.
+export const postUserIds = (p: MmPost): string[] => {
+  const by = reactionsByEmoji(p);
+  const { k } = fitReactions(by, () => '@x');
+  return [...new Set([p.user_id, ...by.slice(0, k).flatMap((r) => r.shown)])];
+};
 
 function reactionLines(p: MmPost, usernames: Map<string, string>): string[] {
   const by = reactionsByEmoji(p);
   // Only without metadata at all: the threads API returns none, while the post APIs always do and leave reactions out when there are none.
   if (!by.length) return p.has_reactions && !p.metadata ? ['リアクションあり（get_post で確認できます）'] : [];
   const name = (id: string) => (usernames.has(id) ? `@${usernames.get(id)}` : `user_id: ${id}`);
-  const each = by.map(({ emoji, shown, total }) =>
-    `:${emoji}: ${total}（${shown.map(name).join('、')}${total > shown.length ? `、ほか ${total - shown.length} 人` : ''}）`);
-  const head = 'リアクション: ';
-  let n = width(head) + width(each[0]);
-  let k = 1;
-  while (k < each.length && (n += 1 + width(each[k])) <= REACTION_MAX_CHARS) k++;
+  const { each, k } = fitReactions(by, name);
+  const head = REACTION_HEAD;
   const left = by.slice(k);
   const rest = left.length ? `、ほか ${left.length} 種類（${left.reduce((m, r) => m + r.total, 0)} 人）` : '';
   return [`${head}${each.slice(0, k).join('、')}${rest}`];

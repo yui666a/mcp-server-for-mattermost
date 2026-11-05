@@ -228,6 +228,31 @@ describe('reactions, edits and system messages', () => {
     expect(out).not.toContain('u10');
   });
 
+  describe('postUserIds keeps the users of the emoji that can fit on the line with the shortest names (@ and one letter)', () => {
+    // 'リアクション: ' is 8 and an item ':e: 1（@x）' is the emoji name plus 8, with '、' between items: 8 + 18 + 1 + (b + 8) = 4000 at b = 3965.
+    const pair = (a: number, b: number) => ({ ...p, user_id: 'author', metadata: { reactions: [r('ua', 'a'.repeat(a)), r('ub', 'b'.repeat(b))] } });
+
+    test('keeps the user of an emoji that brings the line to exactly 4000 characters, and drops the one that would make it 4001', () => {
+      expect(postUserIds(pair(10, 3965))).toEqual(['author', 'ua', 'ub']);
+      expect(postUserIds(pair(10, 3966))).toEqual(['author', 'ua']);
+    });
+
+    test('always keeps the users of the first emoji, even when it alone is over the limit', () => {
+      expect(postUserIds(pair(5000, 1))).toEqual(['author', 'ua']);
+    });
+
+    test('keeps every user the line names', () => {
+      const many = Array.from({ length: 300 }, (_, i) => r(`u${i}`, `e${i}`));
+      const post = { ...p, metadata: { reactions: many } };
+      const named = new Map(many.map((x) => [x.user_id, 'longer-name']));
+      const line = formatPost(post, { ...ctx, usernames: named }).split('\n').at(-2)!;
+      const shownUsers = many.filter((x) => line.includes(`:${x.emoji_name}: `)).map((x) => x.user_id);
+      expect(shownUsers.length).toBeGreaterThan(0);
+      for (const u of shownUsers) expect(postUserIds(post)).toContain(u);
+      expect(postUserIds(post).length).toBeLessThan(301);
+    });
+  });
+
   test('lists the post author and the reacting users whose names are shown, once each', () => {
     const many = Array.from({ length: 12 }, (_, i) => r(`u${i}`, 'tada'));
     expect(postUserIds({ ...p, user_id: 'a', metadata: { reactions: [...many, r('a', 'eyes')] } }))
