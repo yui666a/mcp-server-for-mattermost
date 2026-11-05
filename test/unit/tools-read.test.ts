@@ -516,7 +516,7 @@ describe('get_channel', () => {
   });
 
   test('turns 404 from fetching the channel, by id or by team/name, into a not-found message', async () => {
-    routes = { ...base(), [`GET /channels/${C}`]: mmError(404) };
+    routes = { ...base(), 'GET /users/me/teams': () => [], [`GET /channels/${C}`]: mmError(404) };
     const call = setup();
     expect(await call('get_channel', { channel: C }, true)).toBe('チャンネルが見つかりません（参加していない非公開チャンネルを名前で指定した場合も、Mattermost はこの結果を返します）');
     routes['GET /teams/name/team-a/channels/name/nope'] = mmError(404, 'app.channel.get_by_name.missing.app_error');
@@ -2178,7 +2178,7 @@ describe('list_channel_members', () => {
   });
 
   test('words 403 and 404 from fetching the channel as get_channel does', async () => {
-    routes = { ...base(), [`GET /channels/${C}`]: mmError(403) };
+    routes = { ...base(), 'GET /users/me/teams': () => [], [`GET /channels/${C}`]: mmError(403) };
     const call = setup();
     expect(await call('list_channel_members', { channel: C }, true)).toBe('このチャンネルを見る権限がありません（参加していない非公開チャンネルなど）');
     routes[`GET /channels/${C}`] = mmError(404);

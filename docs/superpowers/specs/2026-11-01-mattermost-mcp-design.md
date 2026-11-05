@@ -281,7 +281,7 @@ MCP サーバー自身は管理者トークンや Bot アカウントを持た�
 - 読み取り系のツールには MCP のツール注釈 `readOnlyHint: true` を付け、書き込み系のツール（`send_message`、`prepare_upload`、`add_reaction`、`remove_reaction`、`save_post`、`unsave_post`、`pin_post`、`unpin_post`、`edit_message`、`delete_message`、`save_draft`、`schedule_message`、`update_scheduled_message`、`cancel_scheduled_message`、`mark_as_read`、`set_status`、`set_custom_status`、`clear_custom_status`、`follow_thread`、`unfollow_thread`）には付けない。MCP クライアントが書き込みの前に利用者へ確認を求められるようにするため
 - 出力は LLM が読みやすいテキストとし、投稿ごとに投稿者のユーザー名、日時、本文、パーマリンク（`https://mattermost.example.com/<team>/pl/<post_id>`）を含める。読み取り系の出力には、チャンネルとチームの ID と名前も含め、LLM が続く呼び出しで ID を使えるようにする
 - チャンネルの指定は次のどれかとする。名前から候補が 2 つ以上見つかった場合は、どれかを選ばずにエラーとし、候補のチーム名、チャンネル名、チャンネル ID を返す
-  - チャンネル ID
+  - チャンネル ID。ID の形（小文字の英数字 26 文字）の指定で、その ID のチャンネルが無ければ（404）、チャンネル名として引き直す。チャンネル名にもその形がありうるため。403 は ID のチャンネルがあることを示すので引き直さない
   - `チーム名/チャンネル名`
   - チャンネル名だけ（利用者が参加しているチームから探す）
   - `@ユーザー名`（その相手との DM）
@@ -303,7 +303,7 @@ MCP サーバー自身は管理者トークンや Bot アカウントを持た�
   - 見つからないチャンネルやユーザーは、`-in:` でもエラーにし、検索しない
   - グループ DM（`@a,b`）は置き換えずに渡す。Mattermost はグループ DM を引くだけで作らないため。見つからなければ 0 件になる
   - 置き換えずに渡すので、チャンネルの指定の `@a,b` の正規化は効かない。Mattermost は渡された名前の ID だけからグループ DM の名前を作るので、自分を含む全員のユーザー名を小文字のカンマ区切りで書く必要がある。ツールの説明にもそう書く
-- `send_message` は、チャンネル ID 以外の指定で投稿先が一意に決まらない場合、必ずエラーにする。`root_id` を渡したときは、その投稿が指定したチャンネルにあることを確かめる
+- `send_message` は、投稿先が一意に決まらない場合、必ずエラーにする。`root_id` を渡したときは、その投稿が指定したチャンネルにあることを確かめる
 - ユーザーはユーザー ID か `@ユーザー名` で指定する
   - ユーザー名は小文字に直して引く。Mattermost のユーザー名は小文字だけで、大文字を含むと 400 で断られるため
 - `get_post` が受け付ける URL は、Mattermost の URL（`MM_BROWSER_URL`）とオリジンとベースのパスが一致し、userinfo を含まない `…/<チーム名>/pl/<post_id>` の形だけとする。ほかのホストのパーマリンクの post_id を、この Mattermost の投稿として読み違えないため。URL のチーム名は使わず、出力のパーマリンクは投稿の実際のチームで作る
