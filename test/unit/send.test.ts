@@ -6,7 +6,7 @@ import type { MmPost } from '../../src/mcp/format.ts';
 import type { Mm } from '../../src/mcp/resolve.ts';
 import { checkRoot, sendMessage } from '../../src/mcp/tools-send.ts';
 import { INFLIGHT_GRACE, Store } from '../../src/store.ts';
-import { SLOW, SLOW_TEST } from './helpers.ts';
+import { freezeCleanupClock, SLOW, SLOW_TEST } from './helpers.ts';
 
 const UID = 'u'.repeat(26);
 const CH = 'c'.repeat(26);
@@ -784,6 +784,7 @@ describe('a draft with the sent message is cleared after the post', () => {
   });
 
   test('the cleanup waits and retries while this MCP\'s own Limiter is full, then clears the draft', async () => {
+    freezeCleanupClock();
     let busy = 2;
     let delBusy = 1;
     const f = fakeMm({
@@ -807,6 +808,7 @@ describe('a draft with the sent message is cleared after the post', () => {
   });
 
   test('a DELETE retried while the Limiter is full is not sent once less than a second is left', async () => {
+    vi.spyOn(AbortSignal, 'timeout').mockImplementation(() => new AbortController().signal);
     vi.spyOn(performance, 'now').mockReturnValueOnce(0).mockReturnValueOnce(3000).mockReturnValue(4500);
     const f = fakeMm({ drafts: () => [draft()], failDelete: () => new RateLimited(1, false) });
     const r = await f.send({ channel: 'team-a/dup', message: 'hello' });
@@ -825,7 +827,8 @@ describe('a draft with the sent message is cleared after the post', () => {
     expect(logged.map((l) => JSON.parse(l))).toEqual([expect.objectContaining({ event: 'draft_cleanup_failed', name: 'TimeoutError' })]);
   });
 
-  test('a client cancelling in the middle of the wait stops it without calling Mattermost again', async () => {
+  test('a client cancelling during the wait for the Limiter stops it without calling Mattermost again', async () => {
+    freezeCleanupClock();
     const client = new AbortController();
     const f = fakeMm({ drafts: () => { setTimeout(() => client.abort(), 20); throw new RateLimited(1, false); } });
     await f.send({ channel: 'team-a/dup', message: 'hello' }, client.signal);
@@ -833,7 +836,7 @@ describe('a draft with the sent message is cleared after the post', () => {
     expect(logged).toEqual([]);
   });
 
-  test('waiting for the Limiter stops when the client cancels, without logging or calling Mattermost again', async () => {
+  test('a client that has already cancelled when the Limiter refuses stops the cleanup without logging or calling Mattermost again', async () => {
     const client = new AbortController();
     const f = fakeMm({ drafts: () => { client.abort(); throw new RateLimited(1, false); } });
     await f.send({ channel: 'team-a/dup', message: 'hello' }, client.signal);

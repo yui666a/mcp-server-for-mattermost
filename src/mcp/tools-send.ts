@@ -401,7 +401,7 @@ class TooLateToDelete extends Error {
 // ponytail: a fixed wait; a queue in the Limiter if callers other than the cleanup need to wait their turn.
 const LIMITER_WAIT_MS = 100;
 
-// Not waiting on Mattermost's 429 or a per-minute limit further away: neither frees up within the cleanup's 5 seconds.
+// Not waiting on Mattermost's 429 or a per-minute limit more than a second away: the wait would use up most of the 4 seconds left before the 1-second margin kept for DELETE, leaving little time to list and delete the draft.
 async function untilAdmitted<T>(attempt: () => Promise<T>, stop: AbortSignal, before?: () => void): Promise<T> {
   for (;;) {
     before?.();
