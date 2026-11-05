@@ -2,6 +2,7 @@ import type { McpServer, ToolCallback } from '@modelcontextprotocol/sdk/server/m
 import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
 import { z } from 'zod';
 import { MmError } from '../mattermost/client.ts';
+import { strictArgs } from './args.ts';
 import { InputError, type MmPost } from './format.ts';
 import { myTeams, resolveChannel, type Mm } from './resolve.ts';
 import { failureText, guarded, text, type ToolContext } from './server.ts';
@@ -11,19 +12,16 @@ const POST_ID = z.string().regex(/^[A-Za-z0-9]{26}$/);
 const MAX_ITEMS = 20;
 const AFTER_PAGE = 200;
 
-// Not dropping unknown keys of an item as zod's z.object does: a misspelled last_post_id would be dropped and the item marked read up to the newest post, which only the user can undo, item by item, in the Mattermost UI.
-const item = <T extends z.ZodRawShape>(shape: T, keys: string) =>
-  z.strictObject(shape, { error: (iss) => iss.code === 'unrecognized_keys' ? `受けない引数です: ${iss.keys.join(', ')}。${keys}` : undefined });
-
 const schema = {
-  channels: z.array(item({
+  // Not leaving an item to zod's z.object, which drops unknown keys: a misspelled last_post_id would mark the item read up to the newest post, which only the user can undo, item by item, in the Mattermost UI.
+  channels: z.array(strictArgs({
     channel: z.string().min(1).describe('チャンネル ID、「チーム名/チャンネル名」、チャンネル名、@ユーザー名（DM）、@a,b（グループ DM）のどれか'),
     last_post_id: POST_ID.optional().describe('このチャンネルで読んだ投稿のうち最も新しいものの post_id'),
-  }, 'channels の要素に渡せるのは channel と last_post_id だけです。')).max(MAX_ITEMS).optional(),
-  threads: z.array(item({
+  })).max(MAX_ITEMS).optional(),
+  threads: z.array(strictArgs({
     post_id: POST_ID.describe('スレッドの親投稿か、スレッド内の投稿の post_id'),
     last_post_id: POST_ID.optional().describe('このスレッドで読んだ投稿のうち最も新しいものの post_id'),
-  }, 'threads の要素に渡せるのは post_id と last_post_id だけです。')).max(MAX_ITEMS).optional(),
+  })).max(MAX_ITEMS).optional(),
 };
 type Args = z.infer<z.ZodObject<typeof schema>>;
 
