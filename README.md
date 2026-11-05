@@ -36,7 +36,7 @@ This project targets the other case:
 | `search_channels` | Find channels (public, joined private, DMs, group DMs) by name |
 | `list_my_channels` | List joined channels by most recent post |
 | `get_channel` | Channel type, purpose, header, member count, and pinned posts |
-| `list_channel_members` | List the members of a joined channel, ordered by username |
+| `list_channel_members` | List the members of a channel the user can read (usually a joined one), ordered by username |
 | `get_unreads` | Unread channels and, with collapsed reply threads, unread threads |
 | `get_mentions` | Posts that mention the user, optionally only the unread ones |
 | `list_followed_threads` | List followed threads, newest reply first, with collapsed reply threads |
@@ -44,7 +44,7 @@ This project targets the other case:
 | `mark_as_read` | Mark channels and threads read, skipping channels with posts by anyone else after the newest post read |
 | `search_users` | Find users by name or username |
 | `get_user` | A user's profile with time zone, local time, and status |
-| `send_message` | Post to a channel or thread (`@username`, or `@a,b` for a group DM, works even before the DM exists), optionally with small inline files or files uploaded through `prepare_upload`; clears a draft with the same text afterwards unless the draft has attachments |
+| `send_message` | Post to a channel or thread (creates the DM for `@username` or `@a,b` if it does not exist yet), optionally with small inline files or files uploaded through `prepare_upload`; clears a draft with the same text afterwards unless the draft has attachments |
 | `prepare_upload` | Issue a one-time URL for uploading local files (screenshots, PDFs, photos) with `curl` (creates the DM for `@username` or `@a,b` if it does not exist yet); for clients that can run commands on the user's machine, such as Claude Code and Codex CLI |
 | `add_reaction` / `remove_reaction` | Add or remove the user's own reaction |
 | `save_post` / `unsave_post` | Save (flag) a post in a joined channel, or remove it from the saved posts |

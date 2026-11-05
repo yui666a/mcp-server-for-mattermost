@@ -113,6 +113,22 @@ describe('followed threads against the local Mattermost', () => {
     expect(await followed()).toContain(root);
   });
 
+  test('a thread in an archived channel is listed with the channel name marked archived', async () => {
+    const ch = await newChannel('archived');
+    const root = await say(bobMm, ch, 'root');
+    await say(aliceMm, ch, 'alice reply', root);
+    await mmApi(e.adminToken, 'DELETE', `/channels/${ch}`);
+    let r = await call('list_followed_threads', { limit: 50 });
+    const pages = [r.content[0].text];
+    for (let i = 0; !pages.at(-1)!.includes(root) && /next_cursor: (\S+)/.test(pages.at(-1)!) && i < 20; i++) {
+      r = await call('list_followed_threads', { cursor: /next_cursor: (\S+)/.exec(pages.at(-1)!)![1] });
+      pages.push(r.content[0].text);
+    }
+    const page = pages.find((t) => t.includes(root));
+    expect(page).toBeDefined();
+    expect(page).toContain(`（アーカイブ済み）（name: t79-archived-${TAG}、channel_id: ${ch}） | チーム: ${e.teams.a.name}（team_id: ${team}）`);
+  });
+
   test('follow_thread on a followed thread keeps its unread replies and mentions', async () => {
     const ch = await newChannel('keep');
     const root = await say(bobMm, ch, 'root');
@@ -147,6 +163,17 @@ describe('followed threads against the local Mattermost', () => {
     expect(r.isError, r.content[0].text).toBeFalsy();
     expect(r.content[0].text).toContain('はすでにフォローしています');
     expect(r.content[0].text).toContain('最初の返信があるまで');
+  });
+
+  test('follow_thread does not say a thread whose replies were all deleted waits for its first reply', async () => {
+    const ch = await newChannel('deleted');
+    // bob writes both, without mentioning alice: a reply on alice's post or a mention would have her follow the thread already.
+    const root = await say(bobMm, ch, 'root');
+    const reply = await say(bobMm, ch, 'bob reply', root);
+    await mmApi(bobMm, 'DELETE', `/posts/${reply}`);
+    const r = await call('follow_thread', { post_id: root });
+    expect(r.content[0].text).toContain('をフォローしました');
+    expect(r.content[0].text).not.toContain('最初の返信があるまで');
   });
 
   test('follow_thread refuses a thread in a public channel alice has not joined', async () => {

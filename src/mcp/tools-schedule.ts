@@ -14,6 +14,7 @@ const MIN_AHEAD = 60_000;
 const MAX_AHEAD = 30 * 24 * 3600_000;
 const STATUS: Record<ScheduledStatus, string> = { pending: '待機中', sending: '投稿中', posted: '投稿済み', failed: '失敗' };
 const STATUSES = ['pending', 'sending', 'posted', 'failed'] as const;
+const AT_LIMIT = `待機中の予約が上限の ${MAX_PENDING_SCHEDULED} 件に達しています。不要な予約を cancel_scheduled_message で取り消してください。`;
 const NOT_CHANGEABLE = '予約が見つかりません。または、投稿中か、投稿を試みた後で結果を確かめている途中か、終了済みのため変えられません。';
 
 const POST_ID = z.string().regex(/^[A-Za-z0-9]{26}$/);
@@ -44,8 +45,10 @@ type ScheduleArgs = { channel: string; message: string; root_id?: string; at: st
 export async function scheduleMessage(mm: Mm, store: Store, uid: string, args: ScheduleArgs): Promise<CallToolResult> {
   const at = when(args.at);
   const fileIds = args.file_ids ?? [];
-  // Not left to createScheduled alone: resolving may create the DM first, and failing after that leaves it empty. A schedule added or put back to pending between the two checks still does.
-  if (store.pendingScheduledCount(uid) >= MAX_PENDING_SCHEDULED) throw new InputError(`待機中の予約が上限の ${MAX_PENDING_SCHEDULED} 件に達しています。不要な予約を cancel_scheduled_message で取り消してください。`);
+  // Not left to createScheduled alone when resolving may create a DM: failing after that leaves it empty. A schedule added or put back to pending between the two checks still does.
+  // Not checked first for other targets: a wrong channel name or file is the error the caller can act on, and the limit is checked again when the row is made.
+  const mayCreate = args.channel.trim().startsWith('@') && !args.root_id && !fileIds.length;
+  if (mayCreate && store.pendingScheduledCount(uid) >= MAX_PENDING_SCHEDULED) throw new InputError(AT_LIMIT);
   const ch = await resolveTarget(mm, store, uid, args.channel, args.root_id, fileIds);
   if (args.root_id) await checkRoot(mm, uid, args.root_id, ch);
   checkUploaded(store, uid, ch.id, fileIds);
@@ -57,11 +60,11 @@ export async function scheduleMessage(mm: Mm, store: Store, uid: string, args: S
     if (e instanceof FileHeld) throw heldError(e.held);
     throw e;
   }
-  if (!id) throw new InputError(`待機中の予約が上限の ${MAX_PENDING_SCHEDULED} 件に達しています。不要な予約を cancel_scheduled_message で取り消してください。`);
+  if (!id) throw new InputError(AT_LIMIT);
   return text([
     '予約しました。',
     `予約 ID: ${id}`,
-    `投稿先: チャンネル: ${ch.displayName || ch.name}（channel_id: ${ch.id}）${args.root_id ? `、返信先 post_id: ${args.root_id}` : ''}`,
+    `投稿先: ${ch.displayName || ch.name}（channel_id: ${ch.id}）${args.root_id ? `、返信先 post_id: ${args.root_id}` : ''}`,
     `予定時刻: ${formatTime(at)}`,
     ...(fileIds.length ? [`添付: ${fileIds.join(', ')}`] : []),
     '結果は list_scheduled_messages で確かめられます。',

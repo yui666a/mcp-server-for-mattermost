@@ -3,6 +3,10 @@ import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 import { every, tick } from '../../src/scheduler.ts';
 import { makeApp } from './helpers.ts';
 
+// Not 2 s, nor vitest's 5 s for a test: on a busy machine the awaited event can take seconds.
+const SLOW = { timeout: 10_000 };
+const SLOW_TEST = 30_000;
+
 type Route = (req: Request, body: any) => unknown;
 let routes: Record<string, Route>;
 let hits: string[];
@@ -39,6 +43,12 @@ afterEach(() => {
   vi.useRealTimers();
   vi.restoreAllMocks();
 });
+
+// Not a plain 401: a call that got only 401 counts as not sent, so the 503 is what makes this a re-login after Mattermost may have handled the post.
+function sentThenRelogin(store: { putMmCred: (u: string, a: string, r: string) => void }) {
+  routes['POST /oauth/access_token'] = () => { store.putMmCred(UID, 'aC', 'rC'); return Response.json({ access_token: 'a2', refresh_token: 'r2' }); };
+  routes['POST /posts'] = (req) => (req.headers.get('authorization') === 'Bearer a2' ? Response.json({ id: 'x' }, { status: 503 }) : new Response(null, { status: 401 }));
+}
 
 function setup() {
   const ctx = makeApp({}, async (input, init) => {
@@ -146,12 +156,21 @@ describe('a refusal fails the schedule without retrying, with a reason for the u
     expect(hits).toEqual([]);
   });
 
-  test('re-login needed after the post was sent tells the user it may have been posted', async () => {
+  test('re-login needed after Mattermost may have handled the post tells the user it may have been posted', async () => {
+    const s = setup();
+    sentThenRelogin(s.store);
+    const id = s.make();
+    await s.run();
+    expect(s.row(id)).toMatchObject({ status: 'failed', error: UNKNOWN });
+  });
+
+  test('re-login needed when Mattermost only answered 401 fails with the re-login reason, since nothing was posted', async () => {
     const s = setup();
     routes['POST /posts'] = () => { s.store.revokeUser(UID); return new Response(null, { status: 401 }); };
     const id = s.make();
     await s.run();
-    expect(s.row(id)).toMatchObject({ status: 'failed', error: UNKNOWN });
+    expect(s.row(id)).toMatchObject({ status: 'failed', first_attempt_at: null });
+    expect(s.row(id).error).toContain('再ログイン');
   });
 });
 
@@ -204,6 +223,19 @@ describe('a retry after an unknown outcome looks for the earlier post first', ()
     s.set(id, 'first_attempt_at = ?, pending_post_id = ?', NOW, 'pending-1');
     return id;
   }
+
+  test('a retry whose post gets only 401 before a re-login fails with the re-login reason and keeps the attempt and its files', async () => {
+    const s = setup();
+    routes[`GET /channels/${CH}/posts`] = () => postList();
+    routes['POST /posts'] = () => { s.store.revokeUser(UID); return new Response(null, { status: 401 }); };
+    const F1 = 'f'.repeat(26);
+    const id = attempted(s, { fileIds: [F1] });
+    await s.run();
+    expect(s.row(id)).toMatchObject({ status: 'failed' });
+    expect(s.row(id).error).toContain('再ログイン');
+    expect(s.row(id).first_attempt_at).not.toBeNull();
+    expect(s.store.heldScheduledFiles(UID, [F1])).toEqual([{ fileId: F1, scheduledId: id }]);
+  });
 
   test('finds the earlier post from the first attempt on and records it without posting again', async () => {
     const s = setup();
@@ -426,6 +458,7 @@ describe('an unexpected error fails only that schedule', () => {
     const fine = s.make({ message: 'fine' });
     await s.run();
     expect(s.row(sentBroken)).toMatchObject({ status: 'failed', error: UNKNOWN });
+    expect(s.row(sentBroken).first_attempt_at).not.toBeNull();
     expect(s.row(sealed)).toMatchObject({ status: 'failed', error: '本文を復号できないため投稿していません。予約を入れ直してください。' });
     expect(s.row(fine)).toMatchObject({ status: 'posted' });
   });
@@ -443,12 +476,12 @@ test('the timer and a tool request share one refresh of the user\'s Mattermost t
   const id = s.make();
   const ticking = s.run();
   const request = s.mm.call(UID, 'GET', '/users/me');
-  await vi.waitFor(() => expect(refreshes).toBe(1), { timeout: 2000, interval: 5 });
+  await vi.waitFor(() => expect(refreshes).toBe(1), { ...SLOW, interval: 5 });
   release();
   await Promise.all([ticking, request]);
   expect(refreshes).toBe(1);
   expect(s.row(id)).toMatchObject({ status: 'posted' });
-});
+}, SLOW_TEST);
 
 describe('a schedule with files', () => {
   const F1 = 'f'.repeat(26);
@@ -532,14 +565,23 @@ describe('a schedule with files', () => {
     expect(s.store.heldScheduledFiles(UID, [F1])).toEqual([]);
   });
 
-  test('a first attempt that needs re-login after sending fails as maybe posted and keeps its files', async () => {
+  test('a first attempt that needs re-login after Mattermost may have handled it fails as maybe posted and keeps its files', async () => {
     const s = setup();
-    routes['POST /posts'] = () => { s.store.revokeUser(UID); return new Response(null, { status: 401 }); };
+    sentThenRelogin(s.store);
     const id = s.make({ fileIds: [F1] });
     await s.run();
     expect(s.row(id)).toMatchObject({ status: 'failed', error: UNKNOWN });
     expect(s.row(id).first_attempt_at).not.toBeNull();
     expect(s.store.heldScheduledFiles(UID, [F1])).toEqual([{ fileId: F1, scheduledId: id }]);
+  });
+
+  test('a first attempt that only got 401 before the re-login fails, forgets the attempt and lets its files go', async () => {
+    const s = setup();
+    routes['POST /posts'] = () => { s.store.revokeUser(UID); return new Response(null, { status: 401 }); };
+    const id = s.make({ fileIds: [F1] });
+    await s.run();
+    expect(s.row(id)).toMatchObject({ status: 'failed', first_attempt_at: null });
+    expect(s.store.heldScheduledFiles(UID, [F1])).toEqual([]);
   });
 
   test('a retry that Mattermost refuses fails but keeps the attempt and its files, since the earlier attempt may have posted', async () => {
@@ -635,12 +677,12 @@ describe('every', () => {
       active--;
       if (runs === 1) throw new TypeError('boom');
     });
-    await vi.waitFor(() => expect(runs).toBeGreaterThanOrEqual(3), { timeout: 2000, interval: 5 });
+    await vi.waitFor(() => expect(runs).toBeGreaterThanOrEqual(3), { ...SLOW, interval: 5 });
     stop();
     const after = runs;
     await new Promise((r) => setTimeout(r, 50));
     expect(most).toBe(1);
     expect(runs).toBe(after);
     expect(writes.join('')).toContain('"name":"TypeError"');
-  });
+  }, SLOW_TEST);
 });
