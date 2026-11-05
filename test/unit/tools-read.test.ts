@@ -28,7 +28,7 @@ function setup() {
     urls.push(`${req.method} ${path}${new URL(req.url).search}`);
     const r = routes[`${req.method} ${path}`];
     if (!r) return Response.json({ id: 'not_found' }, { status: 404 });
-    const out = r(req);
+    const out = await r(req);
     return out instanceof Response ? out : Response.json(out);
   });
   const code = ctx.store.createCode({
@@ -38,13 +38,15 @@ function setup() {
   if (typeof rec !== 'object') throw new Error('code not consumed');
   const { accessToken } = ctx.store.createGrant({ mmUserId: 'u1', clientId: 'c1', scope: 'mattermost', resource: ctx.config.resource, fromCodeHash: rec.codeHash });
   ctx.store.putMmCred('u1', 'mm-access', 'mm-refresh');
-  return async (name: string, args: Record<string, unknown>, isError = false): Promise<string> => {
-    const r = await ctx.req.post('/mcp').set({ authorization: `Bearer ${accessToken}`, accept: 'application/json, text/event-stream', 'content-type': 'application/json' })
-      .send(JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name, arguments: args } }));
+  const post = (name: string, args: Record<string, unknown>) => ctx.req.post('/mcp')
+    .set({ authorization: `Bearer ${accessToken}`, accept: 'application/json, text/event-stream', 'content-type': 'application/json' })
+    .send(JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name, arguments: args } }));
+  return Object.assign(async (name: string, args: Record<string, unknown>, isError = false): Promise<string> => {
+    const r = await post(name, args);
     expect(r.body.result.isError ?? false).toBe(isError);
     last = r.body.result;
     return r.body.result.content[0].text;
-  };
+  }, { post });
 }
 
 const id = (n: number) => `p${String(n).padStart(25, '0')}`;
@@ -831,6 +833,16 @@ describe('list_my_channels', () => {
     const SELF = 's'.repeat(26);
     routes = { ...base(), 'GET /users/me/channels': () => [{ id: SELF, type: 'D', name: 'u1__u1', display_name: '', team_id: '', last_post_at: 2500 }], 'POST /users/ids': () => [{ id: 'u1', username: 'alice' }] };
     expect(await setup()('list_my_channels', {})).toContain(`- @alice（channel_id: ${SELF}、`);
+  });
+
+  test('stops rather than giving up on the partners\' names when the client goes away', async () => {
+    routes = { ...base(), 'POST /users/ids': (req) => new Promise((_, fail) => req.signal.addEventListener('abort', () => fail(req.signal.reason))) };
+    const pending = setup().post('list_my_channels', {});
+    void pending.then(() => undefined, () => undefined);
+    await vi.waitFor(() => expect(hits).toContain('POST /users/ids'));
+    pending.abort();
+    const outcome = () => vi.mocked(process.stdout.write).mock.calls.map(([l]) => JSON.parse(String(l))).find((l) => l.event === 'tool_call')?.outcome;
+    await vi.waitFor(() => expect(outcome()).toBe('upstream_unavailable'));
   });
 
   test('fails on a rate limit while reading the partners\' names, as dmLabel does', async () => {

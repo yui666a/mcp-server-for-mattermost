@@ -3,9 +3,9 @@ import type { Deps } from '../deps.ts';
 import { log } from '../log.ts';
 import type { Store } from '../store.ts';
 import { RateLimited, type Limiter } from './limiter.ts';
-import { refreshTokens, UpstreamUnavailable, type MmTokens } from './upstream.ts';
+import { CallAborted, refreshTokens, UpstreamUnavailable, type MmTokens } from './upstream.ts';
 
-export { RateLimited, UpstreamUnavailable };
+export { CallAborted, RateLimited, UpstreamUnavailable };
 
 export class Reauthorize extends Error {
   name = 'Reauthorize';
@@ -93,7 +93,7 @@ export class MmClient {
     const cred = this.store.getMmCred(mmUserId);
     if (!cred) this.reauthorize(mmUserId, at);
     let res: Response | undefined = await send(cred.access);
-    if (res.status !== 401) return read(res);
+    if (res.status !== 401) return this.reading(read, res, at);
     await discard(res);
     const latest = this.store.getMmCred(mmUserId);
     if (!latest) this.reauthorize(mmUserId, at);
@@ -106,9 +106,19 @@ export class MmClient {
       res = await this.lastChance(mmUserId, at, out.used, send);
     }
     try {
-      return await read(res);
+      return await this.reading(read, res, at);
     } catch (e) {
       if (e instanceof RateLimited && at.doubt) throw new RateLimited(e.retryAfterSec, e.sent, true);
+      throw e;
+    }
+  }
+
+  // Not turning a 4xx into CallAborted: MmError means Mattermost refused, which callers act on (dropping a send_message claim).
+  private async reading<T>(read: Read<T>, res: Response, at: Attempt): Promise<T> {
+    try {
+      return await read(res);
+    } catch (e) {
+      if (at.signal?.aborted && e instanceof UpstreamUnavailable && !(e instanceof CallAborted)) throw new CallAborted(e.message, e.sent, e.status, e.id, e.plainBody);
       throw e;
     }
   }
@@ -118,7 +128,7 @@ export class MmClient {
     try {
       t = await this.untilDeadline(() => this.refreshOnce(mmUserId, cred), at);
     } catch (e) {
-      if (e instanceof UpstreamUnavailable) throw new UpstreamUnavailable(e.message, at.sent);
+      if (e instanceof UpstreamUnavailable) throw new (e instanceof CallAborted ? CallAborted : UpstreamUnavailable)(e.message, at.sent);
       throw e;
     }
     if (t === 'invalid_grant') return { used: cred.version };
@@ -179,7 +189,7 @@ export class MmClient {
         start(),
         new Promise<never>((_, fail) => {
           timer = setTimeout(() => fail(new UpstreamUnavailable('call deadline exceeded', at.sent)), ms);
-          onAbort = () => fail(new UpstreamUnavailable('call aborted', at.sent));
+          onAbort = () => fail(new CallAborted('call aborted', at.sent));
           if (at.signal?.aborted) onAbort();
           else at.signal?.addEventListener('abort', onAbort, { once: true });
         }),
@@ -223,6 +233,7 @@ export class MmClient {
       // A timeout or reset may have reached Mattermost, so only failures before connecting count as unsent.
       if (!NOT_CONNECTED.includes((e as { cause?: { code?: string } })?.cause?.code ?? '')) at.sent = true;
       log('mm_api_failed', { ...fields, error: (e as Error)?.name, ms: this.deps.now() - started });
+      if (at.signal?.aborted) throw new CallAborted('call aborted', at.sent);
       throw new UpstreamUnavailable('Mattermost unreachable', at.sent);
     }
     // Not counting a 401 as sent: Mattermost refuses an invalid session before calling the handler, so nothing was done.

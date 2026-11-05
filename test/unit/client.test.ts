@@ -2,7 +2,7 @@ import { randomBytes } from 'node:crypto';
 import { afterEach, beforeEach, expect, test, vi } from 'vitest';
 import { loadConfig } from '../../src/config.ts';
 import { openDb } from '../../src/db.ts';
-import { CALL_DEADLINE_MS, MmClient, MmError, RateLimited, Reauthorize, UpstreamUnavailable } from '../../src/mattermost/client.ts';
+import { CALL_DEADLINE_MS, CallAborted, MmClient, MmError, RateLimited, Reauthorize, UpstreamUnavailable } from '../../src/mattermost/client.ts';
 import { Limiter } from '../../src/mattermost/limiter.ts';
 import { Store } from '../../src/store.ts';
 import { SLOW, SLOW_TEST } from './helpers.ts';
@@ -450,6 +450,24 @@ test('retryAfterSec from Mattermost is capped at one hour', async () => {
   expect((await failure(client.call('u1', 'GET', '/users/me'))).retryAfterSec).toBe(3600);
 });
 
+test('a call that fails without the caller aborting is not taken for an abort', async () => {
+  store.putMmCred('u1', 'a1', 'r1');
+  api = () => { throw new TypeError('fetch failed', { cause: Object.assign(new Error('reset'), { code: 'ECONNRESET' }) }); };
+  const e = await failure(client.call('u1', 'GET', '/users/me', undefined, new AbortController().signal));
+  expect(e).toBeInstanceOf(UpstreamUnavailable);
+  expect(e).not.toBeInstanceOf(CallAborted);
+});
+
+test('aborting while the body is being read is taken for an abort too', async () => {
+  store.putMmCred('u1', 'a1', 'r1');
+  api = (_access, req) => new Response(new ReadableStream({ start(c) { c.enqueue(new TextEncoder().encode('{"a":')); req.signal.addEventListener('abort', () => c.error(req.signal.reason)); } }), { headers: { 'content-type': 'application/json' } });
+  const ac = new AbortController();
+  const running = failure(client.call('u1', 'GET', '/users/me', undefined, ac.signal));
+  await vi.waitFor(() => expect(apiCalls).toHaveLength(1), SLOW);
+  ac.abort();
+  expect(await running).toBeInstanceOf(CallAborted);
+});
+
 test('aborting the caller signal ends the call and frees its limiter slot', async () => {
   store.putMmCred('u1', 'a1', 'r1');
   api = (_access, req) => new Promise((_, fail) => req.signal.addEventListener('abort', () => fail(req.signal.reason)));
@@ -457,7 +475,7 @@ test('aborting the caller signal ends the call and frees its limiter slot', asyn
   const running = [1, 2, 3, 4].map(() => failure(client.call('u1', 'GET', '/users/me', undefined, ac.signal)));
   expect(await failure(client.call('u1', 'GET', '/users/me'))).toBeInstanceOf(RateLimited);
   ac.abort();
-  for (const e of await Promise.all(running)) expect(e).toBeInstanceOf(UpstreamUnavailable);
+  for (const e of await Promise.all(running)) expect(e).toBeInstanceOf(CallAborted);
   api = () => Response.json({ ok: true });
   expect(await client.call('u1', 'GET', '/users/me')).toEqual({ ok: true });
 });
@@ -472,7 +490,7 @@ test('aborting while waiting on the shared refresh frees the slot at once and th
   const running = [1, 2, 3, 4].map(() => failure(client.call('u1', 'GET', '/users/me', undefined, ac.signal)));
   await vi.waitFor(() => expect(refreshCalls).toEqual(['r1']), SLOW);
   ac.abort();
-  for (const e of await Promise.all(running)) expect(e).toBeInstanceOf(UpstreamUnavailable);
+  for (const e of await Promise.all(running)) expect(e).toBeInstanceOf(CallAborted);
   for (let i = 0; i < 4; i++) limiter.acquire('u1')();
   open();
   await vi.waitFor(() => expect(cred()?.access).toBe('a2'), SLOW);
