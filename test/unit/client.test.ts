@@ -5,10 +5,7 @@ import { openDb } from '../../src/db.ts';
 import { CALL_DEADLINE_MS, MmClient, MmError, RateLimited, Reauthorize, UpstreamUnavailable } from '../../src/mattermost/client.ts';
 import { Limiter } from '../../src/mattermost/limiter.ts';
 import { Store } from '../../src/store.ts';
-
-// Not vitest's defaults (1 s for vi.waitFor, 5 s for a test): on a busy machine the awaited event can take seconds.
-const SLOW = { timeout: 10_000 };
-const SLOW_TEST = 30_000;
+import { SLOW, SLOW_TEST } from './helpers.ts';
 
 const cfg = loadConfig({
   PUBLIC_URL: 'https://mm.example', TOKEN_ENC_KEY: randomBytes(32).toString('base64'),
