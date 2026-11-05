@@ -640,13 +640,29 @@ describe('one schedule in full', () => {
     expect(r.text.endsWith(`${BODY_HEAD}pending one`)).toBe(true);
   });
 
-  test('a body that cannot be decrypted says how to fix it instead', async () => {
+  test('a pending body that cannot be decrypted says, on the last line, how to fix it', async () => {
     const s = setup();
     const id = await s.schedule({ message: 'x' });
     s.setRow(id, "message_sealed = 'broken'");
     const r = await s.call('list_scheduled_messages', { id });
-    expect(r.text).toContain('本文: （復号できません。本文を直すには、update_scheduled_message に新しい本文全体を渡すか');
+    expect(r.isError).toBe(false);
+    expect(r.text.endsWith('本文: （復号できません。本文を直すには、update_scheduled_message に新しい本文全体を渡すか、取り消して予約し直してください）')).toBe(true);
     expect(r.text).not.toContain(BODY_HEAD);
+  });
+
+  test('a body that cannot be decrypted on a schedule no longer pending gets no hint to change it', async () => {
+    const s = setup();
+    const id = await s.schedule({ message: 'x' });
+    s.setRow(id, "message_sealed = 'broken', status = 'failed', error = 'nope'");
+    const r = await s.call('list_scheduled_messages', { id });
+    expect(r.isError).toBe(false);
+    expect(r.text.endsWith('本文: （復号できません）')).toBe(true);
+  });
+
+  test('an empty id is refused by the schema rather than read as no id', async () => {
+    const s = setup();
+    await s.schedule({ message: 'x' });
+    expect((await s.call('list_scheduled_messages', { id: '' })).isError).toBe(true);
   });
 
   test('update says how to check the body only when it changed the body', async () => {
