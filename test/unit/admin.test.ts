@@ -120,6 +120,9 @@ test.each([[[]], [['bogus']], [['delete-client']], [['list-clients', '--wat']], 
   expect(r.out).toBe('');
 });
 
+// Not vitest's 5 s: each of these starts node as a child process, which takes seconds on a busy machine.
+const CHILD_TIMEOUT = 30_000;
+
 test('the CLI runs with DB_PATH as the only environment variable', () => {
   const path = join(mkdtempSync(join(tmpdir(), 'admin-')), 'mcp.sqlite');
   const db = openDb(path);
@@ -131,7 +134,7 @@ test('the CLI runs with DB_PATH as the only environment variable', () => {
   const bad = spawnSync(process.execPath, ['src/admin.ts', 'bogus'], { env });
   expect(bad.status).not.toBe(0);
   expect(bad.stderr.toString()).toContain('Usage');
-});
+}, CHILD_TIMEOUT);
 
 test('a missing DB file is an error and is not created', () => {
   const path = join(mkdtempSync(join(tmpdir(), 'admin-')), 'missing.sqlite');
@@ -140,7 +143,7 @@ test('a missing DB file is an error and is not created', () => {
   expect(r.stderr.toString()).toContain(path);
   expect(r.stdout.toString()).toBe('');
   expect(existsSync(path)).toBe(false);
-});
+}, CHILD_TIMEOUT);
 
 test('a DB error prints a one-line error without a stack trace', () => {
   const path = join(mkdtempSync(join(tmpdir(), 'admin-')), 'bad.sqlite');
@@ -148,4 +151,4 @@ test('a DB error prints a one-line error without a stack trace', () => {
   const r = spawnSync(process.execPath, ['src/admin.ts', 'list-clients'], { env: { DB_PATH: path, PATH: process.env.PATH ?? '' } });
   expect(r.status).toBe(1);
   expect(r.stderr.toString()).toMatch(/^error: .+\n$/);
-});
+}, CHILD_TIMEOUT);
