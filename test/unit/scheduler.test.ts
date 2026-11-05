@@ -3,7 +3,7 @@ import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 import { every, tick } from '../../src/scheduler.ts';
 import { makeApp } from './helpers.ts';
 
-// Not vitest's defaults (1 s for vi.waitFor, 5 s for a test): on a busy machine the awaited event can take seconds.
+// Not 2 s, nor vitest's 5 s for a test: on a busy machine the awaited event can take seconds.
 const SLOW = { timeout: 10_000 };
 const SLOW_TEST = 30_000;
 
