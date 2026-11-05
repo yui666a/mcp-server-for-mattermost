@@ -2,6 +2,7 @@ import type { McpServer, ToolCallback } from '@modelcontextprotocol/sdk/server/m
 import type { ToolAnnotations } from '@modelcontextprotocol/sdk/types.js';
 import { z } from 'zod';
 import { MmError } from '../mattermost/client.ts';
+import { idArg } from './args.ts';
 import { ASK_ADMIN, formatPost, formatTime, InputError, postUserIds, RETRY_SOON, type MmPost } from './format.ts';
 import { pageCursor, paginate } from './paging.ts';
 import { myTeams, type Mm, type MmChannel } from './resolve.ts';
@@ -20,7 +21,7 @@ const THREAD_PAGE = 200;
 
 const CRT_OFF = 'スレッドの折りたたみ（CRT）が無効なため、スレッドのフォローは画面にも通知にも効きません。返信の通知はスレッドごとには止められず、Mattermost の通知の設定（すべてのスレッドに効く）で変えます。';
 
-const POST_ID = z.string().regex(/^[A-Za-z0-9]{26}$/).describe('スレッドの親投稿か、スレッド内の投稿の post_id');
+const POST_ID = idArg.describe('スレッドの親投稿か、スレッド内の投稿の post_id');
 export const missing = (e: unknown) => e instanceof MmError && (e.status === 403 || e.status === 404);
 const followAnnotations: ToolAnnotations = { readOnlyHint: false, destructiveHint: false, idempotentHint: true };
 

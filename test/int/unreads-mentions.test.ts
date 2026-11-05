@@ -1,7 +1,7 @@
 import { randomBytes } from 'node:crypto';
 import type request from 'supertest';
 import { afterAll, beforeAll, describe, expect, test, vi } from 'vitest';
-import { intApp, mcpAuthorize, requireMm, mmDeauthorize, mmLoginCookie, type Cred } from './helpers.ts';
+import { intApp, mcpAuthorize, requireMm, mmDeauthorize, mmLoginCookie, withUsers, type Cred } from './helpers.ts';
 
 const e = await requireMm();
 
@@ -154,10 +154,11 @@ describe('get_unreads and get_mentions against the local Mattermost', () => {
     }
   });
 
-  test('get_mentions pages back across days past the 100-hit search cap, with every mention once and in order', async () => {
+  test('get_mentions pages back across days past the 100-hit search cap, with every mention once and in order', () => withUsers(async (made) => {
     const name = `u6${TAG}`;
     const cred = { id: '', username: name, password: 'Passw0rd!dev123' };
     cred.id = (await mmApi<{ id: string }>(e.adminToken, 'POST', '/users', { username: name, email: `${name}@example.com`, password: cred.password })).id;
+    made.push(cred.id);
     await mmApi(e.adminToken, 'POST', `/teams/${e.teams.a.id}/members`, { team_id: e.teams.a.id, user_id: cred.id });
     const room = await mmApi<{ id: string }>(e.adminToken, 'POST', '/channels', { team_id: e.teams.a.id, name: `t6d-${TAG}`, display_name: `t6d ${TAG}`, type: 'O' });
     await mmApi(e.adminToken, 'POST', `/channels/${room.id}/members`, { user_id: cred.id });
@@ -177,7 +178,6 @@ describe('get_unreads and get_mentions against the local Mattermost', () => {
       expect(seen).toEqual(expected.sort((a, b) => b.create_at - a.create_at).map((p) => p.id));
     } finally {
       await mmApi(e.adminToken, 'DELETE', `/channels/${room.id}`);
-      await mmApi(e.adminToken, 'DELETE', `/users/${cred.id}`);
     }
-  });
+  }));
 });

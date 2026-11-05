@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'vitest';
-import { decodeCursor, encodeCursor, fileLine, formatPost, formatTime, indented, InputError, localTime, oneLine, postTruncated, postUserIds, truncate } from '../../src/mcp/format.ts';
+import { decodeCursor, encodeCursor, fileLine, formatPost, formatTime, indented, InputError, localTime, oneLine, postTruncated, postUserIds, truncate, unformat } from '../../src/mcp/format.ts';
 
 test('truncation keeps grapheme clusters', () => {
   const s = '👨‍👩‍👧'.repeat(4001); const r = truncate(s);
@@ -366,5 +366,31 @@ describe('values that must stay on one line', () => {
 
   test('indented keeps a multi-line value, indenting its continuation lines by 4', () => {
     expect(indented('ヘッダー', 'a\r\nb\u2028c')).toEqual(['ヘッダー: a', '    b', '    c']);
+  });
+});
+
+describe('unformat', () => {
+  test.each([
+    ['spaces and line breaks', ' \t\n@alice \n', '@alice'],
+    ['format characters (Cf) and BOM', '\u200b\ufeff@alice\u200d\u2060', '@alice'],
+    ['a Cf character outside the BMP (a surrogate pair)', '\u{E0001}@alice\u{E0001}\u{E007F}', '@alice'],
+    ['ideographic spaces', '\u3000town\u3000', 'town'],
+  ])('removes %s from both ends only', (_, input, want) => {
+    expect(unformat(input)).toBe(want);
+    expect(unformat(`a${input}b`)).toBe(`a${input}b`);
+  });
+
+  test('keeps a lone surrogate and an emoji at the end, and turns spaces only into an empty string', () => {
+    expect(unformat('a\uDC00')).toBe('a\uDC00');
+    expect(unformat(' \uD83D\uDE00 ')).toBe('\uD83D\uDE00');
+    expect(unformat(' \u200b ')).toBe('');
+  });
+
+  test('takes time linear in the length, even for a long run of spaces followed by other text', () => {
+    const long = `a${' '.repeat(200_000)}b${' '.repeat(200_000)}`;
+    const started = performance.now();
+    expect(unformat(long)).toBe(`a${' '.repeat(200_000)}b`);
+    // Not a tight limit: the quadratic regex took over ten seconds here, so a loaded machine still tells them apart.
+    expect(performance.now() - started).toBeLessThan(1000);
   });
 });
