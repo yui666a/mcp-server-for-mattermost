@@ -106,7 +106,7 @@ export async function markAsRead(mm: Mm, uid: string, args: Args): Promise<CallT
       let label = `チャンネル「${item.channel}」`;
       try {
         const ch = await resolveChannel(mm, uid, item.channel);
-        label = `チャンネル ${oneLine(ch.displayName || ch.name)}（channel_id: ${ch.id}）`;
+        label = `チャンネル（channel_id: ${ch.id}、表示名: ${oneLine(ch.displayName || ch.name)}）`;
         if (seen.has(ch.id)) throw new InputError('同じチャンネルがほかの項目と重なっています。1 件にまとめてください。');
         seen.add(ch.id);
         const me = await mm.call<Member>(uid, 'GET', `/channels/${ch.id}/members/me`).catch((e) => {
