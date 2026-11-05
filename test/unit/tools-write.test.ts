@@ -842,6 +842,7 @@ describe('send_message with files', () => {
     const d = t.inputSchema.properties.files.description;
     expect(d).toContain('チャットに添付されたファイルは、コード実行で中身を読めるときだけ content_base64 で送れる');
     expect(d).toContain('PC でコマンドを実行できないクライアントでは、利用者の PC にあるテキストのファイルも、読めて収まれば content_text で送ってよい');
+    expect(d).toContain('中身に � や化けた文字が見えるとき、Excel などで作った CSV のように元の文字コードや BOM が要りそうなときは、content_text で送らず prepare_upload の説明の案内に従う');
     expect(d).toContain('読めないファイル、収まらないファイル、それ以外の利用者の PC にあるファイルは、prepare_upload の説明の案内に従う');
   });
 
