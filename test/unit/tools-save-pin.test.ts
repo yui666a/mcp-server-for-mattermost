@@ -153,7 +153,7 @@ describe('the checks before save_post, pin_post and unpin_post', () => {
   };
   test.each(CHECKED.flatMap((name) => [[name, 403], [name, 404]] as const))(
     '%s refuses a post of a channel the user has not joined (members/me %i)', async (name, status) => {
-      routes = { ...post(), [`GET /channels/${CH}/members/me`]: mmError(status, 'api.context.permissions.app_error') };
+      routes = { ...post(), [`GET /channels/${CH}/members/me`]: mmError(status, status === 403 ? 'api.context.permissions.app_error' : 'app.channel.get_member.missing.app_error') };
       const r = await setup().call(name, { post_id: POST });
       expect(r).toEqual({ isError: true, text: status === 404 ? NOT_MEMBER[name] : `このチャンネルに参加しているかを確かめられませんでした（参加していないか、Mattermost の一時的な障害）。${NOT_MEMBER[name]}参加しているはずなら、少し待ってから再試行してください。` });
       expect(hits).not.toContain(WRITE[name]);

@@ -110,7 +110,7 @@ export async function markAsRead(mm: Mm, uid: string, args: Args): Promise<CallT
         const me = await mm.call<Member>(uid, 'GET', `/channels/${ch.id}/members/me`).catch((e) => {
           // Not saying a 403 means not joined: Mattermost also answers 403 when its permission check fails on a transient error.
           if (e instanceof MmError && e.status === 403) throw new InputError('このチャンネルに参加しているかを確かめられませんでした（参加していないか、Mattermost の一時的な障害）。参加しているはずなら、少し待ってから再試行してください。');
-          if (missing(e)) throw new InputError('このチャンネルに参加していません。');
+          if (e instanceof MmError && e.status === 404) throw new InputError('このチャンネルに参加していません。');
           throw e;
         });
         const raw = ch.raw as unknown as Counts;
@@ -166,7 +166,7 @@ export async function markAsRead(mm: Mm, uid: string, args: Args): Promise<CallT
           // Not pointing a thread of a channel the user has not joined to follow_thread: follow_thread refuses it. A public channel's posts are readable without joining, so the 404 alone does not tell.
           await mm.call(uid, 'GET', `/channels/${p.channel_id}/members/me`).catch((m) => {
             if (m instanceof MmError && m.status === 403) throw new InputError('このスレッドのチャンネルに参加しているかを確かめられませんでした（参加していないか、Mattermost の一時的な障害）。参加していないなら、既読にするものはありません。参加しているはずなら、少し待ってから再試行してください。');
-            if (missing(m)) throw new InputError('このスレッドのチャンネルに参加していません。参加していないチャンネルのスレッドは未読に数えられないので、既読にするものがありません。');
+            if (m instanceof MmError && m.status === 404) throw new InputError('このスレッドのチャンネルに参加していません。参加していないチャンネルのスレッドは未読に数えられないので、既読にするものがありません。');
             throw m;
           });
           throw new InputError('このスレッドはフォローしていないため、既読の状態がありません（フォローしていないスレッドの返信は未読に数えられません）。フォローするなら follow_thread を使ってください（フォローした時点までの返信が既読になります）。');
