@@ -83,7 +83,7 @@ describe('scheduled messages against the local Mattermost', () => {
   });
 
   test('a schedule to a user never messaged before creates the DM when scheduling and is posted there when its time comes', async () => {
-    const name = `sdm${TAG}`.toLowerCase();
+    const name = `sdm${TAG}`;
     const u = await mmApi<{ id: string }>(e.adminToken, 'POST', '/users', { username: name, email: `${name}@example.com`, password: 'Passw0rd!dev123' });
     const message = `${TAG} scheduled dm`;
     const made = await call('schedule_message', { channel: `@${name}`, message, at: inTwoMinutes() });
@@ -134,6 +134,26 @@ describe('scheduled messages against the local Mattermost', () => {
     const row = await rowOf(id);
     expect(row).toContain('状態: 失敗');
     expect(/失敗の理由: (.+)/.exec(row)?.[1]).toContain('アーカイブ');
+  });
+
+  test('schedule_message refuses files, which only send_message takes, instead of scheduling without the attachment', async () => {
+    const message = `${TAG} with inline files`;
+    const r = await call('schedule_message', { channel: channel.id, message, at: inTwoMinutes(), files: [{ name: 'a.txt', content_text: 'hello' }] });
+    expect(r.isError).toBe(true);
+    expect(r.content[0].text).toContain('受けない引数です: files');
+    expect(r.content[0].text).toContain('file_ids');
+    expect((await call('list_scheduled_messages', {})).content[0].text).not.toContain(message);
+  });
+
+  test('update_scheduled_message refuses file_ids and leaves the schedule as it was', async () => {
+    const message = `${TAG} kept as is`;
+    const id = await schedule(channel.id, message);
+    const r = await call('update_scheduled_message', { id, message: `${TAG} changed`, file_ids: ['a'.repeat(26)] });
+    expect(r.isError).toBe(true);
+    expect(r.content[0].text).toContain('受けない引数です: file_ids');
+    expect(r.content[0].text).toContain('cancel_scheduled_message');
+    expect(await rowOf(id)).toContain(message);
+    expect((await call('cancel_scheduled_message', { id })).isError).toBeFalsy();
   });
 
   afterAll(() => vi.restoreAllMocks());

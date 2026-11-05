@@ -81,11 +81,12 @@ docker compose exec mcp node src/admin.ts list-clients               # 登録さ
 docker compose exec mcp node src/admin.ts list-clients --unauthorized # 未認可の登録だけ
 docker compose exec mcp node src/admin.ts delete-client <client_id>   # 登録を消す。そのクライアントはコネクタの追加し直しが要る
 docker compose exec mcp node src/admin.ts purge-credentials          # 認可途中の状態、grant、トークン、アップロード URL、重複防止の記録を消す。登録は残す
-docker compose exec mcp node src/admin.ts invalidate-scheduled       # 待機中と投稿中の予約をすべて失敗にする。投稿済みと失敗の予約は残す
 ```
 
 `purge-credentials` を稼働中に実行すると、全利用者が再ログインになる。
-通常はバックアップからの復元でだけ使い、そのときは `invalidate-scheduled` も続けて実行する（下の「バックアップと復元」）。
+通常はバックアップからの復元でだけ使い、そのときは `invalidate-scheduled`（待機中と投稿中の予約をすべて失敗にする。投稿済みと失敗の予約は残す）も続けて実行する。
+復元では、どちらも MCP サーバーを起動する前に、単独のコンテナで実行する（下の「バックアップと復元」）。
+`invalidate-scheduled` は稼働中には実行しない。巡回が投稿している途中の予約まで失敗にし、失敗の理由の文言も復元のためのものであるため。
 
 ## 未認可の登録が上限に近いとき
 
