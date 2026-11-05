@@ -2,6 +2,7 @@ import type { DatabaseSync } from 'node:sqlite';
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 import { every, tick } from '../../src/scheduler.ts';
 import { makeApp, SLOW, SLOW_TEST } from './helpers.ts';
+import { RateLimited } from '../../src/mattermost/client.ts';
 
 type Route = (req: Request, body: any) => unknown;
 let routes: Record<string, Route>;
@@ -186,6 +187,15 @@ describe('a temporary failure puts the schedule back to pending for the next tic
     const id = s.make();
     await s.run();
     expect(s.row(id)).toMatchObject({ status: 'pending', first_attempt_at: null });
+  });
+
+  test('a rate limit after an earlier request of the call may have posted keeps the attempt, so the next tick looks for the post', async () => {
+    const s = setup();
+    vi.spyOn(s.mm, 'call').mockRejectedValueOnce(new RateLimited(5, true, true));
+    const id = s.make();
+    await s.run();
+    expect(s.row(id)).toMatchObject({ status: 'pending', first_attempt_at: NOW });
+    expect(s.row(id).pending_post_id).toBeTruthy();
   });
 
   test('maybe sent: keeps the attempt, so the row can no longer be changed', async () => {

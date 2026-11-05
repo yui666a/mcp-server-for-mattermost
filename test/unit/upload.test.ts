@@ -2,6 +2,7 @@ import { request as httpRequest } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import express from 'express';
 import { uploadHandler } from '../../src/upload.ts';
+import { RateLimited } from '../../src/mattermost/client.ts';
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 import { makeApp } from './helpers.ts';
 
@@ -120,6 +121,16 @@ describe('POST /mcp/upload/:token', () => {
     expect(r.status).toBe(400);
     expect(r.text).toContain('ファイル「a.mov」は大きすぎるため添付できません');
     expect(r.text).toContain('同じ URL で');
+  });
+
+  test.each([[false, '同じ URL で', 200], [true, 'URL を発行し直して', 404]])('a 429 leaves the URL usable unless an earlier request of the call may have uploaded the file (doubt: %s)', async (doubt, wording, next) => {
+    const s = setup();
+    vi.spyOn(s.mm, 'call').mockRejectedValueOnce(new RateLimited(3, true, doubt));
+    const url = s.url();
+    const r = await s.req.post(url).attach('file', Buffer.from('x'), 'a.txt');
+    expect(r.status).toBe(429);
+    expect(r.text).toContain(wording);
+    expect((await s.req.post(url).attach('file', Buffer.from('x'), 'a.txt')).status).toBe(next);
   });
 
   test('a failure after some files went to Mattermost lists them and asks for a new URL', async () => {
