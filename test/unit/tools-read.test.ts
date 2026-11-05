@@ -1823,6 +1823,7 @@ describe('read_channel', () => {
   });
 
   test('with nothing unread, does not read again even if Mattermost names a post before', async () => {
+    // Not a combination Mattermost gives today (prev_post_id is '' with nothing unread): it pins that an empty first page is never read again.
     routes = { ...base(), [`GET /users/u1/channels/${CH}/posts/unread`]: () => ({ order: [], posts: {}, prev_post_id: id(1) }) };
     const out = await setup()('read_channel', { channel: CH, from: 'unread' });
     expect(out).toContain('未読はありません。');
@@ -1949,7 +1950,7 @@ describe('read_channel with since and until', () => {
   const byNewest = () => [...corpus].sort((a, b) => b.create_at - a.create_at || byTie(a, b));
   const byOldest = () => [...corpus].sort((a, b) => a.create_at - b.create_at || byTie(a, b));
   const asList = (ps: P[]) => ({ order: ps.map((p) => p.id), posts: Object.fromEntries(ps.map((p) => [p.id, p])) });
-  // Like Mattermost: page/per_page by offset newest first, after= (before=) by create_at strictly later (earlier) oldest (newest) first,
+  // Like Mattermost: page/per_page by offset newest first, after= (before=) by create_at strictly later (earlier), the oldest (newest) per_page, listed newest first,
   // nothing when the cursor's post is gone, at most 200 per call.
   const postsRoute = (req: Request) => {
     const q = new URL(req.url).searchParams;
@@ -1959,7 +1960,7 @@ describe('read_channel with since and until', () => {
     const before = q.get('before');
     if (after) {
       const t = at(after);
-      return asList(t === undefined ? [] : byOldest().filter((p) => p.create_at > t).slice(0, per));
+      return asList(t === undefined ? [] : byOldest().filter((p) => p.create_at > t).slice(0, per).reverse());
     }
     if (before) {
       const t = at(before);
@@ -1968,13 +1969,12 @@ describe('read_channel with since and until', () => {
     const k = Number(q.get('page') ?? 0);
     return asList(byNewest().slice(k * per, (k + 1) * per));
   };
-  // Like Mattermost: the oldest post after last_viewed_at, then those strictly after it.
-  // Like Mattermost: the oldest post after last_viewed_at, then those strictly after it, naming the newest post before it.
+  // Like Mattermost: the oldest post after last_viewed_at, then those strictly after it, listed newest first, naming the newest post before it.
   const unreadRoute = (viewed: number) => (req: Request) => {
     const after = Number(new URL(req.url).searchParams.get('limit_after'));
     const first = byOldest().find((p) => p.create_at > viewed);
     const prev = first ? byNewest().find((p) => p.create_at < first.create_at)?.id ?? '' : '';
-    return { ...asList(first ? [first, ...byOldest().filter((p) => p.create_at > first.create_at).slice(0, after - 1)] : []), prev_post_id: prev };
+    return { ...asList(first ? [first, ...byOldest().filter((p) => p.create_at > first.create_at).slice(0, after - 1)].reverse() : []), prev_post_id: prev };
   };
   const base = (): Record<string, Route> => ({
     [`GET /channels/${CH}`]: () => ({ id: CH, name: 'town', display_name: 'Town', team_id: TEAM, type: 'O' }),
@@ -2102,6 +2102,16 @@ describe('read_channel with since and until', () => {
     expect(out).toContain(GONE);
     expect(out).toContain(how);
     expect(out).not.toContain('until は前と同じ値');
+  });
+
+  test('a range cursor reads its page with one fetch when no millisecond is shared', async () => {
+    fill(20);
+    routes = base();
+    const call = setup();
+    const first = await call('read_channel', { channel: CH, since: iso(1), limit: 3 });
+    hits = []; urls = [];
+    await call('read_channel', { channel: CH, cursor: cursorIn(first) });
+    expect(pages().filter((q) => q.has('after'))).toHaveLength(1);
   });
 
   test('a later range page with an until says to pass the same until again', async () => {
@@ -2265,7 +2275,7 @@ describe('read_channel with since and until', () => {
 
   test('an unread cursor still reads on as unread, with the CRT decision', async () => {
     fill(10);
-    routes = { ...base(), [`GET /channels/${CH}/members/me`]: () => ({ last_viewed_at: T0 }), 'GET /config/client': () => ({ CollapsedThreads: 'always_on' }), [`GET /users/u1/channels/${CH}/posts/unread`]: () => asList(corpus.slice(1, 4)) };
+    routes = { ...base(), [`GET /channels/${CH}/members/me`]: () => ({ last_viewed_at: T0 }), 'GET /config/client': () => ({ CollapsedThreads: 'always_on' }), [`GET /users/u1/channels/${CH}/posts/unread`]: () => asList(corpus.slice(1, 4).reverse()) };
     const call = setup();
     const first = await call('read_channel', { channel: CH, from: 'unread', limit: 2 });
     hits = []; urls = [];
