@@ -276,6 +276,7 @@ describe('follow_thread and unfollow_thread', () => {
       expect(r.isError, String(status)).toBe(true);
       expect(r.text).toContain(status === 404 ? 'このチャンネルに参加していません。' : 'このチャンネルに参加しているかを確かめられませんでした（参加していないか、Mattermost の一時的な障害）。');
       expect(r.text).toContain('参加していないチャンネルのスレッドは、フォローしても一覧にも通知にも出ません。');
+      if (status === 403) expect(r.text).toContain('続くなら、チャンネルから外されたか、サーバーの権限の設定で読む権限が外されている可能性があるので、管理者に確かめてください。');
       expect(writes()).toEqual([]);
     }
   });

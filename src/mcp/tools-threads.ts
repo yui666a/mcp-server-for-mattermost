@@ -120,7 +120,7 @@ export function registerThreadTools(server: McpServer, ctx: ToolContext): void {
       const r = await rootOf(mm, post_id);
       await mm.call(uid, 'GET', `/channels/${r.channelId}/members/me`).catch((e) => {
         // Not saying a 403 means not joined: Mattermost also answers 403 when its permission check fails on a transient error.
-        if (e instanceof MmError && e.status === 403) throw new InputError('このチャンネルに参加しているかを確かめられませんでした（参加していないか、Mattermost の一時的な障害）。参加していないチャンネルのスレッドは、フォローしても一覧にも通知にも出ません。参加しているはずなら、少し待ってから再試行してください。');
+        if (e instanceof MmError && e.status === 403) throw new InputError('このチャンネルに参加しているかを確かめられませんでした（参加していないか、Mattermost の一時的な障害）。参加していないチャンネルのスレッドは、フォローしても一覧にも通知にも出ません。参加しているはずなら、少し待ってから再試行してください。続くなら、チャンネルから外されたか、サーバーの権限の設定で読む権限が外されている可能性があるので、管理者に確かめてください。');
         if (e instanceof MmError && e.status === 404) throw new InputError('このチャンネルに参加していません。参加していないチャンネルのスレッドは、フォローしても一覧にも通知にも出ません。');
         throw e;
       });
