@@ -992,7 +992,7 @@ export function registerReadTools(server: McpServer, ctx: ToolContext): void {
         } catch (e) {
           if (!(e instanceof MmError)) throw e;
           threadsFailed = true;
-          notes.push(`（未読のスレッドを取得できませんでした（Mattermost のエラー ${e.status}: ${e.message}）。チャンネルの未読だけを出しています）`);
+          notes.push(`（未読のスレッドを取得できませんでした（Mattermost のエラー ${e.status}${e.message.trim() ? `: ${e.message}` : ''}）。チャンネルの未読だけを出しています）`);
         }
       }
       const unread = members.flatMap((mb) => {
