@@ -242,7 +242,7 @@ describe('reactions, edits and system messages', () => {
     });
 
     test('keeps every user the line names, and none of the emoji past where even the shortest names stop fitting', () => {
-      // 20-letter emoji names: an item is 28 with the shortest name, so 8 + 28 + 140 × 29 = 4096 > 4000 stops the estimate at 137 emoji.
+      // 20-letter emoji names: an item is 28 with the shortest name, so adding the 138th (8 + 28 + 137 × 29 = 4009 > 4000) stops the estimate at 137 emoji.
       const many = Array.from({ length: 300 }, (_, i) => r(`u${i}`, `e${i}`.padEnd(20, 'x')));
       const post = { ...p, user_id: 'author', metadata: { reactions: many } };
       const kept = postUserIds(post);
