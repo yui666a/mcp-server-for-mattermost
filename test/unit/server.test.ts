@@ -52,3 +52,13 @@ test.each([
   expect((await client.callTool({ name: 'get_user', arguments: args })).isError).toBe(true);
   expect(toolCalls()).toEqual([expect.objectContaining({ tool: 'get_user', outcome: 'invalid_args' })]);
 });
+
+test.each([
+  ['a message', 'denied', 'Mattermost がエラーを返しました（403）: denied'],
+  ['no message', '', 'Mattermost がエラーを返しました（403）。'],
+  ['a blank message', '  ', 'Mattermost がエラーを返しました（403）。'],
+])('a Mattermost error with %s is worded without a dangling colon', async (_, message, text) => {
+  const { MmError } = await import('../../src/mattermost/client.ts');
+  const { failureText } = await import('../../src/mcp/server.ts');
+  expect(failureText(new MmError(403, 'x', message))).toBe(text);
+});
