@@ -80,8 +80,15 @@ const refusalWorded = (who: string, table = CREATE_REFUSED) => (e: unknown): nev
 export async function resolveChannel(mm: Mm, userId: string, spec: string, opts: { create?: boolean } = {}): Promise<ResolvedChannel> {
   const s = spec.trim();
   if (ID.test(s)) {
-    const c = await fetchChannel(mm, userId, `/channels/${s}`);
-    return ref(c, await teamNameOf(mm, userId, c.team_id));
+    const c = await fetchChannel(mm, userId, `/channels/${s}`).catch(async (e) => {
+      // Only on 404 and only in lower case: a 403 means the ID exists, and a channel name cannot contain upper case.
+      if (!(e instanceof ChannelFetchError && e.status === 404 && /^[a-z0-9]{26}$/.test(s))) throw e;
+      const found = await byName(mm, userId, s, await myTeams(mm, userId));
+      if (found.length > 1) throw new Ambiguous(s, found.map((c) => ({ team: c.teamName, name: c.name, id: c.id })));
+      if (!found.length) throw e;
+      return found[0];
+    });
+    return 'raw' in c ? c : ref(c, await teamNameOf(mm, userId, c.team_id));
   }
   const slash = s.indexOf('/');
   if (slash > 0) {
@@ -106,18 +113,23 @@ export async function resolveChannel(mm: Mm, userId: string, spec: string, opts:
     });
     return { ...ref(c, teams[0].name), displayName: `@${other.username}` };
   }
+  const found = await byName(mm, userId, s, teams);
+  if (found.length > 1) throw new Ambiguous(s, found.map((c) => ({ team: c.teamName, name: c.name, id: c.id })));
+  if (!found.length) throw new InputError(`チャンネル「${s}」が見つかりません。`);
+  return found[0];
+}
+
+async function byName(mm: Mm, userId: string, name: string, teams: MmTeam[]): Promise<ResolvedChannel[]> {
   const found: ResolvedChannel[] = [];
   // Sequential rather than Promise.all: parallel lookups would exceed the per-user concurrency limit.
   for (const t of teams) {
-    const c = await mm.call<MmChannelFull>(userId, 'GET', `/teams/${t.id}/channels/name/${s}`).catch((e) => {
+    const c = await mm.call<MmChannelFull>(userId, 'GET', `/teams/${t.id}/channels/name/${name}`).catch((e) => {
       if (missing(e)) return undefined;
       throw e;
     });
     if (c) found.push(ref(c, t.name));
   }
-  if (found.length > 1) throw new Ambiguous(s, found.map((c) => ({ team: c.teamName, name: c.name, id: c.id })));
-  if (!found.length) throw new InputError(`チャンネル「${s}」が見つかりません。`);
-  return found[0];
+  return found;
 }
 
 const ONE_OTHER = 'グループ DM には、自分以外に 2 人以上を指定してください。1 人との DM は @ユーザー名 で指定します。';
