@@ -423,7 +423,7 @@ export function registerReadTools(server: McpServer, ctx: ToolContext): void {
 
   // Not the channel's own team for the permalink of a DM or group DM: they have none, so the user's first team.
   async function places(mm: Mm, archived = true): Promise<(channelId: string) => { where: string; team: string }> {
-    // Not the default listing: it leaves out archived channels the user is still in, where saved posts and files can sit.
+    // Not the default listing unless archived is false: it leaves out archived channels the user is still in, where saved posts can sit.
     const listed = await mm.call<(MmChannel & { delete_at?: number })[]>(uid, 'GET', archived ? '/users/me/channels?include_deleted=true' : '/users/me/channels');
     const channels = new Map(listed.map((x) => [x.id, x]));
     const teams = await myTeams(mm, uid);
