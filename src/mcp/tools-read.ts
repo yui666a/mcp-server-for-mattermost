@@ -185,11 +185,28 @@ export function channelLines(c: ChannelRef): string[] {
   ];
 }
 
+const RETRY = '参加しているはずなら、Mattermost の一時的な障害の可能性があります。少し待ってから再試行してください。';
+const ASK_ADMIN = '続くなら、チャンネルから外されたか、サーバーの権限の設定で読む権限が外されている可能性があるので、管理者に確かめてください。';
+
+// For a post fetched by id: get_post and read_thread word its 403 and 404 alike.
+function postError(e: unknown): never {
+  if (e instanceof MmError && e.status === 403) throw new InputError(`この投稿を見る権限がありません（参加していない非公開チャンネルなど）。${RETRY}${ASK_ADMIN}`);
+  if (e instanceof MmError && e.status === 404) throw new InputError('投稿が見つかりません（削除されたか、存在しません）');
+  throw e;
+}
+
+// For the channel of a post already read: Mattermost may still refuse it on a passing failure, or after the channel went away in between.
+function postChannelError(e: unknown): never {
+  if (e instanceof MmError && e.status === 403) throw new InputError(`この投稿のチャンネルを見る権限がありません。${RETRY}${ASK_ADMIN}`);
+  if (e instanceof MmError && e.status === 404) throw new InputError('この投稿のチャンネルが見つかりません（取得の合間に削除されたなど）。');
+  throw e;
+}
+
 function channelError(e: unknown): never {
   // Not converting a missing team: /teams/name/{team}/channels/name/{channel} answers it with 404 too.
   if (e instanceof ChannelFetchError && e.id !== 'app.team.get_by_name.missing.app_error') {
     if (e.status === 403) throw new InputError('このチャンネルを見る権限がありません（参加していない非公開チャンネルなど）。参加しているはずなら、Mattermost の一時的な障害の可能性があります。少し待ってから再試行してください。続くなら、チャンネルから外されたか、サーバーの権限の設定で読む権限が外されている可能性があるので、管理者に確かめてください。');
-    if (e.status === 404) throw new InputError('チャンネルが見つかりません（参加していない非公開チャンネルを名前で指定した場合も、Mattermost はこの結果を返します）');
+    if (e.status === 404) throw new InputError(`チャンネルが見つかりません（参加していない非公開チャンネルを名前で指定した場合も、Mattermost はこの結果を返します）。名前や ID の誤りなら search_channels で確かめてください。${RETRY}${ASK_ADMIN}`);
   }
   throw e;
 }
@@ -714,7 +731,7 @@ export function registerReadTools(server: McpServer, ctx: ToolContext): void {
         const me = await mm.call<{ last_viewed_at: number }>(uid, 'GET', `/channels/${ch.id}/members/me`).catch((e) => {
           if (e instanceof MmError && e.status === 404) throw new InputError('このチャンネルに参加していないため、未読の位置がありません。from: "latest" で読んでください。');
           // Not saying the user has not joined on 403: Mattermost refuses a public channel the user has not joined with 403 before the membership lookup, and a passing failure answers 403 too.
-          if (e instanceof MmError && e.status === 403) throw new InputError('このチャンネルの未読の位置を取得できませんでした（参加していないか、Mattermost の一時的な障害）。参加していないなら from: "latest" で読んでください。参加しているはずなら、少し待ってから再試行してください。');
+          if (e instanceof MmError && e.status === 403) throw new InputError(`このチャンネルの未読の位置を取得できませんでした（参加していないか、Mattermost の一時的な障害）。参加していないなら from: "latest" で読んでください。参加しているはずなら、少し待ってから再試行してください。${ASK_ADMIN}`);
           throw e;
         });
         // Falling back to newest first rather than walking back to the first post: a channel never opened counts its whole history as unread, with no bound on the walk.
@@ -742,9 +759,9 @@ export function registerReadTools(server: McpServer, ctx: ToolContext): void {
     async ({ post_id, limit, cursor }, mm) => {
       const c = cursorOf(z.object({ from_post: z.string().regex(/^[A-Za-z0-9]{26}$/), from_create_at: z.number().int(), per_page: perPage(200) }), cursor);
       const per = c?.per_page ?? limit ?? 50;
-      const p = await mm.call<MmPost>(uid, 'GET', `/posts/${post_id}`);
+      const p = await mm.call<MmPost>(uid, 'GET', `/posts/${post_id}`).catch(postError);
       const rootId = p.root_id || p.id;
-      const raw = await mm.call<MmChannel>(uid, 'GET', `/channels/${p.channel_id}`);
+      const raw = await mm.call<MmChannel>(uid, 'GET', `/channels/${p.channel_id}`).catch(postChannelError);
       const ch: ChannelRef = { id: raw.id, name: raw.name, displayName: raw.display_name, teamId: raw.team_id, teamName: await teamNameOf(mm, uid, raw.team_id) };
       // Asking for one more than needed and dropping the root: Mattermost counts the root in perPage on the first page only.
       const q = new URLSearchParams({ perPage: String(per + 1), direction: 'down', ...(c ? { fromPost: c.from_post, fromCreateAt: String(c.from_create_at) } : {}) });
@@ -766,12 +783,8 @@ export function registerReadTools(server: McpServer, ctx: ToolContext): void {
     { post: z.string().min(1) },
     async ({ post }, mm) => {
       const id = parsePostRef(post, base);
-      const p = await mm.call<MmPost & { reply_count?: number }>(uid, 'GET', `/posts/${id}`).catch((e) => {
-        if (e instanceof MmError && e.status === 403) throw new InputError('この投稿を見る権限がありません（参加していない非公開チャンネルなど）。参加しているはずなら、Mattermost の一時的な障害の可能性があります。少し待ってから再試行してください。');
-        if (e instanceof MmError && e.status === 404) throw new InputError('投稿が見つかりません（削除されたか、存在しません）');
-        throw e;
-      });
-      const raw = await mm.call<MmChannel>(uid, 'GET', `/channels/${p.channel_id}`);
+      const p = await mm.call<MmPost & { reply_count?: number }>(uid, 'GET', `/posts/${id}`).catch(postError);
+      const raw = await mm.call<MmChannel>(uid, 'GET', `/channels/${p.channel_id}`).catch(postChannelError);
       const ch: ChannelRef = { id: raw.id, name: raw.name, displayName: raw.display_name, teamId: raw.team_id, teamName: await teamNameOf(mm, uid, raw.team_id) };
       const users = await usernames(mm, uid, [p]);
       const replies = p.reply_count ?? 0;
@@ -914,7 +927,10 @@ export function registerReadTools(server: McpServer, ctx: ToolContext): void {
         );
       }
       // Sorting here rather than asking Mattermost for a page: /pinned has neither a limit nor paging.
-      const r = await mm.call<PostList>(uid, 'GET', `/channels/${ch.id}/pinned`);
+      const r = await mm.call<PostList>(uid, 'GET', `/channels/${ch.id}/pinned`).catch((e) => {
+        if (e instanceof MmError && e.status === 403) throw new InputError(`このチャンネルのピン留めを見る権限がありません。${RETRY}${ASK_ADMIN}`);
+        throw e;
+      });
       const all = r.order.map((id) => r.posts[id]).filter(Boolean)
         .sort((a, b) => b.create_at - a.create_at || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
       const rest = c ? all.filter((p) => p.create_at < c.create_at || (p.create_at === c.create_at && p.id > c.id)) : all;
