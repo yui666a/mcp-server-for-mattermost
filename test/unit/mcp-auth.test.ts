@@ -2,11 +2,7 @@ import { once } from 'node:events';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import request from 'supertest';
 import { afterEach, beforeEach, expect, test, vi } from 'vitest';
-import { makeApp } from './helpers.ts';
-
-// Not vitest's defaults (1 s for vi.waitFor, 5 s for a test): on a busy machine the awaited event can take seconds.
-const SLOW = { timeout: 10_000 };
-const SLOW_TEST = 30_000;
+import { makeApp, SLOW, SLOW_TEST } from './helpers.ts';
 
 const PRM = 'https://mm.example/.well-known/oauth-protected-resource/mcp';
 const CHALLENGE = `Bearer resource_metadata="${PRM}", scope="mattermost"`;
@@ -159,6 +155,8 @@ test('a client disconnect aborts the Mattermost request of the running tool', as
       .set({ accept: 'application/json, text/event-stream', 'content-type': 'application/json', authorization: `Bearer ${s.token}` })
       .send(JSON.stringify(GET_USER));
     const done = expect(req).rejects.toThrow(/Aborted/);
+    // Not leaving it unhandled when a wait below fails first: the finally then breaks the connection, and its rejection would be reported on top. await done still throws.
+    done.catch(() => {});
     await vi.waitFor(() => expect(signal).toBeDefined(), SLOW);
     req.abort();
     await done;
