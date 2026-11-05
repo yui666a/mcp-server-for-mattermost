@@ -73,14 +73,15 @@ async function attempt(store: Store, mm: Mm, s: ClaimedScheduled, now: number): 
   const r = await postOnce(mm, s.mmUserId, { ...spec, fileIds }, s.pendingPostId!);
   if (r.kind === 'posted') {
     const kept = fileIds.filter((id) => r.fileIds.includes(id));
-    const dropped = fileIds.length - kept.length;
-    const note = dropped ? `添付した ${fileIds.length} 件のうち ${dropped} 件を Mattermost が外したため、投稿に付いていません。` : undefined;
+    const dropped = fileIds.filter((id) => !kept.includes(id));
+    const note = dropped.length ? `添付した ${fileIds.length} 件のうち ${dropped.length} 件（${dropped.join(', ')}）を Mattermost が外したため、投稿に付いていません。` : undefined;
     return { status: 'posted', postId: r.postId, fileIds: kept, note };
   }
   // Not forgetting a retry's attempt: the next retry would then skip the lookup and post under a new pending_post_id.
   if (r.kind === 'retryable') return { status: 'pending', forgetAttempt: !r.sent && !s.retry };
   if (r.error instanceof Reauthorize && r.error.sent) return failed(UNKNOWN);
-  return failed(wordOf(r.error, fileIds.length ? FILE_POST_WORDING : POST_WORDING) ?? r.reason);
+  // Not forgetting a retry's attempt: the earlier attempt may have posted, and this refusal does not say otherwise.
+  return { status: 'failed', error: wordOf(r.error, fileIds.length ? FILE_POST_WORDING : POST_WORDING) ?? r.reason, forgetAttempt: !s.retry };
 }
 
 // Not setInterval: a tick slower than the interval would overlap the next one and claim rows the first is still posting.

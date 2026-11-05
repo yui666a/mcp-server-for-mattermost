@@ -66,8 +66,8 @@ export type ClaimedScheduled = Scheduled & {
   mmUserId: string; message: string | undefined; pendingPostId: string | null; firstAttemptAt: number | null; retry: boolean;
 };
 export type ScheduledOutcome =
-  | { status: 'posted'; postId: string; fileIds?: string[]; note?: string }
-  | { status: 'failed'; error: string }
+  | { status: 'posted'; postId: string; fileIds: string[]; note?: string }
+  | { status: 'failed'; error: string; forgetAttempt?: boolean }
   | { status: 'pending'; forgetAttempt: boolean };
 
 type Row = Record<string, any>;
@@ -430,7 +430,7 @@ export class Store {
     });
   }
 
-  // Not releasing the files of an attempted failed row: it may have been posted, and Mattermost would drop the files from any other post.
+  // Not releasing the files of a failed row that keeps its attempt: it may have been posted, and Mattermost would drop the files from any other post.
   heldScheduledFiles(mmUserId: string, fileIds: string[]): HeldFile[] {
     if (!fileIds.length) return [];
     const rows = this.db.prepare(
@@ -520,16 +520,18 @@ export class Store {
 
   // Not a second statement after the UPDATE: a crash between them would leave a posted schedule's files unmarked, and send_message would refuse them with the wrong reason.
   settleScheduled(id: string, now: number, o: ScheduledOutcome): void {
-    const forget = o.status === 'pending' && o.forgetAttempt ? 1 : 0;
+    const forget = o.status !== 'posted' && o.forgetAttempt ? 1 : 0;
+    const posted = o.status === 'posted';
     const error = o.status === 'failed' ? o.error : o.status === 'posted' ? o.note ?? null : null;
     this.tx(() => {
       const r = this.get(
         `UPDATE scheduled_posts SET status = ?, post_id = ?, error = ?, updated_at = ?,
-           first_attempt_at = CASE WHEN ? THEN NULL ELSE first_attempt_at END, pending_post_id = CASE WHEN ? THEN NULL ELSE pending_post_id END
+           first_attempt_at = CASE WHEN ? THEN NULL ELSE first_attempt_at END, pending_post_id = CASE WHEN ? THEN NULL ELSE pending_post_id END,
+           file_ids = CASE WHEN ? THEN ? ELSE file_ids END
          WHERE id = ? AND status = 'sending' RETURNING mm_user_id`,
-        o.status, o.status === 'posted' ? o.postId : null, error, now, forget, forget, id,
+        o.status, posted ? o.postId : null, error, now, forget, forget, posted ? 1 : 0, posted ? JSON.stringify(o.fileIds) : null, id,
       );
-      if (r && o.status === 'posted' && o.fileIds?.length) this.markFilesPosted(r.mm_user_id, o.fileIds, o.postId);
+      if (r && o.status === 'posted' && o.fileIds.length) this.markFilesPosted(r.mm_user_id, o.fileIds, o.postId);
     });
   }
 
