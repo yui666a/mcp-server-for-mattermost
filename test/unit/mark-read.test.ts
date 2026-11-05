@@ -197,9 +197,11 @@ describe('mark_as_read for channels', () => {
     routes = { ...base(), [`GET /posts/${LAST}`]: mmError(status, mmId) };
     const r = await setup().call({ channels: [{ channel: CH, last_post_id: LAST }] });
     expect(r.isError).toBe(true);
-    expect(r.text).toContain(`last_post_id ${LAST} の投稿が見つかりません（削除されたか、見る権限がありません）。read_channel で読み直して`);
-    if (status === 403) expect(r.text).toContain('この投稿のチャンネルに参加しているはずなら、Mattermost の一時的な障害の可能性があります。少し待ってから再試行してください。');
-    else expect(r.text).not.toContain('再試行');
+    if (status === 403) expect(r.text).toContain(`last_post_id ${LAST} の投稿を見る権限がありません（参加していない非公開チャンネルなど）。read_channel で読み直して、読んだ投稿のうち最も新しいものの post_id を渡してください。この投稿のチャンネルに参加しているはずなら、Mattermost の一時的な障害の可能性があります。少し待ってから再試行してください。続くなら、チャンネルから外されたか、サーバーの権限の設定で読む権限が外されている可能性があるので、管理者に確かめてください。`);
+    else {
+      expect(r.text).toContain(`last_post_id ${LAST} の投稿が見つかりません（削除されたか、存在しません）。read_channel で読み直して`);
+      expect(r.text).not.toContain('再試行');
+    }
   });
 
   test('keeps a channel\'s display name with a line break on one line in the result', async () => {
@@ -509,7 +511,7 @@ describe('mark_as_read for threads', () => {
     expect(r.text).toContain(`スレッド（post_id: ${id(7)}）: 既読にできませんでした。投稿が見つかりません（削除されたか、存在しません）。`);
     expect(r.text).toContain(`スレッド（親 post_id: ${ROOT}）: 呼んだ時点の最終返信までを既読にしました。`);
     routes[`GET /posts/${id(7)}`] = mmError(403, 'api.context.permissions.app_error');
-    expect((await setup().call({ threads: [{ post_id: id(7) }] })).text).toContain('この投稿は見られません（参加していない非公開チャンネルの投稿など）。');
+    expect((await setup().call({ threads: [{ post_id: id(7) }] })).text).toContain('この投稿は見られません（参加していない非公開チャンネルの投稿など）。参加しているはずなら、Mattermost の一時的な障害の可能性があります。少し待ってから再試行してください。続くなら、チャンネルから外されたか、サーバーの権限の設定で読む権限が外されている可能性があるので、管理者に確かめてください。');
   });
 
   test('says so when the user belongs to no team, for a DM thread', async () => {
@@ -535,7 +537,7 @@ describe('mark_as_read for threads', () => {
     expect(r.text).toContain('read_thread で読み直して');
     expect(r.text).not.toContain('再試行');
     routes = threads({ [`GET /posts/${id(5)}`]: mmError(403, 'api.context.permissions.app_error') });
-    expect((await setup().call({ threads: [{ post_id: ROOT, last_post_id: id(5) }] })).text).toContain('この投稿のチャンネルに参加しているはずなら、Mattermost の一時的な障害の可能性があります。少し待ってから再試行してください。');
+    expect((await setup().call({ threads: [{ post_id: ROOT, last_post_id: id(5) }] })).text).toContain('見る権限がありません（参加していない非公開チャンネルなど）。read_thread で読み直して、読んだ投稿のうち最も新しいものの post_id を渡してください。この投稿のチャンネルに参加しているはずなら、');
   });
 
   test('points to follow_thread for a thread with replies the user does not follow', async () => {

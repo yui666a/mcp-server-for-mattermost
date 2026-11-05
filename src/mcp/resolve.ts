@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 import { MmError, UpstreamUnavailable, type MmClient } from '../mattermost/client.ts';
-import { InputError, oneLine } from './format.ts';
+import { ASK_ADMIN, InputError, oneLine, RETRY } from './format.ts';
 
 // Format characters (Unicode Cf: zero-width, direction marks, soft hyphen) too, not only what trim drops: they slip in with a copy, and no
 // channel, team or user name or ID can have them, as those are ASCII only.
@@ -46,9 +46,6 @@ export class Ambiguous extends InputError {
     this.candidates = candidates;
   }
 }
-
-export const RETRY = '参加しているはずなら、Mattermost の一時的な障害の可能性があります。少し待ってから再試行してください。';
-export const ASK_ADMIN = '続くなら、チャンネルから外されたか、サーバーの権限の設定で読む権限が外されている可能性があるので、管理者に確かめてください。';
 
 // A subclass so that a search can say it in its own words: it leaves out archived channels, which the read tools can still read by ID.
 export class ChannelNotFound extends InputError {
