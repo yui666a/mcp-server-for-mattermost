@@ -425,7 +425,7 @@ export async function saveDraft(mm: Mm, uid: string, args: DraftArgs): Promise<C
   const rootId = args.root_id ?? '';
   // Not listing only after resolving a DM it may create: with drafts disabled on the server the call then fails leaving it empty. A DM's drafts are listed on the first team, the same team as after resolving.
   // Not listing early with root_id: no DM is created then, and a wrong root_id is the mistake to report first.
-  // Not judging by this list: it is taken outside the lock, and a save by send_message's cleanup in between would be missed, so the save lists again under the lock.
+  // Not judging by this list: it is taken outside the lock, and a delete by send_message's cleanup in between would be missed, reporting as already saved a draft that is gone. The save lists again under the lock.
   if (args.channel.trim().startsWith('@') && !rootId) await listDrafts(mm, uid, { teamId: '' });
   // Not creating the DM with root_id: a DM not opened yet holds no root post, and the call would fail right after leaving an empty DM.
   const ch = await resolveChannel(mm, uid, args.channel, { create: !rootId });
