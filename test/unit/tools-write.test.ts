@@ -769,6 +769,14 @@ describe('send_message with files', () => {
   const send = (files: unknown, over: Record<string, unknown> = {}) => setup().call('send_message', { channel: CH, message: 'm', files, ...over });
   const KiB128 = 128 * 1024;
 
+  test('a root_id with a space or a zero-width character at its edges reaches Mattermost without them', async () => {
+    const ROOT = 'r'.repeat(26);
+    serve({ [`GET /posts/${ROOT}`]: () => ({ id: ROOT, channel_id: CH, root_id: '', user_id: 'u2', message: 'root', create_at: 1 }) });
+    const r = await setup().call('send_message', { channel: CH, message: 'm', root_id: `\u200b${ROOT} ` });
+    expect(r.isError).toBe(false);
+    expect((bodies['/posts'] as { root_id: string }).root_id).toBe(ROOT);
+  });
+
   test('sends content_text as its UTF-8 bytes and content_base64 as the decoded bytes, each as an octet-stream named by filename', async () => {
     serve();
     const r = await send([{ name: '図 1.svg', content_text: '<svg>日本</svg>' }, { name: 'b.bin', content_base64: 'AAH/' }]);

@@ -1,12 +1,12 @@
 import type { McpServer, ToolCallback } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
-import { z } from 'zod';
+import { idArg } from './args.ts';
 import { ASK_ADMIN, RETRY, RETRY_SOON } from './format.ts';
 import type { Mm } from './resolve.ts';
 import { guarded, text, type ToolContext } from './server.ts';
 import { worded, type Wording } from './tools-send.ts';
 
-const POST_ID = z.string().regex(/^[A-Za-z0-9]{26}$/);
+const POST_ID = idArg;
 const schema = { post_id: POST_ID.describe('投稿の post_id') };
 type Args = { post_id: string };
 
