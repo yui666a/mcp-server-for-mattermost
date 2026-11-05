@@ -57,12 +57,11 @@ async function attempt(store: Store, mm: Mm, s: ClaimedScheduled, now: number): 
     try {
       const r = await lookPosted(mm, s.mmUserId, { ...spec, fileCount: fileIds.length, fileIds }, s.firstAttemptAt!);
       // Not read before the lookup: a post recorded meanwhile by another schedule or send_message would be missed.
-      const bySchedules = store.otherScheduledPostIds(s.mmUserId, s.id);
-      const owned = new Set([...bySchedules, ...store.otherClaimPostIds(s.mmUserId, 0)]);
+      const owned = new Set([...store.otherScheduledPostIds(s.mmUserId, s.id), ...store.claimedPostIds(s.mmUserId)]);
       found = r.found.find((p) => !owned.has(p));
       // Not posting when every match is another record's: that record may hold this schedule's own earlier post by a mistaken match of its own, and posting again would post it twice.
-      // Not leaving out send_message's posts that were deleted, edited or lost files: a deleted or edited one cannot be compared by text and one with other files may have lost them to Mattermost, so one may be this schedule's own. Other schedules' are left out as before (design doc, known limits).
-      touched = (!found && r.found.length > 0) || [...r.deleted, ...r.edited, ...r.mismatched].some((p) => !bySchedules.has(p));
+      // Not leaving out other records' posts that were deleted, edited or lost files: a deleted or edited one cannot be compared by text and one with other files may have lost them to Mattermost, so whichever record holds it, it may be this schedule's own.
+      touched = (!found && r.found.length > 0) || r.deleted.length + r.edited.length + r.mismatched.length > 0;
     } catch (e) {
       // Not posting without a lookup: the earlier attempt may have posted, and a new post would be a second one.
       if (!late && (e instanceof RateLimited || e instanceof UpstreamUnavailable)) return { status: 'pending', forgetAttempt: false };

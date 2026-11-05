@@ -157,7 +157,7 @@ describe('send_message against the local Mattermost', () => {
     expect(r.isError).toBeFalsy();
     const created = await (await gm()).json() as { id: string; type: string };
     expect(created.type).toBe('G');
-    expect(r.content[0].text).toContain(`@${names[0]}, @${names[1]}（channel_id: ${created.id}）`);
+    expect(r.content[0].text).toContain(`投稿先: channel_id: ${created.id}、表示名: @${names[0]}, @${names[1]}`);
     expect((await read()).body.result.content[0].text).toContain(`${TAG} first group dm`);
   });
 
@@ -182,7 +182,7 @@ describe('send_message against the local Mattermost', () => {
     const r = await call({ channel: `@${name}`, message: `${TAG} first dm` });
     expect(r.isError).toBeFalsy();
     const created = await (await dm()).json() as { id: string };
-    expect(r.content[0].text).toContain(`@${name}（channel_id: ${created.id}）`);
+    expect(r.content[0].text).toContain(`投稿先: channel_id: ${created.id}、表示名: @${name}`);
     const posts = await mmApi<{ posts: Record<string, Post> }>(aliceMm, 'GET', `/channels/${created.id}/posts`);
     expect(Object.values(posts.posts).map((p) => p.message)).toEqual([`${TAG} first dm`]);
   });

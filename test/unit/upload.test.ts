@@ -328,7 +328,7 @@ describe('prepare_upload', () => {
     const s = setup();
     const r = await call(s, { channel: CH });
     expect(r.isError).toBe(false);
-    expect(r.text).toContain(`Town（channel_id: ${CH}）`);
+    expect(r.text).toContain(`投稿先: channel_id: ${CH}、表示名: Town`);
     expect(r.text).toContain('利用者に示して、確認を取ってください');
     const url = /curl -sS -F 'file=@<ファイルのパス>' (\S+)/.exec(r.text)![1];
     expect(url).toMatch(/^https:\/\/mm\.example\/mcp\/upload\/[A-Za-z0-9_-]{43}$/);
