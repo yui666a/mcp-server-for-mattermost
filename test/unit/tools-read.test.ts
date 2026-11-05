@@ -1035,6 +1035,24 @@ describe('get_unreads', () => {
     }
   });
 
+  test('looks up the users of unread threads in calls of at most 1,000 ids, and names the users of every call', async () => {
+    const user = (i: number, j: number) => `r${String(i * 20 + j).padStart(4, '0')}`;
+    const many = Array.from({ length: 50 }, (_, i) => thread(`t${String(i).padStart(25, '0')}`, OLD, 9000 - i, {
+      post: { id: `t${String(i).padStart(25, '0')}`, user_id: `a${i}`, channel_id: OLD, root_id: '', message: `m${i}`, create_at: 100,
+        metadata: { reactions: Array.from({ length: 20 }, (_, j) => ({ user_id: user(i, j), emoji_name: j < 10 ? 'x' : 'y', create_at: j })) } },
+    }));
+    const asked: string[][] = [];
+    routes = {
+      ...base(),
+      [`GET /users/u1/teams/${T1}/threads`]: () => threadPage(many),
+      [`GET /users/u1/teams/${T2}/threads`]: () => threadPage([]),
+      'POST /users/ids': () => { const ids = bodies['/users/ids'] as string[]; asked.push(ids); return ids.map((x) => ({ id: x, username: `n${x}` })); },
+    };
+    const out = await setup()('get_unreads', { limit: 100 });
+    expect(asked.map((x) => x.length)).toEqual([1000, 51]);
+    for (const x of asked[1]) expect(out).toContain(`@n${x}`);
+  });
+
   test('keeps a channel\'s display name with a line break on one line', async () => {
     routes = { ...base(), 'GET /users/me/channels': () => channels().map((x) => (x.id === OLD ? { ...x, display_name: 'O\nLD' } : x)) };
     expect(await setup()('get_unreads', {})).toContain(`- team-a/old（表示名: O LD、channel_id: ${OLD}`);
@@ -2156,6 +2174,18 @@ describe('read_channel', () => {
   });
 
   const membersMe = (status: number, mmId: string) => ({ ...base(), [`GET /channels/${CH}/members/me`]: () => Response.json({ id: mmId, message: 'm', status_code: status }, { status }) });
+
+  const refused = (status: number) => ({ ...base(), 'GET /users/me/teams': () => [], [`GET /channels/${CH}`]: () => Response.json({ id: 'x', message: 'm', status_code: status }, { status }) });
+
+  test('words 403 from fetching the channel as get_channel does', async () => {
+    routes = refused(403);
+    expect(await setup()('read_channel', { channel: CH }, true)).toBe('このチャンネルを見る権限がありません（参加していない非公開チャンネルなど）。参加しているはずなら、Mattermost の一時的な障害の可能性があります。少し待ってから再試行してください。');
+  });
+
+  test('words 404 from fetching the channel, with no channel of that name either, as get_channel does', async () => {
+    routes = refused(404);
+    expect(await setup()('read_channel', { channel: CH }, true)).toBe('チャンネルが見つかりません（参加していない非公開チャンネルを名前で指定した場合も、Mattermost はこの結果を返します）');
+  });
 
   test('when members/me answers 404, says the user has not joined and to use from latest', async () => {
     routes = membersMe(404, 'app.channel.get_member.missing.app_error');
