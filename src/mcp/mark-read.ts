@@ -2,6 +2,7 @@ import type { McpServer, ToolCallback } from '@modelcontextprotocol/sdk/server/m
 import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
 import { z } from 'zod';
 import { MmError } from '../mattermost/client.ts';
+import { strictArgs } from './args.ts';
 import { InputError, type MmPost } from './format.ts';
 import { myTeams, resolveChannel, type Mm } from './resolve.ts';
 import { failureText, guarded, text, type ToolContext } from './server.ts';
@@ -15,11 +16,12 @@ const MAX_ITEMS = 20;
 const AFTER_PAGE = 200;
 
 const schema = {
-  channels: z.array(z.object({
+  // Not leaving an item to zod's z.object, which drops unknown keys: a misspelled last_post_id would mark the item read up to the newest post, which only the user can undo, item by item, in the Mattermost UI.
+  channels: z.array(strictArgs({
     channel: z.string().min(1).describe('チャンネル ID、「チーム名/チャンネル名」、チャンネル名、@ユーザー名（DM）、@a,b（グループ DM）のどれか'),
     last_post_id: POST_ID.optional().describe('このチャンネルで読んだ投稿のうち最も新しいものの post_id'),
   })).max(MAX_ITEMS).optional(),
-  threads: z.array(z.object({
+  threads: z.array(strictArgs({
     post_id: POST_ID.describe('スレッドの親投稿か、スレッド内の投稿の post_id'),
     last_post_id: POST_ID.optional().describe('このスレッドで読んだ投稿のうち最も新しいものの post_id'),
   })).max(MAX_ITEMS).optional(),
@@ -132,6 +134,13 @@ export async function markAsRead(mm: Mm, uid: string, args: Args): Promise<CallT
       }
       const upTo = item.last_post_id ? 'last_post_id までは' : 'すでに';
       const put = (ts: number) => mm.call<ThreadState>(uid, 'PUT', `/users/${uid}/teams/${team}/threads/${root}/read/${ts}`);
+      // Not failing the item when only clearing the mention fails: the position already stands at or past the one to write, so the thread is read.
+      // Not pointing a call without last_post_id to a plain retry: it would also mark read the replies that arrived meanwhile.
+      const clearing = (ts: number) => put(ts).catch((e) => {
+        const retry = item.last_post_id ? 'このスレッドを同じ last_post_id で再実行すると消せることがあります。' : 'このスレッドを、読んだ最終返信を last_post_id に渡して再実行すると消せることがあります。';
+        const why = itemFailure(e);
+        return `ただし、位置ちょうどの返信のメンションは消せませんでした。${why}${why.endsWith('。') ? '' : '。'}${retry}`;
+      });
       // Not writing the read post's own time: Mattermost counts unread replies after the position but mentions from it, so a mention on that post would stay.
       // Not writing a position before the current one: the threads API moves it backwards too, which would unread what the user has read since.
       const to = Math.max(at + 1, state.last_viewed_at);
@@ -143,13 +152,13 @@ export async function markAsRead(mm: Mm, uid: string, args: Args): Promise<CallT
           continue;
         }
         // Not rewriting the same position for a mention with no unread reply: Mattermost counts mentions from the position, so one on a reply at it would stay. No reply is after it, so one millisecond on reads none.
-        const r = await put(to + 1);
-        done = `${upTo}既読です${r.unread_mentions ? '' : '（残っていたメンションを消しました）'}。`;
+        const r = await clearing(to + 1);
+        done = typeof r === 'string' ? `${upTo}既読です。${r}` : `${upTo}既読です${r.unread_mentions ? '' : '（残っていたメンションを消しました）'}。`;
       } else {
         const r = await put(to);
         // Not leaving a mention with no unread reply: it is on a reply at the position, which already counts as read.
-        if (r.unread_mentions && !r.unread_replies) await put(to + 1);
-        done = item.last_post_id ? '既読にしました。' : '呼んだ時点の最終返信までを既読にしました。';
+        const left = r.unread_mentions && !r.unread_replies ? await clearing(to + 1) : undefined;
+        done = (item.last_post_id ? '既読にしました。' : '呼んだ時点の最終返信までを既読にしました。') + (typeof left === 'string' ? left : '');
       }
       results.push({ line: `- ${label}: ${done}`, ok: true });
     } catch (e) {
