@@ -1029,6 +1029,11 @@ describe('get_unreads', () => {
     }
   });
 
+  test('keeps a channel\'s display name with a line break on one line', async () => {
+    routes = { ...base(), 'GET /users/me/channels': () => channels().map((x) => (x.id === OLD ? { ...x, display_name: 'O\nLD' } : x)) };
+    expect(await setup()('get_unreads', {})).toContain(`- team-a/old（表示名: O LD、channel_id: ${OLD}`);
+  });
+
   test('with CRT on, counts root posts only, puts channels with mentions first, then newest root post first, and hides read, archived and mention-only channels without mentions', async () => {
     routes = base();
     const out = await setup()('get_unreads', {});
@@ -3142,6 +3147,12 @@ describe('list_channel_members', () => {
     expect(out).toContain(`- @user1（名前: Ann Lee、ニックネーム: annie、役職: PM、user_id: ${user(1).id}）`);
     expect(out).toContain(`- @user2（Bot アカウント、user_id: ${user(2).id}）`);
     expect(names(out)).toEqual(['user1', 'user2', 'user3']);
+  });
+
+  test('keeps a member\'s name, nickname and position with a line break on one line', async () => {
+    routes = { ...base(), 'GET /users': () => [user(1, { first_name: 'A\nnn', nickname: 'an\u2028nie', position: 'P\nM' })] };
+    const out = await setup()('list_channel_members', { channel: C });
+    expect(out).toContain(`- @user1（名前: A nn、ニックネーム: an nie、役職: P M、user_id: ${user(1).id}）`);
   });
 
   test('pages with limit, a cursor keeping the page size; a full last page leads to an empty one that only says there is no more', async () => {
