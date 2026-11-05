@@ -119,7 +119,7 @@ export async function sendMessage(mm: Mm, store: Store, uid: string, baseUrl: st
   const rootId = args.root_id;
   if (rootId) {
     const root = await mm.call<MmPost>(uid, 'GET', `/posts/${rootId}`);
-    if (root.channel_id !== ch.id) throw new InputError(`root_id ${rootId} の投稿はチャンネル「${ch.name}」にありません。`);
+    if (root.channel_id !== ch.id) throw new InputError(`root_id ${rootId} の投稿はチャンネル「${ch.displayName || ch.name}」（channel_id: ${ch.id}）にありません。`);
   }
   const where = `チャンネル: ${ch.displayName || ch.name}（channel_id: ${ch.id}）${rootId ? `、返信先 post_id: ${rootId}` : ''}`;
   // Not only after a fresh post: an earlier attempt's cleanup may have failed, and a resend that did not post can retry it.
@@ -205,11 +205,11 @@ const POST_ID = z.string().regex(/^[A-Za-z0-9]{26}$/);
 const reactionSchema = {
   post_id: POST_ID.describe('投稿の post_id'),
   // Not a zod regex: a Unicode emoji such as ✅ would get the SDK's generic validation error instead of the emoji-name hint.
-  emoji: z.string().min(1).max(100).describe('Mattermost の絵文字名（例: white_check_mark、+1）。前後のコロンは付けても付けなくてもよい'),
+  emoji: z.string().min(1).max(100).describe('Mattermost の絵文字名（例: white_check_mark、+1）。前後のコロンは付けても付けなくてもよい。カスタム絵文字の名前は search_emoji で調べる'),
 };
 type ReactionArgs = { post_id: string; emoji: string };
 
-const emojiHint = (name: string) => `絵文字「${name}」がありません。Mattermost の絵文字名で指定してください（例: white_check_mark、+1）。`;
+const emojiHint = (name: string) => `絵文字「${name}」がありません。標準の絵文字名（例: white_check_mark、+1）か、search_emoji で調べたカスタム絵文字名を指定してください。`;
 // Checked rather than encoded: the name goes into a path, where "." and ".." survive encoding and fetch would normalise them into another endpoint.
 function emojiName(raw: string): string {
   const name = raw.trim().replace(/^:/, '').replace(/:$/, '');
@@ -335,11 +335,11 @@ async function syncDraftsOff(mm: Mm, uid: string): Promise<boolean> {
   }
 }
 
-export async function checkRoot(mm: Mm, uid: string, rootId: string, ch: { id: string; name: string }): Promise<void> {
+export async function checkRoot(mm: Mm, uid: string, rootId: string, ch: { id: string; name: string; displayName: string }): Promise<void> {
   const root = await worded(mm.call<MmPost>(uid, 'GET', `/posts/${rootId}`), {
     status: [[404, `root_id ${rootId} の投稿が見つかりません。`], [403, `root_id ${rootId} の投稿を見られません。`]],
   });
-  if (root.channel_id !== ch.id) throw new InputError(`root_id ${rootId} の投稿はチャンネル「${ch.name}」にありません。`);
+  if (root.channel_id !== ch.id) throw new InputError(`root_id ${rootId} の投稿はチャンネル「${ch.displayName || ch.name}」（channel_id: ${ch.id}）にありません。`);
   if (root.root_id) throw new InputError(`root_id ${rootId} は返信です。スレッドの親投稿の post_id を指定してください。`);
 }
 
