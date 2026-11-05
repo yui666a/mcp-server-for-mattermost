@@ -83,7 +83,7 @@ describe('scheduled messages against the local Mattermost', () => {
   });
 
   test('a schedule to a user never messaged before creates the DM when scheduling and is posted there when its time comes', async () => {
-    const name = `sdm${TAG}`.toLowerCase();
+    const name = `sdm${TAG}`;
     const u = await mmApi<{ id: string }>(e.adminToken, 'POST', '/users', { username: name, email: `${name}@example.com`, password: 'Passw0rd!dev123' });
     const message = `${TAG} scheduled dm`;
     const made = await call('schedule_message', { channel: `@${name}`, message, at: inTwoMinutes() });

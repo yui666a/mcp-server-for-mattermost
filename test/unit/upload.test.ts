@@ -44,7 +44,7 @@ function setup(env: Record<string, string> = {}) {
 const logged = () => out.map((l) => JSON.parse(l)).filter((l) => l.event === 'upload');
 
 describe('POST /mcp/upload/:token', () => {
-  test('uploads each file to the channel with the user\'s token and lists their file_ids', async () => {
+  test('uploads each file to the channel with the user\'s token, lists their file_ids, and says to pass them to schedule_message\'s file_ids when scheduling', async () => {
     const s = setup();
     const r = await s.req.post(s.url())
       .attach('file', Buffer.from('%PDF-1.7'), 'report.pdf')
