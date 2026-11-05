@@ -7,7 +7,7 @@ import { encodeCursor, formatTime, indented, InputError, lines, oneLine, truncat
 import { dmLabel, type Mm, type MmChannel, teamNameOf } from './resolve.ts';
 import { guarded, text, type ToolContext } from './server.ts';
 import { cursorArg, cursorOf, limitArg, perPage } from './tools-read.ts';
-import { checkRoot, checkUnposted, checkUploaded, createsDirect, heldError, MAX_UPLOAD_FILES, resolveTarget } from './tools-send.ts';
+import { checkRoot, checkUnposted, checkUploaded, heldError, MAX_FILES_BYTES, MAX_UPLOAD_FILES, mayCreateDirect, resolveTarget } from './tools-send.ts';
 import { parseWhen } from './when.ts';
 
 const MIN_AHEAD = 60_000;
@@ -35,10 +35,10 @@ const scheduleShape = {
   root_id: POST_ID.optional().describe('返信にするときの、スレッドの親投稿の post_id'),
   at: AT,
   file_ids: z.array(z.string().regex(/^[A-Za-z0-9]{26}$/)).min(1).max(MAX_UPLOAD_FILES).optional()
-    .describe('prepare_upload で、投稿先と同じチャンネルへ 24 時間以内にアップロードした file_id（1〜5 件）'),
+    .describe(`prepare_upload で、投稿先と同じチャンネルへ 24 時間以内にアップロードした file_id（1〜${MAX_UPLOAD_FILES} 件）`),
 };
 const scheduleSchema = strictArgs(scheduleShape, {
-  files: 'files は予約では使えません。中身を読めて合計 128KiB に収まる 1〜5 件のファイルを今すぐ送るなら、send_message の files を使えます。予約するときと、それ以外のファイルは、prepare_upload の説明の案内に従ってください。',
+  files: `files は予約では使えません。中身を読めて合計 ${MAX_FILES_BYTES / 1024}KiB に収まる 1〜${MAX_UPLOAD_FILES} 件のファイルを今すぐ送るなら、send_message の files を使えます。予約するときと、それ以外のファイルは、prepare_upload の説明の案内に従ってください。`,
 });
 type ScheduleArgs = { channel: string; message: string; root_id?: string; at: string; file_ids?: string[] };
 
@@ -47,7 +47,7 @@ export async function scheduleMessage(mm: Mm, store: Store, uid: string, args: S
   const fileIds = args.file_ids ?? [];
   // Not left to createScheduled alone when resolving may create a DM: failing after that leaves it empty. A schedule added or put back to pending between the two checks still does.
   // Not checked first for other targets: a wrong channel name or file is the error the caller can act on, and the limit is checked again when the row is made.
-  const mayCreate = args.channel.trim().startsWith('@') && createsDirect(args.root_id, fileIds);
+  const mayCreate = mayCreateDirect(args.channel, args.root_id, fileIds);
   if (mayCreate && store.pendingScheduledCount(uid) >= MAX_PENDING_SCHEDULED) throw new InputError(AT_LIMIT);
   const ch = await resolveTarget(mm, store, uid, args.channel, args.root_id, fileIds);
   if (args.root_id) await checkRoot(mm, uid, args.root_id, ch);
