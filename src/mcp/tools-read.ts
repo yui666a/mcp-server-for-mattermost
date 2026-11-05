@@ -254,7 +254,7 @@ const SEARCH_FLAGS = ['from', 'channel', 'in', 'before', 'after', 'on', 'ext'];
 const fields = (s: string) => s.split(SEARCH_SPACE).filter(Boolean);
 
 // Ported from Mattermost's model.splitWords, so that a quoted "in:x" stays a search word as the server reads it.
-function splitWords(text: string): string[] {
+export function splitWords(text: string): string[] {
   const words: string[] = [];
   let quoted = false;
   let start = 0;
@@ -1139,7 +1139,8 @@ export function registerReadTools(server: McpServer, ctx: ToolContext): void {
         };
         // Not taking a read position of 0 as the floor: a channel never viewed or a thread first mentioned in a reply has 0, though nothing in it predates the channel or the root post.
         const floors = [...[...chans].map(([id, at]) => at || created.get(id)!), ...[...threads.values()].map((t) => Math.max(t.last_viewed_at, t.post.create_at))];
-        unreadAfter = ` after:${prevDay(jstDay(Math.min(...floors)))}`;
+        // Not Math.min(...floors): the floors grow with the channels and threads, and spreading them as arguments throws a RangeError past a limit.
+        unreadAfter = ` after:${prevDay(jstDay(floors.reduce((a, b) => Math.min(a, b))))}`;
       }
       let before = c?.before;
       let last = c?.last;
