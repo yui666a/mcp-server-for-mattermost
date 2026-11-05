@@ -62,6 +62,8 @@ test('search_posts sends the JST offset, shows the channel and team names, and n
   const call = setup();
   const out = await call('search_posts', { terms: 'x on:2026-10-15', limit: 50 });
   expect(bodies['/posts/search']).toMatchObject({ terms: 'x on:2026-10-15', time_zone_offset: 32400 });
+  expect(urls).toContain('GET /users/me/channels');
+  expect(urls).not.toContain('GET /users/me/channels?include_deleted=true');
   expect(out).toContain('name: general-dup');
   expect(out).toContain('team-a');
   expect(out).toContain('これより古い一致');
@@ -1301,6 +1303,7 @@ describe('get_mentions', () => {
     add(22, 1);
     routes = base();
     await setup()('get_mentions', {});
+    expect(urls).not.toContain('GET /users/me/channels?include_deleted=true');
     expect(hits.slice(0, 2)).toEqual(['GET /users/me', 'POST /posts/search']);
     expect(bodies['/posts/search']).toEqual({ terms: '"@alice" "aiso"', is_or_search: true, include_deleted_channels: false, time_zone_offset: 32400, page: 0, per_page: 100 });
   });
@@ -1735,7 +1738,7 @@ describe('get_file', () => {
       });
     });
 
-    describe('a whole file that is ASCII but for an incomplete last character (UTF-8 is only a guess)', () => {
+    describe('a whole file without Japanese but for an incomplete last character (UTF-8 is only a guess)', () => {
       test.each([
         ['a.txt', [0x61, 0x62, 0x63, 0xc2], 'Shift_JIS', 'abcﾂ', false],
         ['a.txt', [0x61, 0x62, 0x63, 0xe8, 0xa0], 'Shift_JIS', 'abc陟', false],
@@ -1750,10 +1753,42 @@ describe('get_file', () => {
         expect(out.includes('末尾に不完全な文字')).toBe(cut);
       });
 
-      test('keeps UTF-8 without a guess when the text has other non-ASCII characters', async () => {
-        routes = { [INFO]: textInfo('a.txt', 5), [FILE]: body(Uint8Array.from([...Buffer.from('あ'), 0xe3, 0x81])) };
+      test.each([
+        ['a.txt', [...Buffer.from('abc,'), 0xc3, 0xbd, 0xc4], 'Shift_JIS', 'abc,ﾃｽﾄ', false],
+        // Fixing a known wrong guess: Latin UTF-8 with a cut last character also reads whole as Shift_JIS.
+        ['a.txt', [...Buffer.from('naïve caf'), 0xc3], 'Shift_JIS', 'naﾃｯve cafﾃ', false],
+        ['a.txt', [...Buffer.from('voilà'), 0xc3], 'UTF-8', 'voilà', true],
+        ['a.md', [...Buffer.from('café'), 0xe2], 'UTF-8', 'café', true],
+      ])('reads %s %j, without Japanese and with a cut last character in UTF-8, as %s with the guess noted', async (name, b, encoding, shown, cut) => {
+        routes = { [INFO]: textInfo(name as string, (b as number[]).length), [FILE]: body(Uint8Array.from(b as number[])) };
         const out = await setup()('get_file', { file_id: F });
-        expect(content()).toBe('あ');
+        expect(content()).toBe(shown);
+        expect(out).toContain(`文字コード: ${encoding}`);
+        expect(out).toContain(GUESSED);
+        expect(out.includes('末尾に不完全な文字')).toBe(cut);
+      });
+
+      test('reads a file as not text when Node cannot make a Shift_JIS or EUC-JP decoder, instead of failing', async () => {
+        const Real = globalThis.TextDecoder;
+        vi.stubGlobal('TextDecoder', class extends Real {
+          constructor(label?: string, options?: TextDecoderOptions) {
+            if (label === 'shift_jis' || label === 'euc-jp') throw new RangeError(`unsupported: ${label}`);
+            super(label, options);
+          }
+        });
+        try {
+          routes = { [INFO]: textInfo('a.csv', 3), [FILE]: body(Uint8Array.from([0xb0, 0xa9, 0xbd])) };
+          expect(await setup()('get_file', { file_id: F })).toContain('テキストとして読めない形式');
+        } finally {
+          vi.unstubAllGlobals();
+        }
+      });
+
+      test.each([['日本語のログ'], ['、'], ['Ａ']])('keeps UTF-8 without a guess when the text has Japanese (%s), as a log cut at its size limit', async (head) => {
+        const b = Uint8Array.from([...Buffer.from(head), 0xe3, 0x81]);
+        routes = { [INFO]: textInfo('a.txt', b.length), [FILE]: body(b) };
+        const out = await setup()('get_file', { file_id: F });
+        expect(content()).toBe(head);
         expect(out).toContain('文字コード: UTF-8');
         expect(out).not.toContain('推定');
       });
@@ -2553,11 +2588,15 @@ describe('list_saved_posts', () => {
     routes = { ...base(),
       'GET /users/me/teams': () => [{ id: T, name: 'team-a' }, { id: T2, name: 'team-b' }],
       // Mattermost lists an archived channel only when include_deleted is true.
-      'GET /users/me/channels': (req) => (new URL(req.url).searchParams.get('include_deleted') === 'true' ? [{ id: OLD, name: 'old', display_name: 'Old', team_id: T2, type: 'O', delete_at: 5 }] : []),
-      [FLAGGED]: byOffset([{ ...post('x'.repeat(26), 2), channel_id: OLD }]) };
+      'GET /users/me/channels': (req) => [
+        { id: C, name: 'town', display_name: 'Town', team_id: T, type: 'O', delete_at: 0 },
+        ...(new URL(req.url).searchParams.get('include_deleted') === 'true' ? [{ id: OLD, name: 'old', display_name: 'Old', team_id: T2, type: 'O', delete_at: 5 }] : []),
+      ],
+      [FLAGGED]: byOffset([{ ...post('x'.repeat(26), 2), channel_id: OLD }, post('y'.repeat(26), 1)]) };
     const out = await setup()('list_saved_posts', {});
     expect(urls).toContain('GET /users/me/channels?include_deleted=true');
-    expect(out).toContain(`チャンネル: Old（name: old、channel_id: ${OLD}）`);
+    expect(out).toContain(`チャンネル: Old（アーカイブ済み）（name: old、channel_id: ${OLD}） | チーム: team-b（team_id: ${T2}）`);
+    expect(out).toContain(`チャンネル: Town（name: town、channel_id: ${C}） | チーム: team-a（team_id: ${T}）`);
     expect(out).toContain(`https://mm.example/team-b/pl/${'x'.repeat(26)}`);
   });
 
