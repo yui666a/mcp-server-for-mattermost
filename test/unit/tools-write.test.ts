@@ -541,6 +541,7 @@ describe('save_draft', () => {
       expect(r.text).toContain('a'.repeat(200));
       expect(r.text).not.toContain('B');
       expect(r.text).toContain('overwrite');
+      expect(r.text).toContain('添付ファイル、優先度、burn-on-read も失われます');
       expect(writes()).toEqual([]);
     });
 
@@ -655,15 +656,14 @@ describe('save_draft', () => {
     });
   });
 
-  test('is marked destructive and idempotent, says that sending the same text with send_message clears the draft, and overwrite warns that attachments and priority are lost too', async () => {
+  test('is marked destructive and idempotent, says that sending the same text with send_message clears the draft, and overwrite warns that attachments, priority and burn-on-read are lost too', async () => {
     const list = await setup().tools() as unknown as { name: string; description: string; annotations: object; inputSchema: { properties: Record<string, { description?: string }> } }[];
     const t = list.find((x) => x.name === 'save_draft')!;
     expect(t.annotations).toMatchObject({ readOnlyHint: false, destructiveHint: true, idempotentHint: true });
     expect(t.description).toContain('この下書きと同じ本文を send_message で送ると、投稿の後に下書きを消す');
     expect(t.description).toContain('添付の付いた下書きは消さない');
     const d = t.inputSchema.properties.overwrite.description!;
-    expect(d).toContain('添付');
-    expect(d).toContain('優先度');
+    expect(d).toContain('添付ファイル、優先度、burn-on-read（読まれた後に消える設定）も失われ');
   });
 });
 
@@ -800,7 +800,8 @@ describe('send_message with files', () => {
     const t = (await setup().tools()).find((x) => x.name === 'prepare_upload')!;
     expect(t.description).toContain('curl を実行する前に、送るファイルのパスと投稿先を利用者に示して確認を取ること');
     expect(t.description).toContain('save_draft で本文を下書きにし、ファイルは Mattermost の画面から添付するよう案内する');
-    expect(t.description).toContain('パスの分からないファイル（Claude Code に貼り付けた画像など）は利用者にパスを聞き、無ければ下の save_draft の案内に従う');
+    expect(t.description).toContain('パスの分からないファイル（Claude Code に貼り付けた画像など）は利用者にパスを聞き、無ければ末尾の案内に従う');
+    expect(t.description).toContain('PC でコマンドを実行できないクライアント（claude.ai など）とパスの無いファイルでは、save_draft');
   });
 
   test('file_ids of send_message takes files uploaded to the same channel within 24 hours', async () => {
