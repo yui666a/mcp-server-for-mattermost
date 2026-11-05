@@ -275,6 +275,18 @@ describe('edit_message and delete_message', () => {
   });
 
   describe('edit_message', () => {
+    test('get_post says its message is indented by 2 and cut beyond 4000 characters, and how to rewrite it', async () => {
+      const d = (await setup().tools()).find((x) => x.name === 'get_post')!.description;
+      for (const s of ['2 文字字下げ', '4000 文字を超える本文は切って出す', '字下げを外し', '出力を元に書き換えない']) expect(d).toContain(s);
+    });
+
+    test('the message argument says to reread the post with get_post, drop the 2-space indent, and not rewrite a cut post from the output', async () => {
+      const t = (await setup().tools()).find((x) => x.name === 'edit_message')! as unknown as { description: string; inputSchema: { properties: { message: { description: string } } } };
+      const d = t.inputSchema.properties.message.description;
+      for (const s of ['先に get_post で読み直す', '2 文字字下げ', '先頭の 2 文字の空白を外す', '本文を 4000 文字で切りました', '出力を元に書き換えない']) expect(d).toContain(s);
+      expect(t.description).not.toContain('字下げ');
+    });
+
     test('replaces only the message through the patch API and reports the post_id, channel and permalink', async () => {
       serve(mine({ is_pinned: true }));
       const r = await edit(setup());
