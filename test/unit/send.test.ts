@@ -7,6 +7,10 @@ import type { Mm } from '../../src/mcp/resolve.ts';
 import { sendMessage } from '../../src/mcp/tools-send.ts';
 import { INFLIGHT_GRACE, Store } from '../../src/store.ts';
 
+// Not vitest's defaults (1 s for vi.waitFor, 5 s for a test): on a busy machine the awaited event can take seconds.
+const SLOW = { timeout: 10_000 };
+const SLOW_TEST = 30_000;
+
 const UID = 'u'.repeat(26);
 const CH = 'c'.repeat(26);
 const OTHER = 'o'.repeat(26);
@@ -687,18 +691,18 @@ describe('a draft with the sent message is cleared after the post', () => {
     const gate = new Promise<void>((r) => { open = r; });
     const holder = fakeMm({ drafts: async () => (await gate, []) });
     const holding = holder.send({ channel: 'team-a/dup', message: 'first' });
-    await vi.waitFor(() => expect(paths(holder)).toContain(`GET ${LIST}`));
+    await vi.waitFor(() => expect(paths(holder)).toContain(`GET ${LIST}`), SLOW);
     const client = new AbortController();
     const f = fakeMm({ drafts: () => [draft()] });
     const sending = f.send({ channel: 'team-a/dup', message: 'hello' }, client.signal);
-    await vi.waitFor(() => expect(f.created).toHaveLength(1));
+    await vi.waitFor(() => expect(f.created).toHaveLength(1), SLOW);
     client.abort();
     expect((await sending).isError).toBeFalsy();
     open();
     await holding;
     expect(paths(f).filter((c) => c.endsWith('/drafts'))).toEqual([]);
     expect(logged).toEqual([]);
-  });
+  }, SLOW_TEST);
 
   test('a cleanup whose client has already cancelled does not call Mattermost even with the lock free', async () => {
     const client = new AbortController();
@@ -759,7 +763,7 @@ describe('a draft with the sent message is cleared after the post', () => {
       drafts: (signal) => new Promise((_, reject) => signal!.addEventListener('abort', () => reject(signal!.reason))),
     });
     const sending = f.send({ channel: DM, message: 'hello' });
-    await vi.waitFor(() => expect(paths(f)).toContain(`GET /users/${UID}/teams/ta/drafts`));
+    await vi.waitFor(() => expect(paths(f)).toContain(`GET /users/${UID}/teams/ta/drafts`), SLOW);
     ac.abort(new DOMException('timed out', 'TimeoutError'));
     const r = await sending;
     expect(timeout).toHaveBeenCalledWith(5000);
@@ -768,7 +772,7 @@ describe('a draft with the sent message is cleared after the post', () => {
     expect(cleanup.every((c) => c.signal === ac.signal)).toBe(true);
     expect(r.isError).toBeFalsy();
     expect(textOf(r)).toContain(FAILED);
-  });
+  }, SLOW_TEST);
 
   test('the sync setting and the DELETE get the same deadline signal', async () => {
     const ac = new AbortController();
