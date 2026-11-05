@@ -121,7 +121,9 @@ export function registerThreadTools(server: McpServer, ctx: ToolContext): void {
     async ({ post_id }, mm) => {
       const r = await rootOf(mm, post_id);
       await mm.call(uid, 'GET', `/channels/${r.channelId}/members/me`).catch((e) => {
-        if (missing(e)) throw new InputError('このチャンネルに参加していません。参加していないチャンネルのスレッドは、フォローしても一覧にも通知にも出ません。');
+        // Not saying a 403 means not joined: Mattermost also answers 403 when its permission check fails on a transient error.
+        if (e instanceof MmError && e.status === 403) throw new InputError('このチャンネルに参加しているかを確かめられませんでした（参加していないか、Mattermost の一時的な障害）。参加していないチャンネルのスレッドは、フォローしても一覧にも通知にも出ません。参加しているはずなら、少し待ってから再試行してください。');
+        if (e instanceof MmError && e.status === 404) throw new InputError('このチャンネルに参加していません。参加していないチャンネルのスレッドは、フォローしても一覧にも通知にも出ません。');
         throw e;
       });
       const { team } = await channelOf(mm, r.channelId);

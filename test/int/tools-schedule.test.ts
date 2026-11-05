@@ -141,8 +141,8 @@ describe('scheduled messages against the local Mattermost', () => {
     const r = await call('schedule_message', { channel: channel.id, message, at: inTwoMinutes(), files: [{ name: 'a.txt', content_text: 'hello' }] });
     expect(r.isError).toBe(true);
     expect(r.content[0].text).toContain('受けない引数です: files');
-    expect(r.content[0].text).toContain('今すぐ送るなら send_message の files を');
-    expect(r.content[0].text).toContain('file_ids');
+    expect(r.content[0].text).toContain('send_message の files を使えます');
+    expect(r.content[0].text).toContain('prepare_upload の説明の案内に従ってください');
     expect((await call('list_scheduled_messages', {})).content[0].text).not.toContain(message);
   });
 
