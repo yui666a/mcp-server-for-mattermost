@@ -61,7 +61,7 @@ export function guarded<A extends unknown[]>(ctx: ToolContext, tool: string, fn:
 
 export function buildServer(ctx: ToolContext): McpServer {
   const server = new McpServer({ name: 'mcp-server-for-mattermost', version: '0.1.0' });
-  // Wrapped here rather than in each tool file: every lane's tool gets the strict check, and a new tool cannot miss it.
+  // Wrapped here rather than in each tool file: every tool registered with a plain shape gets the strict check without each lane writing it. A tool that passes its own zod schema must make it strict itself.
   // Not touching a tool without inputSchema: the SDK then calls its handler without arguments, and a shape would change that call.
   const register = server.registerTool.bind(server);
   server.registerTool = ((name: string, config: { inputSchema?: object }, cb: unknown) =>
