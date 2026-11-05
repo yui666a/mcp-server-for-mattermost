@@ -389,14 +389,14 @@ describe('list_scheduled_messages', () => {
     routes[`GET /channels/${GM2}`] = () => ({ id: GM2, name: 'i'.repeat(40), display_name: 'alice, dave, erin', team_id: '', type: 'G' });
     routes[`GET /channels/${LONE}`] = () => ({ id: LONE, name: 'j'.repeat(40), display_name: 'alice, frank, gina', team_id: '', type: 'G' });
     const members: Record<string, unknown> = {
-      [GM]: [{ id: 'u7', username: 'carol' }, { id: 'u1', username: 'alice' }, { id: 'u5', username: 'bob' }],
+      [GM]: [{ id: 'u7', username: 'carol' }, { id: 'u1', username: 'alice' }, { id: 'u5', username: 'bob', delete_at: NOW - DAY }],
       [GM2]: Response.json({ id: 'api.context.permissions.app_error', message: 'm', status_code: 403 }, { status: 403 }),
       [LONE]: [{ id: 'u1', username: 'alice' }],
     };
-    const queries: string[][] = [];
+    const queries: { keys: string[]; perPage: string | null }[] = [];
     routes['GET /users'] = (req) => {
       const q = new URL(req.url).searchParams;
-      queries.push([...q.keys()].sort());
+      queries.push({ keys: [...q.keys()].sort(), perPage: q.get('per_page') });
       return members[q.get('in_channel')!];
     };
     const s = setup();
@@ -411,7 +411,7 @@ describe('list_scheduled_messages', () => {
       `投稿先: alice, frank, gina（channel_id: ${LONE}）`,
     ]);
     expect(hits.filter((h) => h === 'GET /users')).toHaveLength(3);
-    expect(queries).toEqual(Array(3).fill(['in_channel', 'per_page']));
+    expect(queries).toEqual(Array(3).fill({ keys: ['in_channel', 'per_page'], perPage: '200' }));
   });
 
   test.each([
