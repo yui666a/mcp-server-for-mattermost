@@ -384,7 +384,7 @@ export function registerReadTools(server: McpServer, ctx: ToolContext): void {
   }
 
   async function withChannels(mm: Mm, shown: MmPost[]): Promise<string[]> {
-    // include_deleted: a saved post can sit in an archived channel the user is still in, which the default listing leaves out.
+    // Not the default listing: it leaves out archived channels the user is still in, where saved posts can sit.
     const channels = new Map((await mm.call<MmChannel[]>(uid, 'GET', '/users/me/channels?include_deleted=true')).map((x) => [x.id, x]));
     const teams = await myTeams(mm, uid);
     const teamName = new Map(teams.map((t) => [t.id, t.name]));
