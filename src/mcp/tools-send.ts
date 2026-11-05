@@ -117,10 +117,7 @@ export async function sendMessage(mm: Mm, store: Store, uid: string, baseUrl: st
   const ch = await resolveTarget(mm, store, uid, args.channel, args.root_id, fileIds);
   checkUploaded(store, uid, ch.id, fileIds);
   const rootId = args.root_id;
-  if (rootId) {
-    const root = await mm.call<MmPost>(uid, 'GET', `/posts/${rootId}`);
-    if (root.channel_id !== ch.id) throw new InputError(`root_id ${rootId} の投稿はチャンネル「${ch.displayName || ch.name}」（channel_id: ${ch.id}）にありません。`);
-  }
+  if (rootId) await checkRoot(mm, uid, rootId, ch);
   const where = `チャンネル: ${ch.displayName || ch.name}（channel_id: ${ch.id}）${rootId ? `、返信先 post_id: ${rootId}` : ''}`;
   // Not only after a fresh post: an earlier attempt's cleanup may have failed, and a resend that did not post can retry it.
   const done = async (postId: string, note: string) => {
