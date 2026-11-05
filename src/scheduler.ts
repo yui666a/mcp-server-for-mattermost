@@ -55,10 +55,12 @@ async function attempt(store: Store, mm: Mm, s: ClaimedScheduled, now: number): 
     let found: string | undefined;
     let touched = false;
     try {
-      const owned = store.otherScheduledPostIds(s.mmUserId, s.id);
       const r = await lookPosted(mm, s.mmUserId, { ...spec, fileCount: fileIds.length, fileIds }, s.firstAttemptAt!);
+      // Not read before the lookup: a post recorded meanwhile by another schedule or send_message would be missed.
+      const owned = new Set([...store.otherScheduledPostIds(s.mmUserId, s.id), ...store.otherClaimPostIds(s.mmUserId, 0)]);
       found = r.found.find((p) => !owned.has(p));
-      touched = [...r.deleted, ...r.edited, ...r.mismatched].some((p) => !owned.has(p));
+      // Not posting when every match is another record's: that record may hold this schedule's own earlier post by a mistaken match of its own, and posting again would post it twice.
+      touched = (!found && r.found.length > 0) || [...r.deleted, ...r.edited, ...r.mismatched].some((p) => !owned.has(p));
     } catch (e) {
       // Not posting without a lookup: the earlier attempt may have posted, and a new post would be a second one.
       if (!late && (e instanceof RateLimited || e instanceof UpstreamUnavailable)) return { status: 'pending', forgetAttempt: false };
