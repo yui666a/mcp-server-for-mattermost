@@ -193,6 +193,16 @@ describe('search_posts in: filters', () => {
     expect((bodies['/posts/search'] as { include_deleted_channels: boolean }).include_deleted_channels).toBe(archived);
   });
 
+  test('marks the channel line of a post found in an archived channel named by its ID in in:', async () => {
+    routes = {
+      ...base(),
+      'POST /posts/search': () => ({ order: [id(0)], posts: { [id(0)]: { id: id(0), user_id: 'u1', channel_id: AR, root_id: '', message: 'm', create_at: 0 } } }),
+      'GET /users/me/channels': () => [],
+      'POST /users/ids': () => [{ id: 'u1', username: 'me' }],
+    };
+    expect(await setup()('search_posts', { terms: `x in:${AR}` })).toContain(`channel_id: ${AR}、name: old、アーカイブ済み`);
+  });
+
   test('searches terms with 200,000 words before a quote', async () => {
     routes = base();
     const terms = `${'w '.repeat(200_000)}"a b" in:only-a`;
