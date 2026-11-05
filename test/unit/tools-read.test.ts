@@ -1555,15 +1555,27 @@ describe('get_file', () => {
       expect(out).toContain('Shift_JIS');
     });
 
-    test.each([
-      ['UTF-8', 'a.txt', [...Buffer.from('aあ'), 0xe3, 0x81], 'aあ'],
-      ['Shift_JIS', 'a.csv', [0x61, 0x82, 0xa0, 0x82], 'aあ'],
-    ])('drops a %s character cut at the end of the fetched bytes and notes the cut', async (encoding, name, b, shown) => {
-      routes = { [INFO]: textInfo(name as string, 1_000_000), [FILE]: body(Uint8Array.from(b as number[])) };
+    // 40,000 bytes, the most fetched: a file that fills them may go on, so a character cut at their end is the fetch's, not the file's.
+    const FAMILY = '👨‍👩‍👧';
+    test('drops a UTF-8 character cut at the end of the fetched bytes without calling it incomplete', async () => {
+      const head = `${FAMILY.repeat(2222)}aa`;
+      const b = Uint8Array.from([...Buffer.from(head), 0xe3, 0x81]);
+      expect(b.length).toBe(40_000);
+      routes = { [INFO]: textInfo('a.txt', 1_000_000), [FILE]: body(b) };
       const out = await setup()('get_file', { file_id: F });
-      expect(content()).toBe(shown);
-      expect(out).toContain(encoding as string);
-      expect(out).toContain('先頭の 2 文字だけを返しました');
+      expect(content()).toBe(head);
+      expect(out).toContain('UTF-8');
+      expect(out).toContain('先頭の 2224 文字だけを返しました（ファイル全体は 1000000 バイト）');
+      expect(out).not.toContain('末尾に不完全な文字');
+    });
+
+    test('drops a Shift_JIS character cut at the end of the fetched bytes without calling it incomplete', async () => {
+      const b = Uint8Array.from([0x61, ...Array.from({ length: 19_999 }, () => [0x82, 0xa0]).flat(), 0x82]);
+      expect(b.length).toBe(40_000);
+      routes = { [INFO]: textInfo('a.csv', 1_000_000), [FILE]: body(b) };
+      const out = await setup()('get_file', { file_id: F });
+      expect(out).toContain('文字コード: Shift_JIS');
+      expect(out).toContain('先頭の 10000 文字だけを返しました');
       expect(out).not.toContain('末尾に不完全な文字');
     });
 
@@ -1623,6 +1635,69 @@ describe('get_file', () => {
       expect(out).not.toContain('先頭の');
     });
 
+    describe('whether the whole file was fetched', () => {
+      test.each([[1_000_000, 'larger'], [3, 'smaller']])('takes fewer bytes than the most fetched as the whole file whatever its size says (%i, %s)', async (size) => {
+        routes = { [INFO]: textInfo('a.md', size as number), [FILE]: body(Uint8Array.from([0x61, 0x62, 0xe3, 0x81])) };
+        const out = await setup()('get_file', { file_id: F });
+        expect(content()).toBe('ab');
+        expect(out).toContain('ファイルの末尾に不完全な文字があったため');
+        expect(out).not.toContain('先頭の');
+      });
+
+      test('at exactly the most fetched, takes the file as whole only when its size matches, and says "at least" when the size is smaller', async () => {
+        const b = new Uint8Array(Buffer.from('a'.repeat(40_000)));
+        routes = { [INFO]: textInfo('a.md', 40_000), [FILE]: body(b) };
+        expect(await setup()('get_file', { file_id: F })).toContain('先頭の 10000 文字だけを返しました（ファイル全体は 40000 バイト）');
+        routes = { [INFO]: textInfo('a.md', 100), [FILE]: body(b) };
+        expect(await setup()('get_file', { file_id: F })).toContain('先頭の 10000 文字だけを返しました（ファイル全体は少なくとも 40000 バイト）');
+      });
+
+      test('writes the bytes fetched, not the size it says, as the size of a whole file cut to 10,000 characters', async () => {
+        routes = { [INFO]: textInfo('a.md', 1_000_000), [FILE]: body(new Uint8Array(Buffer.from('a'.repeat(10_001)))) };
+        expect(await setup()('get_file', { file_id: F })).toContain('先頭の 10000 文字だけを返しました（ファイル全体は 10001 バイト）');
+      });
+
+      test('keeps UTF-8, with neither note, for ASCII ending in a UTF-8 lead byte when the fetch may have stopped there', async () => {
+        const b = Uint8Array.from([...Buffer.from('a'.repeat(39_999)), 0xe3]);
+        routes = { [INFO]: textInfo('a.log', 1_000_000), [FILE]: body(b) };
+        const out = await setup()('get_file', { file_id: F });
+        expect(out).toContain('文字コード: UTF-8');
+        expect(out).not.toContain('推定');
+        expect(out).not.toContain('末尾に不完全な文字');
+      });
+    });
+
+    describe('a whole file that is ASCII but for an incomplete last character (UTF-8 is only a guess)', () => {
+      test.each([
+        ['a.txt', [0x61, 0x62, 0x63, 0xc2], 'Shift_JIS', 'abcﾂ', false],
+        ['a.txt', [0x61, 0x62, 0x63, 0xe8, 0xa0], 'Shift_JIS', 'abc陟', false],
+        ['a.csv', [...Buffer.from('café', 'latin1')], 'UTF-8', 'caf', true],
+        ['a.md', [0x61, 0x62, 0x63, 0xc2], 'UTF-8', 'abc', true],
+      ])('reads %s %j as %s, noting the guess', async (name, b, encoding, shown, cut) => {
+        routes = { [INFO]: textInfo(name as string, (b as number[]).length), [FILE]: body(Uint8Array.from(b as number[])) };
+        const out = await setup()('get_file', { file_id: F });
+        expect(content()).toBe(shown);
+        expect(out).toContain(`文字コード: ${encoding}`);
+        expect(out).toContain(GUESSED);
+        expect(out.includes('末尾に不完全な文字')).toBe(cut);
+      });
+
+      test('keeps UTF-8 without a guess when the text has other non-ASCII characters', async () => {
+        routes = { [INFO]: textInfo('a.txt', 5), [FILE]: body(Uint8Array.from([...Buffer.from('あ'), 0xe3, 0x81])) };
+        const out = await setup()('get_file', { file_id: F });
+        expect(content()).toBe('あ');
+        expect(out).toContain('文字コード: UTF-8');
+        expect(out).not.toContain('推定');
+      });
+    });
+
+    test('says the file may be missing or unreadable in the store for a 404 from its reader', async () => {
+      routes = { [INFO]: textInfo('a.txt', 5), [FILE]: mmError(404, 'api.file.file_reader.app_error') };
+      const out = await setup()('get_file', { file_id: F });
+      expect(out).toContain('中身を取得できませんでした（HTTP 404）。保存先にファイルの実体が無いか、保存先から読めません。');
+      expect(last.content).toHaveLength(1);
+    });
+
     test('says nothing readable is left when the whole file is one incomplete character', async () => {
       routes = { [INFO]: textInfo('a.md', 1), [FILE]: body(Uint8Array.from([0xe3])) };
       const out = await setup()('get_file', { file_id: F });
@@ -1641,6 +1716,8 @@ describe('get_file', () => {
 
     test.each([
       ['a 500 with a Mattermost JSON error', mmError(500, 'api.file.get_file_info.app_error')],
+      ['a 500 with an empty id (hardened mode)', mmError(500, '')],
+      ['a 500 in HTML from a proxy', () => new Response('<html>500</html>', { status: 500, headers: { 'content-type': 'text/html' } })],
       ['a 502', () => new Response('bad gateway', { status: 502 })],
       ['a 503', () => new Response('unavailable', { status: 503 })],
       ['a 504', () => new Response('gateway timeout', { status: 504 })],
@@ -1687,17 +1764,18 @@ describe('get_file', () => {
       expect(out).toContain('先頭の 10000 文字だけを返しました（ファイル全体は 10001 バイト）');
     });
 
-    test('notes the cut when the file is larger than the bytes fetched, counting the characters returned', async () => {
-      const head = '👨‍👩‍👧'.repeat(2);
+    test('notes the cut when the file fills the bytes fetched and is larger, counting the characters returned', async () => {
+      const head = `${'👨‍👩‍👧'.repeat(2222)}abcd`;
+      expect(Buffer.byteLength(head)).toBe(40_000);
       routes = { [INFO]: textInfo('a.log', 1_000_000), [FILE]: body(new Uint8Array(Buffer.from(head))) };
       const out = await setup()('get_file', { file_id: F });
       expect(content()).toBe(head);
-      expect(out).toContain('先頭の 2 文字だけを返しました（ファイル全体は 1000000 バイト）');
+      expect(out).toContain('先頭の 2226 文字だけを返しました（ファイル全体は 1000000 バイト）');
     });
 
     test.each([
       [mmError(403, 'api.file.get_file.rejected_by_plugin'), 'Mattermost が中身のダウンロードを拒否しました（プラグインによる制限）'],
-      [mmError(404, 'api.file.file_reader.app_error'), '中身を取得できませんでした（HTTP 404）'],
+      [mmError(404, 'api.file.file_reader.app_error'), '中身を取得できませんでした（HTTP 404）。保存先にファイルの実体が無いか、保存先から読めません。'],
     ])('when fetching the content fails with a 4xx, still returns the information with the reason', async (route, reason) => {
       routes = { [INFO]: textInfo('a.txt', 5), [FILE]: route };
       const out = await setup()('get_file', { file_id: F });
