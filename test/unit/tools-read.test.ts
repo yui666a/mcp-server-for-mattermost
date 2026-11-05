@@ -61,6 +61,8 @@ test('search_posts sends the JST offset, shows the channel and team names, and n
   const call = setup();
   const out = await call('search_posts', { terms: 'x on:2026-10-15', limit: 50 });
   expect(bodies['/posts/search']).toMatchObject({ terms: 'x on:2026-10-15', time_zone_offset: 32400 });
+  expect(urls).toContain('GET /users/me/channels');
+  expect(urls).not.toContain('GET /users/me/channels?include_deleted=true');
   expect(out).toContain('name: general-dup');
   expect(out).toContain('team-a');
   expect(out).toContain('これより古い一致');
@@ -1198,6 +1200,7 @@ describe('get_mentions', () => {
     add(22, 1);
     routes = base();
     await setup()('get_mentions', {});
+    expect(urls).not.toContain('GET /users/me/channels?include_deleted=true');
     expect(hits.slice(0, 2)).toEqual(['GET /users/me', 'POST /posts/search']);
     expect(bodies['/posts/search']).toEqual({ terms: '"@alice" "aiso"', is_or_search: true, include_deleted_channels: false, time_zone_offset: 32400, page: 0, per_page: 100 });
   });
@@ -2313,11 +2316,15 @@ describe('list_saved_posts', () => {
     routes = { ...base(),
       'GET /users/me/teams': () => [{ id: T, name: 'team-a' }, { id: T2, name: 'team-b' }],
       // Mattermost lists an archived channel only when include_deleted is true.
-      'GET /users/me/channels': (req) => (new URL(req.url).searchParams.get('include_deleted') === 'true' ? [{ id: OLD, name: 'old', display_name: 'Old', team_id: T2, type: 'O', delete_at: 5 }] : []),
-      [FLAGGED]: byOffset([{ ...post('x'.repeat(26), 2), channel_id: OLD }]) };
+      'GET /users/me/channels': (req) => [
+        { id: C, name: 'town', display_name: 'Town', team_id: T, type: 'O', delete_at: 0 },
+        ...(new URL(req.url).searchParams.get('include_deleted') === 'true' ? [{ id: OLD, name: 'old', display_name: 'Old', team_id: T2, type: 'O', delete_at: 5 }] : []),
+      ],
+      [FLAGGED]: byOffset([{ ...post('x'.repeat(26), 2), channel_id: OLD }, post('y'.repeat(26), 1)]) };
     const out = await setup()('list_saved_posts', {});
     expect(urls).toContain('GET /users/me/channels?include_deleted=true');
-    expect(out).toContain(`チャンネル: Old（name: old、channel_id: ${OLD}）`);
+    expect(out).toContain(`チャンネル: Old（アーカイブ済み）（name: old、channel_id: ${OLD}） | チーム: team-b（team_id: ${T2}）`);
+    expect(out).toContain(`チャンネル: Town（name: town、channel_id: ${C}） | チーム: team-a（team_id: ${T}）`);
     expect(out).toContain(`https://mm.example/team-b/pl/${'x'.repeat(26)}`);
   });
 
