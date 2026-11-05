@@ -18,3 +18,7 @@ export function makeApp(env: Record<string, string> = {}, fetchImpl: typeof fetc
   const app = createApp({ config, store, deps, mm });
   return { app, store, config, mm, req: request(app) };
 }
+
+// Not vitest's defaults (1 s for vi.waitFor, 5 s for a test): on a busy machine the awaited event can take seconds.
+export const SLOW = { timeout: 10_000 };
+export const SLOW_TEST = 30_000;

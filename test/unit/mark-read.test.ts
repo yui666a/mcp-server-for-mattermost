@@ -379,9 +379,27 @@ describe('mark_as_read for threads', () => {
     routes = threads(o);
     const r = await setup().call({ threads: [{ post_id: ROOT, last_post_id: id(5) }] });
     expect(r.isError).toBe(true);
-    expect(r.text).toContain(`スレッド（親 post_id: ${ROOT}）: ${read}ただし、位置ちょうどの返信のメンションを消す前に中断しました。このスレッドを同じ last_post_id で再実行すると消せることがあります。`);
+    expect(r.text).toContain(`スレッド（親 post_id: ${ROOT}）: ${read}ただし、位置ちょうどの返信のメンションを消す書き込みの途中で中断しました（消せたかは分かりません）。このスレッドを同じ last_post_id で再実行すると消せることがあります。`);
     expect(r.text).toContain('ここで中断しました。Mattermost に一時的に接続できません。');
     expect(r.text).not.toContain('処理していません');
+  });
+
+  const refused = () => { throw new TypeError('fetch failed', { cause: Object.assign(new Error('refused'), { code: 'ECONNREFUSED' }) }); };
+
+  test('says the mention was not cleared when the write clearing it could not connect', async () => {
+    routes = threads({
+      [`PUT /users/u1/teams/${TEAM}/threads/${ROOT}/read/1006`]: () => read({ unread_mentions: 1 }),
+      [`PUT /users/u1/teams/${TEAM}/threads/${ROOT}/read/1007`]: refused,
+    });
+    const r = await setup().call({ threads: [{ post_id: ROOT, last_post_id: id(5) }] });
+    expect(r.text).toContain(`スレッド（親 post_id: ${ROOT}）: 既読にしました。ただし、位置ちょうどの返信のメンションを消す前に中断しました。`);
+  });
+
+  test('says an item was not marked when its write could not connect', async () => {
+    routes = threads({ 'POST /channels/members/u1/mark_read': once(() => ({ status: 'OK', last_viewed_at_times: {} }), refused) });
+    const r = await setup().call({ channels: [{ channel: CH }, { channel: CH2 }] });
+    expect(r.text).toContain(`（channel_id: ${CH}）: 呼んだ時点までのすべてを既読にしました。`);
+    expect(r.text).toContain(`（channel_id: ${CH2}）: 処理中に中断しました（既読にしていません）。`);
   });
 
   test('stops at an unavailable write, keeping the items before it and listing the ones not started', async () => {
