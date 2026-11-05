@@ -1,24 +1,7 @@
 import { createHash } from 'node:crypto';
 import { MmError, UpstreamUnavailable, type MmClient } from '../mattermost/client.ts';
-import { ASK_ADMIN, InputError, oneLine, RETRY } from './format.ts';
+import { ASK_ADMIN, InputError, oneLine, RETRY, unformat } from './format.ts';
 
-// Format characters (Unicode Cf: zero-width, direction marks, soft hyphen) too, not only what trim drops: they slip in with a copy, and no
-// channel, team or user name or ID can have them, as those are ASCII only.
-const EDGE = /^[\s\p{Cf}]$/u;
-// Not one regex with [\s\p{Cf}]+$: it restarts at every position of a long run of spaces followed by other text, taking time quadratic in the length, and arguments have no length limit.
-export const unformat = (s: string) => {
-  const t = s.replace(/^[\s\p{Cf}]+/u, '');
-  let end = t.length;
-  while (end > 0) {
-    // Not one UTF-16 unit at a time: some Cf characters (tags, U+E0001 and up) are surrogate pairs.
-    const lo = t.charCodeAt(end - 1);
-    const hi = t.charCodeAt(end - 2);
-    const start = end >= 2 && lo >= 0xdc00 && lo <= 0xdfff && hi >= 0xd800 && hi <= 0xdbff ? end - 2 : end - 1;
-    if (!EDGE.test(t.slice(start, end))) break;
-    end = start;
-  }
-  return t.slice(0, end);
-};
 export type Mm = Pick<MmClient, 'call'>;
 export type ChannelRef = { id: string; name: string; displayName: string; teamId: string; teamName: string };
 export type UserRef = {
@@ -47,7 +30,7 @@ export class Ambiguous extends InputError {
   }
 }
 
-// A subclass so that a search can say it in its own words: it leaves out archived channels, which the read tools can still read by ID.
+// A subclass so that a search can say it in its own words: it reaches an archived channel only by its ID in in:, not by reading it as the read tools do.
 export class ChannelNotFound extends InputError {
   constructor(spec: string) {
     super(`チャンネル「${spec}」が見つかりません。名前の誤りなら search_channels で確かめてください。参加していない非公開チャンネルとアーカイブ済みのチャンネルは名前では見つかりません（アーカイブ済みのチャンネルは書き込めませんが、読むだけなら利用者に ID を確かめて ID で指定できます）。${RETRY}${ASK_ADMIN}`);

@@ -2,11 +2,12 @@ import type { McpServer, ToolCallback } from '@modelcontextprotocol/sdk/server/m
 import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
 import { z } from 'zod';
 import { MmError, UpstreamUnavailable, type MmClient } from '../mattermost/client.ts';
-import { ASK_ADMIN, BAD_CURSOR, BODY_CUT_NOTE, BODY_MAX_CHARS, decodeCursor, encodeCursor, fileLine, formatPost, formatTime, graphemeCount, indented, InputError, localTime, oneLine, POST_FORBIDDEN, postTruncated, postUserIds, RETRY, RETRY_SOON, truncate, type MmFileInfo, type MmPost } from './format.ts';
+import { idArg } from './args.ts';
+import { ASK_ADMIN, BAD_CURSOR, BODY_CUT_NOTE, BODY_MAX_CHARS, decodeCursor, encodeCursor, fileLine, formatPost, formatTime, graphemeCount, indented, InputError, localTime, oneLine, POST_FORBIDDEN, postTruncated, postUserIds, RETRY, RETRY_SOON, truncate, unformat, type MmFileInfo, type MmPost } from './format.ts';
 import { pageCursor, paginate } from './paging.ts';
 import { mentionsMe, mentionTerms, type MentionUser } from './mentions.ts';
 import { parsePostRef } from './permalink.ts';
-import { Ambiguous, ChannelFetchError, ChannelNotFound, myTeams, NoDirectChannel, resolveChannel, resolveUser, teamNameOf, unformat, type ChannelRef, type Mm, type MmChannel, type MmTeam, type ResolvedChannel, type UserRef } from './resolve.ts';
+import { Ambiguous, ChannelFetchError, ChannelNotFound, myTeams, NoDirectChannel, resolveChannel, resolveUser, teamNameOf, type ChannelRef, type Mm, type MmChannel, type MmTeam, type ResolvedChannel, type UserRef } from './resolve.ts';
 import { guarded, text, type ToolContext } from './tool.ts';
 import { worded, type Wording } from './tools-send.ts';
 import { parseWhen } from './when.ts';
@@ -299,7 +300,7 @@ function channelFilters(words: string[]): { at: number; span: number; value: str
   return found;
 }
 
-async function filterChannelIds(mm: Mm, userId: string, spec: string, written: string, exclude: boolean, notes: string[]): Promise<string[]> {
+async function filterChannelIds(mm: Mm, userId: string, spec: string, written: string, exclude: boolean, notes: string[], found: { archived: boolean }): Promise<string[]> {
   let ch;
   try {
     ch = await resolveChannel(mm, userId, spec, { names: false });
@@ -311,8 +312,8 @@ async function filterChannelIds(mm: Mm, userId: string, spec: string, written: s
     }
     // No DM means no posts to exclude, so the condition is dropped rather than failing the search.
     if (e instanceof NoDirectChannel && exclude) return [];
-    // Not the read tools' wording: a search leaves out archived channels, so an ID would find nothing there either.
-    const byName = `チャンネル「${spec}」が見つかりません。名前の誤りなら search_channels で確かめてください。参加していない非公開チャンネルとアーカイブ済みのチャンネルは名前では見つからず、アーカイブ済みのチャンネルは検索の対象外です（読むなら、利用者に ID を確かめて read_channel に渡します）。${RETRY}${ASK_ADMIN}`;
+    // Not the read tools' wording: for a search, the way to an archived channel is its ID in in:, not read_channel.
+    const byName = `チャンネル「${spec}」が見つかりません。名前の誤りなら search_channels で確かめてください。参加していない非公開チャンネルとアーカイブ済みのチャンネルは名前では見つかりません（アーカイブ済みのチャンネルは、参加していたなら、利用者に ID を確かめて in: に ID で指定すれば検索できます）。${RETRY}${ASK_ADMIN}`;
     if (e instanceof ChannelNotFound) throw new InputError(byName);
     if (e instanceof ChannelFetchError && e.id === 'app.team.get_by_name.missing.app_error') {
       throw new InputError(`チャンネル「${spec}」のチームが見つかりません。チーム名の誤りなら、list_my_channels で参加しているチームを確かめてください（チーム名はチャンネルの行の先頭に出ます）。`);
@@ -324,9 +325,8 @@ async function filterChannelIds(mm: Mm, userId: string, spec: string, written: s
     }
     throw e;
   }
-  // Not dropping an -in: of an archived channel: the search leaves it out anyway.
-  // Not searching with include_deleted_channels instead: the tool descriptions and the listing behind the channel lines assume archived channels stay out.
-  if (!exclude && (ch.raw as { delete_at?: number }).delete_at) throw new InputError(`チャンネル「${spec}」はアーカイブ済みで、検索の対象外です。読むなら read_channel に渡します。`);
+  // Not dropping an -in: of an archived channel: it still excludes when another in: makes the search include archived channels.
+  if (!exclude && (ch.raw as { delete_at?: number }).delete_at) found.archived = true;
   return [ch.id];
 }
 
@@ -337,12 +337,13 @@ const MAX_CHANNEL_FILTERS = 20;
 
 // Rewritten here rather than left to Mattermost: a search across all teams looks channel names up without a team and matches nothing,
 // and in:@user creates the DM (GetOrCreateDirectChannel) from a read-only tool.
-export async function resolveInFilters(mm: Mm, userId: string, terms: string): Promise<{ terms: string; notes: string[] }> {
+export async function resolveInFilters(mm: Mm, userId: string, terms: string): Promise<{ terms: string; notes: string[]; archived: boolean }> {
   const words = splitWords(terms);
   const filters = channelFilters(words);
-  if (!filters.length) return { terms, notes: [] };
+  if (!filters.length) return { terms, notes: [], archived: false };
   if (filters.length > MAX_CHANNEL_FILTERS) throw new InputError(`in: と channel: は、-in: などの除外も含めて 1 回の検索で ${MAX_CHANNEL_FILTERS} 個まで指定できます。in: が多いときは検索を分け、除外は分けた各検索に付け直してください（各検索も除外を含めて ${MAX_CHANNEL_FILTERS} 個まで）。除外が多いときは数を減らしてください（in: があるなら、in: のチャンネルと重ならない除外は効かないので外せます。除外を別々の検索に分けると、もう一方の検索では効きません。in: が無く、探したいチャンネルのほうが少ないなら、それを in: で挙げてください）。in: で挙げると、検索の範囲は挙げたチャンネルだけになります。`);
   const notes: string[] = [];
+  const found = { archived: false };
   const out = words.map((w) => [w]);
   const written = (f: (typeof filters)[number]) => words.slice(f.at, f.at + f.span).join(' ');
   // Not left to resolveChannel, which removes them too: the checks for ~ and @ below run before it.
@@ -372,12 +373,12 @@ export async function resolveInFilters(mm: Mm, userId: string, terms: string): P
   // Sequential rather than Promise.all: parallel lookups would exceed the per-user concurrency limit.
   for (const f of filters) {
     const spec = specOf(f);
-    const ids = await filterChannelIds(cached, userId, spec, written(f), f.exclude, notes);
+    const ids = await filterChannelIds(cached, userId, spec, written(f), f.exclude, notes, found);
     out.splice(f.at, f.span, ids.map((id) => `${f.exclude ? '-' : ''}in:${id}`), ...(f.span === 2 ? [[]] : []));
   }
   const rewritten = out.flat().join(' ');
   if (!rewritten) throw new InputError('検索語か条件を 1 つ以上指定してください。');
-  return { terms: rewritten, notes };
+  return { terms: rewritten, notes, archived: found.archived };
 }
 
 const listed = <T>(all: T[], c: { offset: number; per_page: number } | undefined, limit: number) => {
@@ -506,7 +507,7 @@ export function registerReadTools(server: McpServer, ctx: ToolContext): void {
     // Not the default listing unless archived is false: it leaves out archived channels the user is still in, where saved posts can sit.
     const listed = await mm.call<(MmChannel & { delete_at?: number })[]>(uid, 'GET', archived ? '/users/me/channels?include_deleted=true' : '/users/me/channels');
     const channels = new Map(listed.map((x) => [x.id, x]));
-    // Not listing archived channels always for the few a search finds after they were archived; one by one, not in parallel, for the
+    // Not listing archived channels always for the few a search finds (those archived after it ran, or named by ID in in:); one by one, not in parallel, for the
     // per-user concurrency limit. Not the first team on errors other than 403 and 404: a user in several teams would get another team's
     // permalink without notice.
     for (const id of new Set(ids)) {
@@ -530,7 +531,7 @@ export function registerReadTools(server: McpServer, ctx: ToolContext): void {
   }
 
   async function withChannels(mm: Mm, shown: MmPost[], archived = false): Promise<string[]> {
-    // Not always listing archived channels: the post searches leave their posts out, and a user can be in many of them.
+    // Not always listing archived channels: the post searches leave their posts out unless in: names one, and a user can be in many of them.
     const placeOf = await places(mm, shown.map((p) => p.channel_id), archived);
     const users = await usernames(mm, uid, shown);
     return shown.map((p) => {
@@ -539,7 +540,7 @@ export function registerReadTools(server: McpServer, ctx: ToolContext): void {
     });
   }
 
-  tool('search_posts', '参加しているチームのメッセージを検索する。Mattermost の検索構文（from:、in:、before:、after:、on: など）をそのまま使える。in: にはチャンネル ID、「チーム名/チャンネル名」、チャンネル名、@ユーザー名（DM）、@a,b（グループ DM。カンマの前後に空白を入れない）を渡せる。同じ名前が複数のチームにあれば、すべてで探す。見つからない・見る権限の無いチャンネルはエラー、参加していないチャンネル（見られる非公開を含む）に絞ると 0 件になる。アーカイブ済みのチャンネルは対象外（in: に ID を渡すとエラー）。in: と channel:（-in: などの除外を含む）は 1 回の検索で合わせて 20 個まで。DM は作らない。日付は日本時間（JST）で解釈する。新しい順。メッセージ添付（Bot や webhook などが付ける整形表示）の中身は検索の対象外（Mattermost の標準のデータベース検索は添付を検索しないため。その中身を探すなら read_channel で読む。read_channel なら since と until で期間を指定して読める）',
+  tool('search_posts', '参加しているチームのメッセージを検索する。Mattermost の検索構文（from:、in:、before:、after:、on: など）をそのまま使える。in: にはチャンネル ID、「チーム名/チャンネル名」、チャンネル名、@ユーザー名（DM）、@a,b（グループ DM。カンマの前後に空白を入れない）を渡せる。同じ名前が複数のチームにあれば、すべてで探す。見つからない・見る権限の無いチャンネルはエラー、参加していないチャンネル（見られる非公開を含む）に絞ると 0 件になる。アーカイブ済みのチャンネルは、in: にチャンネル ID で挙げたときだけ対象（名前では見つからない）。in: と channel:（-in: などの除外を含む）は 1 回の検索で合わせて 20 個まで。DM は作らない。日付は日本時間（JST）で解釈する。新しい順。メッセージ添付（Bot や webhook などが付ける整形表示）の中身は検索の対象外（Mattermost の標準のデータベース検索は添付を検索しないため。その中身を探すなら read_channel で読む。read_channel なら since と until で期間を指定して読める）',
     { terms: z.string().min(1), limit: limitArg(20, 50), cursor: cursorArg },
     async ({ terms, limit, cursor }, mm) => {
       const c = cursorOf(z.object({ page: z.number().int().min(0), per_page: perPage(50) }).strict(), cursor);
@@ -547,7 +548,7 @@ export function registerReadTools(server: McpServer, ctx: ToolContext): void {
       const page = c?.page ?? 0;
       const filtered = await resolveInFilters(mm, uid, terms);
       // Not passing the cursor's page to Mattermost: its database search ignores per_page and returns nothing for page > 0.
-      const r = await mm.call<PostList>(uid, 'POST', '/posts/search', { terms: filtered.terms, is_or_search: false, include_deleted_channels: false, time_zone_offset: JST_OFFSET_SEC, page: 0, per_page: MM_SEARCH_CAP });
+      const r = await mm.call<PostList>(uid, 'POST', '/posts/search', { terms: filtered.terms, is_or_search: false, include_deleted_channels: filtered.archived, time_zone_offset: JST_OFFSET_SEC, page: 0, per_page: MM_SEARCH_CAP });
       const all = r.order.map((id) => r.posts[id]).filter(Boolean);
       const shown = all.slice(page * per, (page + 1) * per);
       const lines = [`検索: ${terms}`, ...(shown.length ? await withChannels(mm, shown) : ['一致する投稿はありません。'])];
@@ -617,15 +618,15 @@ export function registerReadTools(server: McpServer, ctx: ToolContext): void {
       return render({ lines, posts: shown, notes, next: rest.length > per && last ? { create_at: last.create_at, id: last.id, per_page: per, at: row.get(last.id) } : undefined });
     });
 
-  tool('search_files', 'ファイルを名前で探す（サーバーが中身を抽出していれば中身にも当たる）。参加しているチャンネル、DM、グループ DM のファイルが対象で、参加していない公開チャンネルとアーカイブ済みのチャンネルのファイルは出ない（アーカイブ済みのチャンネルの ID を in: に渡すとエラー）。Mattermost の検索構文（from:、in:、ext:、before:、after:、on: など）を使え、日付は日本時間（JST）で解釈する。in: にはチャンネル ID、「チーム名/チャンネル名」、チャンネル名、@ユーザー名（DM）、@a,b（グループ DM。カンマの前後に空白を入れない）を渡せる。同じ名前が複数のチームにあれば、すべてで探す。見つからない・見る権限の無いチャンネルはエラー。in: と channel:（-in: などの除外を含む）は 1 回の検索で合わせて 20 個まで。DM は作らない。名前は語の単位で当たり、日本語の名前は名前全体か先頭からの前方一致（例: 2026年10月*）でしか当たらない。新しい順。file_id は get_file に、post_id は get_post に渡せる',
+  tool('search_files', 'ファイルを名前で探す（サーバーが中身を抽出していれば中身にも当たる）。参加しているチャンネル、DM、グループ DM のファイルが対象で、参加していない公開チャンネルのファイルは出ず、アーカイブ済みのチャンネルのファイルは in: にチャンネル ID で挙げたときだけ出る（名前では見つからない）。Mattermost の検索構文（from:、in:、ext:、before:、after:、on: など）を使え、日付は日本時間（JST）で解釈する。in: にはチャンネル ID、「チーム名/チャンネル名」、チャンネル名、@ユーザー名（DM）、@a,b（グループ DM。カンマの前後に空白を入れない）を渡せる。同じ名前が複数のチームにあれば、すべてで探す。見つからない・見る権限の無いチャンネルはエラー。in: と channel:（-in: などの除外を含む）は 1 回の検索で合わせて 20 個まで。DM は作らない。名前は語の単位で当たり、日本語の名前は名前全体か先頭からの前方一致（例: 2026年10月*）でしか当たらない。新しい順。file_id は get_file に、post_id は get_post に渡せる',
     { terms: z.string().min(1), limit: limitArg(20, 50), cursor: cursorArg },
     async ({ terms, limit, cursor }, mm) => {
       // Marked here rather than on search_posts' cursor: that one is used more, and its cursors issued before a deploy would stop working.
       const c = cursorOf(z.object({ page: z.number().int().min(0), per_page: perPage(50), files: z.literal(true) }).strict(), cursor);
       const per = c?.per_page ?? limit ?? 20;
       const page = c?.page ?? 0;
-      const search = (t: string, perPageOf: number) => mm.call<FileList>(uid, 'POST', '/files/search', {
-        terms: t, is_or_search: false, include_deleted_channels: false, time_zone_offset: JST_OFFSET_SEC, page: 0, per_page: perPageOf,
+      const search = (t: string, perPageOf: number, archived = false) => mm.call<FileList>(uid, 'POST', '/files/search', {
+        terms: t, is_or_search: false, include_deleted_channels: archived, time_zone_offset: JST_OFFSET_SEC, page: 0, per_page: perPageOf,
       }).catch((e) => {
         if (e instanceof MmError && e.status === 501 && e.id === 'store.sql_file_info.search.disabled') throw new InputError(FILE_SEARCH_OFF);
         throw e;
@@ -640,7 +641,7 @@ export function registerReadTools(server: McpServer, ctx: ToolContext): void {
         throw e;
       });
       // Not passing the cursor's page to Mattermost: its database search returns nothing for page > 0.
-      const r = await search(q.terms, MM_SEARCH_CAP);
+      const r = await search(q.terms, MM_SEARCH_CAP, q.archived);
       const all = r.order.map((id) => r.file_infos[id]).filter(Boolean);
       const shown = all.slice(page * per, (page + 1) * per);
       const lines = [`ファイルの検索: ${terms}`];
@@ -795,7 +796,7 @@ export function registerReadTools(server: McpServer, ctx: ToolContext): void {
     });
 
   tool('read_thread', 'スレッドの親投稿と返信を古い順に読む。post_id はスレッド内のどの投稿でもよい。親投稿は最初のページにだけ含める',
-    { post_id: z.string().regex(/^[A-Za-z0-9]{26}$/), limit: limitArg(50, 200), cursor: cursorArg },
+    { post_id: idArg, limit: limitArg(50, 200), cursor: cursorArg },
     async ({ post_id, limit, cursor }, mm) => {
       const c = cursorOf(z.object({ from_post: z.string().regex(/^[A-Za-z0-9]{26}$/), from_create_at: z.number().int(), per_page: perPage(200) }), cursor);
       const per = c?.per_page ?? limit ?? 50;
@@ -845,7 +846,7 @@ export function registerReadTools(server: McpServer, ctx: ToolContext): void {
     });
 
   tool('get_file', `投稿に添付されたファイルを読む。画像なら縮小版（プレビュー）を画像として返す。テキスト（UTF-8、または拡張子が csv・tsv・txt・log の Shift_JIS か EUC-JP）なら中身を先頭の ${TEXT_MAX_CHARS} 文字まで返す。それ以外（PDF など）は名前・種類・大きさだけを返す。file_id は投稿の「添付:」の行にある`,
-    { file_id: z.string().regex(/^[A-Za-z0-9]{26}$/) },
+    { file_id: idArg },
     async ({ file_id }, mm) => {
       const f = await worded(mm.call<MmFileInfo>(uid, 'GET', `/files/${file_id}/info`), FILE_WORDING);
       const about = `ファイル: ${fileLine(f)}`;

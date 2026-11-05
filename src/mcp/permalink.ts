@@ -1,5 +1,4 @@
-import { InputError } from './format.ts';
-import { unformat } from './resolve.ts';
+import { InputError, unformat } from './format.ts';
 
 const ID = /^[A-Za-z0-9]{26}$/;
 
