@@ -37,7 +37,7 @@ export async function tick(store: Store, mm: Mm, now: number): Promise<void> {
       o = await attempt(store, mm, s, now);
     } catch (e) {
       log('scheduled_post_error', { name: (e as Error)?.name });
-      // Not "not posted" for an error before the post: what runs before sending reports it as a typed failure, and the lookups of a retry catch their own errors, so only a database fault can throw before sending.
+      // Not "not posted" for an error before the post: what runs before sending reports it as a typed failure, and the lookups of a retry catch their own errors, so only a database fault or a bug in this code can throw before sending.
       o = failed(UNKNOWN);
     }
     store.settleScheduled(id, now, o);
@@ -64,7 +64,7 @@ async function attempt(store: Store, mm: Mm, s: ClaimedScheduled, now: number): 
       if (!late && (e instanceof RateLimited || e instanceof UpstreamUnavailable)) return { status: 'pending', forgetAttempt: false };
       return failed(UNKNOWN);
     }
-    // Not the found post's own file_ids: the lookup only matches posts that carry every file of the schedule, so those are the kept ones.
+    // Not the found post's own file_ids: the lookup only matches posts that carry every file of the schedule (or, when Mattermost hid them, as many files), so those are the kept ones.
     if (found) return { status: 'posted', postId: found, fileIds };
     // Not posting again: a deleted or edited post may be this schedule's, changed by the user, and its text can no longer be compared; a post with other files may be the earlier attempt with files Mattermost dropped.
     if (touched) return failed(UNKNOWN);
