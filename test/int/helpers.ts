@@ -37,6 +37,23 @@ export async function requireMm(): Promise<Env> {
   }
 }
 
+// Not stopping at the first failed deactivation: every user made has to go, and the test's own failure must not be replaced by the cleanup's.
+export async function withUsers(run: (made: string[]) => Promise<void>): Promise<void> {
+  const { mmUrl, adminToken } = env();
+  const made: string[] = [];
+  let ok = false;
+  try {
+    await run(made);
+    ok = true;
+  } finally {
+    const failed = (await Promise.allSettled(made.map(async (id) => {
+      const res = await fetch(`${mmUrl}/api/v4/users/${id}`, { method: 'DELETE', headers: { authorization: `Bearer ${adminToken}` } });
+      if (!res.ok) throw new Error(`DELETE /users/${id} -> ${res.status} ${await res.text()}`);
+    }))).find((r) => r.status === 'rejected');
+    if (ok && failed) throw failed.reason;
+  }
+}
+
 export async function mmLoginCookie(user: Cred): Promise<string> {
   const res = await fetch(`${env().mmUrl}/api/v4/users/login`, {
     method: 'POST',
