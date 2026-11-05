@@ -248,7 +248,7 @@ describe('@user that cannot be looked up', () => {
   test.each([
     [404, 'app.user.get_by_username.app_error'],
     [403, 'api.context.permissions.app_error'],
-    [400, 'api.context.invalid_url_param.app_error', '@all'],
+    [400, 'api.context.invalid_body_param.app_error', '@all'],
   ])('a %i from the user lookup says the user is not found', async (status, id, spec = '@ghost') => {
     const mm: Mm = { call: async <T>(_u: string, _m: string, p: string) => {
       if (p === '/users/me/teams') return teams as T;
@@ -267,11 +267,41 @@ describe('@user that cannot be looked up', () => {
   });
 });
 
+test('@、, with no name at all, is left to the name check', async () => {
+  await expect(resolveChannel(fake(routes).mm, ME, '@、')).rejects.toThrow('使えない文字を含みます');
+});
+
+describe('a real channel ID written in upper case', () => {
+  const UPPER = CH_A.toUpperCase();
+
+  test('is looked up again in lower case before any name', async () => {
+    const { mm, calls } = fake(routes);
+    expect(await resolveChannel(mm, ME, UPPER)).toMatchObject({ id: CH_A });
+    expect(calls.slice(0, 2)).toEqual([`GET /channels/${UPPER}`, `GET /channels/${CH_A}`]);
+  });
+
+  test('goes on to the names only when the lower case ID is not found either', async () => {
+    const { mm, calls } = fake(Object.fromEntries(Object.entries(routes).filter(([k]) => k !== `/channels/${CH_A}`)));
+    await expect(resolveChannel(mm, ME, UPPER)).rejects.toMatchObject({ status: 404 });
+    expect(calls.slice(0, 3)).toEqual([`GET /channels/${UPPER}`, `GET /channels/${CH_A}`, 'GET /users/me/teams']);
+  });
+
+  test.each([403, 500])('a %i for the lower case ID is thrown as it is, without looking names up', async (status) => {
+    const calls: string[] = [];
+    const mm: Mm = { call: async (_u, m, p) => {
+      calls.push(`${m} ${p}`);
+      throw new MmError(p === `/channels/${UPPER}` ? 404 : status, 'x', 'x');
+    } };
+    await expect(resolveChannel(mm, ME, UPPER)).rejects.toMatchObject({ status });
+    expect(calls).toEqual([`GET /channels/${UPPER}`, `GET /channels/${CH_A}`]);
+  });
+});
+
 test('a 、 before a word that cannot be a user name is left to the name check, not called a separator', async () => {
   await expect(resolveChannel(fake(routes).mm, ME, '@bob、議事録')).rejects.toThrow('使えない文字を含みます');
 });
 
-test.each(['@bob、carol', '@bob，carol', '@a,b、c'])('%j is refused for its separator before any request', async (spec) => {
+test.each(['@bob、carol', '@bob，carol', '@a,b、c', '@bob、', '@bob、、carol', '@bob、@'])('%j is refused for its separator before any request', async (spec) => {
   const { mm, calls } = fake(routes);
   await expect(resolveChannel(mm, ME, spec)).rejects.toThrow(new InputError('@a,b の区切りは半角のカンマ（,）で書いてください。読点（、）や全角のカンマ（，）は使えません。'));
   expect(calls).toEqual([]);
