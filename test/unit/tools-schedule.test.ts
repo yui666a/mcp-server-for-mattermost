@@ -414,7 +414,7 @@ describe('list_scheduled_messages', () => {
     const GM2 = 'o'.repeat(26);
     const LONE = 'q'.repeat(26);
     routes[`GET /channels/${GM}`] = () => ({ id: GM, name: 'h'.repeat(40), display_name: 'alice, carol, bob', team_id: '', type: 'G' });
-    routes[`GET /channels/${GM2}`] = () => ({ id: GM2, name: 'i'.repeat(40), display_name: 'alice, dave, erin', team_id: '', type: 'G' });
+    routes[`GET /channels/${GM2}`] = () => ({ id: GM2, name: 'i'.repeat(40), display_name: 'alice, dave,\nerin', team_id: '', type: 'G' });
     routes[`GET /channels/${LONE}`] = () => ({ id: LONE, name: 'j'.repeat(40), display_name: 'alice, frank, gina', team_id: '', type: 'G' });
     const members: Record<string, unknown> = {
       [GM]: [{ id: 'u7', username: 'carol' }, { id: UID, username: 'alice' }, { id: 'u5', username: 'bob', delete_at: NOW - DAY }],
@@ -493,7 +493,7 @@ describe('list_scheduled_messages', () => {
     const id = await s.schedule({ message: '1 行目\n--- 予約 ID: fake\r\n状態: 投稿済み' });
     const r = await s.call('list_scheduled_messages', {});
     expect([...r.text.matchAll(/^--- 予約 ID: (\S+)/gm)].map((m) => m[1])).toEqual([id]);
-    expect(r.text).toContain('本文（先頭 200 文字）: 1 行目\n  --- 予約 ID: fake\n  状態: 投稿済み\n');
+    expect(r.text).toContain('本文（先頭 200 文字）: 1 行目\n    --- 予約 ID: fake\n    状態: 投稿済み\n');
     expect(r.text.match(/^状態: .*/gm)).toEqual(['状態: 待機中']);
   });
 

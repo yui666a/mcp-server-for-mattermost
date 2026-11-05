@@ -180,16 +180,34 @@ export function render({ lines, next, posts = [], notes = [] }: Page): string {
   ].join('\n');
 }
 
-export function channelLines(c: ChannelRef): string[] {
+// archived is a field rather than words added to the display name: a display name written as "（アーカイブ済み）" would otherwise pass for one.
+export function channelLines(c: ChannelRef & { archived?: boolean }): string[] {
   return [
     // Not the display name first: a name written as "（name: …、channel_id: …）" would then come before the real id.
-    `チャンネル: channel_id: ${c.id}、name: ${c.name}、表示名: ${oneLine(c.displayName) || c.name}`,
+    `チャンネル: channel_id: ${c.id}、name: ${c.name}${c.archived ? '、アーカイブ済み' : ''}、表示名: ${oneLine(c.displayName) || c.name}`,
     c.teamId ? `チーム: ${c.teamName}（team_id: ${c.teamId}）` : 'チーム: なし（DM またはグループ DM）',
   ];
 }
 
+const RETRY = '参加しているはずなら、Mattermost の一時的な障害の可能性があります。少し待ってから再試行してください。';
+const ASK_ADMIN = '続くなら、チャンネルから外されたか、サーバーの権限の設定で読む権限が外されている可能性があるので、管理者に確かめてください。';
+
+// For a post fetched by id: get_post and read_thread word its 403 and 404 alike.
+function postError(e: unknown): never {
+  if (e instanceof MmError && e.status === 403) throw new InputError(`この投稿を見る権限がありません（参加していない非公開チャンネルなど）。${RETRY}${ASK_ADMIN}`);
+  if (e instanceof MmError && e.status === 404) throw new InputError('投稿が見つかりません（削除されたか、存在しません）');
+  throw e;
+}
+
+// For the channel of a post already read: Mattermost may still refuse it on a passing failure, or after the channel went away in between.
+function postChannelError(e: unknown): never {
+  if (e instanceof MmError && e.status === 403) throw new InputError(`この投稿のチャンネルを見る権限がありません。${RETRY}${ASK_ADMIN}`);
+  if (e instanceof MmError && e.status === 404) throw new InputError('この投稿のチャンネルが見つかりません（取得の合間に削除されたなど）。');
+  throw e;
+}
+
 // Not the channel first on a shared line: the display name, written by users, would then sit before the real team, and a name ending in "| チーム: …（team_id: …）" would be read first.
-export function channelInline(c: ChannelRef): string {
+export function channelInline(c: ChannelRef & { archived?: boolean }): string {
   const [channel, team] = channelLines(c);
   return `${team} | ${channel}`;
 }
@@ -198,7 +216,7 @@ function channelError(e: unknown): never {
   // Not converting a missing team: /teams/name/{team}/channels/name/{channel} answers it with 404 too.
   if (e instanceof ChannelFetchError && e.id !== 'app.team.get_by_name.missing.app_error') {
     if (e.status === 403) throw new InputError('このチャンネルを見る権限がありません（参加していない非公開チャンネルなど）。参加しているはずなら、Mattermost の一時的な障害の可能性があります。少し待ってから再試行してください。続くなら、チャンネルから外されたか、サーバーの権限の設定で読む権限が外されている可能性があるので、管理者に確かめてください。');
-    if (e.status === 404) throw new InputError('チャンネルが見つかりません（参加していない非公開チャンネルを名前で指定した場合も、Mattermost はこの結果を返します）');
+    if (e.status === 404) throw new InputError(`チャンネルが見つかりません（参加していない非公開チャンネルを名前で指定した場合も、Mattermost はこの結果を返します）。名前や ID の誤りなら search_channels で確かめてください。${RETRY}${ASK_ADMIN}`);
   }
   throw e;
 }
@@ -418,7 +436,7 @@ async function unreadThreads(mm: Mm, uid: string, teams: MmTeam[], keep: (channe
       }
       if (got.length < THREAD_PAGE) {
         // Not trusting a short page as the end: before= compares with the starting thread's last reply, so deleting that thread or its replies in between skips or drops the rest.
-        if (seen.size < total) notes.push(`（${t.name} の未読スレッドを total_unread_threads: ${total} に対して取り切れませんでした。取得の合間にスレッドが削除・更新されたときなどは、呼び直すと取り直せます。データ保持ポリシーで根の投稿が消えたスレッドは、呼び直しても取得できません）`);
+        if (seen.size < total) notes.push(`（${t.name} の未読スレッドを total_unread_threads: ${total} に対して取り切れませんでした。取得の合間にスレッドが削除・更新されたときなどは、呼び直すと取り直せます。呼び直しても取り切れなかった旨の注記が続くなら（total の数が変わっても）、データ保持ポリシーで根の投稿が消えたスレッドがあるか、最終返信の時刻が同じスレッドが多いためで、それ以上呼び直しても取得できません）`);
         break;
       }
       if (n === THREAD_PAGES) {
@@ -478,7 +496,7 @@ export function registerReadTools(server: McpServer, ctx: ToolContext): void {
       const ch = channels.get(channelId);
       const team = ch?.team_id ? teamName.get(ch.team_id) : undefined;
       const where = ch
-        ? channelInline({ id: ch.id, name: ch.name, displayName: (ch.display_name || ch.name) + (ch.delete_at ? '（アーカイブ済み）' : ''), teamId: ch.team_id, teamName: team ?? '' })
+        ? channelInline({ id: ch.id, name: ch.name, displayName: ch.display_name || ch.name, teamId: ch.team_id, teamName: team ?? '', archived: !!ch.delete_at })
         : `channel_id: ${channelId}`;
       return { where, team: team ?? teams[0]?.name ?? '' };
     };
@@ -510,7 +528,7 @@ export function registerReadTools(server: McpServer, ctx: ToolContext): void {
       return render({ lines, posts: shown, next: more ? { page: page + 1, per_page: per } : undefined, notes: [...filtered.notes, ...capNote(all.length, 'これより古い一致')] });
     });
 
-  tool('list_saved_posts', '自分が保存した（フラグを付けた）投稿を新しい順に一覧する。参加しているチャンネルの投稿だけが対象で、アーカイブ済みのチャンネルの投稿も含む（チャンネル名に「アーカイブ済み」と付ける）',
+  tool('list_saved_posts', '自分が保存した（フラグを付けた）投稿を新しい順に一覧する。参加しているチャンネルの投稿だけが対象で、アーカイブ済みのチャンネルの投稿も含む（チャンネルの行の name の後に「アーカイブ済み」と出す）',
     { limit: limitArg(20, 50), cursor: cursorArg },
     async ({ limit, cursor }, mm) => {
       const c = cursorOf(z.object({ create_at: z.number().int(), id: z.string(), per_page: perPage(50), at: z.number().int().min(0).optional() }).strict(), cursor);
@@ -726,7 +744,7 @@ export function registerReadTools(server: McpServer, ctx: ToolContext): void {
         const me = await mm.call<{ last_viewed_at: number }>(uid, 'GET', `/channels/${ch.id}/members/me`).catch((e) => {
           if (e instanceof MmError && e.status === 404) throw new InputError('このチャンネルに参加していないため、未読の位置がありません。from: "latest" で読んでください。');
           // Not saying the user has not joined on 403: Mattermost refuses a public channel the user has not joined with 403 before the membership lookup, and a passing failure answers 403 too.
-          if (e instanceof MmError && e.status === 403) throw new InputError('このチャンネルの未読の位置を取得できませんでした（参加していないか、Mattermost の一時的な障害）。参加していないなら from: "latest" で読んでください。参加しているはずなら、少し待ってから再試行してください。');
+          if (e instanceof MmError && e.status === 403) throw new InputError(`このチャンネルの未読の位置を取得できませんでした（参加していないか、Mattermost の一時的な障害）。参加していないなら from: "latest" で読んでください。参加しているはずなら、少し待ってから再試行してください。${ASK_ADMIN}`);
           throw e;
         });
         // Falling back to newest first rather than walking back to the first post: a channel never opened counts its whole history as unread, with no bound on the walk.
@@ -754,9 +772,9 @@ export function registerReadTools(server: McpServer, ctx: ToolContext): void {
     async ({ post_id, limit, cursor }, mm) => {
       const c = cursorOf(z.object({ from_post: z.string().regex(/^[A-Za-z0-9]{26}$/), from_create_at: z.number().int(), per_page: perPage(200) }), cursor);
       const per = c?.per_page ?? limit ?? 50;
-      const p = await mm.call<MmPost>(uid, 'GET', `/posts/${post_id}`);
+      const p = await mm.call<MmPost>(uid, 'GET', `/posts/${post_id}`).catch(postError);
       const rootId = p.root_id || p.id;
-      const raw = await mm.call<MmChannel>(uid, 'GET', `/channels/${p.channel_id}`);
+      const raw = await mm.call<MmChannel>(uid, 'GET', `/channels/${p.channel_id}`).catch(postChannelError);
       const ch: ChannelRef = { id: raw.id, name: raw.name, displayName: raw.display_name, teamId: raw.team_id, teamName: await teamNameOf(mm, uid, raw.team_id) };
       // Asking for one more than needed and dropping the root: Mattermost counts the root in perPage on the first page only.
       const q = new URLSearchParams({ perPage: String(per + 1), direction: 'down', ...(c ? { fromPost: c.from_post, fromCreateAt: String(c.from_create_at) } : {}) });
@@ -778,12 +796,8 @@ export function registerReadTools(server: McpServer, ctx: ToolContext): void {
     { post: z.string().min(1) },
     async ({ post }, mm) => {
       const id = parsePostRef(post, base);
-      const p = await mm.call<MmPost & { reply_count?: number }>(uid, 'GET', `/posts/${id}`).catch((e) => {
-        if (e instanceof MmError && e.status === 403) throw new InputError('この投稿を見る権限がありません（参加していない非公開チャンネルなど）。参加しているはずなら、Mattermost の一時的な障害の可能性があります。少し待ってから再試行してください。');
-        if (e instanceof MmError && e.status === 404) throw new InputError('投稿が見つかりません（削除されたか、存在しません）');
-        throw e;
-      });
-      const raw = await mm.call<MmChannel>(uid, 'GET', `/channels/${p.channel_id}`);
+      const p = await mm.call<MmPost & { reply_count?: number }>(uid, 'GET', `/posts/${id}`).catch(postError);
+      const raw = await mm.call<MmChannel>(uid, 'GET', `/channels/${p.channel_id}`).catch(postChannelError);
       const ch: ChannelRef = { id: raw.id, name: raw.name, displayName: raw.display_name, teamId: raw.team_id, teamName: await teamNameOf(mm, uid, raw.team_id) };
       const users = await usernames(mm, uid, [p]);
       const replies = p.reply_count ?? 0;
@@ -838,10 +852,8 @@ export function registerReadTools(server: McpServer, ctx: ToolContext): void {
       }
       const mine = await mm.call<MmChannel[]>(uid, 'GET', '/users/me/channels');
       const dms = mine.filter((x) => x.type === 'D');
-      const partners = dms.length
-        ? new Map((await mm.call<UserRef[]>(uid, 'POST', '/users/ids', [...new Set(dms.map((x) => x.name.split('__').find((id) => id !== uid) ?? uid))]))
-          .map((u) => [u.id, u.username]))
-        : new Map<string, string>();
+      // Not giving up on the names as list_my_channels does: a DM is matched by its partner's username, so it would silently drop out of the results.
+      const partners = await usernamesOf(mm, uid, dms.map((x) => x.name.split('__').find((id) => id !== uid) ?? uid));
       for (const x of mine) {
         if (x.type === 'D') {
           const other = partners.get(x.name.split('__').find((id) => id !== uid) ?? uid);
@@ -882,9 +894,11 @@ export function registerReadTools(server: McpServer, ctx: ToolContext): void {
       const shown = [...p.updated, ...p.body];
       const other = (x: MmChannel) => x.name.split('__').find((id) => id !== uid) ?? uid;
       const dms = shown.filter((x) => x.type === 'D');
-      const partners = dms.length
-        ? new Map((await mm.call<UserRef[]>(uid, 'POST', '/users/ids', [...new Set(dms.map(other))])).map((u) => [u.id, u.username]))
-        : new Map<string, string>();
+      // Not failing the list when the partners' names cannot be read: they only label the DMs, which then show the partner's user_id, as dmLabel gives up.
+      const partners = await usernamesOf(mm, uid, dms.map(other)).catch((e) => {
+        if (e instanceof MmError || e instanceof UpstreamUnavailable) return new Map<string, string>();
+        throw e;
+      });
       const kind: Record<string, string> = { O: '公開', P: '非公開', D: 'DM', G: 'グループ DM' };
       const line = (x: (typeof shown)[number]) => {
         const team = teamName.get(x.team_id);
@@ -926,7 +940,10 @@ export function registerReadTools(server: McpServer, ctx: ToolContext): void {
         );
       }
       // Sorting here rather than asking Mattermost for a page: /pinned has neither a limit nor paging.
-      const r = await mm.call<PostList>(uid, 'GET', `/channels/${ch.id}/pinned`);
+      const r = await mm.call<PostList>(uid, 'GET', `/channels/${ch.id}/pinned`).catch((e) => {
+        if (e instanceof MmError && e.status === 403) throw new InputError(`このチャンネルのピン留めを見る権限がありません。${RETRY}${ASK_ADMIN}`);
+        throw e;
+      });
       const all = r.order.map((id) => r.posts[id]).filter(Boolean)
         .sort((a, b) => b.create_at - a.create_at || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
       const rest = c ? all.filter((p) => p.create_at < c.create_at || (p.create_at === c.create_at && p.id > c.id)) : all;
@@ -990,7 +1007,7 @@ export function registerReadTools(server: McpServer, ctx: ToolContext): void {
         } catch (e) {
           if (!(e instanceof MmError)) throw e;
           threadsFailed = true;
-          notes.push(`（未読のスレッドを取得できませんでした（Mattermost のエラー ${e.status}: ${e.message}）。チャンネルの未読だけを出しています）`);
+          notes.push(`（未読のスレッドを取得できませんでした（Mattermost のエラー ${e.status}${e.message.trim() ? `: ${e.message}` : ''}）。チャンネルの未読だけを出しています）`);
         }
       }
       const unread = members.flatMap((mb) => {

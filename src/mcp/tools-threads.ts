@@ -43,7 +43,7 @@ export function registerThreadTools(server: McpServer, ctx: ToolContext): void {
       }) as unknown as ToolCallback<S>);
   }
 
-  tool('list_followed_threads', 'フォロー中のスレッドを、最終返信の新しい順に一覧する。全チームと DM、グループ DM が対象。アーカイブ済みのチャンネルのスレッドも含む（チャンネル名に「アーカイブ済み」と付ける）。返信がまだないルート投稿は、フォローしていても最初の返信まで出ない。スレッドの折りたたみ（CRT）が無効な利用者には使えない。読むだけで、既読にはしない',
+  tool('list_followed_threads', 'フォロー中のスレッドを、最終返信の新しい順に一覧する。全チームと DM、グループ DM が対象。アーカイブ済みのチャンネルのスレッドも含む（チャンネルの行の name の後に「アーカイブ済み」と出す）。返信がまだないルート投稿は、フォローしていても最初の返信まで出ない。スレッドの折りたたみ（CRT）が無効な利用者には使えない。読むだけで、既読にはしない',
     { limit: limitArg(20, 50), cursor: cursorArg }, { readOnlyHint: true },
     async ({ limit, cursor }, mm) => {
       const startedAt = Date.now();
@@ -66,7 +66,7 @@ export function registerThreadTools(server: McpServer, ctx: ToolContext): void {
         threads.push(...got.map((x) => ({ ...x, teamName: t.name })));
         total += r.total;
         if (r.total > got.length && got.length) {
-          notes.push(`（${t.name}${i ? '' : ' と DM、グループ DM'} のフォロー中のスレッドは、最終返信の新しい ${got.length} 件だけを取得しています（total: ${r.total}）。最終返信が ${formatTime(got.at(-1)!.last_reply_at)} 以前のスレッドは出ていないことがあります）`);
+          notes.push(`（${t.name}${i ? '' : ' と DM、グループ DM'} のフォロー中のスレッドは、最終返信の新しい ${got.length} 件だけを取得しています（total: ${r.total}）。${got.at(-1)!.last_reply_at ? `最終返信が ${formatTime(got.at(-1)!.last_reply_at)} 以前のスレッド` : '返信がすべて削除されたほかのスレッド'}は出ていないことがあります）`);
         }
       }
       const rows = threads.map((th) => ({ th, updatedAt: th.last_reply_at, key: { t: th.last_reply_at, id: th.id } }));
@@ -83,12 +83,12 @@ export function registerThreadTools(server: McpServer, ctx: ToolContext): void {
       const line = ({ th }: (typeof rows)[number]): string => {
         const ch = channels.get(th.post.channel_id);
         const team = ch && teamName.get(ch.team_id);
-        const label = ch && (ch.type === 'D' ? `@${users.get(other(ch)) ?? other(ch)}` : ch.display_name || ch.name) + (ch.delete_at ? '（アーカイブ済み）' : '');
-        const at = ch ? channelInline({ id: ch.id, name: ch.name, displayName: label ?? '', teamId: ch.team_id, teamName: team ?? '' }) : `channel_id: ${th.post.channel_id}`;
+        const label = ch && (ch.type === 'D' ? `@${users.get(other(ch)) ?? other(ch)}` : ch.display_name || ch.name);
+        const at = ch ? channelInline({ id: ch.id, name: ch.name, displayName: label ?? '', teamId: ch.team_id, teamName: team ?? '', archived: !!ch.delete_at }) : `channel_id: ${th.post.channel_id}`;
         posts.push(th.post);
         return [
           formatPost(th.post, { baseUrl: base, teamName: team ?? th.teamName, usernames: users, channel: at }),
-          `返信: ${th.reply_count}、未読の返信: ${th.unread_replies}、未読のメンション: ${th.unread_mentions}、最終返信: ${formatTime(th.last_reply_at)}`,
+          `返信: ${th.reply_count}、未読の返信: ${th.unread_replies}、未読のメンション: ${th.unread_mentions}、最終返信: ${th.last_reply_at ? formatTime(th.last_reply_at) : 'なし（返信がすべて削除された）'}`,
         ].join('\n');
       };
       const lines = [
@@ -120,7 +120,7 @@ export function registerThreadTools(server: McpServer, ctx: ToolContext): void {
       const r = await rootOf(mm, post_id);
       await mm.call(uid, 'GET', `/channels/${r.channelId}/members/me`).catch((e) => {
         // Not saying a 403 means not joined: Mattermost also answers 403 when its permission check fails on a transient error.
-        if (e instanceof MmError && e.status === 403) throw new InputError('このチャンネルに参加しているかを確かめられませんでした（参加していないか、Mattermost の一時的な障害）。参加していないチャンネルのスレッドは、フォローしても一覧にも通知にも出ません。参加しているはずなら、少し待ってから再試行してください。');
+        if (e instanceof MmError && e.status === 403) throw new InputError('このチャンネルに参加しているかを確かめられませんでした（参加していないか、Mattermost の一時的な障害）。参加していないチャンネルのスレッドは、フォローしても一覧にも通知にも出ません。参加しているはずなら、少し待ってから再試行してください。続くなら、チャンネルから外されたか、サーバーの権限の設定で読む権限が外されている可能性があるので、管理者に確かめてください。');
         if (e instanceof MmError && e.status === 404) throw new InputError('このチャンネルに参加していません。参加していないチャンネルのスレッドは、フォローしても一覧にも通知にも出ません。');
         throw e;
       });
