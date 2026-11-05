@@ -186,4 +186,31 @@ describe('send_message against the local Mattermost', () => {
     const posts = await mmApi<{ posts: Record<string, Post> }>(aliceMm, 'GET', `/channels/${created.id}/posts`);
     expect(Object.values(posts.posts).map((p) => p.message)).toEqual([`${TAG} first dm`]);
   });
+
+  test('attaches a file uploaded through prepare_upload to a DM that prepare_upload created', async () => {
+    const name = `up${TAG}`;
+    const u = await mmApi<{ id: string }>(e.adminToken, 'POST', '/users', { username: name, email: `${name}@example.com`, password: 'Passw0rd!dev123' });
+    await mmApi(e.adminToken, 'POST', `/teams/${e.teams.a.id}/members`, { team_id: e.teams.a.id, user_id: u.id });
+    try {
+      const tool = (toolName: string, args: Record<string, unknown>) => req.post('/mcp')
+        .set({ authorization: `Bearer ${access}`, accept: 'application/json, text/event-stream', 'content-type': 'application/json' })
+        .send(JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: toolName, arguments: args } }));
+      const prepared: string = (await tool('prepare_upload', { channel: `@${name}` })).body.result.content[0].text;
+      const dmId = /channel_id: ([A-Za-z0-9]{26})/.exec(prepared)![1];
+      const token = /\/mcp\/upload\/([A-Za-z0-9_-]+)/.exec(prepared)![1];
+      const up = await req.post(`/mcp/upload/${token}`).attach('file', Buffer.from(`${TAG} note`), 'note.txt');
+      expect(up.status).toBe(200);
+      const fileId = /file_id: ([A-Za-z0-9]{26})/.exec(up.text)![1];
+
+      const r = await call({ channel: `@${name}`, message: `${TAG} dm with file`, file_ids: [fileId] });
+      expect(r.isError).toBeFalsy();
+      expect(r.content[0].text).toContain(`channel_id: ${dmId}`);
+      const posts = await mmApi<{ posts: Record<string, Post> }>(aliceMm, 'GET', `/channels/${dmId}/posts`);
+      const [posted] = Object.values(posts.posts);
+      expect(posted.message).toBe(`${TAG} dm with file`);
+      expect(posted.file_ids).toEqual([fileId]);
+    } finally {
+      await mmApi(e.adminToken, 'DELETE', `/users/${u.id}`);
+    }
+  });
 });
