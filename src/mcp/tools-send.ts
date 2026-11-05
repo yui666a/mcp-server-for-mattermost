@@ -5,7 +5,7 @@ import { randomToken, sha256 } from '../crypto.ts';
 import { log } from '../log.ts';
 import { MmError, RateLimited, Reauthorize } from '../mattermost/client.ts';
 import { MAX_OPEN_UPLOAD_URLS, type HeldFile, type Store } from '../store.ts';
-import { InputError, type MmPost } from './format.ts';
+import { BODY_CUT_NOTE, InputError, type MmPost } from './format.ts';
 import { findPosted, postOnce } from './post.ts';
 import { myTeams, NoDirectChannel, resolveChannel, teamNameOf, type ChannelRef, type Mm, type MmChannel, type ResolvedChannel } from './resolve.ts';
 import { guarded, text, type ToolContext } from './server.ts';
@@ -285,7 +285,7 @@ async function whereOf(mm: Mm, uid: string, post: OwnPost): Promise<Where> {
 
 const editSchema = {
   post_id: POST_ID.describe('編集する、本人の投稿の post_id'),
-  message: z.string().min(1).max(MAX_MESSAGE).describe('新しい本文（全体を置き換える）。一覧のツール（read_channel など）の出力を元に書き換えるときは、先に get_post で読み直す。出力の本文は各行が 2 文字字下げされているので、各行の先頭の 2 文字の空白を外す。get_post に「本文を 4000 文字で切りました」とあれば、出力を元に書き換えない（切られた後ろが消える）'),
+  message: z.string().min(1).max(MAX_MESSAGE).describe(`新しい本文（全体を置き換える）。一覧のツール（read_channel など）の出力を元に書き換えるときは、先に get_post で読み直す。出力の本文は各行が 2 文字字下げされているので、各行の先頭の 2 文字の空白を外す。出力では CRLF や CR の改行を LF にそろえ、垂直タブや U+2028 などの区切りも改行として出すので、書き写すと改行の種類が LF になり、改行が増えることもある。get_post に「${BODY_CUT_NOTE}」とあれば、出力を元に書き換えない（切られた後ろが消える）。出力を元に書き換えたいときは、その投稿は Mattermost の画面で編集するよう利用者に伝える（利用者が新しい本文全体を渡したときは置き換えてよい）`),
 };
 type EditArgs = { post_id: string; message: string };
 
