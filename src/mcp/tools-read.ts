@@ -181,7 +181,7 @@ export function render({ lines, next, posts = [], notes = [] }: Page): string {
 }
 
 // Not writing an unknown partner as @<user_id>: it would be taken for a username and passed to tools that look users up by name.
-const dmPartner = (username: string | undefined, userId: string) => (username ? `@${username}` : `ユーザー名不明（user_id: ${userId}）`);
+export const dmPartner = (username: string | undefined, userId: string) => (username ? `@${username}` : `ユーザー名不明（user_id: ${userId}）`);
 
 // archived is a field rather than words added to the display name: a display name written as "（アーカイブ済み）" would otherwise pass for one.
 const resolvedLines = (ch: ResolvedChannel) => channelLines({ ...ch, archived: !!(ch.raw as ResolvedChannel['raw'] & { delete_at?: number }).delete_at });
