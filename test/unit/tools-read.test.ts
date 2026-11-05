@@ -417,11 +417,12 @@ describe('search_posts in: filters', () => {
       expect(count(`GET /teams/${T2}/channels/name/only-a`)).toBe(1);
     });
 
-    test('a channel or DM given by its ID looks up neither its team nor the other user, as only its ID is used', async () => {
-      routes = { ...withDm(), [`GET /channels/${DM}`]: () => ch(DM, DM_NAME, '', 'D') };
-      await setup()('search_posts', { terms: `x in:${DM} in:${CX}` });
-      expect(sent()).toBe(`x in:${DM} in:${CX}`);
-      expect(hits.filter((h) => (h.startsWith('GET /users/') && h !== 'GET /users/me/teams') || h.startsWith('GET /teams/'))).toEqual([]);
+    test('a channel or group DM given by its ID looks up neither its team nor the other users, as only its ID is used', async () => {
+      const GM = pad('gm');
+      routes = { ...base(), [`GET /channels/${GM}`]: () => ch(GM, 'f'.repeat(40), 'x', 'G'), 'GET /users': () => [{ id: 'u1', username: 'me' }, { id: BOB, username: 'bob' }] };
+      await setup()('search_posts', { terms: `x in:${GM} in:${CX}` });
+      expect(sent()).toBe(`x in:${GM} in:${CX}`);
+      expect(hits.filter((h) => (h.startsWith('GET /users') && h !== 'GET /users/me/teams') || h.startsWith('GET /teams/'))).toEqual([]);
     });
 
     test('a lookup that failed is not sent again either', async () => {
