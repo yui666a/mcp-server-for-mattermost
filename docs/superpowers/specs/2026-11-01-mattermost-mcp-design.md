@@ -22,7 +22,7 @@ Mattermost の公式 MCP サーバーは Agents プラグインに含まれ、�
   - ユーザーのタイムゾーンと現地時刻、在席状況の参照
   - 参加しているチャンネルの一覧
   - チャンネルの種類、目的、ヘッダー、メンバー数、ピン留めされた投稿の参照
-  - 参加しているチャンネルのメンバーの一覧
+  - 読む権限のあるチャンネル（通常は参加しているチャンネル）のメンバーの一覧
   - 自分の未読（チャンネルとスレッド）と、自分へのメンション（未読のものだけにも絞れる）の一覧
   - 自分のチャンネルとスレッドの既読化（AI が読んだ投稿まで）
   - フォロー中のスレッドの一覧と、スレッドのフォローと解除
@@ -281,7 +281,7 @@ MCP サーバー自身は管理者トークンや Bot アカウントを持た�
 
 - どのツールも、引数（inputSchema）に無いキーを渡されたらツールを実行せずにエラーにし、受けないキーの名前を返す。MCP の SDK の既定では知らない引数を黙って捨てるので、名前を誤った引数（`file_ids` を `file_id` とするなど）を渡すと、それが無いものとして投稿や変更をしてしまうため。ツールの登録を 1 か所（`buildServer`）で包んで、各ツールの引数の定義を strict にする。そのため、ツールに新しい引数を足すときは必ず inputSchema に書く。引数を受けないツールも inputSchema に `{}` を書く（inputSchema の無いツールは包みの対象にならない）。zod のスキーマを直接渡すツールは、自分で strict にする。入れ子のオブジェクトの中のキーは対象にしない（`mark_as_read` の `channels` と `threads` の要素は例外。「既読にする」の節を参照）
 - 読み取り系のツールには MCP のツール注釈 `readOnlyHint: true` を付け、書き込み系のツール（`send_message`、`prepare_upload`、`add_reaction`、`remove_reaction`、`save_post`、`unsave_post`、`pin_post`、`unpin_post`、`edit_message`、`delete_message`、`save_draft`、`schedule_message`、`update_scheduled_message`、`cancel_scheduled_message`、`mark_as_read`、`set_status`、`set_custom_status`、`clear_custom_status`、`follow_thread`、`unfollow_thread`）には付けない。MCP クライアントが書き込みの前に利用者へ確認を求められるようにするため
-- `save_post`、`unsave_post`、`pin_post`、`unpin_post` の注釈は `readOnlyHint: false`、`destructiveHint: false`、`idempotentHint: true` とする。外す側も、利用者に見える状態は付け直しで戻せる（編集の期限を過ぎた投稿のピン留めを除く。ピン留めした人は記録されないので、他人のピン留めも付け直せる。抜けたチャンネルの投稿の保存は、再参加するまで付け直せないが、その保存は Mattermost の画面の保存した投稿にも `list_saved_posts` にも出ない）。MCP の定義では `destructiveHint: false` は追加の更新だけを指すが、このサーバーは `mark_as_read` と同じく、取り消せるかどうかで付ける
+- `save_post`、`unsave_post`、`pin_post`、`unpin_post` の注釈は `readOnlyHint: false`、`destructiveHint: false`、`idempotentHint: true` とする。外す側も、利用者に見える状態は付け直しで戻せる（編集の期限を過ぎた投稿のピン留めを除く。ピン留めした人は記録されないので、他人のピン留めも付け直せる。抜けたチャンネルの投稿の保存は、再参加するまで付け直せないが、その保存は Mattermost の画面の保存した投稿にも `list_saved_posts` にも出ない。スレッドの元の投稿を消すと返信も一緒に消え、返信の保存だけが残る。この保存は付け直せないが、同じく一覧に出ない）。MCP の定義では `destructiveHint: false` は追加の更新だけを指すが、このサーバーは `mark_as_read` と同じく、取り消せるかどうかで付ける
 - 出力は LLM が読みやすいテキストとし、投稿ごとに投稿者のユーザー名、日時、本文、パーマリンク（`https://mattermost.example.com/<team>/pl/<post_id>`）を含める。読み取り系の出力には、チャンネルとチームの ID と名前も含め、LLM が続く呼び出しで ID を使えるようにする
 - チャンネルの指定は次のどれかとする。名前から候補が 2 つ以上見つかった場合は、どれかを選ばずにエラーとし、候補のチーム名、チャンネル名、チャンネル ID を返す
   - チャンネル ID（英数字 26 文字）。その ID のチャンネルが無く（404）、小文字に直した同じ文字列を名前に持つチャンネルがあれば、「チーム名/チャンネル名」の形で指定するよう案内するエラーにする。チャンネル名は小文字だけで、26 文字の英数字の名前もありうるため（Mattermost が作る ID も小文字と数字だけなので、大文字を含む 26 文字は名前の書き間違いの見込みが高い）。名前で見つかったチャンネルを ID の代わりには使わない。ユーザー ID や投稿 ID を取り違えて渡したとき、その文字列を名前にしたチャンネル（誰でも作れる）へ書き込まないため。403 は ID のチャンネルがあることを示すので名前を引かない
