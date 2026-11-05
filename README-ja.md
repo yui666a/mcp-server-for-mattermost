@@ -31,7 +31,7 @@ Mattermost は公式の MCP サーバーを [Mattermost Agents プラグイン](
 | `read_channel` | チャンネルの投稿を新しい順に読む。未読の先頭から、または日時の範囲を、古い順にも読める |
 | `read_thread` | スレッドの親投稿と返信を古い順に読む |
 | `get_post` | post_id かパーマリンクの URL で 1 件の投稿を読む |
-| `get_file` | 添付ファイルを読む。画像は縮小版を画像として、テキスト（UTF-8、または csv・tsv・txt・log の Shift_JIS）は先頭から 10,000 文字までを返す |
+| `get_file` | 添付ファイルを読む。画像は縮小版を画像として、テキスト（UTF-8、または csv・tsv・txt・log の Shift_JIS か EUC-JP）は先頭から 10,000 文字までを返す |
 | `search_files` | 添付ファイルを、名前と Mattermost の検索構文（`from:`、`in:`、`ext:` など）で探す |
 | `list_saved_posts` | 自分が保存した（フラグを付けた）投稿を新しい順に一覧する |
 | `search_channels` | 名前でチャンネル（公開、参加している非公開、DM、グループ DM）を探す |
