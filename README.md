@@ -48,7 +48,7 @@ This project targets the other case:
 | `prepare_upload` | Issue a one-time URL for uploading local files (screenshots, PDFs, photos) with `curl` (creates the DM for `@username` or `@a,b` if it does not exist yet); for clients that can run commands on the user's machine, such as Claude Code and Codex CLI |
 | `add_reaction` / `remove_reaction` | Add or remove the user's own reaction |
 | `save_post` / `unsave_post` | Save (flag) a post in a joined channel, or remove it from the saved posts |
-| `pin_post` / `unpin_post` | Pin or unpin a post in a joined channel |
+| `pin_post` / `unpin_post` | Pin or unpin a post in a joined channel (unpinning also removes pins made by others) |
 | `edit_message` / `delete_message` | Edit or delete the user's own post |
 | `save_draft` | Save a Mattermost draft for the user to send from the UI (creates the DM for `@username` or `@a,b` if it does not exist yet); sending the same text with `send_message` clears it |
 | `schedule_message` | Schedule a post for a later time (1 minute to 30 days ahead), creating the DM for `@username` or `@a,b` if it does not exist yet, optionally with files uploaded through `prepare_upload` |
