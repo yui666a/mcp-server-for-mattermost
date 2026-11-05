@@ -458,6 +458,16 @@ test('a call that fails without the caller aborting is not taken for an abort', 
   expect(e).not.toBeInstanceOf(CallAborted);
 });
 
+test('a call whose signal is already aborted sends nothing and is known not to have gone out', async () => {
+  store.putMmCred('u1', 'a1', 'r1');
+  const ac = new AbortController();
+  ac.abort();
+  const e = await failure(client.call('u1', 'POST', '/posts', { message: 'm' }, ac.signal));
+  expect(e).toBeInstanceOf(CallAborted);
+  expect(e.sent).toBe(false);
+  expect(apiCalls).toEqual([]);
+});
+
 test('aborting while the body is being read is taken for an abort too', async () => {
   store.putMmCred('u1', 'a1', 'r1');
   api = (_access, req) => new Response(new ReadableStream({ start(c) { c.enqueue(new TextEncoder().encode('{"a":')); req.signal.addEventListener('abort', () => c.error(req.signal.reason)); } }), { headers: { 'content-type': 'application/json' } });
