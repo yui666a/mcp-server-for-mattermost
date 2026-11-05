@@ -296,7 +296,10 @@ export async function resolveInFilters(mm: Mm, userId: string, terms: string): P
   // Not left to resolveChannel, which only trims: a format character in front would hide a leading ~ or @ from the checks below.
   const specOf = (f: (typeof filters)[number]) => unformat(unformat(f.value).replace(/^~+/, ''));
   for (const f of filters) {
-    const next = words[f.at + f.span];
+    // Not stopping at a word of format characters only: Mattermost keeps it as a word, and it would hide the comma after it.
+    let k = f.at + f.span;
+    while (k < words.length && !unformat(words[k])) k++;
+    const next = words[k];
     const word = unformat(next ?? '');
     // Not treating every 、 or ， as a comma: they also start search words such as 、議事録.
     if (specOf(f).startsWith('@') && /^,|^[、，][A-Za-z0-9._,@、，-]*$/.test(word)) {
