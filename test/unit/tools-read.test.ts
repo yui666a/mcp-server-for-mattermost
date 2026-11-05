@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 import { makeApp } from './helpers.ts';
 
@@ -128,7 +129,6 @@ describe('search_posts in: filters', () => {
     ['a  "b in:only-a" c'],
     ['from: in:only-a x'],
     ['x in:'],
-    ['x in:@bob,carol'],
   ])('passes %j through unchanged', async (terms) => {
     routes = base();
     await setup()('search_posts', { terms });
@@ -190,6 +190,80 @@ describe('search_posts in: filters', () => {
     const out = await setup()('search_posts', { terms: '-in:@bob' }, true);
     expect(out).toContain('検索語か条件を 1 つ以上指定してください。');
     expect(hits).not.toContain('POST /posts/search');
+  });
+
+  describe('a group DM given as @a,b', () => {
+    const CAROL = pad('carol');
+    const GM = pad('gm');
+    const GM_NAME = createHash('sha1').update(['u1', BOB, CAROL].sort().join('')).digest('hex');
+    const users = { me: { id: 'u1', username: 'me' }, bob: { id: BOB, username: 'bob' }, carol: { id: CAROL, username: 'carol' } };
+    const known = (): Record<string, Route> => ({
+      ...base(),
+      'POST /users/usernames': () => (bodies['/users/usernames'] as string[]).flatMap((n) => (n in users ? [users[n as keyof typeof users]] : [])),
+    });
+    const withGroup = () => ({ ...known(), [`GET /teams/${T1}/channels/name/${GM_NAME}`]: () => ch(GM, GM_NAME, '', 'G') });
+
+    test.each([
+      ['x in:@bob,carol', `x in:${GM}`],
+      ['x in:@Carol,@bob,me', `x in:${GM}`],
+      ['x in: @bob,carol', `x in:${GM}`],
+      ['x -in:@bob,carol', `x -in:${GM}`],
+      ['x channel:~@bob,carol', `x in:${GM}`],
+    ])('sends %j to Mattermost as %j, without creating the group DM', async (terms, expected) => {
+      routes = withGroup();
+      await setup()('search_posts', { terms });
+      expect(sent()).toBe(expected);
+      expect(hits).not.toContain('POST /channels/group');
+    });
+
+    test('without the group DM, in: is an error without searching, and -in: drops the condition; neither creates it', async () => {
+      routes = known();
+      const call = setup();
+      expect(await call('search_posts', { terms: 'x in:@bob,carol' }, true)).toContain('@bob, @carol とのグループ DM はまだありません。');
+      expect(hits).not.toContain('POST /posts/search');
+      await call('search_posts', { terms: 'x -in:@bob,carol' });
+      expect(sent()).toBe('x');
+      expect(hits).not.toContain('POST /channels/group');
+    });
+
+    test.each([
+      ['x in:@bob,ghost', 'ユーザーが見つかりません: @ghost。'],
+      ['x -in:@bob,ghost', 'ユーザーが見つかりません: @ghost。'],
+      ['x in:@bob,me', 'グループ DM には、自分以外に 2 人以上を指定してください。'],
+      ['x in:@bob, carol', 'カンマの前後に空白を入れない'],
+      ['x in:@bob ,carol', 'in:@bob の後の「,carol」: 検索の in: では @a,b のようにカンマの前後に空白を入れずに書いてください。'],
+      ['x in:@bob , carol', 'in:@bob の後の「,」'],
+      ['x in: @bob ,carol', 'in:@bob の後の「,carol」'],
+      ['x channel:~@bob ,carol', 'in:~@bob の後の「,carol」'],
+      ['x in:@bob 、carol', 'in:@bob の後の「、carol」'],
+    ])('%j is an input error without searching', async (terms, message) => {
+      routes = withGroup();
+      const out = await setup()('search_posts', { terms }, true);
+      expect(out).toContain(message);
+      expect(hits).not.toContain('POST /posts/search');
+    });
+
+    test('the space check runs before any lookup', async () => {
+      routes = withGroup();
+      await setup()('search_posts', { terms: 'x in:only-a in:@bob ,carol' }, true);
+      expect(hits).toEqual([]);
+    });
+  });
+
+  test('a 404 while resolving a group DM is not reported as a user named after the whole spec', async () => {
+    routes = { ...base(), 'POST /users/usernames': () => Response.json({ id: 'x' }, { status: 404 }) };
+    expect(await setup()('search_posts', { terms: 'x in:@bob,carol' }, true)).not.toContain('ユーザー「@bob,carol」');
+  });
+
+  test('in:@user answered 403 by the user lookup, as with restricted user visibility, is a user not found', async () => {
+    routes = { ...base(), 'GET /users/username/bob': () => Response.json({ id: 'api.context.permissions.app_error' }, { status: 403 }) };
+    expect(await setup()('search_posts', { terms: 'x in:@bob' }, true)).toContain('ユーザー「@bob」が見つかりません。');
+    expect(hits).not.toContain('POST /posts/search');
+  });
+
+  test('in:@ with no name says the user name is empty', async () => {
+    routes = base();
+    expect(await setup()('search_posts', { terms: 'x in:@' }, true)).toContain('ユーザー名が空です。');
   });
 
   test.each([
@@ -258,9 +332,16 @@ describe('get_post', () => {
     expect(out).not.toContain('read_thread');
   });
 
-  test('notes that the message attachments were cut', async () => {
+  test('notes at the end that the message was cut', async () => {
+    routes = { ...base, [`GET /posts/${ROOT}`]: () => post({ id: ROOT, message: 'x'.repeat(4001) }) };
+    expect((await setup()('get_post', { post: ROOT })).split('\n').at(-1)).toBe('（本文を 4000 文字で切りました）');
+  });
+
+  test('notes cut message attachments only where they were cut, not again at the end', async () => {
     routes = { ...base, [`GET /posts/${ROOT}`]: () => post({ id: ROOT, message: '', props: { attachments: [{ text: 'x'.repeat(4001) }] } }) };
-    expect(await setup()('get_post', { post: ROOT })).toContain('（本文かメッセージ添付を 4000 文字で切りました）');
+    const out = await setup()('get_post', { post: ROOT });
+    expect(out.match(/切りました/g)).toHaveLength(1);
+    expect(out).toContain('\n（メッセージ添付をここで切りました。続きは Mattermost の画面で確認してください）\n');
   });
 
   test('accepts a bare post_id', async () => {
@@ -2075,10 +2156,17 @@ describe('search_files', () => {
       expect(hits).not.toContain('POST /files/search');
     });
 
-    test('passes a group DM as given, keeping its words as written', async () => {
-      expect(await terms('x in:@bob,carol')).toBe('x in:@bob,carol');
-      expect(await terms('x channel:@bob,carol in:town')).toBe(`x channel:@bob,carol in:${A}`);
-      expect(await terms('x in: @bob,carol in:town')).toBe(`x in: @bob,carol in:${A}`);
+    test('replaces a group DM with its channel_id, as for any other channel', async () => {
+      const GM = 'm'.repeat(26);
+      const name = createHash('sha1').update(['u1', 'u2', 'u3'].sort().join('')).digest('hex');
+      routes = {
+        ...base(),
+        'POST /users/usernames': () => [{ id: 'u2', username: 'bob' }, { id: 'u3', username: 'carol' }],
+        [`GET /teams/${TA}/channels/name/${name}`]: () => ({ id: GM, name, display_name: '', team_id: '', type: 'G' }),
+      };
+      await setup()('search_files', { terms: 'x in: @bob,carol in:town' });
+      expect(sent()).toBe(`x in:${GM} in:${A}`);
+      expect(hits).not.toContain('POST /channels/group');
     });
 
     test('says a channel is not found, for a name, a channel_id or team/channel answered with 403 or 404, without searching', async () => {
@@ -2175,6 +2263,14 @@ describe('list_channel_members', () => {
     const out = await setup()('list_channel_members', { channel: C }, true);
     expect(out).toBe('参加していないチャンネルのメンバーは見られません（公開チャンネルでも同じです）。');
     expect(hits).not.toContain(`GET /channels/${C}/stats`);
+  });
+
+  test('says the same when the user leaves the channel between reading the members and the count, and passes other errors of the count through', async () => {
+    routes = { ...base(), [`GET /channels/${C}/stats`]: mmError(403, 'api.context.permissions.app_error') };
+    const call = setup();
+    expect(await call('list_channel_members', { channel: C }, true)).toBe('参加していないチャンネルのメンバーは見られません（公開チャンネルでも同じです）。');
+    routes[`GET /channels/${C}/stats`] = mmError(404);
+    expect(await call('list_channel_members', { channel: C }, true)).toContain('Mattermost がエラーを返しました（404）');
   });
 
   test('words 403 and 404 from fetching the channel as get_channel does', async () => {
