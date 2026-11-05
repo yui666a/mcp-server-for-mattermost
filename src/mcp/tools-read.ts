@@ -195,7 +195,11 @@ function channelError(e: unknown): never {
 }
 
 async function usernames(mm: Mm, uid: string, posts: MmPost[]): Promise<Map<string, string>> {
-  const ids = [...new Set(posts.flatMap(postUserIds))];
+  return usernamesOf(mm, uid, posts.flatMap(postUserIds));
+}
+
+export async function usernamesOf(mm: Mm, uid: string, all: string[]): Promise<Map<string, string>> {
+  const ids = [...new Set(all)];
   const out = new Map<string, string>();
   // In chunks, one after another: 1,000 ids are about 29KB of JSON, well inside Mattermost's MaximumPayloadSizeBytes (300,000 by default),
   // and sequential calls stay inside the per-user concurrency limit.
@@ -611,7 +615,7 @@ export function registerReadTools(server: McpServer, ctx: ToolContext): void {
       const per = c?.per_page ?? limit ?? 30;
       const rc = c && 'since' in c ? c : undefined;
       const range = rc ?? (!c && (since !== undefined || until !== undefined) ? rangeOf(since, until, from) : undefined);
-      const ch = await resolveChannel(mm, uid, channel);
+      const ch = await resolveChannel(mm, uid, channel).catch(channelError);
       const GONE = '（カーソルの起点かその続きの投稿が削除されたか、同じミリ秒の投稿が多かったため、続きを取りこぼしている可能性があります。';
       const renderPage = async (head: string[], all: MmPost[], next: (last: MmPost) => object, none: string, gone: string) => {
         const shown = all.slice(0, all.length > per ? tieStart(all.slice(0, per + 1)) || per : per);
@@ -984,10 +988,8 @@ export function registerReadTools(server: McpServer, ctx: ToolContext): void {
         const ch = channels.get(id);
         return ch?.type === 'D' ? [other(ch)] : [];
       };
-      const userIds = [...new Set(shown.flatMap((r) => (r.kind === 'thread' ? [...postUserIds(r.th.post), ...dmOf(r.th.post.channel_id)] : dmOf(r.ch.id))))];
-      const users = userIds.length
-        ? new Map((await mm.call<UserRef[]>(uid, 'POST', '/users/ids', userIds)).map((u) => [u.id, u.username]))
-        : new Map<string, string>();
+      const userIds = shown.flatMap((r) => (r.kind === 'thread' ? [...postUserIds(r.th.post), ...dmOf(r.th.post.channel_id)] : dmOf(r.ch.id)));
+      const users = await usernamesOf(mm, uid, userIds);
       const where = (x: MmChannel) => {
         const label = x.type === 'D' ? `@${users.get(other(x)) ?? other(x)}` : oneLine(x.display_name || x.name);
         const team = teamName.get(x.team_id);

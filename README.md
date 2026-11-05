@@ -44,13 +44,13 @@ This project targets the other case:
 | `mark_as_read` | Mark channels and threads read, skipping channels with posts by anyone else after the newest post read |
 | `search_users` | Find users by name or username |
 | `get_user` | A user's profile with time zone, local time, and status |
-| `send_message` | Post to a channel or thread (creates the DM for `@username` or the group DM for `@a,b` if it does not exist yet), optionally with small inline files or files uploaded through `prepare_upload`; clears a draft with the same text afterwards unless the draft has attachments |
+| `send_message` | Post to a channel, a thread, or a DM (creates the DM for `@username` or the group DM for `@a,b` if it does not exist yet), optionally with small inline files or files uploaded through `prepare_upload`; clears a draft with the same text afterwards unless the draft has attachments |
 | `prepare_upload` | Issue a one-time URL for uploading local files (screenshots, PDFs, photos) with `curl` (creates the DM for `@username` or the group DM for `@a,b` if it does not exist yet); for clients that can run commands on the user's machine, such as Claude Code and Codex CLI |
 | `add_reaction` / `remove_reaction` | Add or remove the user's own reaction |
 | `save_post` / `unsave_post` | Save (flag) a post in a joined channel, or remove it from the saved posts |
 | `pin_post` / `unpin_post` | Pin or unpin a post in a joined channel (unpinning also removes pins made by others) |
 | `edit_message` / `delete_message` | Edit or delete the user's own post |
-| `save_draft` | Save a Mattermost draft for the user to send from the UI (creates the DM for `@username` or the group DM for `@a,b` if it does not exist yet); sending the same text with `send_message` clears it |
+| `save_draft` | Save a Mattermost draft for the user to send from the UI (creates the DM for `@username` or the group DM for `@a,b` if it does not exist yet); sending the same text with `send_message` clears it unless the user added attachments in the UI |
 | `schedule_message` | Schedule a post for a later time (1 minute to 30 days ahead), creating the DM for `@username` or the group DM for `@a,b` if it does not exist yet, optionally with files uploaded through `prepare_upload` |
 | `list_scheduled_messages` | List the user's scheduled posts with status, attached files, and permalink; given an `id`, return that one with its full text |
 | `update_scheduled_message` / `cancel_scheduled_message` | Change or cancel a pending scheduled post |
