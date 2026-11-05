@@ -1780,7 +1780,10 @@ describe('list_saved_posts', () => {
     const at = Number(q.get('page'));
     return list(all.slice(at, at + Number(q.get('per_page'))));
   };
-  const byPage = (pages: ReturnType<typeof post>[][]) => (req: Request) => list(pages[Number(new URL(req.url).searchParams.get('page')) / 200] ?? []);
+  const inTurn = (pages: ReturnType<typeof post>[][]) => {
+    let n = 0;
+    return () => list(pages[n++] ?? []);
+  };
   const base = () => ({
     'GET /users/me/channels': () => [{ id: C, name: 'town', display_name: 'Town', team_id: T, type: 'O' }],
     'GET /users/me/teams': () => [{ id: T, name: 'team-a' }],
@@ -1788,7 +1791,8 @@ describe('list_saved_posts', () => {
   });
   const shownIds = (out: string) => [...out.matchAll(/^--- post_id: ([a-z0-9]{26})/gm)].map((m) => m[1]);
   const cursorIn = (out: string) => /next_cursor: (\S+)/.exec(out)?.[1];
-  const offsets = () => urls.filter((u) => u.startsWith(FLAGGED)).map((u) => Number(new URL(`http://x${u.slice(4)}`).searchParams.get('page')));
+  const asked = (key: string) => urls.filter((u) => u.startsWith(FLAGGED)).map((u) => Number(new URL(`http://x${u.slice(4)}`).searchParams.get(key)));
+  const offsets = () => asked('page');
   const NOTE = '新しい 1000 件だけ';
 
   test('lists the saved posts newest first (ties by post_id) with their channel and team', async () => {
@@ -1816,56 +1820,84 @@ describe('list_saved_posts', () => {
     expect(seen).toEqual(all.map((p) => p.id));
   });
 
-  test('sends row offsets 0, 200, 400, ... as page, 200 rows at a time, until an empty page', async () => {
+  test('reads limit + 21 rows first, then 200 rows at a time each starting 20 rows back, as row offsets in page, until an empty page', async () => {
     const all = Array.from({ length: 401 }, (_, i) => post(pid(i), 5000));
     routes = { ...base(), [FLAGGED]: byOffset(all) };
     await setup()('list_saved_posts', {});
-    expect(offsets()).toEqual([0, 200, 400, 600]);
-    expect(urls.filter((u) => u.startsWith(FLAGGED)).every((u) => u.includes('per_page=200'))).toBe(true);
+    expect(offsets()).toEqual([0, 21, 201, 381, 561]);
+    expect(asked('per_page')).toEqual([41, 200, 200, 200, 200]);
   });
 
-  test('stops reading once the page is filled and the last page reached older posts', async () => {
+  test('stops after the first read once it filled the page and reached older posts', async () => {
     routes = { ...base(), [FLAGGED]: byOffset(Array.from({ length: 450 }, (_, i) => post(pid(i), 10_000 - i))) };
     const out = await setup()('list_saved_posts', { limit: 20 });
     expect(offsets()).toEqual([0]);
+    expect(asked('per_page')).toEqual([41]);
     expect(shownIds(out)).toHaveLength(20);
     expect(cursorIn(out)).toBeDefined();
   });
 
-  test('reads on when the oldest post of the last page has the same time as the last one shown', async () => {
+  test('reads on when the oldest post of the last read has the same time as the last one shown', async () => {
     routes = { ...base(), [FLAGGED]: byOffset(Array.from({ length: 201 }, (_, i) => post(pid(i), 5000))) };
     await setup()('list_saved_posts', { limit: 2 });
-    expect(offsets()).toEqual([0, 200, 400]);
+    expect(offsets()).toEqual([0, 3, 183, 363]);
   });
 
   test('does not stop with exactly limit posts, as it cannot tell yet whether more follow', async () => {
     routes = { ...base(), [FLAGGED]: byOffset(Array.from({ length: 20 }, (_, i) => post(pid(i), 10_000 - i))) };
     const out = await setup()('list_saved_posts', { limit: 20 });
-    expect(offsets()).toEqual([0, 200]);
+    expect(offsets()).toEqual([0, 21]);
     expect(cursorIn(out)).toBeUndefined();
   });
 
-  test('does not stop at a short page, which permission filtering can cause, but at an empty one', async () => {
-    const p0 = Array.from({ length: 10 }, (_, i) => post(pid(i), 10_000 - i));
-    const p1 = Array.from({ length: 5 }, (_, i) => post(pid(100 + i), 5000 - i));
-    routes = { ...base(), [FLAGGED]: byPage([p0, p1]) };
+  test('does not stop at a short read, which permission filtering can cause, but at an empty one', async () => {
+    const all = Array.from({ length: 60 }, (_, i) => post(pid(i), 10_000 - i));
+    const hidden = new Set(all.slice(5, 41).map((p) => p.id));
+    routes = { ...base(), [FLAGGED]: (req: Request) => list(byOffset(all)(req).order.filter((id) => !hidden.has(id)).map((id) => all.find((p) => p.id === id)!)) };
     const out = await setup()('list_saved_posts', { limit: 20 });
-    expect(offsets()).toEqual([0, 200, 400]);
-    expect(shownIds(out)).toEqual([...p0, ...p1].map((p) => p.id));
+    expect(offsets()).toEqual([0, 21]);
+    expect(shownIds(out)).toEqual([...all.slice(0, 5), ...all.slice(41, 56)].map((p) => p.id));
   });
 
-  test('shows a post that comes on two pages once', async () => {
+  test('shows a post that comes in two reads once', async () => {
     const [a, b, c] = [post(pid(1), 3000), post(pid(2), 2000), post(pid(3), 1000)];
-    routes = { ...base(), [FLAGGED]: byPage([[a, b], [b, c]]) };
+    routes = { ...base(), [FLAGGED]: inTurn([[a, b], [b, c]]) };
     expect(shownIds(await setup()('list_saved_posts', {}))).toEqual([a.id, b.id, c.id]);
   });
 
-  test('reads at most 5 pages and then says only the newest 1000 were looked at, on pages with and without a cursor', async () => {
-    const pages = Array.from({ length: 6 }, (_, k) => Array.from({ length: 200 }, (_, i) => post(pid(k * 200 + i), 5000)));
-    routes = { ...base(), [FLAGGED]: byPage(pages) };
+  test('misses no post of a group of 21 with the same time across the boundary of a read, though each read orders the group differently', async () => {
+    // Two groups: one across the end of the first read (row 41 for limit 20), one across the end of the second (row 221).
+    const all = [
+      ...Array.from({ length: 30 }, (_, i) => post(pid(i), 10_000 - i)),
+      ...Array.from({ length: 21 }, (_, i) => post(pid(100 + i), 5000)),
+      ...Array.from({ length: 159 }, (_, i) => post(pid(200 + i), 4000 - i)),
+      ...Array.from({ length: 21 }, (_, i) => post(pid(400 + i), 1000)),
+      ...Array.from({ length: 30 }, (_, i) => post(pid(500 + i), 500 - i)),
+    ];
+    let reads = 0;
+    routes = { ...base(), [FLAGGED]: (req: Request) => {
+      const flip = reads++ % 2 === 1;
+      const ordered = [...all].sort((x, y) => y.create_at - x.create_at || (flip ? y.id.localeCompare(x.id) : x.id.localeCompare(y.id)));
+      return byOffset(ordered)(req);
+    } };
+    const call = setup();
+    const seen: string[] = [];
+    let cursor: string | undefined;
+    do {
+      const out = await call('list_saved_posts', cursor ? { cursor } : { limit: 20 });
+      seen.push(...shownIds(out));
+      cursor = cursorIn(out);
+    } while (cursor);
+    expect(seen).toEqual([...all].sort((x, y) => y.create_at - x.create_at || x.id.localeCompare(y.id)).map((p) => p.id));
+  });
+
+  test('reads up to row 1000 and then says only the newest 1000 were looked at, on pages with and without a cursor', async () => {
+    const all = Array.from({ length: 1100 }, (_, i) => post(pid(i), 5000));
+    routes = { ...base(), [FLAGGED]: byOffset(all) };
     const call = setup();
     const first = await call('list_saved_posts', { limit: 50 });
-    expect(offsets()).toEqual([0, 200, 400, 600, 800]);
+    expect(offsets()).toEqual([0, 51, 231, 411, 591, 771, 951]);
+    expect(asked('per_page')).toEqual([71, 200, 200, 200, 200, 200, 49]);
     expect(first).toContain(NOTE);
     const cursor = cursorIn(first);
     expect(cursor).toBeDefined();
@@ -1876,12 +1908,11 @@ describe('list_saved_posts', () => {
     expect(cursorIn(end)).toBeUndefined();
   });
 
-  test('does not add the note when the fifth page is not empty but the stop condition holds', async () => {
-    const pages = [...Array.from({ length: 4 }, (_, k) => Array.from({ length: 200 }, (_, i) => post(pid(k * 200 + i), 5000))),
-      Array.from({ length: 200 }, (_, i) => post(pid(800 + i), 1000))];
-    routes = { ...base(), [FLAGGED]: byPage(pages) };
+  test('does not add the note when the last read before row 1000 is not empty and the stop condition holds', async () => {
+    const all = [...Array.from({ length: 975 }, (_, i) => post(pid(i), 5000)), ...Array.from({ length: 125 }, (_, i) => post(pid(975 + i), 1000 - i))];
+    routes = { ...base(), [FLAGGED]: byOffset(all) };
     const out = await setup()('list_saved_posts', { limit: 50 });
-    expect(offsets()).toEqual([0, 200, 400, 600, 800]);
+    expect(offsets()).toEqual([0, 51, 231, 411, 591, 771, 951]);
     expect(out).not.toContain(NOTE);
   });
 
