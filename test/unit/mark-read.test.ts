@@ -111,8 +111,8 @@ describe('mark_as_read for channels', () => {
     routes = { ...base(), [`GET /channels/${CH}/posts`]: () => after([post(1, { user_id: 'u1', props: { from_oauth_app: 'true' } })]) };
     const r = await setup().call({ channels: [{ channel: CH, last_post_id: LAST }, { channel: CH2 }] });
     expect(r.isError).toBe(false);
-    expect(r.text).toContain(`チャンネル（channel_id: ${CH}）: 既読にしました。（表示名: TOWN）`);
-    expect(r.text).toContain(`チャンネル（channel_id: ${CH2}）: 呼んだ時点までのすべてを既読にしました。（表示名: SQUARE）`);
+    expect(r.text).toMatch(new RegExp(`チャンネル（channel_id: ${CH}）: 既読にしました。（表示名: TOWN）$`, 'm'));
+    expect(r.text).toMatch(new RegExp(`チャンネル（channel_id: ${CH2}）: 呼んだ時点までのすべてを既読にしました。（表示名: SQUARE）$`, 'm'));
     expect(marked).toEqual([[CH], [CH2]]);
     expect(hits.indexOf('POST /channels/members/u1/mark_read')).toBeLessThan(hits.indexOf(`GET /channels/${CH2}`));
     expect(query(`GET /channels/${CH}/posts`)).toEqual({ after: LAST, per_page: '200', collapsedThreads: 'true', skipFetchThreads: 'true' });
@@ -123,7 +123,7 @@ describe('mark_as_read for channels', () => {
     routes = { ...base(), [`GET /channels/${CH}/members/me`]: () => ({ msg_count: 3, msg_count_root: 6, mention_count: 2, mention_count_root: 0 }) };
     const r = await setup().call({ channels: [{ channel: CH, last_post_id: LAST }] });
     expect(r.isError).toBe(false);
-    expect(r.text).toContain(`- チャンネル（channel_id: ${CH}）: すでに既読です。（表示名: TOWN）`);
+    expect(r.text).toMatch(new RegExp(`- チャンネル（channel_id: ${CH}）: すでに既読です。（表示名: TOWN）$`, 'm'));
     expect(hits).not.toContain('POST /channels/members/u1/mark_read');
     expect(hits).not.toContain(`GET /posts/${LAST}`);
   });
@@ -164,7 +164,7 @@ describe('mark_as_read for channels', () => {
     routes = { ...base(), [`GET /channels/${CH}/posts`]: () => after(own(200)) };
     const r = await setup().call({ channels: [{ channel: CH, last_post_id: LAST }] });
     expect(r.isError).toBe(true);
-    expect(r.text).toContain(`- チャンネル（channel_id: ${CH}）: last_post_id より後に自分の投稿（と参加・退出の通知）が 200 件以上あり、その先を確かめられないため既読にしていません。（表示名: TOWN）`);
+    expect(r.text).toMatch(new RegExp(`- チャンネル（channel_id: ${CH}）: last_post_id より後に自分の投稿（と参加・退出の通知）が 200 件以上あり、その先を確かめられないため既読にしていません。（表示名: TOWN）$`, 'm'));
     routes[`GET /channels/${CH}/posts`] = () => after(own(199));
     expect((await setup().call({ channels: [{ channel: CH, last_post_id: LAST }] })).text).toContain('既読にしました。');
   });
@@ -253,7 +253,7 @@ describe('mark_as_read for channels', () => {
     const r = await setup().call({ channels: [{ channel: CH }, { channel: CH2 }] });
     expect(r.isError).toBe(false);
     expect(r.text).toMatch(new RegExp(`^- チャンネル（channel_id: ${CH}）: 既読にできませんでした。Mattermost がエラーを返しました（400）[^\\n]*（表示名: TOWN）$`, 'm'));
-    expect(r.text).toContain(`（channel_id: ${CH2}）: すでに既読です。（表示名: SQUARE）`);
+    expect(r.text).toMatch(new RegExp(`（channel_id: ${CH2}）: すでに既読です。（表示名: SQUARE）$`, 'm'));
   });
 
   test.each([
@@ -425,16 +425,16 @@ describe('mark_as_read for threads', () => {
   test('says an item was not marked when its write could not connect', async () => {
     routes = threads({ 'POST /channels/members/u1/mark_read': once(() => ({ status: 'OK', last_viewed_at_times: {} }), refused) });
     const r = await setup().call({ channels: [{ channel: CH }, { channel: CH2 }] });
-    expect(r.text).toContain(`（channel_id: ${CH}）: 呼んだ時点までのすべてを既読にしました。（表示名: TOWN）`);
-    expect(r.text).toContain(`（channel_id: ${CH2}）: 処理中に中断しました（既読にしていません）。（表示名: SQUARE）`);
+    expect(r.text).toMatch(new RegExp(`（channel_id: ${CH}）: 呼んだ時点までのすべてを既読にしました。（表示名: TOWN）$`, 'm'));
+    expect(r.text).toMatch(new RegExp(`（channel_id: ${CH2}）: 処理中に中断しました（既読にしていません）。（表示名: SQUARE）$`, 'm'));
   });
 
   test('stops at an unavailable write, keeping the items before it and listing the ones not started', async () => {
     routes = threads({ 'POST /channels/members/u1/mark_read': once(() => ({ status: 'OK', last_viewed_at_times: {} }), unavailable) });
     const r = await setup().call({ channels: [{ channel: CH }, { channel: CH2 }], threads: [{ post_id: ROOT }] });
     expect(r.isError).toBe(true);
-    expect(r.text).toContain(`（channel_id: ${CH}）: 呼んだ時点までのすべてを既読にしました。（表示名: TOWN）`);
-    expect(r.text).toContain(`（channel_id: ${CH2}）: 処理中に中断しました（既読になったかは分かりません）。（表示名: SQUARE）`);
+    expect(r.text).toMatch(new RegExp(`（channel_id: ${CH}）: 呼んだ時点までのすべてを既読にしました。（表示名: TOWN）$`, 'm'));
+    expect(r.text).toMatch(new RegExp(`（channel_id: ${CH2}）: 処理中に中断しました（既読になったかは分かりません）。（表示名: SQUARE）$`, 'm'));
     expect(r.text).toContain(`ここで中断しました。Mattermost に一時的に接続できません。しばらくしてから再試行してください。次の 1 件は処理していません: スレッド（post_id: ${ROOT}）。再実行するときは、中断した項目と処理していない項目だけを渡してください。`);
     expect(hits.filter((h) => h.startsWith('GET /users/u1/teams/'))).toEqual([]);
     const logged = vi.mocked(process.stdout.write).mock.calls.map(([l]) => JSON.parse(String(l)));
@@ -446,7 +446,7 @@ describe('mark_as_read for threads', () => {
     routes = threads({ [`GET /users/u1/teams/${TEAM}/threads/${ROOT}`]: () => new Response(null, { status: 429, headers: { 'x-ratelimit-reset': '7' } }) });
     const r = await setup().call({ channels: [{ channel: CH }], threads: [{ post_id: ROOT }] });
     expect(r.isError).toBe(true);
-    expect(r.text).toContain(`（channel_id: ${CH}）: 呼んだ時点までのすべてを既読にしました。（表示名: TOWN）`);
+    expect(r.text).toMatch(new RegExp(`（channel_id: ${CH}）: 呼んだ時点までのすべてを既読にしました。（表示名: TOWN）$`, 'm'));
     expect(r.text).toContain(`スレッド（親 post_id: ${ROOT}）: 処理中に中断しました（既読にしていません）。`);
     expect(r.text).toContain('ここで中断しました。呼び出しが多すぎます。7 秒後に再試行してください。再実行するときは');
   });
@@ -454,23 +454,23 @@ describe('mark_as_read for threads', () => {
   test('says an item was not marked when its write is rate limited', async () => {
     routes = threads({ 'POST /channels/members/u1/mark_read': once(() => ({ status: 'OK', last_viewed_at_times: {} }), () => new Response(null, { status: 429, headers: { 'x-ratelimit-reset': '7' } })) });
     const r = await setup().call({ channels: [{ channel: CH }, { channel: CH2 }] });
-    expect(r.text).toContain(`（channel_id: ${CH2}）: 処理中に中断しました（既読にしていません）。（表示名: SQUARE）`);
+    expect(r.text).toMatch(new RegExp(`（channel_id: ${CH2}）: 処理中に中断しました（既読にしていません）。（表示名: SQUARE）$`, 'm'));
   });
 
   test('stops with the results so far even when they are all failures', async () => {
     routes = threads({ 'POST /channels/members/u1/mark_read': once(mmError(400, 'app.channel.update_last_viewed_at.app_error'), unavailable) });
     const r = await setup().call({ channels: [{ channel: CH }, { channel: CH2 }] });
     expect(r.isError).toBe(true);
-    expect(r.text).toContain(`（channel_id: ${CH}）: 既読にできませんでした。`);
-    expect(r.text).toContain(`（channel_id: ${CH2}）: 処理中に中断しました（既読になったかは分かりません）。（表示名: SQUARE）`);
+    expect(r.text).toMatch(new RegExp(`（channel_id: ${CH}）: 既読にできませんでした。[^\\n]*（表示名: TOWN）$`, 'm'));
+    expect(r.text).toMatch(new RegExp(`（channel_id: ${CH2}）: 処理中に中断しました（既読になったかは分かりません）。（表示名: SQUARE）$`, 'm'));
   });
 
   test('stops on an unexpected failure too, with the results so far', async () => {
     routes = threads({ [`GET /channels/${CH}/posts`]: () => ({}) });
     const r = await setup().call({ channels: [{ channel: CH2 }, { channel: CH, last_post_id: LAST }] });
     expect(r.isError).toBe(true);
-    expect(r.text).toContain(`（channel_id: ${CH2}）: 呼んだ時点までのすべてを既読にしました。（表示名: SQUARE）`);
-    expect(r.text).toContain(`（channel_id: ${CH}）: 処理中に中断しました（既読にしていません）。（表示名: TOWN）`);
+    expect(r.text).toMatch(new RegExp(`（channel_id: ${CH2}）: 呼んだ時点までのすべてを既読にしました。（表示名: SQUARE）$`, 'm'));
+    expect(r.text).toMatch(new RegExp(`（channel_id: ${CH}）: 処理中に中断しました（既読にしていません）。（表示名: TOWN）$`, 'm'));
     expect(r.text).toContain('ここで中断しました。ツールの実行中に予期しないエラーが発生しました。');
   });
 
@@ -478,7 +478,7 @@ describe('mark_as_read for threads', () => {
     routes = threads({ 'POST /channels/members/u1/mark_read': unavailable });
     const r = await setup().call({ channels: [{ channel: CH }] });
     expect(r.isError).toBe(true);
-    expect(r.text).toContain(`（channel_id: ${CH}）: 処理中に中断しました（既読になったかは分かりません）。（表示名: TOWN）`);
+    expect(r.text).toMatch(new RegExp(`（channel_id: ${CH}）: 処理中に中断しました（既読になったかは分かりません）。（表示名: TOWN）$`, 'm'));
   });
 
   test('accepts the root post itself as last_post_id', async () => {
