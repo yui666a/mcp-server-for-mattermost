@@ -751,7 +751,7 @@ export function registerReadTools(server: McpServer, ctx: ToolContext): void {
       if (c && c.channel_id !== ch.id) throw new InputError(BAD_CURSOR);
       // Not joining /channels/{id}/members with the users: /users?in_channel gives the profiles in one call.
       const q = new URLSearchParams({ in_channel: ch.id, active: 'true', page: String(page), per_page: String(per) });
-      // Not only for /users: the user may leave the channel between the two calls.
+      // Not rewording the 403 of /users alone: the user may leave the channel before /stats.
       const notJoined = (e: unknown): never => {
         if (e instanceof MmError && e.status === 403) throw new InputError('参加していないチャンネルのメンバーは見られません（公開チャンネルでも同じです）。');
         throw e;
