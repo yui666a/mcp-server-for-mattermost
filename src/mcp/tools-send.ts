@@ -18,7 +18,7 @@ type Upload = { name: string; bytes: Buffer<ArrayBuffer> };
 const MAX_MESSAGE = 16383;
 export const MAX_UPLOAD_FILES = 5;
 // Not higher: the MCP path's nginx takes 1 MB per request, and 128KiB of text JSON-escaped up to 6x plus the longest message just fits.
-const MAX_FILES_BYTES = 128 * 1024;
+export const MAX_FILES_BYTES = 128 * 1024;
 export const FILE_NAME = z.string().min(1).max(100).regex(/^[^/\\\p{Cc}]+$/u, 'ファイル名に / や \\、制御文字は使えません');
 const inputSchema = {
   channel: z.string().min(1),
@@ -28,10 +28,10 @@ const inputSchema = {
   files: z.array(z.union([
     z.strictObject({ name: FILE_NAME, content_text: z.string().min(1).describe('UTF-8 のテキストとしてそのまま添付する中身') }),
     z.strictObject({ name: FILE_NAME, content_base64: z.string().min(1).describe('バイナリの中身の base64（data URL の接頭辞や改行は付けない）') }),
-  ])).min(1).max(5).optional()
-    .describe('添付ファイル（1〜5 件、中身の合計 128KiB まで）。各要素は name と、content_text（SVG、CSV、Markdown、コードなどのテキスト）か content_base64（小さなバイナリ）のどちらか一方。中身を読めて合計 128KiB に収まるファイルだけを渡す。チャットに添付されたファイルは、コード実行で中身を読めるときだけ content_base64 で送れる。読めないファイル、収まらないファイル、利用者の PC にあるファイルは、prepare_upload の説明の案内に従う'),
-  file_ids: z.array(z.string().regex(/^[A-Za-z0-9]{26}$/)).min(1).max(5).optional()
-    .describe('prepare_upload で、投稿先と同じチャンネルへ 24 時間以内にアップロードした file_id（1〜5 件）'),
+  ])).min(1).max(MAX_UPLOAD_FILES).optional()
+    .describe(`添付ファイル（1〜${MAX_UPLOAD_FILES} 件、中身の合計 ${MAX_FILES_BYTES / 1024}KiB まで）。各要素は name と、content_text（SVG、CSV、Markdown、コードなどのテキスト）か content_base64（小さなバイナリ）のどちらか一方。中身を読めて合計 ${MAX_FILES_BYTES / 1024}KiB に収まるファイルだけを渡す。チャットに添付されたファイルは、コード実行で中身を読めるときだけ content_base64 で送れる。読めないファイル、収まらないファイル、利用者の PC にあるファイルは、prepare_upload の説明の案内に従う`),
+  file_ids: z.array(z.string().regex(/^[A-Za-z0-9]{26}$/)).min(1).max(MAX_UPLOAD_FILES).optional()
+    .describe(`prepare_upload で、投稿先と同じチャンネルへ 24 時間以内にアップロードした file_id（1〜${MAX_UPLOAD_FILES} 件）`),
 };
 
 const B64 = /^[A-Za-z0-9+/]*={0,2}$/;
@@ -47,7 +47,7 @@ function decodeFiles(files: FileArg[]): Upload[] {
     return { name: f.name, bytes };
   });
   const total = out.reduce((n, f) => n + f.bytes.length, 0);
-  if (total > MAX_FILES_BYTES) throw new InputError(`添付ファイルの中身の合計が ${total} バイトで、上限の ${MAX_FILES_BYTES} バイト（128KiB）を超えています。合計がこの大きさになる添付は files では送れないので、prepare_upload の説明の案内に従ってください。`);
+  if (total > MAX_FILES_BYTES) throw new InputError(`添付ファイルの中身の合計が ${total} バイトで、上限の ${MAX_FILES_BYTES} バイト（${MAX_FILES_BYTES / 1024}KiB）を超えています。合計がこの大きさになる添付は files では送れないので、prepare_upload の説明の案内に従ってください。`);
   return out;
 }
 
@@ -112,6 +112,8 @@ export function checkUnposted(store: Store, uid: string, fileIds: string[]): voi
 
 // Not creating the DM with root_id or file_ids: a DM not opened yet holds neither, and the call would fail right after leaving an empty DM.
 export const createsDirect = (rootId: string | undefined, fileIds: string[]): boolean => !rootId && !fileIds.length;
+// Not repeating the "@" test at each caller: the checks run before resolving have to agree with when resolveChannel may create the DM.
+export const mayCreateDirect = (channel: string, rootId: string | undefined, fileIds: string[]): boolean => channel.trim().startsWith('@') && createsDirect(rootId, fileIds);
 
 // Not reporting only the missing DM when file_ids are given: none of them can belong to a DM not opened yet, so the file is the real mistake.
 // Not reading the client config for a DM that is already there: nothing can be left empty then, and a retry of a send that created it must reach the duplicate guard.
@@ -144,7 +146,7 @@ const INFLIGHT = '同じ投稿を処理中です。少し待ってから read_ch
 export async function sendMessage(mm: Mm, store: Store, uid: string, baseUrl: string, args: Args, client?: AbortSignal): Promise<CallToolResult> {
   const files = decodeFiles(args.files ?? []);
   const fileIds = args.file_ids ?? [];
-  const ch = files.length && args.channel.trim().startsWith('@') && !args.root_id && !fileIds.length
+  const ch = files.length && mayCreateDirect(args.channel, args.root_id, fileIds)
     ? await resolveCreatingAfter(mm, uid, args.channel, () => checkFilesAccepted(mm, uid, files))
     : await resolveTarget(mm, store, uid, args.channel, args.root_id, fileIds);
   checkUploaded(store, uid, ch.id, fileIds);
@@ -490,9 +492,9 @@ export async function saveDraft(mm: Mm, uid: string, args: DraftArgs): Promise<C
   // Not listing only after resolving a DM it may create: with drafts disabled on the server the call then fails leaving it empty. A DM's drafts are listed on the first team, the same team as after resolving.
   // Not listing early with root_id: no DM is created then, and a wrong root_id is the mistake to report first.
   // Not judging by this list: it is taken outside the lock, and a delete by send_message's cleanup in between would be missed, reporting as already saved a draft that is gone. The save lists again under the lock.
-  if (args.channel.trim().startsWith('@') && !rootId) await listDrafts(mm, uid, { teamId: '' });
+  if (mayCreateDirect(args.channel, rootId, [])) await listDrafts(mm, uid, { teamId: '' });
   // Not creating the DM with root_id: a DM not opened yet holds no root post, and the call would fail right after leaving an empty DM.
-  const ch = await resolveChannel(mm, uid, args.channel, { create: !rootId });
+  const ch = await resolveChannel(mm, uid, args.channel, { create: createsDirect(rootId, []) });
   // Checked here rather than left to Mattermost: it saves a draft on any root_id, and one on a reply never shows in any thread.
   if (rootId) await checkRoot(mm, uid, rootId, ch);
   const where = `チャンネル: ${oneLine(ch.displayName || ch.name)}（channel_id: ${ch.id}）${rootId ? `、返信先 post_id: ${rootId}` : ''}`;
@@ -544,7 +546,7 @@ export async function prepareUpload(mm: Mm, store: Store, uid: string, publicUrl
   const full = () => new InputError(`使われていないアップロード URL が ${MAX_OPEN_UPLOAD_URLS} 件あります。それを使うか、10 分の期限が切れるのを待ってください。`);
   // Not left to createUploadUrl alone: resolving may create the DM first, and failing after that leaves it empty. A URL issued or released between the two checks still does.
   if (store.openUploadUrlCount(uid) >= MAX_OPEN_UPLOAD_URLS) throw full();
-  const ch = args.channel.trim().startsWith('@')
+  const ch = mayCreateDirect(args.channel, undefined, [])
     ? await resolveCreatingAfter(mm, uid, args.channel, () => checkFilesAccepted(mm, uid, []))
     : await resolveChannel(mm, uid, args.channel, { create: true });
   const token = store.createUploadUrl({ mmUserId: uid, channelId: ch.id });
