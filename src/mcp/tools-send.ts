@@ -110,10 +110,12 @@ export function checkUnposted(store: Store, uid: string, fileIds: string[]): voi
 }
 
 // Not creating the DM with root_id or file_ids: a DM not opened yet holds neither, and the call would fail right after leaving an empty DM.
+export const createsDirect = (rootId: string | undefined, fileIds: string[]): boolean => !rootId && !fileIds.length;
+
 // Not reporting only the missing DM when file_ids are given: none of them can belong to a DM not opened yet, so the file is the real mistake.
 export async function resolveTarget(mm: Mm, store: Store, uid: string, channel: string, rootId: string | undefined, fileIds: string[]): Promise<ResolvedChannel> {
   try {
-    return await resolveChannel(mm, uid, channel, { create: !rootId && !fileIds.length });
+    return await resolveChannel(mm, uid, channel, { create: createsDirect(rootId, fileIds) });
   } catch (e) {
     if (e instanceof NoDirectChannel && fileIds.length) checkUploaded(store, uid, '', fileIds);
     throw e;

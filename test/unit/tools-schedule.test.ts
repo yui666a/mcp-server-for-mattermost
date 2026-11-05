@@ -731,7 +731,7 @@ describe('arguments a tool does not take', () => {
     const files = await s.call('schedule_message', { channel: CH, message: 'hello', at: '2026-11-03T10:00', files: [] });
     expect(files.isError).toBe(true);
     expect(files.text).toContain(`${GENERAL}files。`);
-    expect(files.text).toContain('今すぐ送るなら send_message の files を、予約するなら prepare_upload');
+    expect(files.text).toContain('中身を読めて合計 128KiB に収まるファイルを今すぐ送るなら send_message の files を、それ以外や予約では prepare_upload');
     const time = await s.call('schedule_message', { channel: CH, message: 'hello', at: '2026-11-03T10:00', time: '10:00' });
     expect(time.isError).toBe(true);
     expect(time.text).toContain(`${GENERAL}time。`);
