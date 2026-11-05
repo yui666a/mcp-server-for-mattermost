@@ -462,6 +462,11 @@ export class Store {
     };
   }
 
+  getScheduled(mmUserId: string, id: string): Scheduled | undefined {
+    const r = this.get('SELECT * FROM scheduled_posts WHERE id = ? AND mm_user_id = ?', id, mmUserId);
+    return r && this.scheduled(r);
+  }
+
   listScheduled(mmUserId: string, q: { status?: ScheduledStatus; after?: { at: number; id: string }; limit: number }): Scheduled[] {
     const rows = this.db.prepare(
       `SELECT * FROM scheduled_posts WHERE mm_user_id = ? AND (? IS NULL OR status = ?)
