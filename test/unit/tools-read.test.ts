@@ -212,7 +212,7 @@ describe('search_posts in: filters', () => {
 
   test('a U+FEFF before or after the value does not change which channel is searched', async () => {
     routes = base();
-    await setup()('search_posts', { terms: 'x in:\ufeff~only-a' });
+    await setup()('search_posts', { terms: 'x in:\ufeff~only-a\ufeff' });
     expect(sent()).toBe(`x in:${CX}`);
     expect(await setup()('search_posts', { terms: 'x in:\ufeff@bob ,carol' }, true)).toContain('の後の「,carol」');
   });
@@ -222,7 +222,9 @@ describe('search_posts in: filters', () => {
     ['x in:@bob \ufeff，carol', '「\ufeff，carol」'],
   ])('a U+FEFF after ~ or before the next word does not hide a misplaced comma in %j', async (terms, word) => {
     routes = base();
-    expect(await setup()('search_posts', { terms }, true)).toContain(`の後の${word}`);
+    const out = await setup()('search_posts', { terms }, true);
+    expect(out).toContain(`の後の${word}`);
+    if (word.includes('，')) expect(out).toContain('区切りは半角のカンマ（,）で書いてください。');
     expect(hits).not.toContain('POST /posts/search');
   });
 
