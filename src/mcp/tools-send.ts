@@ -109,7 +109,7 @@ export async function sendMessage(mm: Mm, store: Store, uid: string, baseUrl: st
   const rootId = args.root_id;
   if (rootId) {
     const root = await mm.call<MmPost>(uid, 'GET', `/posts/${rootId}`);
-    if (root.channel_id !== ch.id) throw new InputError(`root_id ${rootId} の投稿はチャンネル「${ch.name}」にありません。`);
+    if (root.channel_id !== ch.id) throw new InputError(`root_id ${rootId} の投稿はチャンネル「${ch.displayName || ch.name}」（channel_id: ${ch.id}）にありません。`);
   }
   const where = `チャンネル: ${ch.displayName || ch.name}（channel_id: ${ch.id}）${rootId ? `、返信先 post_id: ${rootId}` : ''}`;
   // Not only after a fresh post: an earlier attempt's cleanup may have failed, and a resend that did not post can retry it.
@@ -325,11 +325,11 @@ async function syncDraftsOff(mm: Mm, uid: string): Promise<boolean> {
   }
 }
 
-export async function checkRoot(mm: Mm, uid: string, rootId: string, ch: { id: string; name: string }): Promise<void> {
+export async function checkRoot(mm: Mm, uid: string, rootId: string, ch: { id: string; name: string; displayName: string }): Promise<void> {
   const root = await worded(mm.call<MmPost>(uid, 'GET', `/posts/${rootId}`), {
     status: [[404, `root_id ${rootId} の投稿が見つかりません。`], [403, `root_id ${rootId} の投稿を見られません。`]],
   });
-  if (root.channel_id !== ch.id) throw new InputError(`root_id ${rootId} の投稿はチャンネル「${ch.name}」にありません。`);
+  if (root.channel_id !== ch.id) throw new InputError(`root_id ${rootId} の投稿はチャンネル「${ch.displayName || ch.name}」（channel_id: ${ch.id}）にありません。`);
   if (root.root_id) throw new InputError(`root_id ${rootId} は返信です。スレッドの親投稿の post_id を指定してください。`);
 }
 
