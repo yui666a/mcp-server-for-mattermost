@@ -2177,6 +2177,14 @@ describe('list_channel_members', () => {
     expect(hits).not.toContain(`GET /channels/${C}/stats`);
   });
 
+  test('says the same when the user leaves the channel between reading the members and the count, and passes other errors of the count through', async () => {
+    routes = { ...base(), [`GET /channels/${C}/stats`]: mmError(403, 'api.context.permissions.app_error') };
+    const call = setup();
+    expect(await call('list_channel_members', { channel: C }, true)).toBe('参加していないチャンネルのメンバーは見られません（公開チャンネルでも同じです）。');
+    routes[`GET /channels/${C}/stats`] = mmError(404);
+    expect(await call('list_channel_members', { channel: C }, true)).toContain('Mattermost がエラーを返しました（404）');
+  });
+
   test('words 403 and 404 from fetching the channel as get_channel does', async () => {
     routes = { ...base(), [`GET /channels/${C}`]: mmError(403) };
     const call = setup();
