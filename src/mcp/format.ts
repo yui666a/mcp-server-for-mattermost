@@ -17,7 +17,7 @@ const segmenter = new Intl.Segmenter();
 
 export const graphemeCount = (s: string): number => [...segmenter.segment(s)].length;
 
-// One place for the limit and the note get_post writes, so the guidance in tool descriptions quoting them cannot fall behind.
+// Not written out in each tool description: the guidance quoting the note would fall behind when the limit changes.
 export const BODY_MAX_CHARS = 4000;
 export const BODY_CUT_NOTE = `本文を ${BODY_MAX_CHARS} 文字で切りました`;
 

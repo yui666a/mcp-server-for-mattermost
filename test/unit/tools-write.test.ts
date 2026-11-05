@@ -287,11 +287,11 @@ describe('edit_message and delete_message', () => {
       for (const s of ['2 文字字下げ', '4000 文字を超える本文は切って出す', '字下げを外し', '出力を元に書き換えない']) expect(d).toContain(s);
     });
 
-    test('the message argument says to reread the post with get_post, drop the 2-space indent, and not rewrite a cut post from the output', async () => {
+    test('the message argument says to reread the post with get_post, drop the 2-space indent, expect line breaks to become LF, and leave a cut post to the Mattermost screen', async () => {
       const t = (await setup().tools()).find((x) => x.name === 'edit_message')! as unknown as { description: string; inputSchema: { properties: { message: { description: string } } } };
       const d = t.inputSchema.properties.message.description;
       for (const s of ['先に get_post で読み直す', '2 文字字下げ', '先頭の 2 文字の空白を外す', '出力を元に書き換えない']) expect(d).toContain(s);
-      // The very wording get_post writes when it cuts a message, so changing the limit or the note cannot leave this guidance behind.
+      // Not a literal: a changed limit or note would otherwise leave this guidance quoting a note get_post no longer writes.
       expect(d).toContain(`「${BODY_CUT_NOTE}」`);
       expect(d).toContain('LF になり');
       expect(d).toContain('Mattermost の画面で編集するよう利用者に伝える');
