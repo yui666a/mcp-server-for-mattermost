@@ -23,7 +23,7 @@ const schema = {
 };
 type Args = z.infer<z.ZodObject<typeof schema>>;
 
-type Post = MmPost & { type?: string; props?: { from_webhook?: string; from_bot?: string } };
+type Post = MmPost & { props?: { from_webhook?: string; from_bot?: string } };
 // Not treating these as unread posts: Mattermost leaves them out of the unread count (Post.IsJoinLeaveMessage).
 const JOIN_LEAVE = new Set([
   'system_join_leave', 'system_add_remove', 'system_join_channel', 'system_leave_channel', 'system_join_team',
@@ -31,6 +31,7 @@ const JOIN_LEAVE = new Set([
 ]);
 type Counts = { total_msg_count: number; total_msg_count_root: number };
 type Member = { msg_count: number; msg_count_root: number; mention_count: number; mention_count_root: number };
+type ThreadState = { last_viewed_at: number; last_reply_at: number; unread_replies: number; unread_mentions: number };
 type Result = { line: string; ok: boolean };
 
 const missing = (e: unknown) => e instanceof MmError && (e.status === 403 || e.status === 404);
@@ -105,7 +106,7 @@ export async function markAsRead(mm: Mm, uid: string, args: Args): Promise<CallT
     let label = `スレッド（post_id: ${item.post_id}）`;
     try {
       if (!crt) throw new InputError('スレッドの折りたたみ（CRT）が無効なため、スレッドの既読は画面に出ません。チャンネルを既読にすれば足ります。');
-      const p = await mm.call<Post>(uid, 'GET', `/posts/${item.post_id}`).catch((e) => {
+      const p = await mm.call<Post & { reply_count?: number }>(uid, 'GET', `/posts/${item.post_id}`).catch((e) => {
         if (missing(e)) throw new InputError('投稿が見つかりません（削除されたか、見る権限がありません）。');
         throw e;
       });
@@ -115,9 +116,11 @@ export async function markAsRead(mm: Mm, uid: string, args: Args): Promise<CallT
       // Not looking for the team the user has open: for a DM or group DM thread the team only tells clients which team's thread counts to update, and no API tells which one is open.
       const team = ch.team_id || (anyTeam ??= (await myTeams(mm, uid))[0]?.id);
       if (!team) throw new InputError('所属しているチームがないため、スレッドを既読にできません。');
-      const state = await mm.call<{ last_viewed_at: number; last_reply_at: number; unread_mentions: number }>(uid, 'GET', `/users/${uid}/teams/${team}/threads/${root}`).catch((e) => {
-        if (e instanceof MmError && e.status === 404) throw new InputError('このスレッドには既読の状態がありません（スレッドに参加もフォローもしていません）。');
-        throw e;
+      const state = await mm.call<ThreadState>(uid, 'GET', `/users/${uid}/teams/${team}/threads/${root}`).catch((e) => {
+        if (!(e instanceof MmError && e.status === 404)) throw e;
+        // Not pointing a root post without replies to follow_thread: Mattermost has no thread state for it until the first reply, followed or not.
+        if (!p.root_id && !p.reply_count) throw new InputError('このスレッドには返信が無いため、既読にするものがありません。');
+        throw new InputError('このスレッドはフォローしていないため、既読の状態がありません（フォローしていないスレッドの返信は未読に数えられません）。フォローするなら follow_thread を使ってください（フォローした時点までの返信が既読になります）。');
       });
       let at = state.last_reply_at;
       if (item.last_post_id) {
@@ -125,15 +128,27 @@ export async function markAsRead(mm: Mm, uid: string, args: Args): Promise<CallT
         if (last.id !== root && last.root_id !== root) throw new InputError(`last_post_id ${last.id} の投稿はこのスレッドにありません。`);
         at = last.create_at;
       }
+      const upTo = item.last_post_id ? 'last_post_id までは' : 'すでに';
+      const put = (ts: number) => mm.call<ThreadState>(uid, 'PUT', `/users/${uid}/teams/${team}/threads/${root}/read/${ts}`);
       // Not writing the read post's own time: Mattermost counts unread replies after the position but mentions from it, so a mention on that post would stay.
       // Not writing a position before the current one: the threads API moves it backwards too, which would unread what the user has read since.
       const to = Math.max(at + 1, state.last_viewed_at);
-      if (to === state.last_viewed_at && !state.unread_mentions) {
-        results.push({ line: `- ${label}: ${item.last_post_id ? 'last_post_id までは既読です。' : 'すでに既読です。'}`, ok: true });
-        continue;
+      let done: string;
+      if (to === state.last_viewed_at) {
+        // Not rewriting the position while replies after it are unread: the mention count would not change, and the user may read further meanwhile.
+        if (!state.unread_mentions || state.unread_replies) {
+          results.push({ line: `- ${label}: ${upTo}既読です。`, ok: true });
+          continue;
+        }
+        // Not rewriting the same position for a mention with no unread reply: Mattermost counts mentions from the position, so one on a reply at it would stay. No reply is after it, so one millisecond on reads none.
+        const r = await put(to + 1);
+        done = `${upTo}既読です${r.unread_mentions ? '' : '（残っていたメンションを消しました）'}。`;
+      } else {
+        const r = await put(to);
+        // Not leaving a mention with no unread reply: it is on a reply at the position, which already counts as read.
+        if (r.unread_mentions && !r.unread_replies) await put(to + 1);
+        done = item.last_post_id ? '既読にしました。' : '呼んだ時点の最終返信までを既読にしました。';
       }
-      await mm.call(uid, 'PUT', `/users/${uid}/teams/${team}/threads/${root}/read/${to}`);
-      const done = to === state.last_viewed_at ? `${item.last_post_id ? 'last_post_id までは' : 'すでに'}既読です（メンションの数を数え直させました）。` : item.last_post_id ? '既読にしました。' : '呼んだ時点の最終返信までを既読にしました。';
       results.push({ line: `- ${label}: ${done}`, ok: true });
     } catch (e) {
       results.push({ line: `- ${label}: 既読にできませんでした。${itemFailure(e)}`, ok: false });
