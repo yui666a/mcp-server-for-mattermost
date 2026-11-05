@@ -2,6 +2,9 @@ import { createHash } from 'node:crypto';
 import { MmError, UpstreamUnavailable, type MmClient } from '../mattermost/client.ts';
 import { InputError, oneLine } from './format.ts';
 
+// Format characters (Unicode Cf: zero-width, direction marks, soft hyphen) too, not only what trim drops: they slip in with a copy, and no
+// channel, team or user name or ID can have them, as those are ASCII only.
+export const unformat = (s: string) => s.replace(/^[\s\p{Cf}]+|[\s\p{Cf}]+$/gu, '');
 export type Mm = Pick<MmClient, 'call'>;
 export type ChannelRef = { id: string; name: string; displayName: string; teamId: string; teamName: string };
 export type UserRef = {
@@ -54,7 +57,7 @@ export async function teamNameOf(mm: Mm, userId: string, teamId: string): Promis
 }
 
 export async function resolveUser(mm: Mm, userId: string, spec: string): Promise<UserRef> {
-  const s = spec.trim();
+  const s = unformat(spec);
   // Lowered rather than passed as typed: Mattermost user names are lower case only, and it answers 400 to any upper case letter.
   if (s.startsWith('@')) return mm.call<UserRef>(userId, 'GET', `/users/username/${plain(s.slice(1), 'ユーザー名').toLowerCase()}`);
   // Lowered rather than passed as typed: Mattermost IDs are lower case only, so an upper case ID would only find nothing.
@@ -80,21 +83,14 @@ const refusalWorded = (who: string, table = CREATE_REFUSED) => (e: unknown): nev
 
 // Not creating unless asked: a read must not leave behind a DM the user never opened.
 export async function resolveChannel(mm: Mm, userId: string, spec: string, opts: { create?: boolean; names?: boolean } = {}): Promise<ResolvedChannel> {
-  const s = spec.trim();
+  const s = unformat(spec);
   if (ID.test(s)) {
-    const c = await fetchChannel(mm, userId, `/channels/${s}`).catch(async (e) => {
-      // Not on a 403, which means the ID exists. Lowered for the name too: a channel name is lower case only.
+    const lower = s.toLowerCase();
+    // Lowered from the start rather than tried as written: Mattermost IDs are lower case only, so an upper case ID is the same ID written
+    // differently, and the ID as written could only find nothing.
+    const c = await fetchChannel(mm, userId, `/channels/${lower}`).catch(async (e) => {
+      // Not on a 403, which means the ID exists.
       if (!(e instanceof ChannelFetchError && e.status === 404)) throw e;
-      const lower = s.toLowerCase();
-      // Tried again in lower case before any name: Mattermost IDs are lower case, so an upper case ID is the same ID written differently,
-      // not a name used in place of an ID.
-      if (lower !== s) {
-        const c = await fetchChannel(mm, userId, `/channels/${lower}`).catch((e2) => {
-          if (e2 instanceof ChannelFetchError && e2.status === 404) return undefined;
-          throw e2;
-        });
-        if (c) return c;
-      }
       const found = await byName(mm, userId, lower, await myTeams(mm, userId));
       if (!found.length) throw e;
       // Not used in place of the ID: a user ID or post ID mistaken for a channel would send to whoever named a channel after it.
