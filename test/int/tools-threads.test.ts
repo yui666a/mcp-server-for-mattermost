@@ -1,7 +1,7 @@
 import { randomBytes } from 'node:crypto';
 import type request from 'supertest';
 import { afterAll, beforeAll, describe, expect, test, vi } from 'vitest';
-import { intApp, mcpAuthorize, requireMm, mmDeauthorize, mmLoginCookie, type Cred } from './helpers.ts';
+import { intApp, mcpAuthorize, requireMm, mmDeauthorize, mmLoginCookie, withUsers, type Cred } from './helpers.ts';
 
 const e = await requireMm();
 
@@ -179,9 +179,10 @@ describe('followed threads against the local Mattermost', () => {
     expect(await followed()).not.toContain(root);
   });
 
-  test('in a DM, the other user\'s reply without a mention follows the thread again after unfollow_thread, and the output says so', async () => {
+  test('in a DM, the other user\'s reply without a mention follows the thread again after unfollow_thread, and the output says so', () => withUsers(async (made) => {
     const name = `t79dm${TAG}`;
     const carol = await mmApi<{ id: string }>(e.adminToken, 'POST', '/users', { username: name, email: `${name}@example.com`, password: e.users.alice.password });
+    made.push(carol.id);
     await mmApi(e.adminToken, 'POST', `/teams/${team}/members`, { team_id: team, user_id: carol.id });
     const carolMm = await mmToken({ id: carol.id, username: name, password: e.users.alice.password });
     const dm = await mmApi<{ id: string }>(carolMm, 'POST', '/channels/direct', [carol.id, e.users.alice.id]);
@@ -196,9 +197,8 @@ describe('followed threads against the local Mattermost', () => {
     } finally {
       // Leaving no unread DM behind: other files' get_unreads checks share alice.
       await mmApi(aliceMm, 'POST', `/channels/members/${e.users.alice.id}/mark_read`, [dm.id]);
-      await mmApi(e.adminToken, 'DELETE', `/users/${carol.id}`);
     }
-  });
+  }));
 
   test('after unfollowing every thread this run touched, none is left in alice\'s list', async () => {
     await unfollowAll();

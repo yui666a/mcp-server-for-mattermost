@@ -639,22 +639,19 @@ describe('read tools against the local Mattermost', () => {
       expect(r.order).toEqual([]);
     });
 
-    test('in:@user does not create a DM: it fails without one, and -in:@user drops the condition', async () => {
+    test('in:@user does not create a DM: it fails without one, and -in:@user drops the condition', () => withUsers(async (made) => {
       const name = `${TAG}dm`;
       const u = await mmApi<{ id: string }>(e.adminToken, 'POST', '/users', { username: name, email: `${name}@example.com`, password: 'Passw0rd!dev123' });
-      try {
-        const fail = await call('alice', 'search_files', { terms: `${TAG}f* in:@${name}` });
-        expect(fail.isError).toBe(true);
-        expect(fail.content[0].text).toBe(`@${name} との DM はまだありません。`);
-        const r = await call('alice', 'search_files', { terms: `${TAG}f* -in:@${name}` });
-        expect(fileIds(r)).toContain(files[`${TAG}f-report.pdf`]);
-        const dm = [e.users.alice.id, u.id].sort().join('__');
-        const res = await fetch(`${e.mmUrl}/api/v4/teams/${e.teams.a.id}/channels/name/${dm}`, { headers: { authorization: `Bearer ${aliceMm}` } });
-        expect(res.status).toBe(404);
-      } finally {
-        await mmApi(e.adminToken, 'DELETE', `/users/${u.id}`);
-      }
-    });
+      made.push(u.id);
+      const fail = await call('alice', 'search_files', { terms: `${TAG}f* in:@${name}` });
+      expect(fail.isError).toBe(true);
+      expect(fail.content[0].text).toBe(`@${name} との DM はまだありません。`);
+      const r = await call('alice', 'search_files', { terms: `${TAG}f* -in:@${name}` });
+      expect(fileIds(r)).toContain(files[`${TAG}f-report.pdf`]);
+      const dm = [e.users.alice.id, u.id].sort().join('__');
+      const res = await fetch(`${e.mmUrl}/api/v4/teams/${e.teams.a.id}/channels/name/${dm}`, { headers: { authorization: `Bearer ${aliceMm}` } });
+      expect(res.status).toBe(404);
+    }));
 
     test('does not show bob a file in a private channel he has not joined, but does in a channel he is in', async () => {
       const r = await call('bob', 'search_files', { terms: `${TAG}f*` });
