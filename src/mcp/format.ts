@@ -130,10 +130,9 @@ function reactionLines(p: MmPost, usernames: Map<string, string>): string[] {
   if (!by.length) return p.has_reactions && !p.metadata ? ['リアクションあり（get_post で確認できます）'] : [];
   const name = (id: string) => (usernames.has(id) ? `@${usernames.get(id)}` : `user_id: ${id}`);
   const { each, k } = fitReactions(by, name);
-  const head = REACTION_HEAD;
   const left = by.slice(k);
   const rest = left.length ? `、ほか ${left.length} 種類（${left.reduce((m, r) => m + r.total, 0)} 人）` : '';
-  return [`${head}${each.slice(0, k).join('、')}${rest}`];
+  return [`${REACTION_HEAD}${each.slice(0, k).join('、')}${rest}`];
 }
 
 export function formatPost(p: MmPost, ctx: PostCtx): string {

@@ -241,15 +241,19 @@ describe('reactions, edits and system messages', () => {
       expect(postUserIds(pair(5000, 1))).toEqual(['author', 'ua']);
     });
 
-    test('keeps every user the line names', () => {
-      const many = Array.from({ length: 300 }, (_, i) => r(`u${i}`, `e${i}`));
-      const post = { ...p, metadata: { reactions: many } };
-      const named = new Map(many.map((x) => [x.user_id, 'longer-name']));
-      const line = formatPost(post, { ...ctx, usernames: named }).split('\n').at(-2)!;
+    test('keeps every user the line names, and none of the emoji past where even the shortest names stop fitting', () => {
+      // 20-letter emoji names: an item is 28 with the shortest name, so 8 + 28 + 140 × 29 = 4096 > 4000 stops the estimate at 137 emoji.
+      const many = Array.from({ length: 300 }, (_, i) => r(`u${i}`, `e${i}`.padEnd(20, 'x')));
+      const post = { ...p, user_id: 'author', metadata: { reactions: many } };
+      const kept = postUserIds(post);
+      const line = formatPost(post, { ...ctx, usernames: new Map(many.map((x) => [x.user_id, 'longer-name'])) }).split('\n').at(-2)!;
       const shownUsers = many.filter((x) => line.includes(`:${x.emoji_name}: `)).map((x) => x.user_id);
       expect(shownUsers.length).toBeGreaterThan(0);
-      for (const u of shownUsers) expect(postUserIds(post)).toContain(u);
-      expect(postUserIds(post).length).toBeLessThan(301);
+      for (const u of shownUsers) expect(kept).toContain(u);
+      let k = 1;
+      for (let n = 8 + 28; k < many.length && (n += 29) <= 4000; k++);
+      expect(kept).toEqual(['author', ...many.slice(0, k).map((x) => x.user_id)]);
+      expect(k).toBeLessThan(300);
     });
   });
 
