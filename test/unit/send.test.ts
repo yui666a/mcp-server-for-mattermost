@@ -130,7 +130,7 @@ test('root_id in another channel is rejected', async () => {
 
 test('a root_id in another channel names the channel with a line break in its display name on one line', async () => {
   const mm: Mm = { call: (async () => ({ id: id(1), channel_id: OTHER, root_id: '', user_id: UID, message: 'm', create_at: 0 })) as Mm['call'] };
-  await expect(checkRoot(mm, UID, id(1), { id: CH, name: 'dup', displayName: 'D\nup' })).rejects.toThrow(`チャンネル（channel_id: ${CH}、表示名: D up）にありません`);
+  await expect(checkRoot(mm, UID, id(1), { id: CH, name: 'dup', displayName: 'D\nup' })).rejects.toThrow(`の投稿は channel_id: ${CH} のチャンネルにありません（表示名: D up）。`);
 });
 
 describe('root_id', () => {
@@ -166,7 +166,7 @@ describe('root_id', () => {
   test('a root_id in another channel than a DM given by its channel_id names the DM by the other user, as when given as @user', async () => {
     const f = fakeMm();
     await expect(f.send({ channel: DM, message: 'hi', root_id: id(0) })).rejects.toMatchObject({
-      message: `root_id ${id(0)} の投稿はチャンネル（channel_id: ${DM}、表示名: @olive）にありません。`,
+      message: `root_id ${id(0)} の投稿は channel_id: ${DM} のチャンネルにありません（表示名: @olive）。`,
     });
     expect(f.created).toHaveLength(0);
   });
@@ -175,7 +175,7 @@ describe('root_id', () => {
     const f = withRoots();
     f.posts.push({ id: id(6), user_id: UID, channel_id: OTHER, root_id: id(0), message: 'reply elsewhere', create_at: 0 });
     await expect(f.send({ channel: 'team-a/dup', message: 'hi', root_id: id(6) })).rejects.toMatchObject({
-      message: `root_id ${id(6)} の投稿はチャンネル（channel_id: ${CH}、表示名: Dup）にありません。`,
+      message: `root_id ${id(6)} の投稿は channel_id: ${CH} のチャンネルにありません（表示名: Dup）。`,
     });
     expect(f.created).toHaveLength(0);
   });
