@@ -549,7 +549,7 @@ describe('get_post', () => {
 
   test('turns 403 from GET /posts/{id} into a permission message', async () => {
     routes = { ...base, [`GET /posts/${ROOT}`]: mmError(403) };
-    expect(await setup()('get_post', { post: ROOT }, true)).toBe('この投稿を見る権限がありません（参加していない非公開チャンネルなど）');
+    expect(await setup()('get_post', { post: ROOT }, true)).toBe('この投稿を見る権限がありません（参加していない非公開チャンネルなど）。参加しているはずなら、Mattermost の一時的な障害の可能性があります。少し待ってから再試行してください。');
   });
 
   test('turns 404 from GET /posts/{id} into a not-found message', async () => {
