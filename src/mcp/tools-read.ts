@@ -357,18 +357,29 @@ async function unreadThreads(mm: Mm, uid: string, teams: MmTeam[], keep: (channe
   const notes: string[] = [];
   for (const [i, t] of teams.entries()) {
     let before: string | undefined;
+    // Ids before keep and the largest total: total counts the same threads as the list, and deleting the starting thread or its replies only lowers it.
+    const seen = new Set<string>();
+    let total = 0;
     for (let n = 1; ; n++) {
       // Not taking DM and group DM threads from every team: each team's list repeats them.
       const q = new URLSearchParams({ unread: 'true', per_page: String(THREAD_PAGE), ...(i ? { excludeDirect: 'true' } : {}), ...(before ? { before } : {}) });
       const r = await mm.call<ThreadList>(uid, 'GET', `/users/${uid}/teams/${t.id}/threads?${q}`);
       const got = r.threads ?? [];
-      for (const x of got) if (keep(x.post.channel_id) && !threads.has(x.id)) threads.set(x.id, { ...x, teamName: t.name });
-      if (got.length < THREAD_PAGE) break;
-      if (n === THREAD_PAGES) {
-        notes.push(`（${t.name} の未読スレッドは、${THREAD_PAGE} 件ずつ ${THREAD_PAGES} 回の取得で打ち切りました。境目と同じ時刻のスレッドは取り直すので、取得した異なるスレッドは ${THREAD_PAGE * THREAD_PAGES} 件より少ないことがあります（total_unread_threads: ${r.total_unread_threads}））`);
+      total = Math.max(total, r.total_unread_threads);
+      for (const x of got) {
+        seen.add(x.id);
+        if (keep(x.post.channel_id) && !threads.has(x.id)) threads.set(x.id, { ...x, teamName: t.name });
+      }
+      if (got.length < THREAD_PAGE) {
+        // Not trusting a short page as the end: before= compares with the starting thread's last reply, so deleting that thread or its replies in between skips or drops the rest.
+        if (seen.size < total) notes.push(`（${t.name} の未読スレッドを total_unread_threads: ${total} に対して取り切れませんでした。取得の合間にスレッドや返信が削除されたときなどに、続きを取りこぼすことがあります。呼び直すと取り直せます）`);
         break;
       }
-      // Not paging from the last thread alone: before= is strict, so threads sharing its last_reply_at would drop out; they are taken again and the Map drops the repeats.
+      if (n === THREAD_PAGES) {
+        if (seen.size < total) notes.push(`（${t.name} の未読スレッドは、${THREAD_PAGE} 件ずつ ${THREAD_PAGES} 回の取得で打ち切りました。境目と同じ時刻のスレッドは取り直すので、取得した異なるスレッドは ${THREAD_PAGE * THREAD_PAGES} 件より少ないことがあります（total_unread_threads: ${total}））`);
+        break;
+      }
+      // Not paging from the last thread alone: before= is strict, so threads sharing its last_reply_at would drop out.
       const edge = got.at(-1)!.last_reply_at;
       const newer = got.filter((x) => x.last_reply_at > edge);
       before = (newer.length ? newer.reduce((a, b) => (b.last_reply_at < a.last_reply_at ? b : a)) : got.at(-1)!).id;
