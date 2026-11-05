@@ -148,4 +148,34 @@ describe('read_channel from unread and mark_as_read against the local Mattermost
     expect(state).toMatchObject({ unread_replies: 1, unread_mentions: 0 });
     await mmApi(aliceMm, 'PUT', `/users/${e.users.alice.id}/teams/${e.teams.a.id}/threads/${root}/read/${Date.now() + 60_000}`);
   });
+
+  describe('a mention on a reply one millisecond after last_post_id', () => {
+    type State = { last_viewed_at: number; unread_replies: number; unread_mentions: number };
+    const threadState = (root: string) => mmApi<State>(aliceMm, 'GET', `/users/${e.users.alice.id}/teams/${e.teams.a.id}/threads/${root}`);
+    // Only an admin's create_at is kept; Mattermost replaces anyone else's with the current time.
+    const thread = async (suffix: string) => {
+      const ch = await newChannel(suffix);
+      const root = await say(aliceMm, ch, 'root');
+      const r2 = await say(bobMm, ch, 'r2', root);
+      const t = (await mmApi<{ create_at: number }>(aliceMm, 'GET', `/posts/${r2}`)).create_at;
+      await mmApi(e.adminToken, 'POST', '/posts', { channel_id: ch, root_id: root, message: `${TAG} r3 @${e.users.alice.username}`, create_at: t + 1 });
+      return { root, r2, t };
+    };
+
+    test('is cleared along with the reply when mark_as_read moves the position up to it', async () => {
+      const { root, r2 } = await thread('ms-move');
+      const r = await call('mark_as_read', { threads: [{ post_id: root, last_post_id: r2 }] });
+      expect(r.content[0].text).toContain('既読にしました。');
+      expect(await threadState(root)).toMatchObject({ unread_replies: 0, unread_mentions: 0 });
+    });
+
+    test('is cleared when the position already stands at that reply', async () => {
+      const { root, r2, t } = await thread('ms-stuck');
+      await mmApi(aliceMm, 'PUT', `/users/${e.users.alice.id}/teams/${e.teams.a.id}/threads/${root}/read/${t + 1}`);
+      expect(await threadState(root)).toMatchObject({ unread_replies: 0, unread_mentions: 1 });
+      const r = await call('mark_as_read', { threads: [{ post_id: root, last_post_id: r2 }] });
+      expect(r.content[0].text).toContain('last_post_id までは既読です（残っていたメンションを消しました）。');
+      expect(await threadState(root)).toMatchObject({ last_viewed_at: t + 2, unread_replies: 0, unread_mentions: 0 });
+    });
+  });
 });

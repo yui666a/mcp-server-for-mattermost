@@ -282,19 +282,19 @@ describe('schedule_message with file_ids', () => {
     await s.schedule({ file_ids: [F2] });
   });
 
-  test('the list shows the files, a note on a posted schedule, and how to send the files again on a failed one', async () => {
+  test('the list shows the files, only the kept ones and a note naming the dropped ones on a posted schedule, and how to send the files again on a failed one', async () => {
     const s = setup();
     uploaded(s);
     const posted = await s.schedule({ file_ids: [F1], at: '2026-11-03T10:00' });
-    s.setRow(posted, "status = 'posted', post_id = ?, error = ?", POSTED, '添付した 1 件のうち 1 件を Mattermost が外したため、投稿に付いていません。');
+    s.setRow(posted, "status = 'posted', post_id = ?, file_ids = '[]', error = ?", POSTED, `添付した 1 件のうち 1 件（${F1}）を Mattermost が外したため、投稿に付いていません。`);
     const failed = await s.schedule({ file_ids: [F2], at: '2026-11-04T10:00' });
     s.setRow(failed, "status = 'failed', error = ?", 'nope');
     const plain = await s.schedule({ message: 'plain', at: '2026-11-05T10:00' });
     s.setRow(plain, "status = 'failed', error = ?", 'nope');
     const r = await s.call('list_scheduled_messages', {});
     const [p, f, n] = r.text.split('--- ').slice(1);
-    expect(p).toContain(`添付: ${F1}`);
-    expect(p).toContain('注意: 添付した 1 件のうち 1 件を Mattermost が外したため');
+    expect(p).not.toContain('添付: ');
+    expect(p).toContain(`注意: 添付した 1 件のうち 1 件（${F1}）を Mattermost が外したため`);
     expect(p).not.toContain('失敗の理由');
     expect(f).toContain(`添付: ${F2}`);
     expect(f).toContain('失敗の理由: nope ファイルを付けて送り直すときは、prepare_upload からアップロードし直してください。');

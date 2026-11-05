@@ -15,14 +15,7 @@ const DISABLED: Wording = { id: [[501, 'api.custom_status.disabled', 'この Mat
 const TIME = '。ISO 8601 の YYYY-MM-DDTHH:mm（秒は任意）。タイムゾーン（Z、+09:00 など）が無ければ JST。今から 1 分後以降';
 
 function future(s: string, name: string): number {
-  let ms: number;
-  try {
-    ms = parseWhen(s);
-  } catch (e) {
-    // Rewording rather than letting the error through: parseWhen names the argument `at`, which these tools do not have.
-    if (e instanceof InputError) throw new InputError(e.message.replace(/^at「/, `${name}「`));
-    throw e;
-  }
+  const ms = parseWhen(s, name);
   // Not leaving the lower bound to Mattermost: it floors the DND end to the minute and checks expiry on its own clock.
   if (ms < Date.now() + MIN_AHEAD) throw new InputError(`${name} は今から 1 分後以降の時刻にしてください。指定された時刻: ${formatTime(ms)}`);
   return ms;
@@ -45,7 +38,7 @@ type CustomArgs = { emoji?: string; text?: string; until?: string };
 
 export async function setCustomStatus(mm: Mm, uid: string, args: CustomArgs): Promise<CallToolResult> {
   // Not checking the name's characters as add_reaction does: it goes into the body, not a path, and Mattermost rejects unknown names itself.
-  const emoji = args.emoji?.trim().replace(/^:/, '').replace(/:$/, '') ?? '';
+  const emoji = args.emoji?.trim().replace(/^:/, '').replace(/:$/, '').trim() ?? '';
   const message = args.text?.trim() ?? '';
   if (!emoji && !message) throw new InputError('emoji か text のどちらかを指定してください。');
   const until = args.until === undefined ? undefined : future(args.until, 'until');
