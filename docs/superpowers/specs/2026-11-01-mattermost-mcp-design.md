@@ -281,6 +281,7 @@ MCP サーバー自身は管理者トークンや Bot アカウントを持た�
 - 読み取り系のツールには MCP のツール注釈 `readOnlyHint: true` を付け、書き込み系のツール（`send_message`、`prepare_upload`、`add_reaction`、`remove_reaction`、`save_post`、`unsave_post`、`pin_post`、`unpin_post`、`edit_message`、`delete_message`、`save_draft`、`schedule_message`、`update_scheduled_message`、`cancel_scheduled_message`、`mark_as_read`、`set_status`、`set_custom_status`、`clear_custom_status`、`follow_thread`、`unfollow_thread`）には付けない。MCP クライアントが書き込みの前に利用者へ確認を求められるようにするため
 - `save_post`、`unsave_post`、`pin_post`、`unpin_post` の注釈は `readOnlyHint: false`、`destructiveHint: false`、`idempotentHint: true` とする。外す側も、利用者に見える状態は付け直しで戻せる（編集の期限を過ぎた投稿のピン留めを除く。ピン留めした人は記録されないので、他人のピン留めも付け直せる）。MCP の定義では `destructiveHint: false` は追加の更新だけを指すが、このサーバーは `mark_as_read` と同じく、取り消せるかどうかで付ける
 - 出力は LLM が読みやすいテキストとし、投稿ごとに投稿者のユーザー名、日時、本文、パーマリンク（`https://mattermost.example.com/<team>/pl/<post_id>`）を含める。読み取り系の出力には、チャンネルとチームの ID と名前も含め、LLM が続く呼び出しで ID を使えるようにする
+- 出力は 1 行 1 項目で、行頭の形で項目を見分ける。利用者が書ける値（チャンネルの表示名、ファイル名、ユーザーの姓名・ニックネーム・役職・メールアドレス）は、改行（表示によって改行として扱われる制御文字を含む）を空白にして 1 行に収める。Mattermost はこれらの改行を拒まず、行頭の行を偽れるため。チャンネルの目的とヘッダーは Markdown の表やリストを含むので、1 行にせず 2 行目以降を 4 文字字下げする
 - チャンネルの指定は次のどれかとする。名前から候補が 2 つ以上見つかった場合は、どれかを選ばずにエラーとし、候補のチーム名、チャンネル名、チャンネル ID を返す
   - チャンネル ID
   - `チーム名/チャンネル名`
