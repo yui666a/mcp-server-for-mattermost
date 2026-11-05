@@ -255,7 +255,7 @@ function channelFilters(words: string[]): { at: number; span: number; value: str
 
 async function filterChannelIds(mm: Mm, userId: string, spec: string, written: string, exclude: boolean, notes: string[]): Promise<string[]> {
   try {
-    return [(await resolveChannel(mm, userId, spec)).id];
+    return [(await resolveChannel(mm, userId, spec, { names: false })).id];
   } catch (e) {
     if (e instanceof Ambiguous) {
       const ids = [...new Set(e.candidates.map((c) => c.id))];

@@ -413,7 +413,7 @@ describe('search_posts in: filters', () => {
       expect(count('GET /users/me/teams')).toBe(1);
       expect(count(`GET /channels/${CX}`)).toBe(1);
       expect(count(`GET /channels/${CY}`)).toBe(1);
-      expect(count(`GET /teams/${T1}`)).toBe(1);
+      expect(count(`GET /teams/${T1}`)).toBe(0);
       expect(count(`GET /teams/${T1}/channels/name/only-a`)).toBe(1);
       expect(count(`GET /teams/${T2}/channels/name/only-a`)).toBe(1);
     });
