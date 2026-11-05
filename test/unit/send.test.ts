@@ -15,7 +15,7 @@ const DM = 'd'.repeat(26);
 const BASE = 'https://mm.example';
 const id = (n: number) => `p${String(n).padStart(25, '0')}`;
 
-type Mode = 'before' | 'after' | 'lost' | 'reject' | 'rate429' | 'relogin' | undefined;
+type Mode = 'before' | 'after' | 'lost' | 'reject' | 'rate429' | 'rate429doubt' | 'relogin' | undefined;
 
 type Upload = { query: URLSearchParams; type: string; bytes: Uint8Array };
 type FakeOpts = {
@@ -84,6 +84,7 @@ function fakeMm(opts: FakeOpts = {}) {
         created.push(body);
         if (mode === 'reject') throw new MmError(400, 'bad_request', 'bad');
         if (mode === 'rate429') throw new RateLimited(5, true);
+        if (mode === 'rate429doubt') throw new RateLimited(5, true, true);
         if (mode === 'lost') throw new UpstreamUnavailable('Mattermost unreachable', true);
         const dup = body.pending_post_id ? byPending.get(body.pending_post_id) : undefined;
         const kept = body.file_ids && (opts.keepFiles?.(body.file_ids) ?? body.file_ids);
@@ -334,6 +335,13 @@ test('a 429 from Mattermost drops the claim', async () => {
   const f = fakeMm({ failPost: () => (first ? ((first = false), 'rate429') : undefined) });
   await expect(f.send({ channel: 'team-a/dup', message: '429' })).rejects.toBeInstanceOf(RateLimited);
   expect((await f.send({ channel: 'team-a/dup', message: '429' })).isError).toBeFalsy();
+});
+
+test('a 429 after an earlier request of the call may have posted keeps the claim', async () => {
+  let first = true;
+  const f = fakeMm({ failPost: () => (first ? ((first = false), 'rate429doubt') : undefined) });
+  await expect(f.send({ channel: 'team-a/dup', message: '429' })).rejects.toBeInstanceOf(RateLimited);
+  expect(textOf(await f.send({ channel: 'team-a/dup', message: '429' }))).toContain('処理中');
 });
 
 test('a failed lookup on the retry path keeps the claim', async () => {

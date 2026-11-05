@@ -26,9 +26,8 @@ export async function postOnce(mm: Mm, uid: string, s: PostSpec & { fileIds: str
     return { kind: 'posted', postId: post.id, fileCount: post.file_ids?.length ?? 0, fileIds: post.file_ids ?? [], redactedFileCount: post.metadata?.redacted_file_count ?? 0 };
   } catch (e) {
     if (e instanceof MmError || e instanceof Reauthorize) return { kind: 'failed', reason: failureText(e), error: e };
-    // Not passing RateLimited.sent on: a 429 means Mattermost refused this request, so nothing was posted by it.
-    // ponytail: after a 401 whose refreshed pair lost the save, the check POST can time out or get a 5xx after posting and the resend then gets the 429; that post is reported as unsent (design doc, known limits).
-    if (e instanceof RateLimited) return { kind: 'retryable', sent: false, error: e };
+    // Not passing RateLimited.sent on: a 429 means Mattermost refused this request. Only an earlier request of the call (doubt) may have posted.
+    if (e instanceof RateLimited) return { kind: 'retryable', sent: e.doubt, error: e };
     if (e instanceof UpstreamUnavailable) return { kind: 'retryable', sent: e.sent, error: e };
     throw e;
   }
