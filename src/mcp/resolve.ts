@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 import { MmError, UpstreamUnavailable, type MmClient } from '../mattermost/client.ts';
-import { InputError } from './format.ts';
+import { InputError, oneLine } from './format.ts';
 
 export type Mm = Pick<MmClient, 'call'>;
 export type ChannelRef = { id: string; name: string; displayName: string; teamId: string; teamName: string };
@@ -99,7 +99,7 @@ export async function resolveChannel(mm: Mm, userId: string, spec: string, opts:
       // Not used in place of the ID: a user ID or post ID mistaken for a channel would send to whoever named a channel after it.
       throw new InputError([
         `チャンネル ID「${s}」のチャンネルはありません。ユーザー ID や投稿 ID を渡したのなら、チャンネルの指定ではありません。`,
-        `同じ文字列を名前に持つチャンネルはあります。そのチャンネルを指すときだけ、${found.map((f) => `「${f.teamName}/${lower}」（${f.displayName}）`).join('か')}の形で指定してください。`,
+        `同じ文字列を名前に持つチャンネルはあります。そのチャンネルを指すときだけ、${found.map((f) => `「${f.teamName}/${lower}」（${oneLine(f.displayName)}）`).join('か')}の形で指定してください。`,
       ].join(''));
     });
     const r = ref(c, await teamNameOf(mm, userId, c.team_id));
