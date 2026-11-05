@@ -38,7 +38,7 @@ export async function requireMm(): Promise<Env> {
 }
 
 // Not stopping at the first failed cleanup: every user made has to go, and the test's own failure must not be replaced by the cleanup's.
-// Other cleanups given to later run before the users are deactivated, since they may need them (a channel the user is in).
+// Other cleanups given to later run together, before the users are deactivated, so they must not depend on each other.
 export async function withUsers(run: (made: string[], later: (cleanup: () => Promise<unknown>) => void) => Promise<void>): Promise<void> {
   const { mmUrl, adminToken } = env();
   const made: string[] = [];
@@ -48,7 +48,7 @@ export async function withUsers(run: (made: string[], later: (cleanup: () => Pro
     await run(made, (cleanup) => cleanups.push(cleanup));
     ok = true;
   } finally {
-    const done = await Promise.allSettled(cleanups.map((f) => f()));
+    const done = await Promise.allSettled(cleanups.map(async (f) => f()));
     done.push(...await Promise.allSettled(made.map(async (id) => {
       const res = await fetch(`${mmUrl}/api/v4/users/${id}`, { method: 'DELETE', headers: { authorization: `Bearer ${adminToken}` } });
       if (!res.ok) throw new Error(`DELETE /users/${id} -> ${res.status} ${await res.text()}`);
