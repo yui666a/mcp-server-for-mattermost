@@ -1,7 +1,7 @@
 import { MmError, RateLimited, Reauthorize, UpstreamUnavailable } from '../mattermost/client.ts';
 import type { MmPost } from './format.ts';
 import type { Mm } from './resolve.ts';
-import { failureText } from './server.ts';
+import { failureText } from './tool.ts';
 
 export type PostSpec = { channelId: string; rootId?: string; message: string };
 // Not dropping error: send_message rethrows it to keep the wording its callers already see.

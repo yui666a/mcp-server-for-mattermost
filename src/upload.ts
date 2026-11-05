@@ -4,7 +4,7 @@ import { log } from './log.ts';
 import { MmError, RateLimited, Reauthorize, UpstreamUnavailable } from './mattermost/client.ts';
 import { InputError } from './mcp/format.ts';
 import type { Mm } from './mcp/resolve.ts';
-import { failureText } from './mcp/server.ts';
+import { failureText } from './mcp/tool.ts';
 import { FILE_NAME, MAX_UPLOAD_FILES, uploadFile } from './mcp/tools-send.ts';
 
 const TOKEN = /^[A-Za-z0-9_-]{43}$/;
