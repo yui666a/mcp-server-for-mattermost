@@ -207,6 +207,7 @@ export async function sendMessage(mm: Mm, store: Store, uid: string, baseUrl: st
   }
   let claimedAt = claim.claimedAt;
   let res: Parameters<typeof posted>[0];
+  let posting = false;
   try {
     checkUnposted(store, uid, fileIds);
     const ids = await uploadAll();
@@ -214,12 +215,13 @@ export async function sendMessage(mm: Mm, store: Store, uid: string, baseUrl: st
     const again = store.reclaimPost(claim.id, claimedAt);
     if (again === undefined) return text(INFLIGHT, true);
     claimedAt = again;
+    posting = true;
     const r = await postOnce(mm, uid, { ...spec, fileIds: ids }, claim.pendingPostId);
     if (r.kind !== 'posted') throw r.error;
     res = r;
   } catch (e) {
-    // Not leaving out InputError: here it can only be a file refused before the post or an upload that Mattermost refused, so nothing was posted.
-    if (e instanceof MmError || e instanceof InputError || (e instanceof RateLimited && !e.doubt) || (e as { sent?: boolean })?.sent === false) store.dropPost(claim.id, claimedAt);
+    // Not keeping the claim for a failure before POST /posts, however unsure: nothing was posted by this attempt, and keeping it only turns a resend into "in progress" for 30 seconds.
+    if (!posting || e instanceof MmError || (e instanceof RateLimited && !e.doubt) || (e as { sent?: boolean })?.sent === false) store.dropPost(claim.id, claimedAt);
     throw e;
   }
   store.completePost(claim.id, res.postId);
