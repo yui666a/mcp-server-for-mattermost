@@ -2691,6 +2691,16 @@ describe('list_saved_posts', () => {
       expect(atIn(second)).toBe(99);
     });
 
+    test('reads from row 0, as from the start, with a cursor that has no row', async () => {
+      const all = desc(300);
+      routes = { ...base(), [FLAGGED]: byOffset(all) };
+      const old = Buffer.from(JSON.stringify({ create_at: all[49].create_at, id: all[49].id, per_page: 50 })).toString('base64url');
+      const out = await setup()('list_saved_posts', { cursor: old });
+      expect(offsets()).toEqual([0, 51]);
+      expect(asked('per_page')).toEqual([71, 200]);
+      expect(shownIds(out)).toEqual(all.slice(50, 100).map((p) => p.id));
+    });
+
     test('pages through every post once, in order, with the row in each cursor', async () => {
       const all = desc(300);
       routes = { ...base(), [FLAGGED]: byOffset(all) };
