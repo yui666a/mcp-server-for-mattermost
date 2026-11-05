@@ -470,7 +470,6 @@ describe('mark_as_read for threads', () => {
     expect(all.text).toContain('このスレッドを read_thread で読み、読んだ最終返信を last_post_id に渡して再実行すると消せることがあります。');
   });
 
-
   test.each([
     ['after marking it', { [`PUT /users/u1/teams/${TEAM}/threads/${ROOT}/read/1006`]: () => read({ unread_mentions: 1 }), [`PUT /users/u1/teams/${TEAM}/threads/${ROOT}/read/1007`]: unavailable }, '既読にしました。'],
     ['when already read past the position', { [`GET /users/u1/teams/${TEAM}/threads/${ROOT}`]: () => state(1008, { unread_mentions: 1 }), [`PUT /users/u1/teams/${TEAM}/threads/${ROOT}/read/1009`]: unavailable }, 'last_post_id までは既読です。'],
@@ -482,7 +481,6 @@ describe('mark_as_read for threads', () => {
     expect(r.text).toContain('ここで中断しました。Mattermost に一時的に接続できません。');
     expect(r.text).not.toContain('処理していません');
   });
-
 
   test('says the mention was not cleared when the write clearing it could not connect', async () => {
     routes = threads({
