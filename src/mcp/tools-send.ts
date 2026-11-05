@@ -273,7 +273,7 @@ async function whereOf(mm: Mm, uid: string, post: OwnPost): Promise<Where> {
 
 const editSchema = {
   post_id: POST_ID.describe('編集する、本人の投稿の post_id'),
-  message: z.string().min(1).max(MAX_MESSAGE).describe('新しい本文（全体を置き換える）'),
+  message: z.string().min(1).max(MAX_MESSAGE).describe('新しい本文（全体を置き換える）。一覧のツール（read_channel など）の出力を元に書き換えるときは、先に get_post で読み直す。出力の本文は各行が 2 文字字下げされているので、各行の先頭の 2 文字の空白を外す。get_post に「本文を 4000 文字で切りました」とあれば、出力を元に書き換えない（切られた後ろが消える）'),
 };
 type EditArgs = { post_id: string; message: string };
 
