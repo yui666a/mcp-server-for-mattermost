@@ -278,6 +278,7 @@ MCP サーバー自身は管理者トークンや Bot アカウントを持た�
 | `set_custom_status` | 自分のカスタムステータス（絵文字、文言、期限）を設定する。期限は `set_status` の終了時刻と同じく読む |
 | `clear_custom_status` | 自分のカスタムステータスを消す |
 
+- どのツールも、引数（inputSchema）に無いキーを渡されたらツールを実行せずにエラーにし、受けないキーの名前を返す。MCP の SDK の既定では知らない引数を黙って捨てるので、名前を誤った引数（`file_ids` を `file_id` とするなど）を渡すと、それが無いものとして投稿や変更をしてしまうため。ツールの登録を 1 か所（`buildServer`）で包んで、各ツールの引数の定義を strict にする。そのため、ツールに新しい引数を足すときは必ず inputSchema に書く。引数を受けないツールも inputSchema に `{}` を書く（inputSchema の無いツールは包みの対象にならない）。zod のスキーマを直接渡すツールは、自分で strict にする。入れ子のオブジェクトの中のキーは対象にしない
 - 読み取り系のツールには MCP のツール注釈 `readOnlyHint: true` を付け、書き込み系のツール（`send_message`、`prepare_upload`、`add_reaction`、`remove_reaction`、`save_post`、`unsave_post`、`pin_post`、`unpin_post`、`edit_message`、`delete_message`、`save_draft`、`schedule_message`、`update_scheduled_message`、`cancel_scheduled_message`、`mark_as_read`、`set_status`、`set_custom_status`、`clear_custom_status`、`follow_thread`、`unfollow_thread`）には付けない。MCP クライアントが書き込みの前に利用者へ確認を求められるようにするため
 - `save_post`、`unsave_post`、`pin_post`、`unpin_post` の注釈は `readOnlyHint: false`、`destructiveHint: false`、`idempotentHint: true` とする。外す側も、利用者に見える状態は付け直しで戻せる（編集の期限を過ぎた投稿のピン留めを除く。ピン留めした人は記録されないので、他人のピン留めも付け直せる）。MCP の定義では `destructiveHint: false` は追加の更新だけを指すが、このサーバーは `mark_as_read` と同じく、取り消せるかどうかで付ける
 - 出力は LLM が読みやすいテキストとし、投稿ごとに投稿者のユーザー名、日時、本文、パーマリンク（`https://mattermost.example.com/<team>/pl/<post_id>`）を含める。読み取り系の出力には、チャンネルとチームの ID と名前も含め、LLM が続く呼び出しで ID を使えるようにする
@@ -534,9 +535,9 @@ Mattermost の予約投稿の API は Team Edition では使えず（400 `api.sc
 - Mattermost は、投稿にファイルを付けるとき、アップロードからの経過時間を見ない（v11.7.8 の `FileInfo` の `AttachToPost`）。投稿に使われていないファイルを消す定期ジョブも無い。実物で、`CreateAt` を 31 日前にしたファイルを投稿に付けられることを確かめた。そのため、予約の時刻までファイルは残る。例外は、Enterprise のデータ保持ポリシーでファイルを消している場合である（保持期間は `FileRetentionHours`）。予約の時刻は、作るときはアップロードから最大 31 日（744 時間）後だが、`update_scheduled_message` で延ばせるので、ファイルの古さに上限は無い。保持期間を過ぎたファイルは時刻までに消え、Mattermost はファイルを外して投稿する（一覧に「注意」として出る）
 - 予約の時点で、`send_message` と同じ検査をする（本人が `prepare_upload` で 24 時間以内に、予約の投稿先と同じチャンネルへアップロードし、まだ投稿に使われていない）。時刻が来たときには、MCP サーバーのアップロードの記録（24 時間で消える）を引かず、予約の行に保存した `file_ids` で投稿する。`file_id` は本文と違い暗号化しない。ファイルを読むには Mattermost の権限が要るため
 - 待機中と投稿中の予約、投稿済みの予約（投稿に残ったファイルだけ）、試みた記録が残る失敗の予約（やり直しの回の失敗と、投稿されたか不明の失敗）は、ファイルを持つものとして扱う。`schedule_message` と `send_message` は、ほかの予約が持つファイルを、予約 ID を添えて断る。Mattermost は同じファイルを先に投稿した側にだけ付けるので、後の側は黙ってファイルを失うため。試みた記録が残る失敗を含めるのは、投稿されている可能性があるため。最初の試みを Mattermost が断ったか、送る前に再ログインが必要になった失敗は、投稿されていないと確定しているので持たない。`schedule_message` は、この検査を予約の行を作るのと同じトランザクションで行う。`send_message` は、投稿済みの検査の後で、やり直しで前の投稿を探した後に行う。前の投稿が見つかれば検査せずにそれを返す。先に検査すると、前の試みで投稿できていたやり直しが、その後に同じファイルで入った予約のために断られるため
-- `file_ids` は変更で変えられない。`update_scheduled_message` に `file_ids` などの受けない引数を渡すとエラーにし、取り消して予約し直すよう案内する。MCP の SDK の既定では知らない引数を黙って捨てるので、添付が変わったと誤解されるため。取り消した予約のファイルは Mattermost に残り、24 時間以内なら別の投稿に使える
+- `file_ids` は変更で変えられない。`update_scheduled_message` に `file_ids`、`files`、`channel`、`root_id` を渡したときは、受けない引数のエラー（「ツール」の節）に、取り消して予約し直すよう案内を添える。取り消した予約のファイルは Mattermost に残り、24 時間以内なら別の投稿に使える
 - `file_ids` は予約の行の列に保存する。既存の DB には、起動時に `BEGIN IMMEDIATE` の中で列が無ければ足す。サーバーと管理コマンドが同時に DB を開いても、2 回足そうとしないため
-- `send_message` の `files` のような、中身を直接渡す添付は予約では受け付けない。受け付けるには、中身を SQLite に保存するか、予約の時点で Mattermost へ先にアップロードすることになる。前者は保存する機密と DB の大きさが増え、後者は取り消した予約のファイルが Mattermost に消せずに残る。そのため、ファイル付きの予約は `prepare_upload` を使えるクライアントに限り、claude.ai など、PC でコマンドを実行できないクライアントからはできない。`schedule_message` に `files` などの受けない引数を渡すとエラーにする。MCP の SDK の既定では知らない引数を黙って捨て、添付の無い予約ができるため
+- `send_message` の `files` のような、中身を直接渡す添付は予約では受け付けない。受け付けるには、中身を SQLite に保存するか、予約の時点で Mattermost へ先にアップロードすることになる。前者は保存する機密と DB の大きさが増え、後者は取り消した予約のファイルが Mattermost に消せずに残る。そのため、ファイル付きの予約は `prepare_upload` を使えるクライアントに限り、claude.ai など、PC でコマンドを実行できないクライアントからはできない。`schedule_message` に `files` を渡したときは、受けない引数のエラー（「ツール」の節）に、今すぐ送るなら `send_message` を、予約するなら `prepare_upload` を使うよう案内を添える
 - 予約の上限に、ファイルの大きさの制限は足さない。ファイルの中身は Mattermost にあり、MCP サーバーが持つのは `file_id` だけのため
 
 **実行**
