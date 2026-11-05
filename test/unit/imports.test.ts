@@ -5,8 +5,7 @@ import { expect, test } from 'vitest';
 
 const SRC = resolve(import.meta.dirname, '../../src');
 
-// The imports each module loads when it runs: `import type` and `export type` are erased, but `import { type A }` is kept as `import {}`
-// under verbatimModuleSyntax, so it still loads the module.
+// Not skipping `import { type A }` as `import type` is: verbatimModuleSyntax keeps it as `import {}`, which still loads the module.
 function runtimeImports(file: string): string[] {
   const source = ts.createSourceFile(file, readFileSync(file, 'utf8'), ts.ScriptTarget.Latest);
   const found: string[] = [];
@@ -19,9 +18,11 @@ function runtimeImports(file: string): string[] {
   return found;
 }
 
-test('src has no import cycle that runs, which would make the load order decide whether a top-level const is read before it is set', () => {
+test('src has no import cycle among the imports that load a module', () => {
   const files = readdirSync(SRC, { recursive: true, encoding: 'utf8' }).filter((f) => f.endsWith('.ts')).map((f) => join(SRC, f));
   const graph = new Map(files.map((f) => [f, runtimeImports(f)]));
+  expect(files.length).toBeGreaterThan(0);
+  expect([...graph.values()].flat().filter((to) => !graph.has(to))).toEqual([]);
   const cycles: string[] = [];
   const state = new Map<string, 'visiting' | 'done'>();
   const visit = (f: string, path: string[]) => {
