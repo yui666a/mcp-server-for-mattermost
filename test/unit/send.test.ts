@@ -183,6 +183,11 @@ test('a re-login that Mattermost only answered with 401 leaves no duplicate-guar
   expect(f.created).toHaveLength(1);
 });
 
+test('the output names the destination as 投稿先, the same label as scheduling and prepare_upload use', async () => {
+  const r = await fakeMm().send({ channel: 'team-a/dup', message: 'hello' });
+  expect(textOf(r)).toContain(`投稿先: Dup（channel_id: ${CH}）`);
+});
+
 test('retry after a lost response does not double post', async () => {
   let first = true;
   const f = fakeMm({ failPost: () => (first ? ((first = false), 'after') : undefined) });
