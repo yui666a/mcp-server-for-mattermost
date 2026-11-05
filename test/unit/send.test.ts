@@ -71,9 +71,11 @@ function fakeMm(opts: FakeOpts = {}) {
         await opts.onUpload?.(n);
         const mode = opts.failUpload?.(n);
         if (mode === 'before') throw new RateLimited(5, false);
+        if (mode === 'relogin') throw new Reauthorize(false);
         uploads.push({ query: new URLSearchParams(path.split('?')[1]), type: (body as Blob).type, bytes: new Uint8Array(await (body as Blob).arrayBuffer()) });
         if (mode === 'reject') throw new MmError(400, 'api.file.upload_file.large_image_detailed.app_error', 'too big');
         if (mode === 'lost') throw new UpstreamUnavailable('Mattermost unreachable', true);
+        if (mode === 'rate429doubt') throw new RateLimited(5, false, true);
         return { file_infos: [{ id: `f${String(n).padStart(25, '0')}` }] };
       }
       if (method === 'POST' && p === '/posts') {
@@ -504,7 +506,10 @@ describe('send_message with files', () => {
   test.each([
     ['refused (4xx)', 'reject'],
     ['rate limited before sending', 'before'],
-  ] as const)('an upload %s drops the claim and does not post, so sending again uploads and posts', async (_, mode) => {
+    ['rate limited after a request of the call may have gone through', 'rate429doubt'],
+    ['whose response was lost', 'lost'],
+    ['that needs a re-login', 'relogin'],
+  ] as const)('an upload %s drops the claim and does not post, so sending again right away uploads and posts', async (_, mode) => {
     let first = true;
     const f = fakeMm({ failUpload: () => (first ? ((first = false), mode) : undefined) });
     const args = { channel: 'team-a/dup', message: 'up', files: [txt('a.txt', 'x')] };
@@ -514,13 +519,20 @@ describe('send_message with files', () => {
     expect(f.created).toHaveLength(1);
   });
 
-  test('a lost upload response keeps the claim, so an immediate resend is reported as in progress', async () => {
-    let first = true;
-    const f = fakeMm({ failUpload: () => (first ? ((first = false), 'lost') : undefined) });
+  test('a retry whose lookup finds nothing and whose upload then fails drops the claim, so sending again right away posts', async () => {
+    let post = 0;
+    let upload = 0;
+    const f = fakeMm({
+      failPost: () => (post++ === 0 ? 'lost' : undefined),
+      failUpload: () => (upload++ === 1 ? 'rate429doubt' : undefined),
+    });
     const args = { channel: 'team-a/dup', message: 'up', files: [txt('a.txt', 'x')] };
     await expect(f.send(args)).rejects.toBeInstanceOf(UpstreamUnavailable);
-    expect(textOf(await f.send(args))).toContain('処理中');
-    expect(f.created).toHaveLength(0);
+    f.advance(31_000);
+    await expect(f.send(args)).rejects.toBeInstanceOf(RateLimited);
+    expect(f.created).toHaveLength(1);
+    expect((await f.send(args)).isError).toBeFalsy();
+    expect(f.created).toHaveLength(2);
   });
 
   test('says so when Mattermost silently dropped some of the uploaded files from the post', async () => {
