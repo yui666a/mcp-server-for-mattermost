@@ -716,6 +716,64 @@ describe('a draft with the sent message is cleared after the post', () => {
     }
   });
 
+  test('the cleanup waits and retries while this MCP\'s own Limiter is full, then clears the draft', async () => {
+    let busy = 2;
+    let delBusy = 1;
+    const f = fakeMm({
+      drafts: () => { if (busy-- > 0) throw new RateLimited(1, false); return [draft()]; },
+      failDelete: () => (delBusy-- > 0 ? new RateLimited(1, false) : undefined),
+    });
+    const r = await f.send({ channel: 'team-a/dup', message: 'hello' });
+    expect(textOf(r)).toContain(CLEARED);
+    expect(deletes(f)).toHaveLength(2);
+  });
+
+  test.each([
+    ['Mattermost\'s own 429', () => new RateLimited(1, true)],
+    ['a per-minute limit that frees up in 2 seconds', () => new RateLimited(2, false)],
+    ['a per-minute limit further away', () => new RateLimited(60, false)],
+  ])('%s is not waited for', async (_, error) => {
+    const f = fakeMm({ drafts: () => { throw error(); } });
+    const r = await f.send({ channel: 'team-a/dup', message: 'hello' });
+    expect(textOf(r)).toContain(FAILED);
+    expect(paths(f).filter((c) => c.endsWith('/drafts'))).toHaveLength(1);
+  });
+
+  test('a DELETE retried while the Limiter is full is not sent once less than a second is left', async () => {
+    vi.spyOn(performance, 'now').mockReturnValueOnce(0).mockReturnValueOnce(3000).mockReturnValue(4500);
+    const f = fakeMm({ drafts: () => [draft()], failDelete: () => new RateLimited(1, false) });
+    const r = await f.send({ channel: 'team-a/dup', message: 'hello' });
+    expect(textOf(r)).toContain(FAILED);
+    expect(deletes(f)).toHaveLength(1);
+    expect(logged.map((l) => JSON.parse(l))).toEqual([expect.objectContaining({ event: 'draft_cleanup_failed', name: 'TimeoutError', skipped: 'delete' })]);
+  });
+
+  test('waiting for the Limiter stops at the deadline, logged as a timeout', async () => {
+    const ac = new AbortController();
+    const realTimeout = AbortSignal.timeout.bind(AbortSignal);
+    vi.spyOn(AbortSignal, 'timeout').mockImplementation((ms) => (ms === 5000 ? ac.signal : realTimeout(ms)));
+    const f = fakeMm({ drafts: () => { ac.abort(new DOMException('timed out', 'TimeoutError')); throw new RateLimited(1, false); } });
+    const r = await f.send({ channel: 'team-a/dup', message: 'hello' });
+    expect(textOf(r)).toContain(FAILED);
+    expect(logged.map((l) => JSON.parse(l))).toEqual([expect.objectContaining({ event: 'draft_cleanup_failed', name: 'TimeoutError' })]);
+  });
+
+  test('a client cancelling in the middle of the wait stops it without calling Mattermost again', async () => {
+    const client = new AbortController();
+    const f = fakeMm({ drafts: () => { setTimeout(() => client.abort(), 20); throw new RateLimited(1, false); } });
+    await f.send({ channel: 'team-a/dup', message: 'hello' }, client.signal);
+    expect(paths(f).filter((c) => c.endsWith('/drafts'))).toHaveLength(1);
+    expect(logged).toEqual([]);
+  });
+
+  test('waiting for the Limiter stops when the client cancels, without logging or calling Mattermost again', async () => {
+    const client = new AbortController();
+    const f = fakeMm({ drafts: () => { client.abort(); throw new RateLimited(1, false); } });
+    await f.send({ channel: 'team-a/dup', message: 'hello' }, client.signal);
+    expect(paths(f).filter((c) => c.endsWith('/drafts'))).toHaveLength(1);
+    expect(logged).toEqual([]);
+  });
+
   test('a cleanup failure is logged with the channel_id', async () => {
     const f = fakeMm({ drafts: () => [draft()], failDelete: () => new MmError(500, 'app.draft.delete.app_error', 'x') });
     await f.send({ channel: 'team-a/dup', message: 'hello' });
@@ -730,6 +788,9 @@ describe('a draft with the sent message is cleared after the post', () => {
   });
 
   test('a cleanup whose client cancels while it waits for the user\'s lock neither calls Mattermost nor logs a failure', async () => {
+    // Not the real 5-second deadline: under load it could run out before the client cancels, and log a failure.
+    const realTimeout = AbortSignal.timeout.bind(AbortSignal);
+    vi.spyOn(AbortSignal, 'timeout').mockImplementation((ms) => (ms === 5000 ? new AbortController().signal : realTimeout(ms)));
     let open!: () => void;
     const gate = new Promise<void>((r) => { open = r; });
     const holder = fakeMm({ drafts: async () => (await gate, []) });
