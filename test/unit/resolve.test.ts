@@ -208,7 +208,7 @@ describe('a real channel ID written in upper case', () => {
   test('goes on to the names only when the lower case ID is not found either', async () => {
     const { mm, calls } = fake(Object.fromEntries(Object.entries(routes).filter(([k]) => k !== `/channels/${CH_A}`)));
     await expect(resolveChannel(mm, ME, UPPER)).rejects.toMatchObject({ status: 404 });
-    expect(calls).toContain('GET /users/me/teams');
+    expect(calls.slice(0, 3)).toEqual([`GET /channels/${UPPER}`, `GET /channels/${CH_A}`, 'GET /users/me/teams']);
   });
 
   test.each([403, 500])('a %i for the lower case ID is thrown as it is, without looking names up', async (status) => {
