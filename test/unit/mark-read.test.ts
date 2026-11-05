@@ -128,7 +128,7 @@ describe('mark_as_read for channels', () => {
     routes = { ...base(), [`GET /channels/${CH}`]: () => channel(CH, 'town', { delete_at: 5 }), [`GET /channels/${CH}/members/me`]: () => ({ msg_count: 3, msg_count_root: 6, mention_count: 2, mention_count_root: 0 }) };
     expect((await setup().call({ channels: [{ channel: CH }] })).text).toContain(`チャンネル（channel_id: ${CH}、アーカイブ済み、表示名: TOWN）`);
     routes = base();
-    expect((await setup().call({ channels: [{ channel: CH }] })).text).not.toContain('アーカイブ済み');
+    expect((await setup().call({ channels: [{ channel: CH }] })).text).toContain(`チャンネル（channel_id: ${CH}、表示名: TOWN）`);
   });
 
   test('marks each channel read right after checking it when nothing but the user\'s own posts (sent through this app) follow last_post_id', async () => {
