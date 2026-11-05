@@ -81,6 +81,7 @@ describe('add_reaction', () => {
     ['  white_check_mark  ', 'white_check_mark'],
     [':white_check_mark:', 'white_check_mark'],
     [' :+1: ', '+1'],
+    [': white_check_mark :', 'white_check_mark'],
     ['a'.repeat(64), 'a'.repeat(64)],
     ['Smile', 'Smile'],
   ])('normalises the emoji %j to %j before sending it', async (given, sent) => {

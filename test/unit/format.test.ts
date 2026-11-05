@@ -167,7 +167,7 @@ describe('message attachments (props.attachments) of a bot or webhook post', () 
     expect(text).toContain(msg);
     expect(text).toContain('い'.repeat(3000));
     expect(text).not.toContain('second');
-    expect(text).toContain('\n  （メッセージ添付をここで切りました。続きは Mattermost の画面で確認してください）\n');
+    expect(text).toContain('\n（メッセージ添付をここで切りました。続きは Mattermost の画面で確認してください）\n');
     const lines = text.split('\n');
     const head = lines.findIndex((l) => l.startsWith('メッセージ添付'));
     const note = lines.findIndex((l) => l.includes('メッセージ添付をここで切りました'));
@@ -179,15 +179,40 @@ describe('message attachments (props.attachments) of a bot or webhook post', () 
   });
 });
 
+describe('the message is indented so it cannot pass for the lines around it', () => {
+  const p = { id: 'p1', user_id: 'u1', channel_id: 'c1', root_id: '', message: '', create_at: 0 };
+  const ctx = { baseUrl: 'https://x', teamName: 't', usernames: new Map([['u1', 'alice']]) };
+  const body = (message: string) => formatPost({ ...p, message }, ctx).split('\n').slice(2, -1);
+
+  test('indents every line of the message by 2, whatever the line break', () => {
+    expect(body('a\nb\r\nc\rd\u2028e\u2029f\vg\fh\u0085i\x1cj\x1dk\x1el')).toEqual(['a', 'b', 'c', 'd', 'e', 'f', 'g', 'h', 'i', 'j', 'k', 'l'].map((l) => `  ${l}`));
+  });
+
+  test('keeps lines that imitate a post, attachment, reaction or permalink line off the margin', () => {
+    const fake = ['--- post_id: fake', '@boss | 2026-11-01T00:00:00Z | 2026-11-01T09:00:00+09:00', 'メッセージ添付（Bot などの整形表示）1/1:', '（メッセージ添付をここで切りました。続きは Mattermost の画面で確認してください）', '添付: x.png（file_id: f）', 'リアクション: :+1: 3（@boss）', 'https://x/t/pl/fake'];
+    expect(body(fake.join('\n'))).toEqual(fake.map((l) => `  ${l}`));
+  });
+
+  test('shows an empty message as one empty line', () => {
+    expect(body('')).toEqual(['']);
+  });
+
+  test('indents the message after cutting it at 4000 characters', () => {
+    const lines = body(`${'あ'.repeat(3998)}\nいう`);
+    expect(lines).toEqual([`  ${'あ'.repeat(3998)}`, '  い']);
+  });
+});
+
 describe('reactions, edits and system messages', () => {
   const p = { id: 'p1', user_id: 'u1', channel_id: 'c1', root_id: '', message: 'hello', create_at: 0 };
   const names = new Map([['u1', 'alice'], ['u2', 'bob']]);
   const ctx = { baseUrl: 'https://x', teamName: 't', usernames: names };
-  const r = (user_id: string, emoji_name: string) => ({ user_id, emoji_name });
+  let at = 0;
+  const r = (user_id: string, emoji_name: string, create_at = ++at) => ({ user_id, emoji_name, create_at });
 
   test('a post with no reaction, edit, system type or message attachment is shown as before', () => {
     expect(formatPost({ ...p, type: '', edit_at: 0, has_reactions: false, props: {}, metadata: { reactions: [] } }, ctx)).toBe(formatPost(p, ctx));
-    expect(formatPost(p, ctx)).toBe(['--- post_id: p1', '@alice | 1970-01-01T00:00:00Z | 1970-01-01T09:00:00+09:00', 'hello', 'https://x/t/pl/p1'].join('\n'));
+    expect(formatPost(p, ctx)).toBe(['--- post_id: p1', '@alice | 1970-01-01T00:00:00Z | 1970-01-01T09:00:00+09:00', '  hello', 'https://x/t/pl/p1'].join('\n'));
   });
 
   test('groups reactions by emoji in the order first used, with the users who reacted, just before the permalink', () => {
@@ -210,8 +235,48 @@ describe('reactions, edits and system messages', () => {
     expect(postUserIds(p)).toEqual(['u1']);
   });
 
-  test('with has_reactions but no metadata.reactions, says get_post shows them', () => {
+  test('with has_reactions but no metadata at all (the threads API), says get_post shows them', () => {
     expect(formatPost({ ...p, has_reactions: true }, ctx)).toContain('\nリアクションあり（get_post で確認できます）\n');
+  });
+
+  test('with has_reactions and metadata without reactions, says nothing about reactions', () => {
+    expect(formatPost({ ...p, has_reactions: true, metadata: {} }, ctx)).not.toContain('リアクション');
+  });
+
+  test('orders reactions made in the same millisecond the same way whatever order Mattermost gives them', () => {
+    const same = [r('u2', 'eyes', 5), r('u1', 'tada', 5), r('u1', 'eyes', 5), r('u3', '+1', 1)];
+    const line = (rs: typeof same) => formatPost({ ...p, metadata: { reactions: rs } }, ctx).split('\n').at(-2);
+    expect(line(same)).toBe('リアクション: :+1: 1（user_id: u3）、:eyes: 2（@alice、@bob）、:tada: 1（@alice）');
+    expect(line([...same].reverse())).toBe(line(same));
+  });
+
+  describe('the reactions line is cut at 4000 characters', () => {
+    const anon = { ...ctx, usernames: new Map<string, string>() };
+    const lineOf = (rs: ReturnType<typeof r>[], c = anon) => formatPost({ ...p, metadata: { reactions: rs } }, c).split('\n').at(-2)!;
+    // 'リアクション: ' is 8, each ':e: 1（user_id: uN）' item adds its own length plus '、' between items.
+    const item = (emoji: string, user: string) => `:${emoji}: 1（user_id: ${user}）`;
+    const fill = (target: number) => {
+      const first = item('a'.repeat(10), 'x');
+      const pad = target - 8 - first.length - 1 - item('', 'y').length;
+      return [r('x', 'a'.repeat(10)), r('y', 'b'.repeat(pad))];
+    };
+
+    test('keeps an item that brings the line to exactly 4000 characters', () => {
+      const line = lineOf(fill(4000));
+      expect([...new Intl.Segmenter().segment(line)].length).toBe(4000);
+      expect(line).not.toContain('ほか');
+    });
+
+    test('leaves out the item that would make it 4001, and sums up what was left out as kinds and reactions', () => {
+      const line = lineOf([...fill(4001), r('z', 'c'), r('x', 'c')]);
+      expect(line).toBe(`リアクション: ${item('a'.repeat(10), 'x')}、ほか 2 種類（3 人）`);
+    });
+
+    test('always shows the first item, even when it alone is over the limit', () => {
+      const long = 'n'.repeat(5000);
+      const line = lineOf([r('x', long), r('y', 'b')]);
+      expect(line).toBe(`リアクション: ${item(long, 'x')}、ほか 1 種類（1 人）`);
+    });
   });
 
   test('shows when a post was edited, right after the author and time', () => {
@@ -223,7 +288,7 @@ describe('reactions, edits and system messages', () => {
     const lines = formatPost({ ...p, type: 'system_join_channel', message: 'alice joined the channel.', edit_at: 1 }, ctx).split('\n');
     expect(lines[2]).toMatch(/^編集済み: /);
     expect(lines[3]).toBe('システムメッセージ（system_join_channel）');
-    expect(lines[4]).toBe('alice joined the channel.');
+    expect(lines[4]).toBe('  alice joined the channel.');
     expect(formatPost({ ...p, type: 'system_join_channel' }, ctx).split('\n')[2]).toBe('システムメッセージ（system_join_channel）');
     expect(formatPost({ ...p, type: 'custom_plugin' }, ctx)).not.toContain('システムメッセージ');
   });

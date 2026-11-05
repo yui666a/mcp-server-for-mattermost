@@ -313,7 +313,10 @@ async function unreadThreads(mm: Mm, uid: string, teams: MmTeam[], keep: (channe
         notes.push(`（${t.name} の未読スレッドは ${THREAD_PAGE * THREAD_PAGES} 件までしか取得していません（total_unread_threads: ${r.total_unread_threads}））`);
         break;
       }
-      before = got.at(-1)!.id;
+      // Not paging from the last thread alone: before= is strict, so threads sharing its last_reply_at would drop out; they are taken again and the Map drops the repeats.
+      const edge = got.at(-1)!.last_reply_at;
+      const newer = got.filter((x) => x.last_reply_at > edge);
+      before = (newer.length ? newer.reduce((a, b) => (b.last_reply_at < a.last_reply_at ? b : a)) : got.at(-1)!).id;
     }
   }
   return { threads, notes };
@@ -604,7 +607,8 @@ export function registerReadTools(server: McpServer, ctx: ToolContext): void {
         `返信数: ${replies}`,
         ...(p.root_id ? [`スレッド内の返信です。親 post_id: ${p.root_id}。read_thread でスレッド全体を読めます。`]
           : replies ? [`返信があります。read_thread に post_id: ${p.id} を渡すと、スレッド全体を読めます。`] : []),
-        ...(postTruncated(p) ? ['（本文かメッセージ添付を 4000 文字で切りました）'] : []),
+        // Not noting cut message attachments again: formatPost already says where it cut them.
+        ...(truncate(p.message).truncated ? ['（本文を 4000 文字で切りました）'] : []),
       ].join('\n');
     });
 
@@ -756,12 +760,14 @@ export function registerReadTools(server: McpServer, ctx: ToolContext): void {
       if (c && c.channel_id !== ch.id) throw new InputError(BAD_CURSOR);
       // Not joining /channels/{id}/members with the users: /users?in_channel gives the profiles in one call.
       const q = new URLSearchParams({ in_channel: ch.id, active: 'true', page: String(page), per_page: String(per) });
-      const users = await mm.call<UserRef[]>(uid, 'GET', `/users?${q}`).catch((e) => {
+      // Not rewording the 403 of /users alone: the user may leave the channel before /stats.
+      const notJoined = (e: unknown): never => {
         if (e instanceof MmError && e.status === 403) throw new InputError('参加していないチャンネルのメンバーは見られません（公開チャンネルでも同じです）。');
         throw e;
-      });
+      };
+      const users = await mm.call<UserRef[]>(uid, 'GET', `/users?${q}`).catch(notJoined);
       const lines = channelLines(ch);
-      if (!c) lines.push(`メンバー数: ${(await mm.call<{ member_count: number }>(uid, 'GET', `/channels/${ch.id}/stats?exclude_files_count=true`)).member_count}`);
+      if (!c) lines.push(`メンバー数: ${(await mm.call<{ member_count: number }>(uid, 'GET', `/channels/${ch.id}/stats?exclude_files_count=true`).catch(notJoined)).member_count}`);
       lines.push(...users.map((u) => {
         const name = [u.first_name, u.last_name].filter(Boolean).join(' ');
         return `- @${u.username}（${[name && `名前: ${name}`, u.nickname && `ニックネーム: ${u.nickname}`, u.position && `役職: ${u.position}`, u.is_bot && 'Bot アカウント', `user_id: ${u.id}`].filter(Boolean).join('、')}）`;
