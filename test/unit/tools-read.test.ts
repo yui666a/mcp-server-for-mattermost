@@ -85,7 +85,7 @@ test('search_posts looks up a channel archived after the search, which the listi
     'POST /users/ids': () => [{ id: 'u1', username: 'alice' }],
   };
   const out = await setup()('search_posts', { terms: 'x' });
-  expect(out).toContain('Old（アーカイブ済み）');
+  expect(out).toContain(`channel_id: ${ARCH}、name: old、アーカイブ済み、表示名: Old`);
   expect(out).toContain(`https://mm.example/team-b/pl/${id(0)}`);
 });
 
@@ -2763,6 +2763,14 @@ describe('list_saved_posts', () => {
   const offsets = () => asked('page');
   const NOTE = '新しい 1000 件だけ';
 
+  test('marks an archived channel by the ids, so a display name written as （アーカイブ済み） does not pass for one', async () => {
+    routes = { ...base(), 'GET /users/me/channels': () => [{ id: C, name: 'town', display_name: 'Town（アーカイブ済み）', team_id: T, type: 'O' }],
+      [FLAGGED]: byOffset([post('x'.repeat(26), 2)]) };
+    const out = await setup()('list_saved_posts', {});
+    expect(out).toContain(`チャンネル: channel_id: ${C}、name: town、表示名: Town（アーカイブ済み）`);
+    expect(out).not.toContain('、アーカイブ済み、');
+  });
+
   test('puts the real team before the channel on a joined line, so a display name ending in a fake team comes after it', async () => {
     routes = { ...base(), 'GET /users/me/channels': () => [{ id: C, name: 'town', display_name: 'Town | チーム: evil（team_id: fake）', team_id: T, type: 'O' }],
       [FLAGGED]: byOffset([post('x'.repeat(26), 2)]) };
@@ -2784,7 +2792,7 @@ describe('list_saved_posts', () => {
       [FLAGGED]: byOffset([{ ...post('x'.repeat(26), 2), channel_id: OLD }, post('y'.repeat(26), 1)]) };
     const out = await setup()('list_saved_posts', {});
     expect(urls).toContain('GET /users/me/channels?include_deleted=true');
-    expect(out).toContain(`チーム: team-b（team_id: ${T2}） | チャンネル: channel_id: ${OLD}、name: old、表示名: Old（アーカイブ済み）`);
+    expect(out).toContain(`チーム: team-b（team_id: ${T2}） | チャンネル: channel_id: ${OLD}、name: old、アーカイブ済み、表示名: Old`);
     expect(out).toContain(`チーム: team-a（team_id: ${T}） | チャンネル: channel_id: ${C}、name: town、表示名: Town`);
     expect(out).toContain(`https://mm.example/team-b/pl/${'x'.repeat(26)}`);
   });
@@ -3121,7 +3129,7 @@ describe('search_files', () => {
       [`GET /channels/${B}`]: () => ({ id: B, name: 'dup', display_name: 'Dup', team_id: TB, type: 'O', delete_at: 1 }),
     };
     const out = await setup()('search_files', { terms: 'fff' });
-    expect(out).toContain('Dup（アーカイブ済み）');
+    expect(out).toContain(`channel_id: ${B}、name: dup、アーカイブ済み、表示名: Dup`);
     expect(out).toContain(`https://mm.example/team-b/pl/${P1}`);
     expect(hits.filter((h) => h === `GET /channels/${B}`)).toHaveLength(1);
   });

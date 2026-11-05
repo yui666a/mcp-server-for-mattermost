@@ -83,8 +83,8 @@ export function registerThreadTools(server: McpServer, ctx: ToolContext): void {
       const line = ({ th }: (typeof rows)[number]): string => {
         const ch = channels.get(th.post.channel_id);
         const team = ch && teamName.get(ch.team_id);
-        const label = ch && (ch.type === 'D' ? `@${users.get(other(ch)) ?? other(ch)}` : ch.display_name || ch.name) + (ch.delete_at ? '（アーカイブ済み）' : '');
-        const at = ch ? channelInline({ id: ch.id, name: ch.name, displayName: label ?? '', teamId: ch.team_id, teamName: team ?? '' }) : `channel_id: ${th.post.channel_id}`;
+        const label = ch && (ch.type === 'D' ? `@${users.get(other(ch)) ?? other(ch)}` : ch.display_name || ch.name);
+        const at = ch ? channelInline({ id: ch.id, name: ch.name, displayName: label ?? '', teamId: ch.team_id, teamName: team ?? '', archived: !!ch.delete_at }) : `channel_id: ${th.post.channel_id}`;
         posts.push(th.post);
         return [
           formatPost(th.post, { baseUrl: base, teamName: team ?? th.teamName, usernames: users, channel: at }),
