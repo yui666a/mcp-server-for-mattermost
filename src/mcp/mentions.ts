@@ -21,12 +21,19 @@ const LIST_ITEM = /^ {0,3}([-+*]|\d{1,9}[.)])(\s|$)/;
 const INDENTED = /^( {4}|\t)/;
 
 // Not a regex with a backreference: it looks for a closing run from every opening one, which takes O(n^1.5) for runs of many lengths.
+// Not letting a backslash escape a closing run: like the server's parser, a backslash escapes only where a span would open, and is plain text inside one.
 export function stripCodeSpans(text: string): string {
-  const runs = [...text.matchAll(/`+/g)].map((m) => ({ at: m.index, len: m[0].length }));
+  const runs = [...text.matchAll(/`+/g)].map((m) => {
+    let slashes = 0;
+    while (text[m.index - slashes - 1] === '\\') slashes++;
+    // An odd number of backslashes before a run escapes its first backtick, so a span can only open with the rest.
+    const escaped = slashes % 2;
+    return { at: m.index, len: m[0].length, openAt: m.index + escaped, openLen: m[0].length - escaped };
+  });
   const next: number[] = [];
   const later = new Map<number, number>();
   for (let i = runs.length - 1; i >= 0; i--) {
-    next[i] = later.get(runs[i].len) ?? -1;
+    next[i] = runs[i].openLen ? later.get(runs[i].openLen) ?? -1 : -1;
     later.set(runs[i].len, i);
   }
   let out = '';
@@ -37,7 +44,7 @@ export function stripCodeSpans(text: string): string {
       i++;
       continue;
     }
-    out += `${text.slice(from, runs[i].at)} `;
+    out += `${text.slice(from, runs[i].openAt)} `;
     from = runs[j].at + runs[j].len;
     i = j + 1;
   }
