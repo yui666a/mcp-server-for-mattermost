@@ -284,7 +284,7 @@ describe('edit_message and delete_message', () => {
       const t = (await setup().tools()).find((x) => x.name === 'edit_message')! as unknown as { description: string; inputSchema: { properties: { message: { description: string } } } };
       const d = t.inputSchema.properties.message.description;
       for (const s of ['先に get_post で読み直す', '2 文字字下げ', '先頭の 2 文字の空白を外す', '本文を 4000 文字で切りました', '出力を元に書き換えない']) expect(d).toContain(s);
-      expect(t.description).not.toContain('字下げ');
+      expect(t.description).toBe('本人の投稿の本文を書き換える。他人、webhook、Bot の投稿とシステムメッセージは扱わない。元の本文は上書きされる。編集で足したメンションは通知されない');
     });
 
     test('replaces only the message through the patch API and reports the post_id, channel and permalink', async () => {
