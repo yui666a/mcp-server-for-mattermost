@@ -6,7 +6,7 @@ import { BAD_CURSOR, BODY_CUT_NOTE, BODY_MAX_CHARS, decodeCursor, encodeCursor, 
 import { pageCursor, paginate } from './paging.ts';
 import { mentionsMe, mentionTerms, type MentionUser } from './mentions.ts';
 import { parsePostRef } from './permalink.ts';
-import { Ambiguous, ChannelFetchError, myTeams, NoDirectChannel, resolveChannel, resolveUser, teamNameOf, unformat, type ChannelRef, type Mm, type MmChannel, type MmTeam, type ResolvedChannel, type UserRef } from './resolve.ts';
+import { Ambiguous, ASK_ADMIN, ChannelFetchError, ChannelNotFound, myTeams, NoDirectChannel, RETRY, resolveChannel, resolveUser, teamNameOf, unformat, type ChannelRef, type Mm, type MmChannel, type MmTeam, type ResolvedChannel, type UserRef } from './resolve.ts';
 import { guarded, text, type ToolContext } from './server.ts';
 import { worded, type Wording } from './tools-send.ts';
 import { parseWhen } from './when.ts';
@@ -194,8 +194,6 @@ export function channelLines(c: ChannelRef & { archived?: boolean }): string[] {
   ];
 }
 
-const RETRY = '参加しているはずなら、Mattermost の一時的な障害の可能性があります。少し待ってから再試行してください。';
-const ASK_ADMIN = '続くなら、チャンネルから外されたか、サーバーの権限の設定で読む権限が外されている可能性があるので、管理者に確かめてください。';
 
 // For a post fetched by id: get_post and read_thread word its 403 and 404 alike.
 function postError(e: unknown): never {
@@ -309,7 +307,17 @@ async function filterChannelIds(mm: Mm, userId: string, spec: string, written: s
     }
     // No DM means no posts to exclude, so the condition is dropped rather than failing the search.
     if (e instanceof NoDirectChannel && exclude) return [];
-    if (e instanceof ChannelFetchError && (e.status === 403 || e.status === 404)) throw new InputError(`チャンネル「${spec}」が見つかりません。`);
+    // Not the read tools' wording: a search leaves out archived channels, so an ID would find nothing there either.
+    const byName = `チャンネル「${spec}」が見つかりません。名前の誤りなら search_channels で確かめてください。参加していない非公開チャンネルとアーカイブ済みのチャンネルは名前では見つからず、アーカイブ済みのチャンネルは検索の対象外です（読むなら read_channel に ID を渡します）。${RETRY}${ASK_ADMIN}`;
+    if (e instanceof ChannelNotFound) throw new InputError(byName);
+    if (e instanceof ChannelFetchError && e.id === 'app.team.get_by_name.missing.app_error') {
+      throw new InputError(`チャンネル「${spec}」のチームが見つかりません。チーム名の誤りなら、list_my_channels で参加しているチームを確かめてください。`);
+    }
+    // Told apart by the form of the spec, not by Mattermost's id: a 404 without an id, as a proxy may give, still gets a fitting message.
+    if (e instanceof ChannelFetchError && e.status === 403) throw new InputError(`チャンネル「${spec}」を見る権限がありません（参加していない非公開チャンネルなど）。${RETRY}${ASK_ADMIN}`);
+    if (e instanceof ChannelFetchError && e.status === 404) {
+      throw new InputError(spec.includes('/') ? byName : `チャンネル「${spec}」が見つかりません。ID の誤りなら search_channels で確かめてください。`);
+    }
     throw e;
   }
 }
@@ -325,7 +333,7 @@ export async function resolveInFilters(mm: Mm, userId: string, terms: string): P
   const words = splitWords(terms);
   const filters = channelFilters(words);
   if (!filters.length) return { terms, notes: [] };
-  if (filters.length > MAX_CHANNEL_FILTERS) throw new InputError(`in: と channel: は、-in: などの除外も含めて 1 回の検索で ${MAX_CHANNEL_FILTERS} 個まで指定できます。in: が多いときは検索を分け、除外は分けた各検索に付け直してください（各検索も除外を含めて ${MAX_CHANNEL_FILTERS} 個まで）。除外が多いときは数を減らしてください（in: があるなら、in: のチャンネルと重ならない除外は効かないので外せます。除外を別々の検索に分けると、もう一方の検索では効きません。in: が無く、探したいチャンネルのほうが少ないなら、それを in: で挙げてください）。`);
+  if (filters.length > MAX_CHANNEL_FILTERS) throw new InputError(`in: と channel: は、-in: などの除外も含めて 1 回の検索で ${MAX_CHANNEL_FILTERS} 個まで指定できます。in: が多いときは検索を分け、除外は分けた各検索に付け直してください（各検索も除外を含めて ${MAX_CHANNEL_FILTERS} 個まで）。除外が多いときは数を減らしてください（in: があるなら、in: のチャンネルと重ならない除外は効かないので外せます。除外を別々の検索に分けると、もう一方の検索では効きません。in: が無く、探したいチャンネルのほうが少ないなら、それを in: で挙げてください）。in: で挙げると、検索の範囲は挙げたチャンネルだけになります。`);
   const notes: string[] = [];
   const out = words.map((w) => [w]);
   const written = (f: (typeof filters)[number]) => words.slice(f.at, f.at + f.span).join(' ');

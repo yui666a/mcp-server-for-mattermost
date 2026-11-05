@@ -253,7 +253,7 @@ describe('names are looked up in lower case, which is all Mattermost allows', ()
     const { mm, calls } = fake(routes);
     expect(await resolveChannel(mm, ME, 'Only-A')).toMatchObject({ id: CH_A, teamName: 'team-a' });
     expect(calls).toContain(`GET /teams/${teams[0].id}/channels/name/only-a`);
-    await expect(resolveChannel(mm, ME, 'NoWhere')).rejects.toThrow(new InputError('チャンネル「NoWhere」が見つかりません。名前の誤りなら search_channels で確かめてください。参加していない非公開チャンネルとアーカイブ済みのチャンネルは名前では見つかりません（アーカイブ済みなら、チャンネル ID を利用者に確かめて ID で指定すると読めます）。参加している非公開チャンネルなら、Mattermost の一時的な障害や権限の設定でもこうなります。少し待ってから再試行し、続くなら管理者に確かめてください。'));
+    await expect(resolveChannel(mm, ME, 'NoWhere')).rejects.toThrow(new InputError('チャンネル「NoWhere」が見つかりません。名前の誤りなら search_channels で確かめてください。参加していない非公開チャンネルとアーカイブ済みのチャンネルは名前では見つかりません（アーカイブ済みのチャンネルは書き込めませんが、読むだけなら利用者に ID を確かめて ID で指定できます）。参加しているはずなら、Mattermost の一時的な障害の可能性があります。少し待ってから再試行してください。続くなら、チャンネルから外されたか、サーバーの権限の設定で読む権限が外されている可能性があるので、管理者に確かめてください。'));
     const e = await resolveChannel(mm, ME, 'General-Dup').catch((x) => x);
     expect(e).toBeInstanceOf(Ambiguous);
     expect(e.message).toContain('「General-Dup」に当たるチャンネルが複数あります。');
@@ -346,8 +346,13 @@ describe('format characters before or after a spec are removed, as they slip in 
 
   test('an error shows the spec without them', async () => {
     const e = await resolveChannel(fake(routes).mm, ME, '\u200bnowhere').catch((x) => x);
-    expect(e.message).toBe('チャンネル「nowhere」が見つかりません。名前の誤りなら search_channels で確かめてください。参加していない非公開チャンネルとアーカイブ済みのチャンネルは名前では見つかりません（アーカイブ済みなら、チャンネル ID を利用者に確かめて ID で指定すると読めます）。参加している非公開チャンネルなら、Mattermost の一時的な障害や権限の設定でもこうなります。少し待ってから再試行し、続くなら管理者に確かめてください。');
+    expect(e.message).toBe('チャンネル「nowhere」が見つかりません。名前の誤りなら search_channels で確かめてください。参加していない非公開チャンネルとアーカイブ済みのチャンネルは名前では見つかりません（アーカイブ済みのチャンネルは書き込めませんが、読むだけなら利用者に ID を確かめて ID で指定できます）。参加しているはずなら、Mattermost の一時的な障害の可能性があります。少し待ってから再試行してください。続くなら、チャンネルから外されたか、サーバーの権限の設定で読む権限が外されている可能性があるので、管理者に確かめてください。');
   });
+});
+
+test.each(['bad\nname', 'bad\u2028name'])('a name with a line break in its middle is named on one line in the error: %j', async (spec) => {
+  const e = await resolveChannel(fake(routes).mm, ME, spec).catch((x) => x);
+  expect(e.message).toBe('チャンネル名「bad name」は Mattermost の名前として使えない文字を含みます。');
 });
 
 test('every form of channel spec also returns the fetched channel as raw', async () => {
