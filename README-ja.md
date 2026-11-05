@@ -45,14 +45,14 @@ Mattermost は公式の MCP サーバーを [Mattermost Agents プラグイン](
 | `mark_as_read` | チャンネルとスレッドを既読にする。読んだ中で最も新しい投稿より後に自分以外の投稿があるチャンネルは既読にしない |
 | `search_users` | 名前やユーザー名でユーザーを探す |
 | `get_user` | ユーザーのプロフィールを、タイムゾーン、現地時刻、在席状況とともに読む |
-| `send_message` | チャンネルやスレッドへ投稿する。`@ユーザー名` や `@a,b` の DM が無ければ作る。小さなファイルと、`prepare_upload` でアップロードしたファイルを添付できる。投稿の後に、同じ本文の下書きを消す（添付の付いた下書きは消さない） |
-| `prepare_upload` | PC のファイル（スクリーンショット、PDF、写真など）を `curl` で送るための使い捨ての URL を発行する。`@ユーザー名` や `@a,b` の DM が無ければ作る。Claude Code や Codex CLI のように PC でコマンドを実行できるクライアント向け |
+| `send_message` | チャンネルやスレッドへ投稿する。`@ユーザー名` の DM や `@a,b` のグループ DM が無ければ作る。小さなファイルと、`prepare_upload` でアップロードしたファイルを添付できる。投稿の後に、同じ本文の下書きを消す（添付の付いた下書きは消さない） |
+| `prepare_upload` | PC のファイル（スクリーンショット、PDF、写真など）を `curl` で送るための使い捨ての URL を発行する。`@ユーザー名` の DM や `@a,b` のグループ DM が無ければ作る。Claude Code や Codex CLI のように PC でコマンドを実行できるクライアント向け |
 | `add_reaction` / `remove_reaction` | 自分のリアクションを付ける、外す |
 | `save_post` / `unsave_post` | 参加しているチャンネルの投稿を保存する（フラグを付ける）、保存から外す |
 | `pin_post` / `unpin_post` | 参加しているチャンネルの投稿をピン留めする、ピン留めを外す（他人のピン留めも外れる） |
 | `edit_message` / `delete_message` | 自分の投稿を編集する、削除する |
-| `save_draft` | 本人が画面から送る Mattermost の下書きとして保存する。`@ユーザー名` や `@a,b` の DM が無ければ作る。同じ本文を `send_message` で送ると消える |
-| `schedule_message` | 投稿を予約する（1 分後から 30 日後まで）。`@ユーザー名` や `@a,b` の DM が無ければ作る。`prepare_upload` でアップロードしたファイルを添付できる |
+| `save_draft` | 本人が画面から送る Mattermost の下書きとして保存する。`@ユーザー名` の DM や `@a,b` のグループ DM が無ければ作る。同じ本文を `send_message` で送ると消える |
+| `schedule_message` | 投稿を予約する（1 分後から 30 日後まで）。`@ユーザー名` の DM や `@a,b` のグループ DM が無ければ作る。`prepare_upload` でアップロードしたファイルを添付できる |
 | `list_scheduled_messages` | 自分の予約を、状態、添付するファイル、パーマリンクとともに一覧する。`id` を渡すとその 1 件を本文を切らずに返す |
 | `update_scheduled_message` / `cancel_scheduled_message` | 待機中の予約を変える、取り消す |
 | `search_emoji` | `add_reaction` や `set_custom_status` に渡すカスタム絵文字を、名前の一部で探す（標準の絵文字は対象外） |
