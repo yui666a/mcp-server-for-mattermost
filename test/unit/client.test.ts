@@ -379,6 +379,34 @@ test('after a lost save, an inconclusive check of the refreshed token keeps the 
   }
 });
 
+test('a 429 from the stored credential after a lost save tells whether the check of the refreshed token may have been carried out', async () => {
+  const cases: [string, Api, boolean][] = [
+    ['503', () => mmError(503, 'x'), true],
+    ['a timeout', () => { throw new DOMException('timed out', 'TimeoutError'); }, true],
+    ['a redirect', () => new Response(null, { status: 302, headers: { location: 'https://evil.example/' } }), true],
+    ['a refused connection', () => { throw new TypeError('fetch failed', { cause: Object.assign(new Error('refused'), { code: 'ECONNREFUSED' }) }); }, false],
+    ['429', () => new Response(null, { status: 429, headers: { 'x-ratelimit-reset': '1' } }), false],
+    ['401', () => mmError(401, 'api.context.session_expired.app_error'), false],
+  ];
+  for (const [name, check, doubt] of cases) {
+    store.putMmCred('u1', 'a1', 'r1');
+    refresh = () => { store.putMmCred('u1', 'aC', 'rC'); return Response.json({ access_token: 'a2', refresh_token: 'r2' }); };
+    api = (access, req) => (access === 'a1' ? mmError(401, 'api.context.session_expired.app_error')
+      : access === 'a2' ? check(access, req) : new Response(null, { status: 429, headers: { 'x-ratelimit-reset': '1' } }));
+    const e = await failure(client.call('u1', 'POST', '/channels/members/u1/mark_read', ['c']));
+    expect(e, name).toBeInstanceOf(RateLimited);
+    expect(e.doubt, name).toBe(doubt);
+  }
+});
+
+test('a plain 429 does not suggest an earlier request was carried out', async () => {
+  store.putMmCred('u1', 'a1', 'r1');
+  api = () => new Response(null, { status: 429, headers: { 'x-ratelimit-reset': '1' } });
+  const e = await failure(client.call('u1', 'GET', '/users/me'));
+  expect(e).toBeInstanceOf(RateLimited);
+  expect(e.doubt).toBe(false);
+});
+
 test('a relogin after any response other than 401 counts the call as sent, since that request may have been handled', async () => {
   store.putMmCred('u1', 'a1', 'r1');
   refresh = () => { store.putMmCred('u1', 'aC', 'rC'); return Response.json({ access_token: 'a2', refresh_token: 'r2' }); };

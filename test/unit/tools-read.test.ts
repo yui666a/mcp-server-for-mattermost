@@ -75,6 +75,20 @@ test('search_posts looks up more than 1,000 users in calls of at most 1,000 ids,
   expect(out).not.toContain('user_id: ');
 });
 
+test('search_posts looks up a channel archived after the search, which the listing lacks, for its line and the team of its permalink', async () => {
+  const ARCH = 'a'.repeat(26);
+  routes = {
+    'POST /posts/search': () => ({ order: [id(0)], posts: { [id(0)]: { id: id(0), user_id: 'u1', channel_id: ARCH, root_id: '', message: 'm', create_at: 0 } } }),
+    'GET /users/me/channels': () => [],
+    [`GET /channels/${ARCH}`]: () => ({ id: ARCH, name: 'old', display_name: 'Old', team_id: 's'.repeat(26), type: 'O', delete_at: 5 }),
+    'GET /users/me/teams': () => [{ id: 't'.repeat(26), name: 'team-a' }, { id: 's'.repeat(26), name: 'team-b' }],
+    'POST /users/ids': () => [{ id: 'u1', username: 'alice' }],
+  };
+  const out = await setup()('search_posts', { terms: 'x' });
+  expect(out).toContain('Old（アーカイブ済み）');
+  expect(out).toContain(`https://mm.example/team-b/pl/${id(0)}`);
+});
+
 test('search_posts sends the JST offset, shows the channel and team names, and notes the 100-result cap', async () => {
   routes = {
     'POST /posts/search': () => posts(100),
@@ -87,6 +101,7 @@ test('search_posts sends the JST offset, shows the channel and team names, and n
   expect(bodies['/posts/search']).toMatchObject({ terms: 'x on:2026-10-15', time_zone_offset: 32400 });
   expect(urls).toContain('GET /users/me/channels');
   expect(urls).not.toContain('GET /users/me/channels?include_deleted=true');
+  expect(hits.some((h) => h.startsWith('GET /channels/'))).toBe(false);
   expect(out).toContain('name: general-dup');
   expect(out).toContain('team-a');
   expect(out).toContain('これより古い一致');
@@ -425,9 +440,16 @@ describe('search_posts in: filters', () => {
       expect(count('GET /users/me/teams')).toBe(1);
       expect(count(`GET /channels/${CX}`)).toBe(1);
       expect(count(`GET /channels/${CY}`)).toBe(1);
-      expect(count(`GET /teams/${T1}`)).toBe(1);
       expect(count(`GET /teams/${T1}/channels/name/only-a`)).toBe(1);
       expect(count(`GET /teams/${T2}/channels/name/only-a`)).toBe(1);
+    });
+
+    test('a channel or group DM given by its ID looks up neither its team nor the other users, as only its ID is used', async () => {
+      const GM = pad('gm');
+      routes = { ...base(), [`GET /channels/${GM}`]: () => ch(GM, 'f'.repeat(40), '', 'G'), 'GET /users': () => [{ id: 'u1', username: 'me' }, { id: BOB, username: 'bob' }] };
+      await setup()('search_posts', { terms: `x in:${GM} in:${CX}` });
+      expect(sent()).toBe(`x in:${GM} in:${CX}`);
+      expect(hits.filter((h) => (h.startsWith('GET /users') && h !== 'GET /users/me/teams') || h.startsWith('GET /teams/'))).toEqual([]);
     });
 
     test('a lookup that failed is not sent again either', async () => {
@@ -1394,7 +1416,8 @@ describe('get_mentions', () => {
     add(22, 1);
     routes = base();
     await setup()('get_mentions', {});
-    expect(urls).not.toContain('GET /users/me/channels?include_deleted=true');
+    expect(urls).toContain('GET /users/me/channels');
+    expect(urls.filter((u) => u.startsWith('GET /users/me/channels')).every((u) => !u.includes('include_deleted'))).toBe(true);
     expect(hits.slice(0, 2)).toEqual(['GET /users/me', 'POST /posts/search']);
     expect(bodies['/posts/search']).toEqual({ terms: '"@alice" "aiso"', is_or_search: true, include_deleted_channels: false, time_zone_offset: 32400, page: 0, per_page: 100 });
   });
@@ -3055,11 +3078,29 @@ describe('search_files', () => {
     expect(hits).not.toContain('POST /users/ids');
   });
 
-  test('shows only the channel_id of a channel not in the user\'s channel list', async () => {
-    routes = { ...base(), 'POST /files/search': () => found([file(F1, { channel_id: B })]) };
+  test('looks up, once, a channel the listing lacks, as one archived after the search, for its line and team', async () => {
+    routes = {
+      ...base(),
+      'POST /files/search': () => found([file(F1, { channel_id: B }), file(F2, { channel_id: B })]),
+      [`GET /channels/${B}`]: () => ({ id: B, name: 'dup', display_name: 'Dup', team_id: TB, type: 'O', delete_at: 1 }),
+    };
     const out = await setup()('search_files', { terms: 'fff' });
-    expect(out).toContain(`channel_id: ${B}`);
+    expect(out).toContain('Dup（アーカイブ済み）');
+    expect(out).toContain(`https://mm.example/team-b/pl/${P1}`);
+    expect(hits.filter((h) => h === `GET /channels/${B}`)).toHaveLength(1);
+  });
+
+  test.each([403, 404])('shows only the channel_id when the channel the listing lacks answers %i', async (status) => {
+    const GONE = 'z'.repeat(26);
+    routes = { ...base(), 'POST /files/search': () => found([file(F1, { channel_id: GONE })]), [`GET /channels/${GONE}`]: mmError(status) };
+    const out = await setup()('search_files', { terms: 'fff' });
+    expect(out).toContain(`channel_id: ${GONE}`);
     expect(out).toContain(`https://mm.example/team-a/pl/${P1}`);
+  });
+
+  test('fails rather than guessing the team when looking up a channel the listing lacks fails otherwise', async () => {
+    routes = { ...base(), 'POST /files/search': () => found([file(F1, { channel_id: B })]), [`GET /channels/${B}`]: mmError(500) };
+    await setup()('search_files', { terms: 'fff' }, true);
   });
 
   test('pages through the 100 results with limit, a cursor keeping the page size, and notes the 100-result cap', async () => {
@@ -3087,10 +3128,12 @@ describe('search_files', () => {
     expect(out).toBe('この Mattermost ではファイルの検索が無効になっています（システムコンソールの設定）。ファイル名を含む投稿は search_posts で探せます。');
   });
 
-  test('lists the user\'s channels with archived ones included, as for posts', async () => {
+  test('lists the user\'s channels without archived ones, which the file search leaves out, and looks no listed channel up', async () => {
     routes = base();
     await setup()('search_files', { terms: 'fff' });
-    expect(urls).toContain('GET /users/me/channels?include_deleted=true');
+    expect(urls).toContain('GET /users/me/channels');
+    expect(urls.filter((u) => u.startsWith('GET /users/me/channels')).every((u) => !u.includes('include_deleted'))).toBe(true);
+    expect(hits.some((h) => h.startsWith('GET /channels/'))).toBe(false);
   });
 
   test('rejects a search_posts cursor, which has the same page and per_page', async () => {

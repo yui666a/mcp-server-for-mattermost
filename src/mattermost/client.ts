@@ -30,7 +30,7 @@ export class MmError extends Error {
 
 type Cred = { access: string; refresh: string; version: number };
 type Refreshed = MmTokens & { saved: boolean };
-type Attempt = { sent: boolean; requests: number; deadline: number; signal?: AbortSignal };
+type Attempt = { sent: boolean; doubt?: boolean; requests: number; deadline: number; signal?: AbortSignal };
 type Send = (access: string) => Promise<Response>;
 type Read<T> = (res: Response) => Promise<T>;
 // res is undefined when Mattermost answered nothing usable for this pair (invalid_grant, or revoked meanwhile).
@@ -104,7 +104,12 @@ export class MmClient {
       await discard(res);
       res = await this.lastChance(mmUserId, at, out.used, send);
     }
-    return read(res);
+    try {
+      return await read(res);
+    } catch (e) {
+      if (e instanceof RateLimited && at.doubt) throw new RateLimited(e.retryAfterSec, e.sent, true);
+      throw e;
+    }
   }
 
   private async refreshAndSend(mmUserId: string, cred: Cred, at: Attempt, send: Send): Promise<Outcome> {
@@ -124,6 +129,8 @@ export class MmClient {
       if (e instanceof UpstreamUnavailable) return undefined;
       throw e;
     });
+    // Not treating a later refusal as proof that nothing was done: the check may have reached Mattermost and been carried out.
+    if (check ? check.status >= 500 : at.sent) at.doubt = true;
     if (check && check.status !== 401 && check.status !== 429 && check.status < 500) {
       if (this.store.getMmCred(mmUserId)) this.store.putMmCred(mmUserId, t.access, t.refresh);
       return { res: check, used: cred.version };
