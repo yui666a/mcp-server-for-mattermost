@@ -287,7 +287,7 @@ export async function resolveInFilters(mm: Mm, userId: string, terms: string): P
   const words = splitWords(terms);
   const filters = channelFilters(words);
   if (!filters.length) return { terms, notes: [] };
-  if (filters.length > MAX_CHANNEL_FILTERS) throw new InputError(`in: と channel: は、-in: などの除外も含めて 1 回の検索で ${MAX_CHANNEL_FILTERS} 個まで指定できます。in: が多いときは検索を分け、除外は分けた各検索に付け直してください（各検索も除外を含めて 20 個まで）。除外が多いときは数を減らしてください（in: があるなら、in: のチャンネルと重ならない除外は効かないので外せます。除外を別々の検索に分けると、もう一方の検索では効きません）。`);
+  if (filters.length > MAX_CHANNEL_FILTERS) throw new InputError(`in: と channel: は、-in: などの除外も含めて 1 回の検索で ${MAX_CHANNEL_FILTERS} 個まで指定できます。in: が多いときは検索を分け、除外は分けた各検索に付け直してください（各検索も除外を含めて ${MAX_CHANNEL_FILTERS} 個まで）。除外が多いときは数を減らしてください（in: があるなら、in: のチャンネルと重ならない除外は効かないので外せます。除外を別々の検索に分けると、もう一方の検索では効きません）。`);
   const notes: string[] = [];
   const out = words.map((w) => [w]);
   const written = (f: (typeof filters)[number]) => words.slice(f.at, f.at + f.span).join(' ');
