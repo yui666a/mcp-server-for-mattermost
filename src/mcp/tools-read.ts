@@ -2,7 +2,7 @@ import type { McpServer, ToolCallback } from '@modelcontextprotocol/sdk/server/m
 import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
 import { z } from 'zod';
 import { MmError, UpstreamUnavailable, type MmClient } from '../mattermost/client.ts';
-import { BAD_CURSOR, BODY_CUT_NOTE, BODY_MAX_CHARS, decodeCursor, encodeCursor, fileLine, formatPost, formatTime, graphemeCount, InputError, localTime, postTruncated, postUserIds, truncate, type MmFileInfo, type MmPost } from './format.ts';
+import { BAD_CURSOR, BODY_CUT_NOTE, BODY_MAX_CHARS, decodeCursor, encodeCursor, fileLine, formatPost, formatTime, graphemeCount, indented, InputError, localTime, oneLine, postTruncated, postUserIds, truncate, type MmFileInfo, type MmPost } from './format.ts';
 import { pageCursor, paginate } from './paging.ts';
 import { mentionsMe, mentionTerms, type MentionUser } from './mentions.ts';
 import { parsePostRef } from './permalink.ts';
@@ -30,6 +30,7 @@ const IMAGE_MAX_SIDE = 3000;
 // Decimal MB rather than MiB: base64 of 3.75e6 bytes is 5e6, inside a 5MB request limit whichever unit it means.
 const IMAGE_MAX_BYTES = 3_750_000;
 const TEXT_MAX_CHARS = 10_000;
+const USER_IDS_CHUNK = 1_000;
 // 4 bytes per code point rather than per grapheme: a grapheme has no byte limit, so text of long graphemes is cut by bytes first.
 const TEXT_FETCH_BYTES = 4 * TEXT_MAX_CHARS;
 // Shift_JIS and EUC-JP only for these: their decoders also accept the head of binary files such as PDF.
@@ -55,6 +56,7 @@ function imageType(b: Uint8Array): string | undefined {
 type Decoded = { text: string; encoding: string; guessed: boolean; cutTail: boolean };
 const KANA = /[\u3041-\u3096\u30a1-\u30fa]/;
 const HALF_KANA = /[\uff61-\uff9f]/;
+const JAPANESE = /[\u3000-\u30ff\u31f0-\u31ff\u3400-\u9fff\uf900-\ufaff\uff00-\uffef\u{20000}-\u{3ffff}]/u;
 
 // Not by mime_type: Mattermost guesses it from the extension, so a Shift_JIS CSV is labelled utf-8 and a file without an extension gets none.
 // whole: the bytes are the whole file, so a character left incomplete at the end is the file's own and not where the fetch stopped.
@@ -62,7 +64,14 @@ function decodeText(b: Uint8Array, name: string, whole: boolean): Decoded | unde
   if (b.includes(0) || Buffer.from(b.subarray(0, 5)).toString('latin1') === '%PDF-') return undefined;
   // stream: true rather than a plain decode, which would reject the whole text for a character cut at the end of the bytes.
   const decode = (encoding: string) => {
-    const d = new TextDecoder(encoding, { fatal: true });
+    let d: TextDecoder;
+    try {
+      d = new TextDecoder(encoding, { fatal: true });
+    } catch (e) {
+      // Not for UTF-8: a Node without full ICU lacks only the legacy encodings, while a missing UTF-8 fatal mode would turn every file unreadable unnoticed.
+      if (encoding === 'utf-8') throw e;
+      return undefined;
+    }
     try {
       const text = d.decode(b, { stream: true });
       let cutTail = false;
@@ -79,9 +88,10 @@ function decodeText(b: Uint8Array, name: string, whole: boolean): Decoded | unde
     }
   };
   const utf8 = decode('utf-8');
-  // ASCII but for a cut last character: its bytes may as well be Latin-1 or a Shift_JIS character, so UTF-8 is only a guess.
-  const asciiButTail = utf8?.cutTail && !/[^\x00-\x7f]/.test(utf8.text);
-  if (utf8 && !asciiButTail) return { ...utf8, encoding: 'UTF-8', guessed: false };
+  // No Japanese and a cut last character: such text may as well be half-width kana Shift_JIS or Latin-1, so UTF-8 is only a guess.
+  // Not for text with Japanese: a log cut at its size limit stays UTF-8.
+  const guessUtf8 = utf8?.cutTail && !JAPANESE.test(utf8.text);
+  if (utf8 && !guessUtf8) return { ...utf8, encoding: 'UTF-8', guessed: false };
   const ext = name.includes('.') ? name.split('.').pop()!.toLowerCase() : '';
   const utf8Guess = utf8 && { ...utf8, encoding: 'UTF-8', guessed: true };
   if (!SJIS_EXTENSIONS.has(ext)) return utf8Guess;
@@ -166,7 +176,7 @@ export function render({ lines, next, posts = [], notes = [] }: Page): string {
 
 export function channelLines(c: ChannelRef): string[] {
   return [
-    `チャンネル: ${c.displayName || c.name}（name: ${c.name}、channel_id: ${c.id}）`,
+    `チャンネル: ${oneLine(c.displayName) || c.name}（name: ${c.name}、channel_id: ${c.id}）`,
     c.teamId ? `チーム: ${c.teamName}（team_id: ${c.teamId}）` : 'チーム: なし（DM またはグループ DM）',
   ];
 }
@@ -174,7 +184,7 @@ export function channelLines(c: ChannelRef): string[] {
 function channelError(e: unknown): never {
   // Not converting a missing team: /teams/name/{team}/channels/name/{channel} answers it with 404 too.
   if (e instanceof ChannelFetchError && e.id !== 'app.team.get_by_name.missing.app_error') {
-    if (e.status === 403) throw new InputError('このチャンネルを見る権限がありません（参加していない非公開チャンネルなど）');
+    if (e.status === 403) throw new InputError('このチャンネルを見る権限がありません（参加していない非公開チャンネルなど）。参加しているはずなら、Mattermost の一時的な障害の可能性があります。少し待ってから再試行してください。');
     if (e.status === 404) throw new InputError('チャンネルが見つかりません（参加していない非公開チャンネルを名前で指定した場合も、Mattermost はこの結果を返します）');
   }
   throw e;
@@ -182,9 +192,13 @@ function channelError(e: unknown): never {
 
 async function usernames(mm: Mm, uid: string, posts: MmPost[]): Promise<Map<string, string>> {
   const ids = [...new Set(posts.flatMap(postUserIds))];
-  if (!ids.length) return new Map();
-  const users = await mm.call<UserRef[]>(uid, 'POST', '/users/ids', ids);
-  return new Map(users.map((u) => [u.id, u.username]));
+  const out = new Map<string, string>();
+  // In chunks, one after another: 1,000 ids are about 29KB of JSON, well inside Mattermost's MaximumPayloadSizeBytes (300,000 by default),
+  // and sequential calls stay inside the per-user concurrency limit.
+  for (let i = 0; i < ids.length; i += USER_IDS_CHUNK) {
+    for (const u of await mm.call<UserRef[]>(uid, 'POST', '/users/ids', ids.slice(i, i + USER_IDS_CHUNK))) out.set(u.id, u.username);
+  }
+  return out;
 }
 
 const FILE_SEARCH_OFF = 'この Mattermost ではファイルの検索が無効になっています（システムコンソールの設定）。ファイル名を含む投稿は search_posts で探せます。';
@@ -422,23 +436,25 @@ export function registerReadTools(server: McpServer, ctx: ToolContext): void {
   }
 
   // Not the channel's own team for the permalink of a DM or group DM: they have none, so the user's first team.
-  async function places(mm: Mm): Promise<(channelId: string) => { where: string; team: string }> {
-    // Not the default listing: it leaves out archived channels the user is still in, where saved posts and files can sit.
-    const channels = new Map((await mm.call<MmChannel[]>(uid, 'GET', '/users/me/channels?include_deleted=true')).map((x) => [x.id, x]));
+  async function places(mm: Mm, archived = true): Promise<(channelId: string) => { where: string; team: string }> {
+    // Not the default listing unless archived is false: it leaves out archived channels the user is still in, where saved posts can sit.
+    const listed = await mm.call<(MmChannel & { delete_at?: number })[]>(uid, 'GET', archived ? '/users/me/channels?include_deleted=true' : '/users/me/channels');
+    const channels = new Map(listed.map((x) => [x.id, x]));
     const teams = await myTeams(mm, uid);
     const teamName = new Map(teams.map((t) => [t.id, t.name]));
     return (channelId) => {
       const ch = channels.get(channelId);
       const team = ch?.team_id ? teamName.get(ch.team_id) : undefined;
       const where = ch
-        ? channelLines({ id: ch.id, name: ch.name, displayName: ch.display_name, teamId: ch.team_id, teamName: team ?? '' }).join(' | ')
+        ? channelLines({ id: ch.id, name: ch.name, displayName: (ch.display_name || ch.name) + (ch.delete_at ? '（アーカイブ済み）' : ''), teamId: ch.team_id, teamName: team ?? '' }).join(' | ')
         : `channel_id: ${channelId}`;
       return { where, team: team ?? teams[0]?.name ?? '' };
     };
   }
 
-  async function withChannels(mm: Mm, shown: MmPost[]): Promise<string[]> {
-    const placeOf = await places(mm);
+  async function withChannels(mm: Mm, shown: MmPost[], archived = false): Promise<string[]> {
+    // Not always listing archived channels: the post searches leave their posts out, and a user can be in many of them.
+    const placeOf = await places(mm, archived);
     const users = await usernames(mm, uid, shown);
     return shown.map((p) => {
       const { where, team } = placeOf(p.channel_id);
@@ -462,7 +478,7 @@ export function registerReadTools(server: McpServer, ctx: ToolContext): void {
       return render({ lines, posts: shown, next: more ? { page: page + 1, per_page: per } : undefined, notes: [...filtered.notes, ...capNote(all.length, 'これより古い一致')] });
     });
 
-  tool('list_saved_posts', '自分が保存した（フラグを付けた）投稿を新しい順に一覧する。参加しているチャンネルの投稿だけが対象で、アーカイブ済みのチャンネルの投稿も含む',
+  tool('list_saved_posts', '自分が保存した（フラグを付けた）投稿を新しい順に一覧する。参加しているチャンネルの投稿だけが対象で、アーカイブ済みのチャンネルの投稿も含む（チャンネル名に「アーカイブ済み」と付ける）',
     { limit: limitArg(20, 50), cursor: cursorArg },
     async ({ limit, cursor }, mm) => {
       const c = cursorOf(z.object({ create_at: z.number().int(), id: z.string(), per_page: perPage(50), at: z.number().int().min(0).optional() }).strict(), cursor);
@@ -518,7 +534,8 @@ export function registerReadTools(server: McpServer, ctx: ToolContext): void {
       if (capped) capped = (await read(SAVED_SCAN, SAVED_OVERLAP)).length > 0;
       const shown = rest.slice(0, per);
       const last = shown.at(-1);
-      const lines = ['保存した投稿（新しい順）', ...(shown.length ? await withChannels(mm, shown) : c ? [] : ['保存した投稿はありません。'])];
+      // Archived channels too: a saved post can sit in one the user is still in.
+      const lines = ['保存した投稿（新しい順）', ...(shown.length ? await withChannels(mm, shown, true) : c ? [] : ['保存した投稿はありません。'])];
       const notes = capped ? [`（保存した投稿のうち新しい ${SAVED_SCAN} 件だけを見ています）`] : [];
       return render({ lines, posts: shown, notes, next: rest.length > per && last ? { create_at: last.create_at, id: last.id, per_page: per, at: row.get(last.id) } : undefined });
     });
@@ -675,8 +692,9 @@ export function registerReadTools(server: McpServer, ctx: ToolContext): void {
       }
       if (!c && from === 'unread') {
         const me = await mm.call<{ last_viewed_at: number }>(uid, 'GET', `/channels/${ch.id}/members/me`).catch((e) => {
-          // Not reading only 404 as not joined: a public channel the user has not joined is refused with 403 before the membership lookup.
-          if (e instanceof MmError && (e.status === 403 || e.status === 404)) throw new InputError('このチャンネルに参加していないため、未読の位置がありません。from: "latest" で読んでください。');
+          if (e instanceof MmError && e.status === 404) throw new InputError('このチャンネルに参加していないため、未読の位置がありません。from: "latest" で読んでください。');
+          // Not saying the user has not joined on 403: Mattermost refuses a public channel the user has not joined with 403 before the membership lookup, and a passing failure answers 403 too.
+          if (e instanceof MmError && e.status === 403) throw new InputError('このチャンネルの未読の位置を取得できませんでした（参加していないか、Mattermost の一時的な障害）。参加していないなら from: "latest" で読んでください。参加しているはずなら、少し待ってから再試行してください。');
           throw e;
         });
         // Falling back to newest first rather than walking back to the first post: a channel never opened counts its whole history as unread, with no bound on the walk.
@@ -804,8 +822,9 @@ export function registerReadTools(server: McpServer, ctx: ToolContext): void {
       const { shown, next } = listed(all, c, limit ?? 20);
       const lines = [`チャンネルの検索: ${query}`, ...shown.map((x) => {
         const team = teamName.get(x.team_id);
-        const where = team ? `${team}/${x.name}` : (x.label ?? x.display_name ?? x.name);
-        return `- ${where}（表示名: ${x.display_name || x.label || x.name}、種類: ${kind[x.type] ?? x.type}、channel_id: ${x.id}${team ? `、team_id: ${x.team_id}` : ''}）`;
+        const shown = oneLine(x.display_name ?? '');
+        const where = team ? `${team}/${x.name}` : (x.label ?? (x.display_name === undefined ? x.name : shown));
+        return `- ${where}（表示名: ${shown || x.label || x.name}、種類: ${kind[x.type] ?? x.type}、channel_id: ${x.id}${team ? `、team_id: ${x.team_id}` : ''}）`;
       })];
       if (!shown.length) lines.push('一致するチャンネルはありません。');
       return render({ lines, next, notes: capNote(capped, 'ほかの公開チャンネル') });
@@ -837,7 +856,7 @@ export function registerReadTools(server: McpServer, ctx: ToolContext): void {
       const kind: Record<string, string> = { O: '公開', P: '非公開', D: 'DM', G: 'グループ DM' };
       const line = (x: (typeof shown)[number]) => {
         const team = teamName.get(x.team_id);
-        const label = x.type === 'D' ? `@${partners.get(other(x)) ?? other(x)}` : x.display_name || x.name;
+        const label = x.type === 'D' ? `@${partners.get(other(x)) ?? other(x)}` : oneLine(x.display_name) || x.name;
         const where = team ? `${team}/${x.name}` : x.type === 'D' || x.type === 'G' ? label : x.name;
         return `- ${where}（表示名: ${label}、種類: ${kind[x.type] ?? x.type}、channel_id: ${x.id}${x.team_id ? `、team_id: ${x.team_id}` : ''}、最終投稿: ${x.last_post_at ? formatTime(x.last_post_at) : '投稿なし'}）`;
       };
@@ -869,8 +888,8 @@ export function registerReadTools(server: McpServer, ctx: ToolContext): void {
         });
         lines.push(
           `種類: ${kind[ch.raw.type] ?? ch.raw.type}`,
-          `目的: ${ch.raw.purpose || 'なし'}`,
-          `ヘッダー: ${ch.raw.header || 'なし'}`,
+          ...indented('目的', ch.raw.purpose || 'なし'),
+          ...indented('ヘッダー', ch.raw.header || 'なし'),
           `メンバー数: ${stats ? stats.member_count : '取得できません（参加していないか、一時的な障害）'}`,
         );
       }
@@ -1090,7 +1109,7 @@ export function registerReadTools(server: McpServer, ctx: ToolContext): void {
       const { shown, next } = listed(all, c, limit ?? 20);
       const lines = [`ユーザーの検索: ${query}`, ...shown.map((u) => {
         const name = [u.first_name, u.last_name].filter(Boolean).join(' ');
-        return `- @${u.username}（${[name && `名前: ${name}`, u.nickname && `ニックネーム: ${u.nickname}`, `user_id: ${u.id}`].filter(Boolean).join('、')}）`;
+        return `- @${u.username}（${[name && `名前: ${oneLine(name)}`, u.nickname && `ニックネーム: ${oneLine(u.nickname)}`, `user_id: ${u.id}`].filter(Boolean).join('、')}）`;
       })];
       if (!shown.length) lines.push('一致するユーザーはいません。');
       return render({ lines, next, notes: capNote(all.length, 'ほかのユーザー') });
@@ -1104,10 +1123,10 @@ export function registerReadTools(server: McpServer, ctx: ToolContext): void {
       return [
         `username: @${u.username}`,
         `user_id: ${u.id}`,
-        ...(name ? [`名前: ${name}`] : []),
-        ...(u.nickname ? [`ニックネーム: ${u.nickname}`] : []),
-        ...(u.position ? [`役職: ${u.position}`] : []),
-        ...(u.email ? [`メール: ${u.email}`] : []),
+        ...(name ? [`名前: ${oneLine(name)}`] : []),
+        ...(u.nickname ? [`ニックネーム: ${oneLine(u.nickname)}`] : []),
+        ...(u.position ? [`役職: ${oneLine(u.position)}`] : []),
+        ...(u.email ? [`メール: ${oneLine(u.email)}`] : []),
         ...(u.is_bot ? ['Bot アカウント'] : []),
         ...(u.delete_at ? ['無効化されたアカウント'] : []),
         ...timeZoneLines(u.timezone),

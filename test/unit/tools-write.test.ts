@@ -853,6 +853,8 @@ describe('a DM not opened yet', () => {
     routes = {
       'GET /users/me/teams': () => [{ id: 't1', name: 'team-a' }],
       'GET /users/username/carol': () => ({ id: CAROL, username: 'carol', delete_at: 0 }),
+      'POST /users/usernames': () => [{ id: CAROL, username: 'carol', delete_at: 0 }, { id: 'v'.repeat(26), username: 'dave', delete_at: 0 }],
+      'GET /config/client': () => ({}),
       [CREATE]: () => ({ id: NEW_DM, name: `${CAROL}__u1`, display_name: '', team_id: '', type: 'D' }),
       [PREF]: mmError(400, 'app.preference.get.app_error'),
       'GET /users/u1/teams/t1/drafts': () => [],
@@ -898,6 +900,22 @@ describe('a DM not opened yet', () => {
     expect(r.text).toContain(msg);
     expect(r.text).not.toContain('DM はまだありません');
     expect(hits).not.toContain(CREATE);
+  });
+
+  test('prepare_upload to a DM not opened yet on a server with attachments off creates no DM', async () => {
+    serve();
+    routes['GET /config/client'] = () => ({ EnableFileAttachments: 'false' });
+    const r = await setup().call('prepare_upload', { channel: '@carol' });
+    expect(r.text).toBe('このサーバーではファイルの添付が無効です。');
+    expect(hits).not.toContain(CREATE);
+  });
+
+  test('prepare_upload to an existing DM does not read the client config', async () => {
+    serve();
+    routes[`GET /teams/t1/channels/name/${CAROL}__u1`] = () => ({ id: NEW_DM, name: `${CAROL}__u1`, display_name: '', team_id: '', type: 'D' });
+    const r = await setup().call('prepare_upload', { channel: '@carol' });
+    expect(r.text).toContain('アップロード用の URL を発行しました');
+    expect(hits).not.toContain('GET /config/client');
   });
 
   test('prepare_upload with every upload URL in use refuses before resolving the channel, so no DM is created', async () => {
@@ -970,13 +988,56 @@ describe('a DM not opened yet', () => {
       ['@carol', CREATE],
       ['  @carol ', CREATE],
       ['@carol,dave', 'POST /channels/group'],
-    ])('to %j on a server with attachments off is refused before resolving, so no DM is created', async (channel, create) => {
+    ])('to %j on a server with attachments off is refused after finding no DM and before creating one', async (channel, create) => {
       serveWith(() => ({ EnableFileAttachments: 'false', MaxFileSize: '100' }));
       const r = await setup().call('send_message', { channel, message: 'hi', files: [file(1)] });
       expect(r.isError).toBe(true);
       expect(r.text).toBe('このサーバーではファイルの添付が無効です。');
-      expect(hits).toEqual([CONFIG]);
+      const lookup = hits.findIndex((h) => h.startsWith('GET /teams/t1/channels/name/'));
+      expect(lookup).toBeGreaterThanOrEqual(0);
+      expect(hits.indexOf(CONFIG)).toBeGreaterThan(lookup);
       expect(hits).not.toContain(create);
+    });
+
+    test.each([
+      ['@carol', `${CAROL}__u1`],
+      ['@carol,dave', 'GROUP'],
+    ])('to an existing DM %j, the client config is not read', async (channel, name) => {
+      serveWith(() => ({ EnableFileAttachments: 'false' }));
+      routes['GET /teams/t1/channels/name/' + (name === 'GROUP' ? createHash('sha1').update([CAROL, 'v'.repeat(26), 'u1'].sort().join('')).digest('hex') : name)] =
+        () => ({ id: NEW_DM, name: 'x', display_name: '', team_id: '', type: name === 'GROUP' ? 'G' : 'D' });
+      const r = await setup().call('send_message', { channel, message: 'hi', files: [file(1)] });
+      expect(r.text).toContain('投稿しました。');
+      expect(hits).not.toContain(CONFIG);
+    });
+
+    test('to a user not found, the user is reported without reading the client config', async () => {
+      serveWith(() => ({ EnableFileAttachments: 'false' }));
+      const r = await setup().call('send_message', { channel: '@nobody', message: 'hi', files: [file(1)] });
+      expect(r.isError).toBe(true);
+      expect(r.text).toContain('ユーザー「@nobody」が見つかりません');
+      expect(hits).not.toContain(CONFIG);
+    });
+
+    test('to a deactivated user, the refusal comes after the client config is read, since only creating the DM finds it out', async () => {
+      serveWith(() => ({}));
+      routes['GET /users/username/carol'] = () => ({ id: CAROL, username: 'carol', delete_at: 1 });
+      const r = await setup().call('send_message', { channel: '@carol', message: 'hi', files: [file(1)] });
+      expect(r.text).toContain('無効化されているため、DM を作りません');
+      expect(hits).toContain(CONFIG);
+      expect(hits).not.toContain(CREATE);
+    });
+
+    test('a retry of a send that created the DM gets the earlier post even when the client config can no longer be read', async () => {
+      let dm = false;
+      serveWith(() => ({}));
+      routes[CREATE] = () => { dm = true; return { id: NEW_DM, name: `${CAROL}__u1`, display_name: '', team_id: '', type: 'D' }; };
+      routes[`GET /teams/t1/channels/name/${CAROL}__u1`] = () => (dm ? { id: NEW_DM, name: `${CAROL}__u1`, display_name: '', team_id: '', type: 'D' } : Response.json({ id: 'not_found' }, { status: 404 }));
+      const s = setup();
+      expect((await s.call('send_message', { channel: '@carol', message: 'hi', files: [file(1)] })).text).toContain('投稿しました。');
+      routes[CONFIG] = mmError(500, 'app.config.get.app_error');
+      const r = await s.call('send_message', { channel: '@carol', message: 'hi', files: [file(1)] });
+      expect(r.text).toContain('同じ本文を直前に投稿済み');
     });
 
     test.each([
@@ -1010,7 +1071,10 @@ describe('a DM not opened yet', () => {
       const r = await setup().call('send_message', { channel: '@carol', message: 'hi', files: [file(1)] });
       expect(r.isError).toBe(true);
       expect(r.text).toContain('Mattermost に一時的に接続できません');
-      expect(hits).toEqual([CONFIG]);
+      const lookup = hits.findIndex((h) => h.startsWith('GET /teams/t1/channels/name/'));
+      expect(lookup).toBeGreaterThanOrEqual(0);
+      expect(hits.indexOf(CONFIG)).toBeGreaterThan(lookup);
+      expect(hits).not.toContain(CREATE);
     });
 
     test('to a channel given by its channel_id, which never creates a DM, the client config is not read', async () => {

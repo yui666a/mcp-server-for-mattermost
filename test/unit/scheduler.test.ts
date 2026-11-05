@@ -246,6 +246,22 @@ describe('a retry after an unknown outcome looks for the earlier post first', ()
     expect(s.row(id)).toMatchObject({ status: 'posted', post_id: 'found'.padEnd(26, 'x') });
   });
 
+  test.each([
+    [2, 'posted'],
+    [1, 'failed'],
+  ])('a retry with files that finds the earlier post with its files hidden (ABAC) and %i counted ends %s', async (count, status) => {
+    const s = setup();
+    const F1 = 'f'.repeat(26);
+    const F2 = 'g'.repeat(26);
+    routes[`GET /channels/${CH}/posts`] = () => postList(mine('found'.padEnd(26, 'x'), { file_ids: [], metadata: { redacted_file_count: count } }));
+    const id = attempted(s, { fileIds: [F1, F2] });
+    await s.run(NOW + MIN);
+    expect(s.row(id).status).toBe(status);
+    if (status === 'posted') expect(s.store.heldScheduledFiles(UID, [F1, F2])).toHaveLength(2);
+    else expect(s.row(id).error).toBe(UNKNOWN);
+    expect(hits.filter((h) => h === 'POST /posts')).toEqual([]);
+  });
+
   test('posts again with the same pending_post_id when nothing is found', async () => {
     const s = setup();
     let sent: any;

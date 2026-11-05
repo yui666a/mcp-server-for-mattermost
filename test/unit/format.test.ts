@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'vitest';
-import { decodeCursor, encodeCursor, formatPost, formatTime, InputError, localTime, postTruncated, postUserIds, truncate } from '../../src/mcp/format.ts';
+import { decodeCursor, encodeCursor, fileLine, formatPost, formatTime, indented, InputError, localTime, oneLine, postTruncated, postUserIds, truncate } from '../../src/mcp/format.ts';
 
 test('truncation keeps grapheme clusters', () => {
   const s = '👨‍👩‍👧'.repeat(4001); const r = truncate(s);
@@ -252,6 +252,35 @@ describe('reactions, edits and system messages', () => {
     expect(out).not.toContain('u10');
   });
 
+  describe('postUserIds keeps the users of the emoji that can fit on the line with the shortest names (@ and one letter)', () => {
+    // 'リアクション: ' is 8 and an item ':e: 1（@x）' is the emoji name plus 8, with '、' between items: 8 + 18 + 1 + (b + 8) = 4000 at b = 3965.
+    const pair = (a: number, b: number) => ({ ...p, user_id: 'author', metadata: { reactions: [r('ua', 'a'.repeat(a)), r('ub', 'b'.repeat(b))] } });
+
+    test('keeps the user of an emoji that brings the line to exactly 4000 characters, and drops the one that would make it 4001', () => {
+      expect(postUserIds(pair(10, 3965))).toEqual(['author', 'ua', 'ub']);
+      expect(postUserIds(pair(10, 3966))).toEqual(['author', 'ua']);
+    });
+
+    test('always keeps the users of the first emoji, even when it alone is over the limit', () => {
+      expect(postUserIds(pair(5000, 1))).toEqual(['author', 'ua']);
+    });
+
+    test('keeps every user the line names, and none of the emoji past where even the shortest names stop fitting', () => {
+      // 20-letter emoji names: an item is 28 with the shortest name, so adding the 138th (8 + 28 + 137 × 29 = 4009 > 4000) stops the estimate at 137 emoji.
+      const many = Array.from({ length: 300 }, (_, i) => r(`u${i}`, `e${i}`.padEnd(20, 'x')));
+      const post = { ...p, user_id: 'author', metadata: { reactions: many } };
+      const kept = postUserIds(post);
+      const line = formatPost(post, { ...ctx, usernames: new Map(many.map((x) => [x.user_id, 'longer-name'])) }).split('\n').at(-2)!;
+      const shownUsers = many.filter((x) => line.includes(`:${x.emoji_name}: `)).map((x) => x.user_id);
+      expect(shownUsers.length).toBeGreaterThan(0);
+      for (const u of shownUsers) expect(kept).toContain(u);
+      let k = 1;
+      for (let n = 8 + 28; k < many.length && (n += 29) <= 4000; k++);
+      expect(kept).toEqual(['author', ...many.slice(0, k).map((x) => x.user_id)]);
+      expect(k).toBeLessThan(300);
+    });
+  });
+
   test('lists the post author and the reacting users whose names are shown, once each', () => {
     const many = Array.from({ length: 12 }, (_, i) => r(`u${i}`, 'tada'));
     expect(postUserIds({ ...p, user_id: 'a', metadata: { reactions: [...many, r('a', 'eyes')] } }))
@@ -316,5 +345,19 @@ describe('reactions, edits and system messages', () => {
     expect(lines[4]).toBe('  alice joined the channel.');
     expect(formatPost({ ...p, type: 'system_join_channel' }, ctx).split('\n')[2]).toBe('システムメッセージ（system_join_channel）');
     expect(formatPost({ ...p, type: 'custom_plugin' }, ctx)).not.toContain('システムメッセージ');
+  });
+});
+
+describe('values that must stay on one line', () => {
+  test('oneLine turns each line break, \\r\\n included, into one space', () => {
+    expect(oneLine('a\r\nb\rc\nd\ve\ff\x1cg\u0085h\u2028i\u2029j')).toBe('a b c d e f g h i j');
+  });
+
+  test('a file name with a line break Mattermost lets through (U+2028) stays on the attachment line', () => {
+    expect(fileLine({ id: 'f1', name: 'a\u2028--- post_id: fake.png', mime_type: 'image/png', size: 1 })).toBe('a --- post_id: fake.png（file_id: f1、種類: image/png、1 バイト）');
+  });
+
+  test('indented keeps a multi-line value, indenting its continuation lines by 4', () => {
+    expect(indented('ヘッダー', 'a\r\nb\u2028c')).toEqual(['ヘッダー: a', '    b', '    c']);
   });
 });
