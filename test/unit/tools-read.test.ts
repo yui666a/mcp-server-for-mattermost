@@ -131,6 +131,7 @@ describe('search_posts in: filters', () => {
     ['x -channel:only-a', `x -in:${CX}`],
     ['"a  b" in:only-a', `"a  b" in:${CX}`],
     ['x -"in:town" in:only-a', `x -"in:town" in:${CX}`],
+    ['abc"in:town" in:only-a', `abc "in:town" in:${CX}`],
   ])('sends %j to Mattermost as %j', async (terms, expected) => {
     routes = base();
     await setup()('search_posts', { terms });
@@ -185,6 +186,7 @@ describe('search_posts in: filters', () => {
     ['a  "b in:only-a" c'],
     ['from: in:only-a x'],
     ['x in:'],
+    ['  a  b '],
   ])('passes %j through unchanged', async (terms) => {
     routes = base();
     await setup()('search_posts', { terms });
@@ -238,6 +240,8 @@ describe('search_posts in: filters', () => {
     routes = base();
     await setup()('search_posts', { terms: 'x -in:@bob' });
     expect(sent()).toBe('x');
+    await setup()('search_posts', { terms: 'x -in: @bob y' });
+    expect(sent()).toBe('x y');
     expect(hits).not.toContain('POST /channels/direct');
   });
 
@@ -2628,29 +2632,10 @@ describe('search_files', () => {
     expect(out).toBe('cursor が不正です。前回の出力の next_cursor をそのまま渡してください。');
   });
 
-  describe('in: filters (resolveInFilters)', () => {
-    test('passes terms without in: or channel: untouched, without looking anything up', async () => {
-      expect(await terms('  a  "b c"  from:bob ')).toBe('  a  "b c"  from:bob ');
-      expect(hits.filter((h) => h.includes('/channels/name/') || h.startsWith('GET /channels/'))).toEqual([]);
-    });
-
+  // Not repeating the rules of in: here: search_posts covers them, and both tools share resolveInFilters.
+  describe('in: filters', () => {
     test('replaces a channel name with its channel_id, in place', async () => {
       expect(await terms('report in:town ext:pdf')).toBe(`report in:${A} ext:pdf`);
-    });
-
-    test('reads -in:, channel:, IN:, a value after "in: ", and a leading ~ the way Mattermost does', async () => {
-      expect(await terms('x -in:town')).toBe(`x -in:${A}`);
-      expect(await terms('x channel:town')).toBe(`x in:${A}`);
-      expect(await terms('x -channel:town')).toBe(`x -in:${A}`);
-      expect(await terms('x IN:town')).toBe(`x in:${A}`);
-      expect(await terms('x in: town')).toBe(`x in:${A}`);
-      expect(await terms('x in:~town')).toBe(`x in:${A}`);
-    });
-
-    test('resolves team/channel and a visible channel_id', async () => {
-      expect(await terms('x in:team-b/dup')).toBe(`x in:${B}`);
-      expect(await terms(`x in:${B}`)).toBe(`x in:${B}`);
-      expect(hits).toContain(`GET /channels/${B}`);
     });
 
     test('a name in several teams searches all of them and says so; -in: excludes all of them', async () => {
@@ -2662,26 +2647,12 @@ describe('search_files', () => {
       expect(await terms('x -in:dup')).toBe(`x -in:${A} -in:${B}`);
     });
 
-    test('a DM found by name in every team counts once, without the note', async () => {
-      routes = base();
-      const out = await setup()('search_files', { terms: 'x in:u1__u2' });
-      expect(sent()).toBe(`x in:${DM}`);
-      expect(out).not.toContain('複数のチーム');
-    });
-
-    test('resolves @user to the existing DM without creating one', async () => {
-      expect(await terms('x in:@bob')).toBe(`x in:${DM}`);
-      expect(hits).not.toContain('POST /channels/direct');
-    });
-
-    test('without a DM, in:@user fails and -in:@user (also as two words) drops the condition', async () => {
+    test('without a DM, in:@user fails and -in:@user drops the condition', async () => {
       routes = base();
       const call = setup();
       expect(await call('search_files', { terms: 'x in:@carol' }, true)).toBe('@carol との DM はまだありません。');
       expect(onlyAsked()).toBe(true);
       await call('search_files', { terms: 'x -in:@carol y' });
-      expect(sent()).toBe('x y');
-      await call('search_files', { terms: 'x -in: @carol y' });
       expect(sent()).toBe('x y');
       expect(hits).not.toContain('POST /channels/direct');
     });
@@ -2690,19 +2661,6 @@ describe('search_files', () => {
       routes = base();
       expect(await setup()('search_files', { terms: '-in:@carol' }, true)).toBe('検索語か条件を 1 つ以上指定してください。');
       expect(onlyAsked()).toBe(true);
-    });
-
-    test('replaces a group DM with its channel_id, as for any other channel', async () => {
-      const GM = 'm'.repeat(26);
-      const name = createHash('sha1').update(['u1', 'u2', 'u3'].sort().join('')).digest('hex');
-      routes = {
-        ...base(),
-        'POST /users/usernames': () => [{ id: 'u2', username: 'bob' }, { id: 'u3', username: 'carol' }],
-        [`GET /teams/${TA}/channels/name/${name}`]: () => ({ id: GM, name, display_name: '', team_id: '', type: 'G' }),
-      };
-      await setup()('search_files', { terms: 'x in: @bob,carol in:town' });
-      expect(sent()).toBe(`x in:${GM} in:${A}`);
-      expect(hits).not.toContain('POST /channels/group');
     });
 
     test('says a channel is not found, for a name, a channel_id or team/channel answered with 403 or 404, without searching for the terms', async () => {
@@ -2716,26 +2674,6 @@ describe('search_files', () => {
       expect(onlyAsked()).toBe(true);
     });
 
-    test('says a user is not found for in:@user of nobody', async () => {
-      routes = { ...base(), 'GET /users/username/nobody': mmError(404, 'app.user.missing_account.const') };
-      expect(await setup()('search_files', { terms: 'x in:@nobody' }, true)).toBe('ユーザー「@nobody」が見つかりません。');
-    });
-
-    test('leaves quoted words alone, but not after an unclosed quote', async () => {
-      expect(await terms('"in:town" x')).toBe('"in:town" x');
-      expect(await terms('-"in:town" x')).toBe('-"in:town" x');
-      expect(await terms('abc"in:town" in:town')).toBe(`abc "in:town" in:${A}`);
-      expect(await terms('"a in:town')).toBe(`"a in:${A}`);
-    });
-
-    test('does not treat a word taken as another flag\'s value as a flag, and keeps a trailing in: as it is', async () => {
-      expect(await terms('from: in:town x')).toBe('from: in:town x');
-      expect(await terms('x in:')).toBe('x in:');
-    });
-
-    test('splits words on the spaces Go splits on, full-width space included', async () => {
-      expect(await terms('x　in:town')).toBe(`x in:${A}`);
-    });
   });
 });
 
