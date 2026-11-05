@@ -348,6 +348,12 @@ describe('mark_as_read for threads', () => {
     const r = await setup().call({ threads: [{ post_id: ROOT, last_post_id: id(5) }] });
     expect(r.isError).toBe(false);
     expect(r.text).toContain('last_post_id までは既読です。ただし、位置ちょうどの返信のメンションは消せませんでした。');
+    routes[`GET /users/u1/teams/${TEAM}/threads/${ROOT}`] = () => state(1010, { unread_mentions: 1 });
+    routes[`PUT /users/u1/teams/${TEAM}/threads/${ROOT}/read/1011`] = mmError(403, 'api.context.permissions.app_error');
+    const all = await setup().call({ threads: [{ post_id: ROOT }] });
+    expect(all.isError).toBe(false);
+    expect(all.text).toContain('すでに既読です。ただし、位置ちょうどの返信のメンションは消せませんでした。');
+    expect(all.text).toContain('このスレッドを、読んだ最終返信を last_post_id に渡して再実行すると消せることがあります。');
   });
 
   test('stays a tool error when Mattermost is unavailable while clearing the mention', async () => {
