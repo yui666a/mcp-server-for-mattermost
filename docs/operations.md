@@ -115,7 +115,7 @@ docker compose exec mcp node src/admin.ts list-clients --unauthorized | cut -f2,
 
 ## Mattermost を更新するとき
 
-MCP サーバーは Mattermost 11.7.8 で実測した OAuth の挙動（[measurements.md](measurements.md)）と、公開文書にない `pending_post_id` の重複排除を前提にしている。
+MCP サーバーは Mattermost 11.7.15 で実測した OAuth の挙動（[measurements.md](measurements.md)）と、公開文書にない `pending_post_id` の重複排除を前提にしている。
 更新する前に、開発機で新しい版に対して結合テストを通す。
 
 ```bash

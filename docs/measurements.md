@@ -5,12 +5,12 @@ Mattermost を更新するときは、結合テスト（`pnpm test:int`）でこ
 
 ## Mattermost の OAuth の実測
 
-ローカルの Mattermost 11.7.8（`dev/compose.yml`、OAuth アプリは confidential で `is_trusted: true`）に対して `test/int/mattermost-oauth.test.ts` で測った結果。設計の前提のうち、トークンの再利用、リフレッシュ token のローテーション、`pending_post_id` の重複排除は成り立った。リフレッシュによる旧アクセストークンの失効は成り立たなかった（下の「リフレッシュ後の旧アクセストークン」）。
+ローカルの Mattermost 11.7.15（`dev/compose.yml`、OAuth アプリは confidential で `is_trusted: true`）に対して `test/int/mattermost-oauth.test.ts` で測った結果。設計の前提のうち、トークンの再利用、リフレッシュ token のローテーション、`pending_post_id` の重複排除は成り立った。リフレッシュによる旧アクセストークンの失効は成り立たなかった（下の「リフレッシュ後の旧アクセストークン」）。
 
 ### トークン交換とリフレッシュ
 
 - エンドポイントは `POST {MM_URL}/oauth/access_token`、本文は `application/x-www-form-urlencoded`。
-- 認可コード交換の必須パラメータは `grant_type=authorization_code`、`code`、`client_id`、`client_secret`、`redirect_uri`。`redirect_uri` を省かない（省くと 400 `api.oauth.get_access_token.expired_code.app_error`）。認可時と異なる値は 400 `api.oauth.get_access_token.redirect_uri.app_error`。
+- 認可コード交換の必須パラメータは `grant_type=authorization_code`、`code`、`client_id`、`client_secret`、`redirect_uri`。`redirect_uri` を省かない。省いたときも認可時と異なる値のときも 400 `api.oauth.get_access_token.redirect_uri.app_error`。使用済みの `code` は 400 `api.oauth.get_access_token.expired_code.app_error`。
 - リフレッシュの必須パラメータは `grant_type=refresh_token`、`refresh_token`、`client_id`、`client_secret`。`redirect_uri` は不要（付けても 200）。`client_secret` を省いても誤っても 401 `model.oauth.validate_grant.credentials.app_error`。
 - 応答は `access_token`、`refresh_token`、`token_type: bearer`、`expires_in`、`scope`、`id_token`。`expires_in` は 2592000（30 日）で、MCP 側のアクセストークンの期限とは無関係に固定。
 - 同じユーザーと同じアプリで再認可すると、期限内なら同じ `access_token` と `refresh_token` が返る（テストで確認）。
@@ -31,12 +31,12 @@ Mattermost を更新するときは、結合テスト（`pnpm test:int`）でこ
 | `client_secret` の欠落か不一致 | 401 | `model.oauth.validate_grant.credentials.app_error` | 不要（設定の誤り） |
 
 - MCP サーバーが再ログインを要求するのは、リフレッシュが 404 かつ `id` が `api.oauth.get_access_token.refresh_token.app_error` のときと、下の 403 のときだけ。
-- 無効化の 404 は、無効化で `OAuthAccessData` が消えるため。v11.7.8 のソースには、`OAuthAccessData` が残っていて `DeleteAt != 0` の場合に 403 `api.oauth.get_access_token.expired_code.app_error` を返す分岐もある。ローカルでは到達しなかったが、MCP サーバーはこの 403 も再ログインとして扱う。
-- 取り消しは `POST {MM_URL}/oauth/deauthorize`、本文 `{"client_id": "..."}`、利用者の Cookie（`MMAUTHTOKEN`）に加えて `X-Requested-With: XMLHttpRequest` と `X-CSRF-Token`（`MMCSRF` Cookie の値）が必要。Cookie は、ログイン要求に `X-Requested-With: XMLHttpRequest` を付けたときだけ `Set-Cookie` される。
+- 無効化の 404 は、無効化で `OAuthAccessData` が消えるため。v11.7.15 のソースには、`OAuthAccessData` が残っていて `DeleteAt != 0` の場合に 403 `api.oauth.get_access_token.expired_code.app_error` を返す分岐もある。ローカルでは到達しなかったが、MCP サーバーはこの 403 も再ログインとして扱う。
+- 取り消しは `POST {MM_URL}/oauth/deauthorize`、本文 `{"client_id": "..."}`、利用者の Cookie（`MMAUTHTOKEN`）に加えて、`X-Requested-With: XMLHttpRequest` か `X-CSRF-Token`（`MMCSRF` Cookie の値）のどちらかが必要。どちらも無いとき、`X-CSRF-Token` の値が誤っているときは 401。Cookie は、ログイン要求に `X-Requested-With: XMLHttpRequest` を付けたときだけ `Set-Cookie` される。
 
 ### リフレッシュ後の旧アクセストークン
 
-- 同じユーザーと同じアプリで認可し、リフレッシュしたあと、旧 `access_token` で `GET /api/v4/users/me` を 15 秒間隔で呼んだ。リフレッシュ後 826 秒（約 13.8 分）まで 200 のままで、401 にならなかった。新しい `access_token` も同時に 200。
+- 同じユーザーと同じアプリで認可し、リフレッシュしたあと、旧 `access_token` で `GET /api/v4/users/me` を 15 秒間隔で呼んだ。リフレッシュ後 841 秒（約 14 分）まで 200 のままで、401 にならなかった。新しい `access_token` も同時に 200。
 - Mattermost のセッションキャッシュ（`SessionCacheInMinutes`、既定 10）の 10 分を超えても 200 が続いたため、キャッシュによる一時的な残存ではない。旧 `access_token` に紐づくセッションはリフレッシュで失効せず、セッション自体の期限（`SessionLengthSSOInDays`、既定 30 日、`expires_in` の 2592000 と一致）まで有効とみられる。30 日までは測っていない。
 - 旧 `access_token` が 401 になるのが確認できたのは、利用者がアプリを取り消したとき（`POST /oauth/deauthorize`）だけ。
 - MCP サーバーは、Mattermost が 401 を返したら保存済みの資格情報を読み直す方式なので、旧トークンが残っても動作は変わらない。Mattermost のトークンは MCP サーバーの外に出さないが、リフレッシュ後の旧トークンは保存先が漏えいしたときのリスクとして残る。
