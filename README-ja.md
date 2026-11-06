@@ -18,7 +18,7 @@ Mattermost は公式の MCP サーバーを [Mattermost Agents プラグイン](
 このプロジェクトは、それ以外の場合に向けたものである。
 
 - **独立したサーバー**: 既存の Mattermost の横に 1 つのコンテナとして置き、プラグインを入れない。Mattermost とは REST API と OAuth 2.0 サービスプロバイダーだけでやり取りする
-- **Team Edition で動く**: Mattermost Team Edition 11.7.8 で開発し、テストしている
+- **Team Edition で動く**: Mattermost Team Edition 11.7.15 で開発し、テストしている
 - **利用者ごとの OAuth と、自前の認可サーバー**: MCP クライアントは自分を登録し（Dynamic Client Registration）、このサーバーでだけ使えるトークンを受け取る。利用者の Mattermost のトークンはサーバー側に暗号化して保存し、MCP クライアントには渡さない（token passthrough をしない）。認可のたびに、クライアントのリダイレクト URI を示す同意画面を出す
 - **Team Edition でも予約投稿ができる**: Team Edition では Mattermost の予約投稿の API を使えないので、サーバーが予約を保存し、時刻が来たら本人のトークンで投稿する
 - **LLM が呼ぶ前提の安全策**: クライアントがやり直したときの二重投稿を防ぐ。編集と削除は本人の投稿に限り、返信のあるスレッドの親投稿は消さない。下書きは、本文の違う既存の下書きを指示なしに上書きせず、同じ投稿先へ同じ本文を `send_message` で投稿したら消す（予約投稿と、添付の付いた下書きでは消さない）
@@ -82,7 +82,7 @@ MCP クライアント ──(MCP のトークン)──> mcp-server-for-matterm
 
 ## 必要なもの
 
-- OAuth 2.0 サービスプロバイダーを有効にした Mattermost。Team Edition 11.7.8 で確かめている。ほかの版は結合テストを通してから使う
+- OAuth 2.0 サービスプロバイダーを有効にした Mattermost。Team Edition 11.7.15 で確かめている。ほかの版は結合テストを通してから使う
 - 開発には Node.js 26 以上と pnpm 11（`packageManager` で固定）。サーバーとローカルの Mattermost を動かすには Docker
 - サーバーの HTTPS のオリジンと、その前に置くリバースプロキシ
 
@@ -90,7 +90,7 @@ MCP クライアント ──(MCP のトークン)──> mcp-server-for-matterm
 
 ```bash
 pnpm install
-pnpm dev:up    # http://localhost:8065 で Mattermost 11.7.8 を起動し、dev/.state.json を書く
+pnpm dev:up    # http://localhost:8065 で Mattermost 11.7.15 を起動し、dev/.state.json を書く
 ```
 
 `pnpm dev:up` は、ユーザー `admin`、`alice`、`bob`（パスワード `Passw0rd!dev123`）、2 つのチーム、負荷の確認に使う `load1`〜`load6`、コールバックが `http://localhost:3000/mcp/oauth/callback` の OAuth アプリを作る。
