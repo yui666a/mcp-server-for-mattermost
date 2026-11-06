@@ -17,7 +17,7 @@ If you have that license and version, it is the natural choice.
 This project targets the other case:
 
 - **Standalone.** It runs as its own container beside an existing Mattermost and needs no plugin. It talks to Mattermost only through the REST API and its OAuth 2.0 service provider.
-- **Works with Team Edition.** It is developed and tested against Mattermost Team Edition 11.7.8.
+- **Works with Team Edition.** It is developed and tested against Mattermost Team Edition 11.7.15.
 - **Per-user OAuth with its own authorization server.** MCP clients register themselves (Dynamic Client Registration) and receive tokens that are valid only for this server. The user's Mattermost tokens are kept server-side, encrypted, and are never handed to the MCP client (no token passthrough). Every authorization shows a consent page that displays the client's redirect URI.
 - **Scheduled posts on Team Edition.** Mattermost's scheduled-post API is not available on Team Edition, so the server stores scheduled posts itself and posts them with the user's token when they are due.
 - **Guard rails for an LLM caller.** It suppresses duplicate posts when a client retries, edits and deletes only the user's own posts, refuses to delete a thread root that has replies, does not overwrite a different draft unless asked, and clears a draft with the same text in the same place once that text is posted with `send_message` (scheduled posts leave it).
@@ -81,7 +81,7 @@ The full design is in [docs/superpowers/specs/2026-11-01-mattermost-mcp-design.m
 
 ## Requirements
 
-- Mattermost with the OAuth 2.0 service provider enabled. Tested with Team Edition 11.7.8; run the integration tests before using another version.
+- Mattermost with the OAuth 2.0 service provider enabled. Tested with Team Edition 11.7.15; run the integration tests before using another version.
 - Node.js 26 or later and pnpm 11 (pinned through `packageManager`) for development; Docker for running the server and the local Mattermost.
 - An HTTPS origin for the server and a reverse proxy in front of it.
 
@@ -89,7 +89,7 @@ The full design is in [docs/superpowers/specs/2026-11-01-mattermost-mcp-design.m
 
 ```bash
 pnpm install
-pnpm dev:up    # starts Mattermost 11.7.8 on http://localhost:8065 and writes dev/.state.json
+pnpm dev:up    # starts Mattermost 11.7.15 on http://localhost:8065 and writes dev/.state.json
 ```
 
 `pnpm dev:up` creates the users `admin`, `alice`, and `bob` (password `Passw0rd!dev123`), two teams, the load-test users `load1` to `load6`, and an OAuth app whose callback is `http://localhost:3000/mcp/oauth/callback`.

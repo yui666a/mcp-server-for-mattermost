@@ -26,12 +26,12 @@ claude.ai から接続するなら、インターネットから届く必要も�
 
 ## 1. Mattermost の事前確認
 
-OAuth の挙動は Mattermost 11.7.8 で実測している（[measurements.md](measurements.md)）。
+OAuth の挙動は Mattermost 11.7.15 で実測している（[measurements.md](measurements.md)）。
 ほかの版で動かす前に、その版で結合テストを通す（[operations.md の「Mattermost を更新するとき」](operations.md#mattermost-を更新するとき)）。
 
 | 項目 | 必要な状態 | 満たさないとき |
 |---|---|---|
-| バージョン | 11.7.8（結合テストを通した版） | 未検証の版では、トークンの再利用やリフレッシュの前提が崩れうる |
+| バージョン | 11.7.15（結合テストを通した版） | 未検証の版では、トークンの再利用やリフレッシュの前提が崩れうる |
 | `ServiceSettings.EnableOAuthServiceProvider` | `true`（System Console の Integrations > Integration Management の「Enable OAuth 2.0 Service Provider」） | OAuth アプリを作れず、ログインできない |
 | `ServiceSettings.AllowSyncedDrafts` | `true`（既定） | `save_draft` が「このサーバーでは下書きの同期が無効です。」を返すだけになる |
 | `FileSettings.EnableFileAttachments` と `MaxFileSize` | `true`、かつ添付の上限（`send_message` の `files` は 128KiB、`prepare_upload` は `UPLOAD_MAX_BYTES`）より大きい | `send_message` の添付と `prepare_upload` の URL へのアップロードが失敗する |
@@ -48,7 +48,7 @@ SELECT name, deleteat FROM teams WHERE name = 'mcp';
 ```
 
 Mattermost のレート制限（`RateLimitSettings.Enable` が `true` のとき）は、MCP の呼び出しにもかかる。
-枠の分け方は次のとおり（v11.7.8 の `server/channels/app/ratelimit.go`）。
+枠の分け方は次のとおり（v11.7.15 の `server/channels/app/ratelimit.go`）。
 
 - `VaryByUser` が `true`: トークンごとに枠を分ける。MCP サーバーは利用者ごとの OAuth のトークンで呼ぶので、利用者ごとに別の枠になり、その利用者の Web やアプリのセッションとも分け合わない
 - `VaryByUser` が `false` で `VaryByRemoteAddr` が `true`: 接続元 IP ごとに枠を分ける。MCP サーバーからの呼び出しは全利用者ぶんが同じ接続元（MCP サーバー、またはそれが経由するリバースプロキシのアドレス）から来るので、1 つの枠を分け合う。`TrustedProxyIPHeader` が空だと、リバースプロキシの後ろの Web やアプリの利用者も同じ枠に入り、MCP の呼び出しが多いと Web やアプリにも 429 が返る
