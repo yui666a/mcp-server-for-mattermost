@@ -5,7 +5,7 @@
 A remote [MCP](https://modelcontextprotocol.io/) server that lets AI clients (claude.ai, Claude Code, Codex CLI, and other MCP clients) read and post to Mattermost **as each user**.
 Users add one URL as a connector and sign in with their own Mattermost account; the server only ever sees and does what that user can.
 
-> Tool descriptions, tool output, the consent page, and the documents under `docs/` are written in Japanese.
+> Tool descriptions are written in English. Tool output, the consent page, and the documents under `docs/` are written in Japanese.
 
 ## Why this exists
 
