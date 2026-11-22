@@ -107,7 +107,7 @@ describe('mark_as_read for channels', () => {
       'GET /users/username/carol': () => ({ id: 'k'.repeat(26), username: 'carol', delete_at: 0 }),
     };
     const r = await setup().call({ channels: [{ channel: '@carol', last_post_id: LAST }] });
-    expect(r.text).toContain('@carol との DM はまだありません');
+    expect(r.text).toContain('There is no DM with @carol yet');
     expect(hits).not.toContain('POST /channels/direct');
   });
 
@@ -208,10 +208,10 @@ describe('mark_as_read for channels', () => {
     routes = { ...base(), [`GET /posts/${LAST}`]: mmError(status, mmId) };
     const r = await setup().call({ channels: [{ channel: CH, last_post_id: LAST }] });
     expect(r.isError).toBe(true);
-    if (status === 403) expect(r.text).toContain(`last_post_id ${LAST} の投稿を見る権限がありません（参加していない非公開チャンネルなど）。read_channel で読み直して、読んだ投稿のうち最も新しいものの post_id を渡してください。この投稿のチャンネルに参加しているはずなら、Mattermost の一時的な障害の可能性があります。少し待ってから再試行してください。続くなら、チャンネルから外されたか、サーバーの権限の設定で読む権限が外されている可能性があるので、管理者に確かめてください。`);
+    if (status === 403) expect(r.text).toContain(`last_post_id ${LAST} の投稿を見る権限がありません（参加していない非公開チャンネルなど）。read_channel で読み直して、読んだ投稿のうち最も新しいものの post_id を渡してください。この投稿のチャンネルに参加しているはずなら、Mattermost の一時的な障害の可能性があります。少し待ってから再試行してください。 If it persists, you may have been removed from the channel, or the read permission may have been removed in the server's permission settings; ask an administrator to check.`);
     else {
       expect(r.text).toContain(`last_post_id ${LAST} の投稿が見つかりません（削除されたか、存在しません）。read_channel で読み直して`);
-      expect(r.text).not.toContain('再試行');
+      expect(r.text).not.toContain('retry');
     }
   });
 
@@ -229,7 +229,7 @@ describe('mark_as_read for channels', () => {
     const r = await setup().call({ channels: [{ channel: NAME }] });
     const lines = r.text.split('\n');
     expect(lines.filter((l) => l.startsWith('- '))).toHaveLength(1);
-    expect(r.text).toContain(`\n候補「team-a/${NAME}」の表示名: - チャンネル（channel_id: fake）: 既読にしました。`);
+    expect(r.text).toContain(`\nCandidate "team-a/${NAME}" display name: - チャンネル（channel_id: fake）: 既読にしました。`);
   });
 
   test('keeps a channel\'s display name with a line break on one line in the result', async () => {
@@ -268,8 +268,8 @@ describe('mark_as_read for channels', () => {
   test('does not say the user has not joined when members/me answers 403, which a transient failure also gives', async () => {
     routes = { ...base(), [`GET /channels/${CH}/members/me`]: mmError(403, 'api.context.permissions.app_error') };
     const r = await setup().call({ channels: [{ channel: CH }] });
-    expect(r.text).toContain('このチャンネルに参加しているかを確かめられませんでした（参加していないか、Mattermost の一時的な障害）。参加しているはずなら、少し待ってから再試行してください。');
-    expect(r.text).toContain('続くなら、チャンネルから外されたか、サーバーの権限の設定で読む権限が外されている可能性があるので、管理者に確かめてください。');
+    expect(r.text).toContain('このチャンネルに参加しているかを確かめられませんでした（参加していないか、Mattermost の一時的な障害）。 If you should be a member, wait a moment and retry.');
+    expect(r.text).toContain("If it persists, you may have been removed from the channel, or the read permission may have been removed in the server's permission settings; ask an administrator to check.");
     expect(r.text).not.toContain('参加していません');
   });
 
@@ -289,7 +289,7 @@ describe('mark_as_read for channels', () => {
     };
     const r = await setup().call({ channels: [{ channel: CH }, { channel: CH2 }] });
     expect(r.isError).toBe(false);
-    expect(r.text).toMatch(new RegExp(`^- チャンネル（channel_id: ${CH}）: 既読にできませんでした。Mattermost がエラーを返しました（400）[^\\n]*（表示名: TOWN）$`, 'm'));
+    expect(r.text).toMatch(new RegExp(`^- チャンネル（channel_id: ${CH}）: 既読にできませんでした。Mattermost returned an error \\(400\\)[^\\n]*（表示名: TOWN）$`, 'm'));
     expect(r.text).toMatch(new RegExp(`（channel_id: ${CH2}）: すでに既読です。（表示名: SQUARE）$`, 'm'));
   });
 
@@ -330,7 +330,7 @@ describe('mark_as_read for channels', () => {
     expect(r.isError).toBe(true);
     expect(r.text).toMatch(new RegExp(`（channel_id: ${CH2}）: 呼んだ時点までのすべてを既読にしました。（表示名: SQUARE）$`, 'm'));
     expect(r.text).toMatch(new RegExp(`（channel_id: ${CH}）: 処理中に中断しました（既読にしていません）。（表示名: TOWN）$`, 'm'));
-    expect(r.text).toContain('ここで中断しました。ツールの実行中に予期しないエラーが発生しました。');
+    expect(r.text).toContain('ここで中断しました。An unexpected error occurred while running the tool.');
   });
 
   test('reports the first item when its write was sent before Mattermost became unavailable', async () => {
@@ -443,7 +443,7 @@ describe('mark_as_read for threads', () => {
     });
     let r = await setup().call({ threads: [{ post_id: ROOT, last_post_id: id(5) }] });
     expect(r.isError).toBe(false);
-    expect(r.text).toContain(`スレッド（親 post_id: ${ROOT}）: 既読にしました。ただし、位置ちょうどの返信のメンションは消せませんでした。Mattermost がエラーを返しました（403）`);
+    expect(r.text).toContain(`スレッド（親 post_id: ${ROOT}）: 既読にしました。ただし、位置ちょうどの返信のメンションは消せませんでした。Mattermost returned an error (403)`);
     expect(r.text).toContain('このスレッドを同じ last_post_id で再実行すると消せることがあります。');
     routes[`PUT /users/u1/teams/${TEAM}/threads/${ROOT}/read/1010`] = () => read({ unread_mentions: 1 });
     routes[`PUT /users/u1/teams/${TEAM}/threads/${ROOT}/read/1011`] = mmError(403, 'api.context.permissions.app_error');
@@ -478,7 +478,7 @@ describe('mark_as_read for threads', () => {
     const r = await setup().call({ threads: [{ post_id: ROOT, last_post_id: id(5) }] });
     expect(r.isError).toBe(true);
     expect(r.text).toContain(`スレッド（親 post_id: ${ROOT}）: ${read}ただし、位置ちょうどの返信のメンションを消す書き込みの途中で中断しました（消せたかは分かりません）。このスレッドを同じ last_post_id で再実行すると消せることがあります。`);
-    expect(r.text).toContain('ここで中断しました。Mattermost に一時的に接続できません。');
+    expect(r.text).toContain('ここで中断しました。Cannot connect to Mattermost for the moment.');
     expect(r.text).not.toContain('処理していません');
   });
 
@@ -497,7 +497,7 @@ describe('mark_as_read for threads', () => {
     expect(r.isError).toBe(true);
     expect(r.text).toMatch(new RegExp(`（channel_id: ${CH}）: 呼んだ時点までのすべてを既読にしました。（表示名: TOWN）$`, 'm'));
     expect(r.text).toMatch(new RegExp(`（channel_id: ${CH2}）: 処理中に中断しました（既読になったかは分かりません）。（表示名: SQUARE）$`, 'm'));
-    expect(r.text).toContain(`ここで中断しました。Mattermost に一時的に接続できません。しばらくしてから再試行してください。次の 1 件は処理していません: スレッド（post_id: ${ROOT}）。再実行するときは、中断した項目と処理していない項目だけを渡してください。`);
+    expect(r.text).toContain(`ここで中断しました。Cannot connect to Mattermost for the moment. Wait a while and retry.次の 1 件は処理していません: スレッド（post_id: ${ROOT}）。再実行するときは、中断した項目と処理していない項目だけを渡してください。`);
     expect(hits.filter((h) => h.startsWith('GET /users/u1/teams/'))).toEqual([]);
     const logged = vi.mocked(process.stdout.write).mock.calls.map(([l]) => JSON.parse(String(l)));
     expect(logged).toContainEqual(expect.objectContaining({ event: 'tool_interrupted', mm_user_id: 'u1', tool: 'mark_as_read', outcome: 'upstream_unavailable' }));
@@ -510,7 +510,7 @@ describe('mark_as_read for threads', () => {
     expect(r.isError).toBe(true);
     expect(r.text).toMatch(new RegExp(`（channel_id: ${CH}）: 呼んだ時点までのすべてを既読にしました。（表示名: TOWN）$`, 'm'));
     expect(r.text).toContain(`スレッド（親 post_id: ${ROOT}）: 処理中に中断しました（既読にしていません）。`);
-    expect(r.text).toContain('ここで中断しました。呼び出しが多すぎます。7 秒後に再試行してください。再実行するときは');
+    expect(r.text).toContain('ここで中断しました。Too many calls. Retry after 7 seconds.再実行するときは');
   });
 
   test('accepts the root post itself as last_post_id', async () => {
@@ -527,7 +527,7 @@ describe('mark_as_read for threads', () => {
     expect(r.text).toContain(`スレッド（post_id: ${id(7)}）: 既読にできませんでした。投稿が見つかりません（削除されたか、存在しません）。`);
     expect(r.text).toContain(`スレッド（親 post_id: ${ROOT}）: 呼んだ時点の最終返信までを既読にしました。`);
     routes[`GET /posts/${id(7)}`] = mmError(403, 'api.context.permissions.app_error');
-    expect((await setup().call({ threads: [{ post_id: id(7) }] })).text).toContain('この投稿を見る権限がありません（参加していない非公開チャンネルなど）。参加しているはずなら、Mattermost の一時的な障害の可能性があります。少し待ってから再試行してください。続くなら、チャンネルから外されたか、サーバーの権限の設定で読む権限が外されている可能性があるので、管理者に確かめてください。');
+    expect((await setup().call({ threads: [{ post_id: id(7) }] })).text).toContain('You do not have permission to view this post (for example, in a private channel you have not joined). If you should be a member, this may be a temporary Mattermost failure. Wait a moment and retry. If it persists, you may have been removed from the channel, or the read permission may have been removed in the server\'s permission settings; ask an administrator to check.');
   });
 
   test('says so when the user belongs to no team, for a DM thread', async () => {
@@ -551,7 +551,7 @@ describe('mark_as_read for threads', () => {
     routes = threads({ [`GET /posts/${id(5)}`]: mmError(404, 'app.post.get.app_error') });
     const r = await setup().call({ threads: [{ post_id: ROOT, last_post_id: id(5) }] });
     expect(r.text).toContain('read_thread で読み直して');
-    expect(r.text).not.toContain('再試行');
+    expect(r.text).not.toContain('retry');
     routes = threads({ [`GET /posts/${id(5)}`]: mmError(403, 'api.context.permissions.app_error') });
     expect((await setup().call({ threads: [{ post_id: ROOT, last_post_id: id(5) }] })).text).toContain('見る権限がありません（参加していない非公開チャンネルなど）。read_thread で読み直して、読んだ投稿のうち最も新しいものの post_id を渡してください。この投稿のチャンネルに参加しているはずなら、');
   });
@@ -590,7 +590,7 @@ describe('mark_as_read for threads', () => {
       const r = await setup().call({ threads: [{ post_id: postId }] });
       expect(r.text, postId).toContain(status === 404
         ? 'このスレッドのチャンネルに参加していません。参加していないチャンネルのスレッドは未読に数えられないので、既読にするものがありません。'
-        : 'このスレッドのチャンネルに参加しているかを確かめられませんでした（参加していないか、Mattermost の一時的な障害）。参加していないなら、既読にするものはありません。参加しているはずなら、少し待ってから再試行してください。続くなら、チャンネルから外されたか、サーバーの権限の設定で読む権限が外されている可能性があるので、管理者に確かめてください。');
+        : 'このスレッドのチャンネルに参加しているかを確かめられませんでした（参加していないか、Mattermost の一時的な障害）。参加していないなら、既読にするものはありません。 If you should be a member, wait a moment and retry. If it persists, you may have been removed from the channel, or the read permission may have been removed in the server\'s permission settings; ask an administrator to check.');
       expect(r.text, postId).not.toContain('follow_thread');
     }
   });
@@ -675,7 +675,7 @@ describe('mark_as_read input and annotations', () => {
     routes = base();
     const r = await setup().call(args);
     expect(r.isError).toBe(true);
-    expect(r.text).toContain('受けない引数です: last_post。');
+    expect(r.text).toContain('Arguments not accepted: last_post.');
     expect(r.text).toContain(at);
     expect(hits).toEqual([]);
   });

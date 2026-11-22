@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
-import { BODY_CUT_NOTE } from '../../src/mcp/format.ts';
+import { setLocale } from '../../src/i18n/index.ts';
+import { bodyCutNote } from '../../src/mcp/format.ts';
 import { splitWords } from '../../src/mcp/tools-read.ts';
 import { setTimeZone } from '../../src/zone.ts';
 import { makeApp } from './helpers.ts';
@@ -18,7 +19,10 @@ beforeEach(() => {
   hits = [];
   urls = [];
 });
-afterEach(() => vi.restoreAllMocks());
+afterEach(() => {
+  vi.restoreAllMocks();
+  setLocale('en');
+});
 
 function setup() {
   const ctx = makeApp({}, async (input, init) => {
@@ -142,7 +146,7 @@ test('search_posts pages with its own next_cursor and rejects a search_files cur
   expect(second).toContain(`post_id: ${id(20)}`);
   expect(second).not.toContain(`post_id: ${id(19)}`);
   const files = Buffer.from(JSON.stringify({ page: 1, per_page: 20, files: true })).toString('base64url');
-  expect(await call('search_posts', { terms: 'x', cursor: files }, true)).toBe('cursor が不正です。前回の出力の next_cursor をそのまま渡してください。');
+  expect(await call('search_posts', { terms: 'x', cursor: files }, true)).toBe('The cursor is invalid. Pass next_cursor from the previous output as it is.');
 });
 
 describe('search_posts in: filters', () => {
@@ -370,7 +374,7 @@ describe('search_posts in: filters', () => {
   test('in:@user without a DM is an error, and neither creates the DM nor searches', async () => {
     routes = base();
     const out = await setup()('search_posts', { terms: 'x in:@bob' }, true);
-    expect(out).toContain('@bob との DM はまだありません。');
+    expect(out).toContain('There is no DM with @bob yet.');
     expect(hits).not.toContain('POST /channels/direct');
     expect(hits).not.toContain('POST /posts/search');
   });
@@ -424,7 +428,7 @@ describe('search_posts in: filters', () => {
     test('without the group DM, in: is an error without searching, and -in: drops the condition; neither creates it', async () => {
       routes = known();
       const call = setup();
-      expect(await call('search_posts', { terms: 'x in:@bob,carol' }, true)).toContain('@bob, @carol とのグループ DM はまだありません。');
+      expect(await call('search_posts', { terms: 'x in:@bob,carol' }, true)).toContain('There is no group DM with @bob, @carol yet.');
       expect(hits).not.toContain('POST /posts/search');
       await call('search_posts', { terms: 'x -in:@bob,carol' });
       expect(sent()).toBe('x');
@@ -432,10 +436,10 @@ describe('search_posts in: filters', () => {
     });
 
     test.each([
-      ['x in:@bob,ghost', 'ユーザーが見つかりません: @ghost。'],
-      ['x -in:@bob,ghost', 'ユーザーが見つかりません: @ghost。'],
-      ['x in:@bob,me', 'グループ DM には、自分以外に 2 人以上を指定してください。'],
-      ['x in:@bob, carol', 'カンマの前後に空白を入れない'],
+      ['x in:@bob,ghost', 'Users not found: @ghost.'],
+      ['x -in:@bob,ghost', 'Users not found: @ghost.'],
+      ['x in:@bob,me', 'A group DM needs 2 or more users besides yourself.'],
+      ['x in:@bob, carol', 'no spaces around the commas'],
       ['x in:@bob ,carol', 'in:@bob の後の「,carol」: 検索の条件では @a,b のようにカンマの前後に空白を入れずに書いてください。'],
       ['x in:@bob , carol', 'in:@bob の後の「,」'],
       ['x in: @bob ,carol', 'in: @bob の後の「,carol」'],
@@ -478,12 +482,12 @@ describe('search_posts in: filters', () => {
 
     test('in:@bob、 is refused for its separator', async () => {
       routes = withGroup();
-      expect(await setup()('search_posts', { terms: 'x in:@bob、' }, true)).toContain('@a,b の区切りは半角のカンマ（,）で書いてください。');
+      expect(await setup()('search_posts', { terms: 'x in:@bob、' }, true)).toContain('Separate @a,b with a half-width comma (,).');
     });
 
     test('in:@bob、carol is refused for its separator', async () => {
       routes = withGroup();
-      expect(await setup()('search_posts', { terms: 'x in:@bob、carol' }, true)).toContain('@a,b の区切りは半角のカンマ（,）で書いてください。');
+      expect(await setup()('search_posts', { terms: 'x in:@bob、carol' }, true)).toContain('Separate @a,b with a half-width comma (,).');
     });
 
     test('the space check runs before any lookup', async () => {
@@ -500,13 +504,13 @@ describe('search_posts in: filters', () => {
 
   test('in:@user answered 403 by the user lookup, as with restricted user visibility, is a user not found', async () => {
     routes = { ...base(), 'GET /users/username/bob': () => Response.json({ id: 'api.context.permissions.app_error' }, { status: 403 }) };
-    expect(await setup()('search_posts', { terms: 'x in:@bob' }, true)).toContain('ユーザー「@bob」が見つかりません。');
+    expect(await setup()('search_posts', { terms: 'x in:@bob' }, true)).toContain('User "@bob" not found.');
     expect(hits).not.toContain('POST /posts/search');
   });
 
   test('a 403 from the teams lookup for in:@user is not reported as a missing user', async () => {
     routes = { ...base(), 'GET /users/me/teams': () => Response.json({ id: 'api.context.permissions.app_error' }, { status: 403 }) };
-    expect(await setup()('search_posts', { terms: 'x in:@bob' }, true)).not.toContain('ユーザー「@bob」が見つかりません。');
+    expect(await setup()('search_posts', { terms: 'x in:@bob' }, true)).not.toContain('User "@bob" not found.');
   });
 
   describe('within one search', () => {
@@ -570,7 +574,7 @@ describe('search_posts in: filters', () => {
 
   test('in:@ with no name says the user name is empty', async () => {
     routes = base();
-    expect(await setup()('search_posts', { terms: 'x in:@' }, true)).toContain('ユーザー名が空です。');
+    expect(await setup()('search_posts', { terms: 'x in:@' }, true)).toContain('The user name is empty.');
   });
 
   test.each([
@@ -581,8 +585,8 @@ describe('search_posts in: filters', () => {
     ['x in:team-a/private', 'チャンネル「team-a/private」が見つかりません。名前の誤りなら search_channels で確かめてください。'],
     ['x in:team-c/town', 'チャンネル「team-c/town」を見る権限がありません（参加していないチームのチャンネルや、見る権限の無い公開チャンネルなど）。'],
     ['x in:nowhere', 'チャンネル「nowhere」が見つかりません。名前の誤りなら search_channels で確かめてください。参加していない非公開チャンネルとアーカイブ済みのチャンネルは名前では見つかりません（アーカイブ済みのチャンネルは、参加していたなら、利用者に ID を確かめて in: に ID で指定すれば検索できます）。'],
-    ['x in:@ghost', 'ユーザー「@ghost」が見つかりません。'],
-    ['x -in:@ghost', 'ユーザー「@ghost」が見つかりません。'],
+    ['x in:@ghost', 'User "@ghost" not found.'],
+    ['x -in:@ghost', 'User "@ghost" not found.'],
   ])('%j is an input error without searching', async (terms, message) => {
     routes = base();
     const out = await setup()('search_posts', { terms }, true);
@@ -604,7 +608,7 @@ test('search_posts looks up the names of the users who reacted, and notes a post
   };
   const out = await setup()('search_posts', { terms: 'x' });
   expect(bodies['/users/ids']).toEqual(['u1', 'u2']);
-  expect(out).toContain('リアクション: :+1: 1（@bob）');
+  expect(out).toContain('Reactions: :+1: 1 (@bob)');
   expect(out).toContain('（本文かメッセージ添付を 4000 文字で切った投稿があります）');
 });
 
@@ -668,7 +672,7 @@ test('search_channels fails rather than leaving the DMs out when their partners 
     'GET /users/me/channels': () => [{ id: 'd'.repeat(26), type: 'D', name: 'u1__u2', display_name: '', team_id: '' }],
     'POST /users/ids': () => new Response('oops', { status: 503 }),
   };
-  expect(await setup()('search_channels', { query: 'bob' }, true)).toContain('Mattermost に一時的に接続できません');
+  expect(await setup()('search_channels', { query: 'bob' }, true)).toContain('Cannot connect to Mattermost for the moment');
 });
 
 test('search_users notes the 100-result cap', async () => {
@@ -716,18 +720,20 @@ describe('get_post', () => {
 
   test('notes at the end that the message was cut', async () => {
     routes = { ...base, [`GET /posts/${ROOT}`]: () => post({ id: ROOT, message: 'x'.repeat(4001) }) };
-    expect((await setup()('get_post', { post: ROOT })).split('\n').at(-1)).toBe(`（${BODY_CUT_NOTE}）`);
-    expect(BODY_CUT_NOTE).toBe('本文を 4000 文字で切りました');
+    expect((await setup()('get_post', { post: ROOT })).split('\n').at(-1)).toBe(`（${bodyCutNote()}）`);
+    expect(bodyCutNote()).toBe('The body was cut at 4000 characters');
   });
 
   test('notes cut message attachments only where they were cut, not again at the end', async () => {
     routes = { ...base, [`GET /posts/${ROOT}`]: () => post({ id: ROOT, message: '', props: { attachments: [{ text: 'x'.repeat(4001) }] } }) };
     const out = await setup()('get_post', { post: ROOT });
-    expect(out.match(/切りました/g)).toHaveLength(1);
-    expect(out).toContain('\n（メッセージ添付をここで切りました。続きは Mattermost の画面で確認してください）\n');
+    expect(out.match(/cut here/g)).toHaveLength(1);
+    expect(out).toContain('\n(Message attachments were cut here. See the rest in the Mattermost UI.)\n');
   });
 
   test('looks up exactly 1,000 users (the author and 999 reacting users) in one call to /users/ids', async () => {
+    // Run in ja: a reactions line in English is longer, and fewer than 1,000 users fit on it.
+    setLocale('ja');
     const reactions = Array.from({ length: 999 }, (_, i) => ({ user_id: `r${String(i).padStart(4, '0')}`, emoji_name: `e${String(Math.floor(i / 10)).padStart(2, '0')}`.slice(-2), create_at: i }));
     const asked: string[][] = [];
     routes = { ...base, [`GET /posts/${ROOT}`]: () => post({ id: ROOT, metadata: { reactions } }),
@@ -764,7 +770,7 @@ describe('get_post', () => {
 
   test('turns 403 from GET /posts/{id} into a permission message', async () => {
     routes = { ...base, [`GET /posts/${ROOT}`]: mmError(403) };
-    expect(await setup()('get_post', { post: ROOT }, true)).toBe('この投稿を見る権限がありません（参加していない非公開チャンネルなど）。参加しているはずなら、Mattermost の一時的な障害の可能性があります。少し待ってから再試行してください。続くなら、チャンネルから外されたか、サーバーの権限の設定で読む権限が外されている可能性があるので、管理者に確かめてください。');
+    expect(await setup()('get_post', { post: ROOT }, true)).toBe('You do not have permission to view this post (for example, in a private channel you have not joined). If you should be a member, this may be a temporary Mattermost failure. Wait a moment and retry. If it persists, you may have been removed from the channel, or the read permission may have been removed in the server\'s permission settings; ask an administrator to check.');
   });
 
   test('turns 404 from GET /posts/{id} into a not-found message', async () => {
@@ -775,25 +781,25 @@ describe('get_post', () => {
   test('words 403 and 404 from fetching the post\'s channel, and leaves a 403 from a later API call as the generic Mattermost error', async () => {
     routes = { ...base, [`GET /posts/${ROOT}`]: () => post({ id: ROOT }), [`GET /channels/${C}`]: mmError(403) };
     const call = setup();
-    expect(await call('get_post', { post: ROOT }, true)).toBe('この投稿のチャンネルを見る権限がありません。参加しているはずなら、Mattermost の一時的な障害の可能性があります。少し待ってから再試行してください。続くなら、チャンネルから外されたか、サーバーの権限の設定で読む権限が外されている可能性があるので、管理者に確かめてください。');
+    expect(await call('get_post', { post: ROOT }, true)).toBe('この投稿のチャンネルを見る権限がありません。 If you should be a member, this may be a temporary Mattermost failure. Wait a moment and retry. If it persists, you may have been removed from the channel, or the read permission may have been removed in the server\'s permission settings; ask an administrator to check.');
     routes[`GET /channels/${C}`] = mmError(404);
     expect(await call('get_post', { post: ROOT }, true)).toBe('この投稿のチャンネルが見つかりません（取得の合間に削除されたなど）。');
     routes = { ...base, [`GET /posts/${ROOT}`]: () => post({ id: ROOT }), [`GET /teams/${T}`]: mmError(403) };
-    expect(await call('get_post', { post: ROOT }, true)).toContain('Mattermost がエラーを返しました（403）');
+    expect(await call('get_post', { post: ROOT }, true)).toContain('Mattermost returned an error (403)');
   });
 
   test('read_thread words 403 and 404 from fetching the post and its channel as get_post does', async () => {
     routes = { ...base, [`GET /posts/${ROOT}`]: mmError(403) };
     const call = setup();
-    expect(await call('read_thread', { post_id: ROOT }, true)).toBe('この投稿を見る権限がありません（参加していない非公開チャンネルなど）。参加しているはずなら、Mattermost の一時的な障害の可能性があります。少し待ってから再試行してください。続くなら、チャンネルから外されたか、サーバーの権限の設定で読む権限が外されている可能性があるので、管理者に確かめてください。');
+    expect(await call('read_thread', { post_id: ROOT }, true)).toBe('You do not have permission to view this post (for example, in a private channel you have not joined). If you should be a member, this may be a temporary Mattermost failure. Wait a moment and retry. If it persists, you may have been removed from the channel, or the read permission may have been removed in the server\'s permission settings; ask an administrator to check.');
     routes = { ...base, [`GET /posts/${ROOT}`]: mmError(404) };
     expect(await call('read_thread', { post_id: ROOT }, true)).toBe('投稿が見つかりません（削除されたか、存在しません）。');
     routes = { ...base, [`GET /posts/${ROOT}`]: () => post({ id: ROOT }), [`GET /channels/${C}`]: mmError(403) };
-    expect(await call('read_thread', { post_id: ROOT }, true)).toBe('この投稿のチャンネルを見る権限がありません。参加しているはずなら、Mattermost の一時的な障害の可能性があります。少し待ってから再試行してください。続くなら、チャンネルから外されたか、サーバーの権限の設定で読む権限が外されている可能性があるので、管理者に確かめてください。');
+    expect(await call('read_thread', { post_id: ROOT }, true)).toBe('この投稿のチャンネルを見る権限がありません。 If you should be a member, this may be a temporary Mattermost failure. Wait a moment and retry. If it persists, you may have been removed from the channel, or the read permission may have been removed in the server\'s permission settings; ask an administrator to check.');
     routes[`GET /channels/${C}`] = mmError(404);
     expect(await call('read_thread', { post_id: ROOT }, true)).toBe('この投稿のチャンネルが見つかりません（取得の合間に削除されたなど）。');
     routes = { ...base, [`GET /posts/${ROOT}`]: () => post({ id: ROOT }), [`GET /posts/${ROOT}/thread`]: mmError(403) };
-    expect(await call('read_thread', { post_id: ROOT }, true)).toBe('このスレッドを見る権限がありません。参加しているはずなら、Mattermost の一時的な障害の可能性があります。少し待ってから再試行してください。続くなら、チャンネルから外されたか、サーバーの権限の設定で読む権限が外されている可能性があるので、管理者に確かめてください。');
+    expect(await call('read_thread', { post_id: ROOT }, true)).toBe('このスレッドを見る権限がありません。 If you should be a member, this may be a temporary Mattermost failure. Wait a moment and retry. If it persists, you may have been removed from the channel, or the read permission may have been removed in the server\'s permission settings; ask an administrator to check.');
     routes[`GET /posts/${ROOT}/thread`] = mmError(404);
     expect(await call('read_thread', { post_id: ROOT }, true)).toBe('このスレッドが見つかりません（取得の合間に削除されたなど）。');
   });
@@ -863,7 +869,7 @@ describe('list_my_channels', () => {
 
   test('fails on a rate limit while reading the partners\' names, as dmLabel does', async () => {
     routes = { ...base(), 'POST /users/ids': () => new Response(null, { status: 429, headers: { 'x-ratelimit-reset': '7' } }) };
-    expect(await setup()('list_my_channels', {}, true)).toContain('呼び出しが多すぎます');
+    expect(await setup()('list_my_channels', {}, true)).toContain('Too many calls');
   });
 
   test('lists every channel the user is in, newest post first (ties by channel_id), with team, name, kind, ids and the last post time', async () => {
@@ -939,7 +945,7 @@ describe('list_my_channels', () => {
   test('rejects a cursor from another tool', async () => {
     routes = base();
     const out = await setup()('list_my_channels', { cursor: Buffer.from(JSON.stringify({ offset: 0, per_page: 20 })).toString('base64url') }, true);
-    expect(out).toBe('cursor が不正です。前回の出力の next_cursor をそのまま渡してください。');
+    expect(out).toBe('The cursor is invalid. Pass next_cursor from the previous output as it is.');
   });
 });
 
@@ -1050,7 +1056,7 @@ describe('get_channel', () => {
     const call = setup();
     const first = await call('get_channel', { channel: C, pinned_limit: 1 });
     const out = await call('get_channel', { channel: OTHER, cursor: cursorIn(first) }, true);
-    expect(out).toBe('cursor が不正です。前回の出力の next_cursor をそのまま渡してください。');
+    expect(out).toBe('The cursor is invalid. Pass next_cursor from the previous output as it is.');
   });
 
   test('shows a DM given as @username with its kind', async () => {
@@ -1072,7 +1078,7 @@ describe('get_channel', () => {
 
   test('turns 403 from fetching the channel into a permission message', async () => {
     routes = { ...base(), [`GET /channels/${C}`]: mmError(403) };
-    expect(await setup()('get_channel', { channel: C }, true)).toBe('このチャンネルを見る権限がありません（参加していない非公開チャンネルなど）。参加しているはずなら、Mattermost の一時的な障害の可能性があります。少し待ってから再試行してください。続くなら、チャンネルから外されたか、サーバーの権限の設定で読む権限が外されている可能性があるので、管理者に確かめてください。');
+    expect(await setup()('get_channel', { channel: C }, true)).toBe('このチャンネルを見る権限がありません（参加していない非公開チャンネルなど）。 If you should be a member, this may be a temporary Mattermost failure. Wait a moment and retry. If it persists, you may have been removed from the channel, or the read permission may have been removed in the server\'s permission settings; ask an administrator to check.');
   });
 
   test('words a 403 by team/channel as a channel of a team not joined or a public channel not visible, not a private channel', async () => {
@@ -1093,7 +1099,7 @@ describe('get_channel', () => {
     expect(out).not.toContain('ピン留め: 0 件');
     expect(out).not.toContain('続きはありません');
     routes[`GET /channels/${C}/pinned`] = mmError(404);
-    expect(await call('get_channel', { channel: C }, true)).toContain('Mattermost がエラーを返しました（404）');
+    expect(await call('get_channel', { channel: C }, true)).toContain('Mattermost returned an error (404)');
   });
 
   test('on 403 from fetching the next page of pinned posts, says so as an error, and leaves 404 as the generic error', async () => {
@@ -1102,14 +1108,14 @@ describe('get_channel', () => {
     const first = await call('get_channel', { channel: C, pinned_limit: 1 });
     const cursor = /next_cursor: (\S+)/.exec(first)![1];
     routes[`GET /channels/${C}/pinned`] = mmError(403);
-    expect(await call('get_channel', { channel: C, cursor }, true)).toBe('このチャンネルのピン留めを取得できません（参加していないか、一時的な障害か、権限の設定）。参加しているはずなら、Mattermost の一時的な障害の可能性があります。少し待ってから再試行してください。続くなら、チャンネルから外されたか、サーバーの権限の設定で読む権限が外されている可能性があるので、管理者に確かめてください。');
+    expect(await call('get_channel', { channel: C, cursor }, true)).toBe('このチャンネルのピン留めを取得できません（参加していないか、一時的な障害か、権限の設定）。 If you should be a member, this may be a temporary Mattermost failure. Wait a moment and retry. If it persists, you may have been removed from the channel, or the read permission may have been removed in the server\'s permission settings; ask an administrator to check.');
     routes[`GET /channels/${C}/pinned`] = mmError(404);
-    expect(await call('get_channel', { channel: C, cursor }, true)).toContain('Mattermost がエラーを返しました（404）');
+    expect(await call('get_channel', { channel: C, cursor }, true)).toContain('Mattermost returned an error (404)');
   });
 
   test('a 404 from looking the team up by name, as a passing failure gives, also points to retrying', async () => {
     routes = { ...base(), 'GET /teams/name/team-a/channels/name/nope': mmError(404, 'app.team.get_by_name.app_error') };
-    expect(await setup()('get_channel', { channel: 'team-a/nope' }, true)).toBe('チャンネルが見つかりません（参加していない非公開チャンネルとアーカイブ済みのチャンネルは、名前で指定すると Mattermost はこの結果を返します。アーカイブ済みなら、チャンネル ID を利用者に確かめて ID で指定してください）。名前の誤りなら search_channels で確かめてください。参加しているはずなら、Mattermost の一時的な障害の可能性があります。少し待ってから再試行してください。続くなら、チャンネルから外されたか、サーバーの権限の設定で読む権限が外されている可能性があるので、管理者に確かめてください。');
+    expect(await setup()('get_channel', { channel: 'team-a/nope' }, true)).toBe('チャンネルが見つかりません（参加していない非公開チャンネルとアーカイブ済みのチャンネルは、名前で指定すると Mattermost はこの結果を返します。アーカイブ済みなら、チャンネル ID を利用者に確かめて ID で指定してください）。名前の誤りなら search_channels で確かめてください。 If you should be a member, this may be a temporary Mattermost failure. Wait a moment and retry. If it persists, you may have been removed from the channel, or the read permission may have been removed in the server\'s permission settings; ask an administrator to check.');
   });
 
   test('turns 404 from fetching the channel into a not-found message, pointing to retrying only when looked up by team/name', async () => {
@@ -1118,9 +1124,9 @@ describe('get_channel', () => {
     expect(await call('get_channel', { channel: C }, true)).toBe('チャンネルが見つかりません。ID の誤りなら search_channels で確かめてください。');
     // A 404 without Mattermost's id, as a proxy may give, is read as one by name, which points to retrying.
     routes[`GET /channels/${C}`] = () => new Response('not found', { status: 404 });
-    expect(await call('get_channel', { channel: C }, true)).toContain('名前の誤りなら search_channels で確かめてください。参加しているはずなら');
+    expect(await call('get_channel', { channel: C }, true)).toContain('名前の誤りなら search_channels で確かめてください。 If you should be a member');
     routes['GET /teams/name/team-a/channels/name/nope'] = mmError(404, 'app.channel.get_by_name.missing.app_error');
-    expect(await call('get_channel', { channel: 'team-a/nope' }, true)).toBe('チャンネルが見つかりません（参加していない非公開チャンネルとアーカイブ済みのチャンネルは、名前で指定すると Mattermost はこの結果を返します。アーカイブ済みなら、チャンネル ID を利用者に確かめて ID で指定してください）。名前の誤りなら search_channels で確かめてください。参加しているはずなら、Mattermost の一時的な障害の可能性があります。少し待ってから再試行してください。続くなら、チャンネルから外されたか、サーバーの権限の設定で読む権限が外されている可能性があるので、管理者に確かめてください。');
+    expect(await call('get_channel', { channel: 'team-a/nope' }, true)).toBe('チャンネルが見つかりません（参加していない非公開チャンネルとアーカイブ済みのチャンネルは、名前で指定すると Mattermost はこの結果を返します。アーカイブ済みなら、チャンネル ID を利用者に確かめて ID で指定してください）。名前の誤りなら search_channels で確かめてください。 If you should be a member, this may be a temporary Mattermost failure. Wait a moment and retry. If it persists, you may have been removed from the channel, or the read permission may have been removed in the server\'s permission settings; ask an administrator to check.');
   });
 
   test('does not turn errors about the user or the team into the channel messages', async () => {
@@ -1131,8 +1137,8 @@ describe('get_channel', () => {
       'GET /teams/name/no-team/channels/name/town': mmError(404, 'app.team.get_by_name.missing.app_error'),
     };
     const call = setup();
-    expect(await call('get_channel', { channel: '@nobody' }, true)).toBe('ユーザー「@nobody」が見つかりません。');
-    expect(await call('get_channel', { channel: 'no-team/town' }, true)).toContain('Mattermost がエラーを返しました（404）');
+    expect(await call('get_channel', { channel: '@nobody' }, true)).toBe('User "@nobody" not found.');
+    expect(await call('get_channel', { channel: 'no-team/town' }, true)).toContain('Mattermost returned an error (404)');
   });
 });
 
@@ -1534,7 +1540,7 @@ describe('get_unreads', () => {
     };
     const out = await setup()('get_unreads', {});
     expect(bodies['/users/ids']).toContain('u3');
-    expect(out).toContain('リアクション: :eyes: 1（@carol）');
+    expect(out).toContain('Reactions: :eyes: 1 (@carol)');
   });
 
   test('says that a thread root has reactions when the threads API gives only has_reactions', async () => {
@@ -1549,7 +1555,7 @@ describe('get_unreads', () => {
     };
     const out = await setup()('get_unreads', {});
     expect([...(bodies['/users/ids'] as string[])].sort()).toEqual(['u1', 'u2']);
-    expect(out).toContain('リアクションあり（get_post で確認できます）');
+    expect(out).toContain('Has reactions (check with get_post)');
   });
 
   test('says when there is nothing unread', async () => {
@@ -1612,7 +1618,7 @@ describe('get_unreads', () => {
   test('rejects a cursor from another tool', async () => {
     routes = base();
     const out = await setup()('get_unreads', { cursor: Buffer.from(JSON.stringify({ offset: 0, per_page: 5 })).toString('base64url') }, true);
-    expect(out).toContain('cursor が不正です');
+    expect(out).toContain('The cursor is invalid');
   });
 
   test('stays within 2 + 1 + (members pages) + 1 + 4T + 1 Mattermost calls, in that order, and never marks anything read', async () => {
@@ -1778,7 +1784,7 @@ describe('get_mentions', () => {
   test('rejects a cursor from another tool', async () => {
     routes = base();
     const out = await setup()('get_mentions', { cursor: Buffer.from(JSON.stringify({ page: 1, per_page: 5 })).toString('base64url') }, true);
-    expect(out).toContain('cursor が不正です');
+    expect(out).toContain('The cursor is invalid');
   });
 
   describe('with unread_only', () => {
@@ -1949,7 +1955,7 @@ describe('get_file', () => {
     const out = await setup()('get_file', { file_id: F });
     expect(hits).toEqual([INFO, PREVIEW]);
     expect(image()).toEqual({ type: 'image', data: Buffer.from(b).toString('base64'), mimeType: 'image/jpeg' });
-    for (const s of [F, 'photo.jpg', 'image/jpeg', '58626 バイト', '1920x1080']) expect(out).toContain(s);
+    for (const s of [F, 'photo.jpg', 'image/jpeg', '58626 bytes', '1920x1080']) expect(out).toContain(s);
   });
 
   test.each([['PNG', PNG, 'image/png'], ['GIF', GIF, 'image/gif'], ['WebP', WEBP, 'image/webp']])(
@@ -1971,7 +1977,7 @@ describe('get_file', () => {
     const out = await setup()('get_file', { file_id: F });
     expect(hits).toEqual([INFO, FILE]);
     expect(last.content).toHaveLength(1);
-    for (const s of ['IMG.heic', 'image/heic', '900 バイト', 'テキストとして読めない形式']) expect(out).toContain(s);
+    for (const s of ['IMG.heic', 'image/heic', '900 bytes', 'テキストとして読めない形式']) expect(out).toContain(s);
   });
 
   describe('text files', () => {
@@ -2262,12 +2268,12 @@ describe('get_file', () => {
       ['a 504', () => new Response('gateway timeout', { status: 504 })],
     ])('%s while fetching the content stays an error', async (_, route) => {
       routes = { [INFO]: textInfo('a.txt', 5), [FILE]: route };
-      expect(await setup()('get_file', { file_id: F }, true)).toContain('再試行');
+      expect(await setup()('get_file', { file_id: F }, true)).toContain('retry');
     });
 
     test('a plain-text 500 for an image preview stays an error', async () => {
       routes = { [INFO]: info({ width: 200, height: 100 }), [PREVIEW]: () => new Response("seeker can't seek\n", { status: 500, headers: { 'content-type': 'text/plain' } }) };
-      expect(await setup()('get_file', { file_id: F }, true)).toContain('再試行');
+      expect(await setup()('get_file', { file_id: F }, true)).toContain('retry');
     });
 
     test('says an ABAC policy denies the file when its information is refused', async () => {
@@ -2392,7 +2398,7 @@ describe('get_file', () => {
 
   test('says the caller may not see the file on a 403', async () => {
     routes = { [INFO]: mmError(403, 'api.context.permissions.app_error') };
-    expect(await setup()('get_file', { file_id: F }, true)).toBe('このファイルを見る権限がありません（参加していない非公開チャンネルのファイルなど）。参加しているはずなら、Mattermost の一時的な障害の可能性があります。少し待ってから再試行してください。続くなら、チャンネルから外されたか、サーバーの権限の設定で読む権限が外されている可能性があるので、管理者に確かめてください。');
+    expect(await setup()('get_file', { file_id: F }, true)).toBe('このファイルを見る権限がありません（参加していない非公開チャンネルのファイルなど）。 If you should be a member, this may be a temporary Mattermost failure. Wait a moment and retry. If it persists, you may have been removed from the channel, or the read permission may have been removed in the server\'s permission settings; ask an administrator to check.');
   });
 
   test('says the file is not found on a 404', async () => {
@@ -2421,8 +2427,8 @@ describe('get_file', () => {
 test('read_channel says of a channel name it cannot find that an archived channel cannot be written to but can be read by ID', async () => {
   routes = { 'GET /users/me/teams': () => [{ id: 't'.repeat(26), name: 'team-a' }] };
   const out = await setup()('read_channel', { channel: 'nowhere' }, true);
-  expect(out).toContain('チャンネル「nowhere」が見つかりません。');
-  expect(out).toContain('アーカイブ済みのチャンネルは書き込めませんが、読むだけなら利用者に ID を確かめて ID で指定できます');
+  expect(out).toContain('Channel "nowhere" was not found.');
+  expect(out).toContain('an archived channel cannot be written to, but to read it, ask the user for its ID and specify it by ID');
 });
 
 describe('read_channel', () => {
@@ -2526,7 +2532,7 @@ describe('read_channel', () => {
 
   test('words 403 from fetching the channel as get_channel does', async () => {
     routes = refused(403);
-    expect(await setup()('read_channel', { channel: CH }, true)).toBe('このチャンネルを見る権限がありません（参加していない非公開チャンネルなど）。参加しているはずなら、Mattermost の一時的な障害の可能性があります。少し待ってから再試行してください。続くなら、チャンネルから外されたか、サーバーの権限の設定で読む権限が外されている可能性があるので、管理者に確かめてください。');
+    expect(await setup()('read_channel', { channel: CH }, true)).toBe('このチャンネルを見る権限がありません（参加していない非公開チャンネルなど）。 If you should be a member, this may be a temporary Mattermost failure. Wait a moment and retry. If it persists, you may have been removed from the channel, or the read permission may have been removed in the server\'s permission settings; ask an administrator to check.');
   });
 
   test('words 404 from fetching the channel, with no channel of that name either, as get_channel does', async () => {
@@ -2538,13 +2544,13 @@ describe('read_channel', () => {
     routes = membersMe(404, 'app.channel.get_member.missing.app_error');
     const out = await setup()('read_channel', { channel: CH, from: 'unread' }, true);
     expect(out).toBe('このチャンネルに参加していないため、未読の位置がありません。from: "latest" で読んでください。');
-    expect(out).not.toContain('再試行');
+    expect(out).not.toContain('retry');
   });
 
   test('when members/me answers 403, says it may be not joined or a passing failure, without saying which', async () => {
     routes = membersMe(403, 'api.context.permissions.app_error');
     const out = await setup()('read_channel', { channel: CH, from: 'unread' }, true);
-    expect(out).toBe('このチャンネルの未読の位置を取得できませんでした（参加していないか、Mattermost の一時的な障害）。参加していないなら from: "latest" で読んでください。参加しているはずなら、少し待ってから再試行してください。続くなら、チャンネルから外されたか、サーバーの権限の設定で読む権限が外されている可能性があるので、管理者に確かめてください。');
+    expect(out).toBe('このチャンネルの未読の位置を取得できませんでした（参加していないか、Mattermost の一時的な障害）。参加していないなら from: "latest" で読んでください。 If you should be a member, wait a moment and retry. If it persists, you may have been removed from the channel, or the read permission may have been removed in the server\'s permission settings; ask an administrator to check.');
   });
 
   test('a newest-first cursor keeps reading newest first even with from unread', async () => {
@@ -2690,8 +2696,8 @@ describe('read_channel with since and until', () => {
     [{ since: '2026-11-03T10:00', from: 'latest' }, 'since と from は同時に指定できません'],
     [{ since: '2026-11-03T10:00', from: 'unread' }, 'since と from は同時に指定できません'],
     [{ since: '2026-11-03T10:00', until: '2026-11-03T10:00' }, 'until は since より後'],
-    [{ since: '2026-11-03' }, 'since「2026-11-03」を日時として読めません'],
-    [{ since: '2026-11-03T10:00', until: 'later' }, 'until「later」を日時として読めません'],
+    [{ since: '2026-11-03' }, 'since "2026-11-03" cannot be read as a date-time'],
+    [{ since: '2026-11-03T10:00', until: 'later' }, 'until "later" cannot be read as a date-time'],
   ])('refuses %j before calling Mattermost', async (args, message) => {
     routes = base();
     const out = await setup()('read_channel', { channel: CH, ...args }, true);
@@ -3316,7 +3322,7 @@ describe('list_saved_posts', () => {
     routes = { ...base(), [FLAGGED]: byOffset([p]), 'POST /users/ids': () => [{ id: 'u1', username: 'alice' }, { id: 'u2', username: 'bob' }] };
     const out = await setup()('list_saved_posts', {});
     expect(bodies['/users/ids']).toEqual(['u1', 'u2']);
-    expect(out).toContain('リアクション: :+1: 1（@bob）');
+    expect(out).toContain('Reactions: :+1: 1 (@bob)');
     expect(out).toContain('（本文かメッセージ添付を 4000 文字で切った投稿があります）');
   });
 
@@ -3330,7 +3336,7 @@ describe('list_saved_posts', () => {
   test('rejects a cursor from another tool', async () => {
     routes = base();
     const out = await setup()('list_saved_posts', { cursor: Buffer.from(JSON.stringify({ offset: 0, per_page: 20 })).toString('base64url') }, true);
-    expect(out).toBe('cursor が不正です。前回の出力の next_cursor をそのまま渡してください。');
+    expect(out).toBe('The cursor is invalid. Pass next_cursor from the previous output as it is.');
   });
 });
 
@@ -3391,7 +3397,7 @@ describe('search_files', () => {
     routes = base();
     const out = await setup()('search_files', { terms: 'fff' });
     expect(out).toContain('ファイルの検索: fff');
-    expect(out).toContain(`file_id: ${F1}、種類: application/pdf、1234 バイト、名前: fff.pdf`);
+    expect(out).toContain(`file_id: ${F1}, type: application/pdf, 1234 bytes, name: fff.pdf`);
     expect(out).toContain('@bob | 2026-10-01T00:00:00Z | 2026-10-01T09:00:00+09:00');
     expect(out).toContain(`チーム: team-a（team_id: ${TA}） | チャンネル: channel_id: ${A}、name: town、表示名: Town`);
     expect(out).toContain(`post_id: ${P1}`);
@@ -3467,7 +3473,7 @@ describe('search_files', () => {
   test('rejects a search_posts cursor, which has the same page and per_page', async () => {
     routes = base();
     const out = await setup()('search_files', { terms: 'x', cursor: Buffer.from(JSON.stringify({ page: 1, per_page: 20 })).toString('base64url') }, true);
-    expect(out).toBe('cursor が不正です。前回の出力の next_cursor をそのまま渡してください。');
+    expect(out).toBe('The cursor is invalid. Pass next_cursor from the previous output as it is.');
   });
 
   describe('on a server with file search turned off', () => {
@@ -3491,7 +3497,7 @@ describe('search_files', () => {
 
   test('on a server with file search on, an in: that cannot be resolved is reported after one "*" request', async () => {
     routes = base();
-    expect(await setup()('search_files', { terms: 'x in:nowhere' }, true)).toBe('チャンネル「nowhere」が見つかりません。名前の誤りなら search_channels で確かめてください。参加していない非公開チャンネルとアーカイブ済みのチャンネルは名前では見つかりません（アーカイブ済みのチャンネルは、参加していたなら、利用者に ID を確かめて in: に ID で指定すれば検索できます）。参加しているはずなら、Mattermost の一時的な障害の可能性があります。少し待ってから再試行してください。続くなら、チャンネルから外されたか、サーバーの権限の設定で読む権限が外されている可能性があるので、管理者に確かめてください。');
+    expect(await setup()('search_files', { terms: 'x in:nowhere' }, true)).toBe('チャンネル「nowhere」が見つかりません。名前の誤りなら search_channels で確かめてください。参加していない非公開チャンネルとアーカイブ済みのチャンネルは名前では見つかりません（アーカイブ済みのチャンネルは、参加していたなら、利用者に ID を確かめて in: に ID で指定すれば検索できます）。 If you should be a member, this may be a temporary Mattermost failure. Wait a moment and retry. If it persists, you may have been removed from the channel, or the read permission may have been removed in the server\'s permission settings; ask an administrator to check.');
     expect(searched).toEqual(['*']);
   });
 
@@ -3506,14 +3512,14 @@ describe('search_files', () => {
       searched.push((bodies['/files/search'] as { terms: string }).terms);
       return mmError(500)();
     } };
-    expect(await setup()('search_files', { terms: 'x in:nowhere' }, true)).toBe('チャンネル「nowhere」が見つかりません。名前の誤りなら search_channels で確かめてください。参加していない非公開チャンネルとアーカイブ済みのチャンネルは名前では見つかりません（アーカイブ済みのチャンネルは、参加していたなら、利用者に ID を確かめて in: に ID で指定すれば検索できます）。参加しているはずなら、Mattermost の一時的な障害の可能性があります。少し待ってから再試行してください。続くなら、チャンネルから外されたか、サーバーの権限の設定で読む権限が外されている可能性があるので、管理者に確かめてください。');
+    expect(await setup()('search_files', { terms: 'x in:nowhere' }, true)).toBe('チャンネル「nowhere」が見つかりません。名前の誤りなら search_channels で確かめてください。参加していない非公開チャンネルとアーカイブ済みのチャンネルは名前では見つかりません（アーカイブ済みのチャンネルは、参加していたなら、利用者に ID を確かめて in: に ID で指定すれば検索できます）。 If you should be a member, this may be a temporary Mattermost failure. Wait a moment and retry. If it persists, you may have been removed from the channel, or the read permission may have been removed in the server\'s permission settings; ask an administrator to check.');
     expect(searched).toEqual(['*']);
   });
 
   test('rejects a cursor of another shape', async () => {
     routes = base();
     const out = await setup()('search_files', { terms: 'x', cursor: Buffer.from(JSON.stringify({ offset: 0, per_page: 20 })).toString('base64url') }, true);
-    expect(out).toBe('cursor が不正です。前回の出力の next_cursor をそのまま渡してください。');
+    expect(out).toBe('The cursor is invalid. Pass next_cursor from the previous output as it is.');
   });
 
   // Not repeating the rules of in: here: search_posts covers them, and both tools share resolveInFilters.
@@ -3534,7 +3540,7 @@ describe('search_files', () => {
     test('without a DM, in:@user fails and -in:@user drops the condition', async () => {
       routes = base();
       const call = setup();
-      expect(await call('search_files', { terms: 'x in:@carol' }, true)).toBe('@carol との DM はまだありません。');
+      expect(await call('search_files', { terms: 'x in:@carol' }, true)).toBe('There is no DM with @carol yet.');
       expect(onlyAsked()).toBe(true);
       await call('search_files', { terms: 'x -in:@carol y' });
       expect(sent()).toBe('x y');
@@ -3550,9 +3556,9 @@ describe('search_files', () => {
     test('says a channel is not found, for a name, a channel_id or team/channel answered with 403 or 404, each in its own words, without searching for the terms', async () => {
       routes = { ...base(), [`GET /channels/${B}`]: mmError(403), 'GET /teams/name/team-b/channels/name/dup': mmError(404) };
       const call = setup();
-      expect(await call('search_files', { terms: 'x in:nowhere' }, true)).toBe('チャンネル「nowhere」が見つかりません。名前の誤りなら search_channels で確かめてください。参加していない非公開チャンネルとアーカイブ済みのチャンネルは名前では見つかりません（アーカイブ済みのチャンネルは、参加していたなら、利用者に ID を確かめて in: に ID で指定すれば検索できます）。参加しているはずなら、Mattermost の一時的な障害の可能性があります。少し待ってから再試行してください。続くなら、チャンネルから外されたか、サーバーの権限の設定で読む権限が外されている可能性があるので、管理者に確かめてください。');
-      expect(await call('search_files', { terms: `x -in:${B}` }, true)).toBe(`チャンネル「${B}」を見る権限がありません（参加していない非公開チャンネルなど）。参加しているはずなら、Mattermost の一時的な障害の可能性があります。少し待ってから再試行してください。続くなら、チャンネルから外されたか、サーバーの権限の設定で読む権限が外されている可能性があるので、管理者に確かめてください。`);
-      expect(await call('search_files', { terms: 'x in:team-b/dup' }, true)).toBe('チャンネル「team-b/dup」が見つかりません。名前の誤りなら search_channels で確かめてください。参加していない非公開チャンネルとアーカイブ済みのチャンネルは名前では見つかりません（アーカイブ済みのチャンネルは、参加していたなら、利用者に ID を確かめて in: に ID で指定すれば検索できます）。参加しているはずなら、Mattermost の一時的な障害の可能性があります。少し待ってから再試行してください。続くなら、チャンネルから外されたか、サーバーの権限の設定で読む権限が外されている可能性があるので、管理者に確かめてください。');
+      expect(await call('search_files', { terms: 'x in:nowhere' }, true)).toBe('チャンネル「nowhere」が見つかりません。名前の誤りなら search_channels で確かめてください。参加していない非公開チャンネルとアーカイブ済みのチャンネルは名前では見つかりません（アーカイブ済みのチャンネルは、参加していたなら、利用者に ID を確かめて in: に ID で指定すれば検索できます）。 If you should be a member, this may be a temporary Mattermost failure. Wait a moment and retry. If it persists, you may have been removed from the channel, or the read permission may have been removed in the server\'s permission settings; ask an administrator to check.');
+      expect(await call('search_files', { terms: `x -in:${B}` }, true)).toBe(`チャンネル「${B}」を見る権限がありません（参加していない非公開チャンネルなど）。 If you should be a member, this may be a temporary Mattermost failure. Wait a moment and retry. If it persists, you may have been removed from the channel, or the read permission may have been removed in the server's permission settings; ask an administrator to check.`);
+      expect(await call('search_files', { terms: 'x in:team-b/dup' }, true)).toBe('チャンネル「team-b/dup」が見つかりません。名前の誤りなら search_channels で確かめてください。参加していない非公開チャンネルとアーカイブ済みのチャンネルは名前では見つかりません（アーカイブ済みのチャンネルは、参加していたなら、利用者に ID を確かめて in: に ID で指定すれば検索できます）。 If you should be a member, this may be a temporary Mattermost failure. Wait a moment and retry. If it persists, you may have been removed from the channel, or the read permission may have been removed in the server\'s permission settings; ask an administrator to check.');
       routes[`GET /channels/${B}`] = mmError(404, 'app.channel.get.existing.app_error');
       expect(await call('search_files', { terms: `x in:${B}` }, true)).toBe(`チャンネル「${B}」が見つかりません。ID の誤りなら search_channels で確かめてください。`);
       routes['GET /teams/name/team-b/channels/name/dup'] = mmError(404, 'app.team.get_by_name.missing.app_error');
@@ -3652,32 +3658,32 @@ describe('list_channel_members', () => {
   test('says members of a channel the user has not joined cannot be seen, without asking for the count', async () => {
     routes = { ...base(), 'GET /users': mmError(403, 'api.context.permissions.app_error') };
     const out = await setup()('list_channel_members', { channel: C }, true);
-    expect(out).toBe('このチャンネルのメンバーを見る権限がありません。参加していないチャンネルのメンバーは、公開チャンネルでも見られません。参加しているはずなら、Mattermost の一時的な障害の可能性があります。少し待ってから再試行してください。続くなら、チャンネルから外されたか、サーバーの権限の設定で読む権限が外されている可能性があるので、管理者に確かめてください。');
+    expect(out).toBe('このチャンネルのメンバーを見る権限がありません。参加していないチャンネルのメンバーは、公開チャンネルでも見られません。 If you should be a member, this may be a temporary Mattermost failure. Wait a moment and retry. If it persists, you may have been removed from the channel, or the read permission may have been removed in the server\'s permission settings; ask an administrator to check.');
     expect(hits).not.toContain(`GET /channels/${C}/stats`);
   });
 
   test('says the same when the user leaves the channel between reading the members and the count, and passes other errors of the count through', async () => {
     routes = { ...base(), [`GET /channels/${C}/stats`]: mmError(403, 'api.context.permissions.app_error') };
     const call = setup();
-    expect(await call('list_channel_members', { channel: C }, true)).toBe('このチャンネルのメンバーを見る権限がありません。参加していないチャンネルのメンバーは、公開チャンネルでも見られません。参加しているはずなら、Mattermost の一時的な障害の可能性があります。少し待ってから再試行してください。続くなら、チャンネルから外されたか、サーバーの権限の設定で読む権限が外されている可能性があるので、管理者に確かめてください。');
+    expect(await call('list_channel_members', { channel: C }, true)).toBe('このチャンネルのメンバーを見る権限がありません。参加していないチャンネルのメンバーは、公開チャンネルでも見られません。 If you should be a member, this may be a temporary Mattermost failure. Wait a moment and retry. If it persists, you may have been removed from the channel, or the read permission may have been removed in the server\'s permission settings; ask an administrator to check.');
     routes[`GET /channels/${C}/stats`] = mmError(404);
-    expect(await call('list_channel_members', { channel: C }, true)).toContain('Mattermost がエラーを返しました（404）');
+    expect(await call('list_channel_members', { channel: C }, true)).toContain('Mattermost returned an error (404)');
   });
 
   test('words 403 and 404 from fetching the channel as get_channel does', async () => {
     routes = { ...base(), 'GET /users/me/teams': () => [], [`GET /channels/${C}`]: mmError(403) };
     const call = setup();
-    expect(await call('list_channel_members', { channel: C }, true)).toBe('このチャンネルを見る権限がありません（参加していない非公開チャンネルなど）。参加しているはずなら、Mattermost の一時的な障害の可能性があります。少し待ってから再試行してください。続くなら、チャンネルから外されたか、サーバーの権限の設定で読む権限が外されている可能性があるので、管理者に確かめてください。');
+    expect(await call('list_channel_members', { channel: C }, true)).toBe('このチャンネルを見る権限がありません（参加していない非公開チャンネルなど）。 If you should be a member, this may be a temporary Mattermost failure. Wait a moment and retry. If it persists, you may have been removed from the channel, or the read permission may have been removed in the server\'s permission settings; ask an administrator to check.');
     routes[`GET /channels/${C}`] = mmError(404, 'app.channel.get.existing.app_error');
     const missing = await call('list_channel_members', { channel: C }, true);
     expect(missing).toContain('チャンネルが見つかりません');
-    expect(missing).not.toContain('再試行');
+    expect(missing).not.toContain('retry');
   });
 
   test('rejects a cursor issued for another channel, and one of another shape', async () => {
     routes = base();
     const call = setup();
-    const bad = 'cursor が不正です。前回の出力の next_cursor をそのまま渡してください。';
+    const bad = 'The cursor is invalid. Pass next_cursor from the previous output as it is.';
     const enc = (o: object) => Buffer.from(JSON.stringify(o)).toString('base64url');
     expect(await call('list_channel_members', { channel: C, cursor: enc({ channel_id: OTHER, page: 1, per_page: 1 }) }, true)).toBe(bad);
     expect(await call('list_channel_members', { channel: C, cursor: enc({ page: 1, per_page: 1 }) }, true)).toBe(bad);

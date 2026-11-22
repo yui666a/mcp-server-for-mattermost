@@ -6,8 +6,9 @@ import { randomToken, sha256 } from '../crypto.ts';
 import { log } from '../log.ts';
 import { MmError, RateLimited, Reauthorize } from '../mattermost/client.ts';
 import { MAX_OPEN_UPLOAD_URLS, type HeldFile, type Store } from '../store.ts';
+import { msg } from '../i18n/index.ts';
 import { idArg } from './args.ts';
-import { BODY_CUT_NOTE, indented, InputError, oneLine, truncate, unformat, type MmPost } from './format.ts';
+import { bodyCutNote, indented, InputError, oneLine, truncate, unformat, type MmPost } from './format.ts';
 import { lookPosted, postOnce } from './post.ts';
 import { myTeams, NoDirectChannel, resolveChannel, teamNameOf, type ChannelRef, type Mm, type MmChannel, type ResolvedChannel } from './resolve.ts';
 import { guarded, text, type ToolContext } from './tool.ts';
@@ -319,7 +320,7 @@ async function whereOf(mm: Mm, uid: string, post: OwnPost): Promise<Where> {
 
 const editSchema = {
   post_id: POST_ID,
-  message: z.string().min(1).max(MAX_MESSAGE).describe(`New message, replacing the whole text. To rewrite from earlier output, first reread the post with get_post and remove the 2-space indent from each line. If get_post shows "${BODY_CUT_NOTE}", do not rewrite from the output (the cut part would be lost); ask the user to edit it in Mattermost instead, unless they give you the whole new text.`),
+  message: z.string().min(1).max(MAX_MESSAGE).describe(`New message, replacing the whole text. To rewrite from earlier output, first reread the post with get_post and remove the 2-space indent from each line. If get_post shows "${bodyCutNote()}", do not rewrite from the output (the cut part would be lost); ask the user to edit it in Mattermost instead, unless they give you the whole new text.`),
 };
 type EditArgs = { post_id: string; message: string };
 

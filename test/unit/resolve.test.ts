@@ -50,8 +50,8 @@ test('resolve team/channel, bare name, @user DM, id', async () => {
 
   expect(await resolveUser(mm, ME, '@bob')).toMatchObject({ id: BOB, username: 'bob' });
   expect(await resolveUser(mm, ME, BOB)).toMatchObject({ id: BOB, username: 'bob' });
-  await expect(resolveUser(mm, ME, 'bob')).rejects.toThrow(/@ユーザー名/);
-  await expect(resolveChannel(mm, ME, 'nowhere')).rejects.toThrow(/見つかりません/);
+  await expect(resolveUser(mm, ME, 'bob')).rejects.toThrow(/@username/);
+  await expect(resolveChannel(mm, ME, 'nowhere')).rejects.toThrow(/was not found/);
 });
 
 test('bare name in two teams throws Ambiguous with both candidates', async () => {
@@ -91,7 +91,7 @@ describe('a missing ID that is the name of a channel (26 lower-case letters and 
   test('is not used in place of the missing ID, but named in the error with its team/channel form', async () => {
     const { mm, calls } = fake({ ...routes, [`/teams/${teams[0].id}/channels/name/${NAME}`]: named, [`/teams/name/team-a/channels/name/${NAME}`]: named });
     await expect(resolveChannel(mm, ME, NAME)).rejects.toThrow(new InputError(
-      `チャンネル ID「${NAME}」のチャンネルはありません。ユーザー ID や投稿 ID を渡したのなら、チャンネルの指定ではありません。同じ文字列を名前に持つチャンネルはあります。そのチャンネルを指すときだけ、「team-a/${NAME}」の形で指定してください。\n候補「team-a/${NAME}」の表示名: ${NAME.toUpperCase()}`,
+      `There is no channel with the channel ID "${NAME}". If you passed a user ID or a post ID, it does not identify a channel. A channel with that same string as its name exists. Only to refer to that channel, specify it in the form "team-a/${NAME}".\nCandidate "team-a/${NAME}" display name: ${NAME.toUpperCase()}`,
     ));
     expect(calls).toEqual([`GET /channels/${NAME}`, 'GET /users/me/teams', `GET /teams/${teams[0].id}/channels/name/${NAME}`, `GET /teams/${teams[1].id}/channels/name/${NAME}`]);
     expect(await resolveChannel(mm, ME, `team-a/${NAME}`)).toMatchObject({ id: named.id, name: NAME });
@@ -108,7 +108,7 @@ describe('a missing ID that is the name of a channel (26 lower-case letters and 
   test('puts the display name of a candidate on one line, as anyone who creates the channel can write line breaks in it', async () => {
     const { mm } = fake({ ...routes, [`/teams/${teams[0].id}/channels/name/${NAME}`]: { ...named, display_name: 'a\nb\u2028c' } });
     const e = await resolveChannel(mm, ME, NAME).catch((x) => x);
-    expect(e.message).toContain(`\n候補「team-a/${NAME}」の表示名: a b c`);
+    expect(e.message).toContain(`\nCandidate "team-a/${NAME}" display name: a b c`);
     expect(e.message.split('\n')).toHaveLength(2);
     expect(e.message).not.toMatch(/\u2028/);
   });
@@ -116,12 +116,12 @@ describe('a missing ID that is the name of a channel (26 lower-case letters and 
   test('names a candidate without a display name by its name', async () => {
     const { mm } = fake({ ...routes, [`/teams/${teams[0].id}/channels/name/${NAME}`]: { ...named, display_name: '' } });
     const e = await resolveChannel(mm, ME, NAME).catch((x) => x);
-    expect(e.message).toMatch(new RegExp(`\\n候補「team-a/${NAME}」の表示名: ${NAME}$`));
+    expect(e.message).toMatch(new RegExp(`\\nCandidate "team-a/${NAME}" display name: ${NAME}$`));
   });
 
   test('names every team that has that name', async () => {
     const { mm } = fake({ ...routes, [`/teams/${teams[0].id}/channels/name/${NAME}`]: named, [`/teams/${teams[1].id}/channels/name/${NAME}`]: ch('g'.repeat(26), NAME, teams[1].id) });
-    await expect(resolveChannel(mm, ME, NAME)).rejects.toThrow(`「team-a/${NAME}」か「team-b/${NAME}」の形で指定してください。\n候補「team-a/${NAME}」の表示名: ${NAME.toUpperCase()}\n候補「team-b/${NAME}」の表示名: ${NAME.toUpperCase()}`);
+    await expect(resolveChannel(mm, ME, NAME)).rejects.toThrow(`in the form "team-a/${NAME}" or "team-b/${NAME}".\nCandidate "team-a/${NAME}" display name: ${NAME.toUpperCase()}\nCandidate "team-b/${NAME}" display name: ${NAME.toUpperCase()}`);
   });
 
   test('is not looked up by name after a 403, which means the ID exists', async () => {
@@ -137,7 +137,7 @@ describe('a missing ID that is the name of a channel (26 lower-case letters and 
   test('with upper case, is looked up by name in lower case, which is the only case a channel name has', async () => {
     const upper = 'N'.repeat(26);
     const { mm, calls } = fake({ ...routes, [`/teams/${teams[0].id}/channels/name/${NAME}`]: named });
-    await expect(resolveChannel(mm, ME, upper)).rejects.toThrow(`「team-a/${NAME}」の形で指定してください。\n候補「team-a/${NAME}」の表示名: ${NAME.toUpperCase()}`);
+    await expect(resolveChannel(mm, ME, upper)).rejects.toThrow(`in the form "team-a/${NAME}".\nCandidate "team-a/${NAME}" display name: ${NAME.toUpperCase()}`);
     expect(calls).toContain(`GET /teams/${teams[0].id}/channels/name/${NAME}`);
     await expect(resolveChannel(fake(routes).mm, ME, upper)).rejects.toMatchObject({ status: 404 });
   });
@@ -159,8 +159,8 @@ describe('a missing ID that is the name of a channel (26 lower-case letters and 
 });
 
 test.each([
-  ['team-a/', 'チャンネル名が空です。'],
-  ['@', 'ユーザー名が空です。'],
+  ['team-a/', 'The channel name is empty.'],
+  ['@', 'The user name is empty.'],
 ])('an empty name in %j says which name is empty', async (spec, message) => {
   await expect(resolveChannel(fake(routes).mm, ME, spec)).rejects.toThrow(new InputError(message));
 });
@@ -261,10 +261,10 @@ describe('names are looked up in lower case, which is all Mattermost allows', ()
     const { mm, calls } = fake(routes);
     expect(await resolveChannel(mm, ME, 'Only-A')).toMatchObject({ id: CH_A, teamName: 'team-a' });
     expect(calls).toContain(`GET /teams/${teams[0].id}/channels/name/only-a`);
-    await expect(resolveChannel(mm, ME, 'NoWhere')).rejects.toThrow(new InputError('チャンネル「NoWhere」が見つかりません。名前の誤りなら search_channels で確かめてください。参加していない非公開チャンネルとアーカイブ済みのチャンネルは名前では見つかりません（アーカイブ済みのチャンネルは書き込めませんが、読むだけなら利用者に ID を確かめて ID で指定できます）。参加しているはずなら、Mattermost の一時的な障害の可能性があります。少し待ってから再試行してください。続くなら、チャンネルから外されたか、サーバーの権限の設定で読む権限が外されている可能性があるので、管理者に確かめてください。'));
+    await expect(resolveChannel(mm, ME, 'NoWhere')).rejects.toThrow(new InputError('Channel "NoWhere" was not found. If the name may be wrong, check it with search_channels. Private channels you have not joined and archived channels cannot be found by name (an archived channel cannot be written to, but to read it, ask the user for its ID and specify it by ID). If you should be a member, this may be a temporary Mattermost failure. Wait a moment and retry. If it persists, you may have been removed from the channel, or the read permission may have been removed in the server\'s permission settings; ask an administrator to check.'));
     const e = await resolveChannel(mm, ME, 'General-Dup').catch((x) => x);
     expect(e).toBeInstanceOf(Ambiguous);
-    expect(e.message).toContain('「General-Dup」に当たるチャンネルが複数あります。');
+    expect(e.message).toContain('Several channels match "General-Dup".');
   });
 
   test('team/channel, with the team name in lower case in the result', async () => {
@@ -284,7 +284,7 @@ describe('@user that cannot be looked up', () => {
       if (p === '/users/me/teams') return teams as T;
       throw new MmError(status, id, 'x');
     } };
-    await expect(resolveChannel(mm, ME, spec)).rejects.toThrow(new InputError(`ユーザー「${spec}」が見つかりません。`));
+    await expect(resolveChannel(mm, ME, spec)).rejects.toThrow(new InputError(`User "${spec}" not found.`));
   });
 
   test('a 403 from the teams lookup is not reported as a missing user', async () => {
@@ -298,7 +298,7 @@ describe('@user that cannot be looked up', () => {
 });
 
 test('@、, with no name at all, is left to the name check', async () => {
-  await expect(resolveChannel(fake(routes).mm, ME, '@、')).rejects.toThrow('使えない文字を含みます');
+  await expect(resolveChannel(fake(routes).mm, ME, '@、')).rejects.toThrow('contains characters that cannot be used');
 });
 
 describe('a real channel ID written in upper case', () => {
@@ -329,12 +329,12 @@ describe('a real channel ID written in upper case', () => {
 });
 
 test('a 、 before a word that cannot be a user name is left to the name check, not called a separator', async () => {
-  await expect(resolveChannel(fake(routes).mm, ME, '@bob、議事録')).rejects.toThrow('使えない文字を含みます');
+  await expect(resolveChannel(fake(routes).mm, ME, '@bob、議事録')).rejects.toThrow('contains characters that cannot be used');
 });
 
 test.each(['@bob、carol', '@bob，carol', '@a,b、c', '@bob、', '@bob、、carol', '@bob、@'])('%j is refused for its separator before any request', async (spec) => {
   const { mm, calls } = fake(routes);
-  await expect(resolveChannel(mm, ME, spec)).rejects.toThrow(new InputError('@a,b の区切りは半角のカンマ（,）で書いてください。読点（、）や全角のカンマ（，）は使えません。'));
+  await expect(resolveChannel(mm, ME, spec)).rejects.toThrow(new InputError('Separate @a,b with a half-width comma (,). Ideographic commas (、) and full-width commas (，) are not accepted.'));
   expect(calls).toEqual([]);
 });
 
@@ -354,13 +354,13 @@ describe('format characters before or after a spec are removed, as they slip in 
 
   test('an error shows the spec without them', async () => {
     const e = await resolveChannel(fake(routes).mm, ME, '\u200bnowhere').catch((x) => x);
-    expect(e.message).toBe('チャンネル「nowhere」が見つかりません。名前の誤りなら search_channels で確かめてください。参加していない非公開チャンネルとアーカイブ済みのチャンネルは名前では見つかりません（アーカイブ済みのチャンネルは書き込めませんが、読むだけなら利用者に ID を確かめて ID で指定できます）。参加しているはずなら、Mattermost の一時的な障害の可能性があります。少し待ってから再試行してください。続くなら、チャンネルから外されたか、サーバーの権限の設定で読む権限が外されている可能性があるので、管理者に確かめてください。');
+    expect(e.message).toBe('Channel "nowhere" was not found. If the name may be wrong, check it with search_channels. Private channels you have not joined and archived channels cannot be found by name (an archived channel cannot be written to, but to read it, ask the user for its ID and specify it by ID). If you should be a member, this may be a temporary Mattermost failure. Wait a moment and retry. If it persists, you may have been removed from the channel, or the read permission may have been removed in the server\'s permission settings; ask an administrator to check.');
   });
 });
 
 test.each(['bad\nname', 'bad\u2028name'])('a name with a line break in its middle is named on one line in the error: %j', async (spec) => {
   const e = await resolveChannel(fake(routes).mm, ME, spec).catch((x) => x);
-  expect(e.message).toBe('チャンネル名「bad name」は Mattermost の名前として使えない文字を含みます。');
+  expect(e.message).toBe('The channel name "bad name" contains characters that cannot be used in a Mattermost name.');
 });
 
 test('every form of channel spec also returns the fetched channel as raw', async () => {
@@ -410,18 +410,18 @@ describe('@user with create', () => {
 
   test('no DM is created with a deactivated user', async () => {
     const { mm, posts } = writer({ '/users/username/carol': { id: CAROL, username: 'carol', delete_at: 1 } });
-    await expect(resolveChannel(mm, ME, '@carol', { create: true })).rejects.toThrow('@carol は無効化されているため、DM を作りません。');
+    await expect(resolveChannel(mm, ME, '@carol', { create: true })).rejects.toThrow('@carol is deactivated, so the DM is not created.');
     expect(posts()).toEqual([]);
   });
 
   test('a refused creation is worded by its reason', async () => {
     const refuse = (status: number, id: string) => writer({}, () => { throw new MmError(status, id, 'x'); }).mm;
     await expect(resolveChannel(refuse(403, 'api.context.permissions.app_error'), ME, '@carol', { create: true }))
-      .rejects.toThrow('@carol との DM を作る権限が無いか、相手を見る権限がありません。');
+      .rejects.toThrow('You may lack the permission to create a DM with @carol, or to see that user.');
     await expect(resolveChannel(refuse(403, 'api.channel.create_channel.direct_channel.team_restricted_error'), ME, '@carol', { create: true }))
-      .rejects.toThrow('このサーバーでは、同じチームにいない相手との DM は作れません。');
+      .rejects.toThrow('This server does not allow DMs with users who are not on the same team.');
     await expect(resolveChannel(refuse(403, 'api.channel.create_channel.direct_channel.remote_restricted.app_error'), ME, '@carol', { create: true }))
-      .rejects.toThrow('@carol は別のサーバーのユーザーのため、このサーバーでは DM を作れません。');
+      .rejects.toThrow('@carol is a user of another server, so a DM cannot be created on this server.');
     await expect(resolveChannel(refuse(403, 'other.id'), ME, '@carol', { create: true })).rejects.toMatchObject({ status: 403, id: 'other.id' });
     await expect(resolveChannel(refuse(500, 'x'), ME, '@carol', { create: true })).rejects.toMatchObject({ status: 500 });
   });
@@ -497,17 +497,17 @@ describe('@a,b group DM', () => {
 
   test('a missing group DM is created only when asked to, with the other members', async () => {
     const r = group();
-    await expect(resolveChannel(r.mm, ME, '@bob,dave')).rejects.toThrow(new NoDirectChannel('@bob, @dave とのグループ DM はまだありません。'));
+    await expect(resolveChannel(r.mm, ME, '@bob,dave')).rejects.toThrow(new NoDirectChannel('There is no group DM with @bob, @dave yet.'));
     expect(r.posts()).toEqual([]);
     expect(await resolveChannel(r.mm, ME, '@dave,bob', { create: true })).toMatchObject({ id: NEW_GM, displayName: '@bob, @dave' });
     expect(r.posts()).toEqual([{ method: 'POST', path: '/channels/group', body: [DAVE, BOB] }]);
   });
 
   test.each([
-    ['@bob,', '空の名前'],
-    ['@,bob', '空の名前'],
-    ['@bob,,carol', '空の名前'],
-    ['@bob,bo/b', '使えない文字'],
+    ['@bob,', 'empty name'],
+    ['@,bob', 'empty name'],
+    ['@bob,,carol', 'empty name'],
+    ['@bob,bo/b', 'cannot be used'],
   ])('%s is refused before any user lookup', async (spec, msg) => {
     const { mm, calls } = group();
     await expect(resolveChannel(mm, ME, spec)).rejects.toThrow(msg);
@@ -520,7 +520,7 @@ describe('@a,b group DM', () => {
     ['@me,me', true],
   ])('%s names one other user or none and points to @user', async (spec, beforeLookup) => {
     const { mm, calls } = group();
-    await expect(resolveChannel(mm, ME, spec)).rejects.toThrow('1 人との DM は @ユーザー名 で指定します');
+    await expect(resolveChannel(mm, ME, spec)).rejects.toThrow('Specify a DM with one user as @username');
     expect(calls.some((c) => c.path === '/users/usernames')).toBe(!beforeLookup);
   });
 
@@ -531,26 +531,26 @@ describe('@a,b group DM', () => {
     const seven = many.slice(0, 7);
     expect(await resolveChannel(group().mm, ME, `@${seven.join(',')}`, { create: true })).toMatchObject({ id: NEW_GM });
     expect(await resolveChannel(group().mm, ME, `@me,${seven.join(',')}`, { create: true })).toMatchObject({ id: NEW_GM });
-    await expect(resolveChannel(group().mm, ME, `@${many.join(',')}`, { create: true })).rejects.toThrow('自分以外に 7 人まで');
+    await expect(resolveChannel(group().mm, ME, `@${many.join(',')}`, { create: true })).rejects.toThrow('up to 7 users besides yourself');
     const nine = group();
-    await expect(resolveChannel(nine.mm, ME, `@${[...many, 'bob'].join(',')}`, { create: true })).rejects.toThrow('自分以外に 7 人まで');
+    await expect(resolveChannel(nine.mm, ME, `@${[...many, 'bob'].join(',')}`, { create: true })).rejects.toThrow('up to 7 users besides yourself');
     expect(nine.calls.some((c) => c.path === '/users/usernames')).toBe(false);
   });
 
   test('names that are not found are listed', async () => {
-    await expect(resolveChannel(group().mm, ME, '@bob,ghost,nobody')).rejects.toThrow(new InputError('ユーザーが見つかりません: @ghost, @nobody。'));
+    await expect(resolveChannel(group().mm, ME, '@bob,ghost,nobody')).rejects.toThrow(new InputError('Users not found: @ghost, @nobody.'));
   });
 
   test('without a team, the users are looked up but no group DM is looked up or created', async () => {
     const { mm, calls } = group({ teams: [] });
-    await expect(resolveChannel(mm, ME, '@bob,dave', { create: true })).rejects.toThrow('所属しているチームがない');
+    await expect(resolveChannel(mm, ME, '@bob,dave', { create: true })).rejects.toThrow('You belong to no team');
     expect(calls.filter((c) => c.path.startsWith('/teams/') || c.path === '/channels/group')).toEqual([]);
     expect(calls.some((c) => c.path === '/users/usernames')).toBe(true);
   });
 
   test('no group DM is created with a deactivated user, while an existing one is still looked up', async () => {
     const r = group({ deactivated: 'dave' });
-    await expect(resolveChannel(r.mm, ME, '@bob,dave', { create: true })).rejects.toThrow('@dave は無効化されているため、グループ DM を作りません。');
+    await expect(resolveChannel(r.mm, ME, '@bob,dave', { create: true })).rejects.toThrow('@dave is deactivated, so the group DM is not created.');
     expect(r.posts()).toEqual([]);
     expect(await resolveChannel(group({ deactivated: 'carol' }).mm, ME, '@bob,carol', { create: true })).toMatchObject({ id: GM });
   });
@@ -576,11 +576,11 @@ describe('@a,b group DM', () => {
   test('a refused creation is worded by its reason', async () => {
     const refuse = (status: number, id: string) => group({ post: () => { throw new MmError(status, id, 'x'); } }).mm;
     await expect(resolveChannel(refuse(403, 'api.context.permissions.app_error'), ME, '@bob,dave', { create: true }))
-      .rejects.toThrow('@bob, @dave とのグループ DM を作る権限が無いか、相手を見る権限がありません。');
+      .rejects.toThrow('You may lack the permission to create a group DM with @bob, @dave, or to see those users.');
     await expect(resolveChannel(refuse(403, 'api.channel.create_group.remote_restricted.app_error'), ME, '@bob,dave', { create: true }))
-      .rejects.toThrow('別のサーバーのユーザーを含むため、このサーバーではグループ DM を作れません。');
+      .rejects.toThrow('A user of another server is included, so a group DM cannot be created on this server.');
     await expect(resolveChannel(refuse(400, 'api.channel.create_group.bad_user.app_error'), ME, '@bob,dave', { create: true }))
-      .rejects.toThrow('グループ DM に加えられないユーザーが含まれています。');
+      .rejects.toThrow('Users who cannot be added to a group DM are included.');
     await expect(resolveChannel(refuse(500, 'x'), ME, '@bob,dave', { create: true })).rejects.toMatchObject({ status: 500 });
   });
 });

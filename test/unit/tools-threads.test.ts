@@ -219,7 +219,7 @@ describe('list_followed_threads', () => {
     const unreads = Buffer.from(JSON.stringify({ as_of: 1, checked_at: 1, last: { s: 1, m: 0, t: 5000, id: TH1 }, per_page: 30, crt: true })).toString('base64url');
     const r = await setup().call('list_followed_threads', { cursor: unreads });
     expect(r.isError).toBe(true);
-    expect(r.text).toContain('cursor が不正です');
+    expect(r.text).toContain('The cursor is invalid');
   });
 
   test('puts threads with a reply after the previous page in a section before the rest', async () => {
@@ -311,7 +311,7 @@ describe('follow_thread and unfollow_thread', () => {
       expect(r.isError, String(status)).toBe(true);
       expect(r.text).toContain(status === 404 ? 'このチャンネルに参加していません。' : 'このチャンネルに参加しているかを確かめられませんでした（参加していないか、Mattermost の一時的な障害）。');
       expect(r.text).toContain('参加していないチャンネルのスレッドは、フォローしても一覧にも通知にも出ません。');
-      if (status === 403) expect(r.text).toContain('続くなら、チャンネルから外されたか、サーバーの権限の設定で読む権限が外されている可能性があるので、管理者に確かめてください。');
+      if (status === 403) expect(r.text).toContain("If it persists, you may have been removed from the channel, or the read permission may have been removed in the server's permission settings; ask an administrator to check.");
       expect(writes()).toEqual([]);
     }
   });
@@ -446,7 +446,7 @@ describe('follow_thread and unfollow_thread', () => {
     };
     for (const name of ['follow_thread', 'unfollow_thread']) {
       expect((await setup().call(name, { post_id: GONE })).text, name).toContain('投稿が見つかりません（削除されたか、存在しません）。');
-      expect((await setup().call(name, { post_id: HIDDEN })).text, name).toContain('この投稿を見る権限がありません（参加していない非公開チャンネルなど）。参加しているはずなら、Mattermost の一時的な障害の可能性があります。少し待ってから再試行してください。続くなら、チャンネルから外されたか、サーバーの権限の設定で読む権限が外されている可能性があるので、管理者に確かめてください。');
+      expect((await setup().call(name, { post_id: HIDDEN })).text, name).toContain('You do not have permission to view this post (for example, in a private channel you have not joined). If you should be a member, this may be a temporary Mattermost failure. Wait a moment and retry. If it persists, you may have been removed from the channel, or the read permission may have been removed in the server\'s permission settings; ask an administrator to check.');
       expect((await setup().call(name, { post_id: 'bad' })).isError, name).toBe(true);
     }
     expect(writes()).toEqual([]);

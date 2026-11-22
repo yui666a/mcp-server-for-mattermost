@@ -7,7 +7,7 @@ import { makeApp, SLOW, SLOW_TEST } from './helpers.ts';
 const PRM = 'https://mm.example/.well-known/oauth-protected-resource/mcp';
 const CHALLENGE = `Bearer resource_metadata="${PRM}", scope="mattermost"`;
 const INVALID = `${CHALLENGE}, error="invalid_token"`;
-const RELOGIN_TEXT = 'Mattermost への再ログインが必要です。コネクタを再接続してください。';
+const RELOGIN_TEXT = 'You need to log in to Mattermost again. Reconnect the connector.';
 const INIT = {
   jsonrpc: '2.0', id: 1, method: 'initialize',
   params: { protocolVersion: '2025-11-25', capabilities: {}, clientInfo: { name: 't', version: '0' } },
@@ -121,9 +121,9 @@ test('after Reauthorize in a tool call, the next request gets 401 invalid_token'
 test('other tool errors become isError results without tokens', async () => {
   const s = setup();
   const cases: [Mm, RegExp, string][] = [
-    [() => new Response(null, { status: 429, headers: { 'x-ratelimit-reset': '7' } }), /7 秒/, 'rate_limited'],
-    [() => { throw new TypeError('fetch failed'); }, /Mattermost に一時的に接続できません/, 'upstream_unavailable'],
-    [() => new Response('oops', { status: 503 }), /Mattermost に一時的に接続できません/, 'upstream_unavailable'],
+    [() => new Response(null, { status: 429, headers: { 'x-ratelimit-reset': '7' } }), /7 seconds/, 'rate_limited'],
+    [() => { throw new TypeError('fetch failed'); }, /Cannot connect to Mattermost for the moment/, 'upstream_unavailable'],
+    [() => new Response('oops', { status: 503 }), /Cannot connect to Mattermost for the moment/, 'upstream_unavailable'],
     [() => Response.json({ id: 'api.x', message: 'You do not have permission' }, { status: 403 }), /403.*You do not have permission/, 'mm_error'],
   ];
   for (const [impl, text, outcome] of cases) {

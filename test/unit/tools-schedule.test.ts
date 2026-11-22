@@ -115,7 +115,7 @@ describe('schedule_message', () => {
     test('does not create the DM when root_id is given, since the DM cannot hold it yet', async () => {
       const r = await setup().call('schedule_message', { channel: '@carol', message: 'hello', at: '2026-11-03T10:00', root_id: ROOT });
       expect(r.isError).toBe(true);
-      expect(r.text).toContain('@carol との DM はまだありません');
+      expect(r.text).toContain('There is no DM with @carol yet');
       expect(hits).not.toContain('POST /channels/direct');
     });
 
@@ -139,7 +139,7 @@ describe('schedule_message', () => {
     });
 
     test.each([
-      ['a channel name that does not exist', { channel: 'nowhere' }, 'チャンネル「nowhere」が見つかりません'],
+      ['a channel name that does not exist', { channel: 'nowhere' }, 'Channel "nowhere" was not found'],
       ['a file_id that was not uploaded', { channel: CH, file_ids: ['z'.repeat(26)] }, 'z'.repeat(26)],
       ['a root_id that does not exist', { channel: CH, root_id: 'q'.repeat(26) }, `root_id ${'q'.repeat(26)} の投稿が見つかりません`],
     ])('with the pending schedules at the limit, %s is reported before the limit', async (_, args, error) => {
@@ -573,7 +573,7 @@ describe('list_scheduled_messages', () => {
     expect(second.text).toContain('（続きはありません）');
     const bad = await s.call('list_scheduled_messages', { cursor: 'nope' });
     expect(bad.isError).toBe(true);
-    expect(bad.text).toContain('cursor が不正です');
+    expect(bad.text).toContain('The cursor is invalid');
   });
 });
 
@@ -771,7 +771,7 @@ describe('one schedule in full', () => {
 });
 
 describe('arguments a tool does not take', () => {
-  const GENERAL = '受けない引数です: ';
+  const GENERAL = 'Arguments not accepted: ';
 
   test('every tool declares that it takes no other arguments', async () => {
     const all = (await setup().tools()) as unknown as { name: string; inputSchema: { additionalProperties?: boolean } }[];
@@ -782,7 +782,7 @@ describe('arguments a tool does not take', () => {
   test('send_message refuses a misspelled file_ids instead of posting without the file', async () => {
     const r = await setup().call('send_message', { channel: CH, message: 'hello', file_id: 'f'.repeat(26) });
     expect(r.isError).toBe(true);
-    expect(r.text).toContain(`${GENERAL}file_id。`);
+    expect(r.text).toContain(`${GENERAL}file_id.`);
     expect(hits.filter((h) => h.startsWith('POST'))).toEqual([]);
   });
 
@@ -790,11 +790,11 @@ describe('arguments a tool does not take', () => {
     const s = setup();
     const files = await s.call('schedule_message', { channel: CH, message: 'hello', at: '2026-11-03T10:00', files: [] });
     expect(files.isError).toBe(true);
-    expect(files.text).toContain(`${GENERAL}files。`);
+    expect(files.text).toContain(`${GENERAL}files.`);
     expect(files.text).toContain('中身を読めて合計 128KiB に収まる 1〜5 件のファイルを今すぐ送るなら、send_message の files を使えます。予約するときと、それ以外のファイルは、prepare_upload の説明の案内に従ってください。');
     const time = await s.call('schedule_message', { channel: CH, message: 'hello', at: '2026-11-03T10:00', time: '10:00' });
     expect(time.isError).toBe(true);
-    expect(time.text).toContain(`${GENERAL}time。`);
+    expect(time.text).toContain(`${GENERAL}time.`);
     expect(time.text).not.toContain('prepare_upload');
     expect(s.store.listScheduled(UID, { limit: 10 })).toEqual([]);
   });
@@ -802,7 +802,7 @@ describe('arguments a tool does not take', () => {
   test('an unknown key and an invalid value are both reported, the value with its place', async () => {
     const r = await setup().call('schedule_message', { channel: CH, message: '', at: '2026-11-03T10:00', time: '10:00' });
     expect(r.isError).toBe(true);
-    expect(r.text).toContain(`${GENERAL}time。`);
+    expect(r.text).toContain(`${GENERAL}time.`);
     expect(r.text.split('\n').some((l) => !l.includes(GENERAL) && l.endsWith(' at message'))).toBe(true);
   });
 
@@ -811,7 +811,7 @@ describe('arguments a tool does not take', () => {
     const id = await s.schedule({});
     const r = await s.call('update_scheduled_message', { id, message: 'changed', channel: CH2, file_ids: ['f'.repeat(26)] });
     expect(r.isError).toBe(true);
-    expect(r.text).toContain(`${GENERAL}channel, file_ids。`);
+    expect(r.text).toContain(`${GENERAL}channel, file_ids.`);
     expect(r.text.split('投稿先と添付は変えられません').length - 1).toBe(1);
     expect(s.store.listScheduled(UID, { limit: 1 })[0].message).toBe('hello');
   });
@@ -819,14 +819,14 @@ describe('arguments a tool does not take', () => {
   test.each(['channel', 'root_id', 'files', 'file_ids'])('update_scheduled_message gives the cancel hint for %s alone', async (key) => {
     const r = await setup().call('update_scheduled_message', { id: 'x', message: 'changed', [key]: 'v' });
     expect(r.isError).toBe(true);
-    expect(r.text).toContain(`${GENERAL}${key}。`);
+    expect(r.text).toContain(`${GENERAL}${key}.`);
     expect(r.text).toContain('投稿先と添付は変えられません');
   });
 
   test('a key named like an Object method gets the general wording only', async () => {
     const r = await setup().call('update_scheduled_message', { id: 'x', message: 'changed', constructor: 1 });
     expect(r.isError).toBe(true);
-    expect(r.text).toContain(`${GENERAL}constructor。ツールの引数（inputSchema）にあるものだけを渡してください。`);
+    expect(r.text).toContain(`${GENERAL}constructor. Pass only those defined in the tool's arguments (inputSchema).`);
     expect(r.text).not.toContain('function');
     expect(r.text).not.toContain('cancel_scheduled_message');
   });

@@ -3,8 +3,9 @@ import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
 import { z } from 'zod';
 import { CallAborted, MmError, UpstreamUnavailable, type MmClient } from '../mattermost/client.ts';
 import { offsetMinutesAt, timeZone, zonedDay } from '../zone.ts';
+import { msg } from '../i18n/index.ts';
 import { idArg } from './args.ts';
-import { ASK_ADMIN, BAD_CURSOR, BODY_CUT_NOTE, BODY_MAX_CHARS, decodeCursor, encodeCursor, fileLine, formatPost, formatTime, graphemeCount, indented, InputError, localTime, oneLine, POST_FORBIDDEN, postTruncated, postUserIds, RETRY, RETRY_SOON, truncate, unformat, type MmFileInfo, type MmPost } from './format.ts';
+import { bodyCutNote, BODY_MAX_CHARS, decodeCursor, encodeCursor, fileLine, formatPost, formatTime, graphemeCount, indented, InputError, localTime, oneLine, postTruncated, postUserIds, truncate, unformat, type MmFileInfo, type MmPost } from './format.ts';
 import { pageCursor, paginate } from './paging.ts';
 import { mentionsMe, mentionTerms, type MentionUser } from './mentions.ts';
 import { parsePostRef } from './permalink.ts';
@@ -41,7 +42,7 @@ const FILE_WORDING: Wording = {
     [404, 'app.file_info.get.app_error', 'ファイルが見つかりません（投稿が削除されたか、存在しません）'],
     [403, 'api.file.get_file.abac_denied.app_error', 'Mattermost のアクセス制御の方針（ABAC）により、このファイルを見られません'],
   ],
-  status: [[403, `このファイルを見る権限がありません（参加していない非公開チャンネルのファイルなど）。${RETRY}${ASK_ADMIN}`]],
+  get status(): [number, string][] { return [[403, `このファイルを見る権限がありません（参加していない非公開チャンネルのファイルなど）。${msg().common.retry}${msg().common.askAdmin}`]]; },
 };
 
 // Not trusting Content-Type: Mattermost labels every preview image/jpeg, PNG ones included.
@@ -169,7 +170,7 @@ const channelKinds = z.array(z.enum(['public', 'private', 'dm', 'group_dm'])).mi
 export function cursorOf<S extends z.ZodType>(schema: S, cursor: string | undefined): z.infer<S> | undefined {
   if (cursor === undefined) return undefined;
   const r = schema.safeParse(decodeCursor(cursor));
-  if (!r.success) throw new InputError(BAD_CURSOR);
+  if (!r.success) throw new InputError(msg().common.badCursor);
   return r.data;
 }
 
@@ -198,14 +199,14 @@ const resolvedLines = (ch: ResolvedChannel) => channelLines({ ...ch, archived: !
 
 // For a post fetched by id: get_post and read_thread word its 403 and 404 alike.
 function postError(e: unknown): never {
-  if (e instanceof MmError && e.status === 403) throw new InputError(POST_FORBIDDEN);
+  if (e instanceof MmError && e.status === 403) throw new InputError(msg().common.postForbidden);
   if (e instanceof MmError && e.status === 404) throw new InputError('投稿が見つかりません（削除されたか、存在しません）。');
   throw e;
 }
 
 // For the channel of a post already read: Mattermost may still refuse it on a passing failure, or after the channel went away in between.
 function postChannelError(e: unknown): never {
-  if (e instanceof MmError && e.status === 403) throw new InputError(`この投稿のチャンネルを見る権限がありません。${RETRY}${ASK_ADMIN}`);
+  if (e instanceof MmError && e.status === 403) throw new InputError(`この投稿のチャンネルを見る権限がありません。${msg().common.retry}${msg().common.askAdmin}`);
   if (e instanceof MmError && e.status === 404) throw new InputError('この投稿のチャンネルが見つかりません（取得の合間に削除されたなど）。');
   throw e;
 }
@@ -225,9 +226,9 @@ const forbiddenExample = (spec: string) => (spec.includes('/') ? '参加して�
 export function channelError(e: unknown, spec: string): never {
   // Not converting a missing team: /teams/name/{team}/channels/name/{channel} answers it with 404 too.
   if (e instanceof ChannelFetchError && e.id !== 'app.team.get_by_name.missing.app_error') {
-    if (e.status === 403) throw new InputError(`このチャンネルを見る権限がありません（${forbiddenExample(spec)}）。${RETRY}${ASK_ADMIN}`);
+    if (e.status === 403) throw new InputError(`このチャンネルを見る権限がありません（${forbiddenExample(spec)}）。${msg().common.retry}${msg().common.askAdmin}`);
     // Not keying on the name lookup's ids: a 404 without an id, as a proxy may give, is better read as one by name, which guides to retrying.
-    if (e.status === 404 && e.id !== BY_ID_404) throw new InputError(`チャンネルが見つかりません（参加していない非公開チャンネルとアーカイブ済みのチャンネルは、名前で指定すると Mattermost はこの結果を返します。アーカイブ済みなら、チャンネル ID を利用者に確かめて ID で指定してください）。名前の誤りなら search_channels で確かめてください。${RETRY}${ASK_ADMIN}`);
+    if (e.status === 404 && e.id !== BY_ID_404) throw new InputError(`チャンネルが見つかりません（参加していない非公開チャンネルとアーカイブ済みのチャンネルは、名前で指定すると Mattermost はこの結果を返します。アーカイブ済みなら、チャンネル ID を利用者に確かめて ID で指定してください）。名前の誤りなら search_channels で確かめてください。${msg().common.retry}${msg().common.askAdmin}`);
     if (e.status === 404) throw new InputError('チャンネルが見つかりません。ID の誤りなら search_channels で確かめてください。');
   }
   throw e;
@@ -314,12 +315,12 @@ async function filterChannelIds(mm: Mm, userId: string, spec: string, written: s
     // No DM means no posts to exclude, so the condition is dropped rather than failing the search.
     if (e instanceof NoDirectChannel && exclude) return [];
     // Not the read tools' wording: for a search, the way to an archived channel is its ID in in:, not read_channel.
-    const byName = `チャンネル「${spec}」が見つかりません。名前の誤りなら search_channels で確かめてください。参加していない非公開チャンネルとアーカイブ済みのチャンネルは名前では見つかりません（アーカイブ済みのチャンネルは、参加していたなら、利用者に ID を確かめて in: に ID で指定すれば検索できます）。${RETRY}${ASK_ADMIN}`;
+    const byName = `チャンネル「${spec}」が見つかりません。名前の誤りなら search_channels で確かめてください。参加していない非公開チャンネルとアーカイブ済みのチャンネルは名前では見つかりません（アーカイブ済みのチャンネルは、参加していたなら、利用者に ID を確かめて in: に ID で指定すれば検索できます）。${msg().common.retry}${msg().common.askAdmin}`;
     if (e instanceof ChannelNotFound) throw new InputError(byName);
     if (e instanceof ChannelFetchError && e.id === 'app.team.get_by_name.missing.app_error') {
       throw new InputError(`チャンネル「${spec}」のチームが見つかりません。チーム名の誤りなら、list_my_channels で参加しているチームを確かめてください（チーム名はチャンネルの行の先頭に出ます）。`);
     }
-    if (e instanceof ChannelFetchError && e.status === 403) throw new InputError(`チャンネル「${spec}」を見る権限がありません（${forbiddenExample(spec)}）。${RETRY}${ASK_ADMIN}`);
+    if (e instanceof ChannelFetchError && e.status === 403) throw new InputError(`チャンネル「${spec}」を見る権限がありません（${forbiddenExample(spec)}）。${msg().common.retry}${msg().common.askAdmin}`);
     // Told apart by the form of the spec, not by Mattermost's id: a 404 without an id, as a proxy may give, still gets a fitting message.
     if (e instanceof ChannelFetchError && e.status === 404) {
       throw new InputError(spec.includes('/') ? byName : `チャンネル「${spec}」が見つかりません。ID の誤りなら search_channels で確かめてください。`);
@@ -706,7 +707,7 @@ export function registerReadTools(server: McpServer, ctx: ToolContext): void {
         `${sinceAgain}。同じミリ秒の投稿が多いときは、limit を大きくして読み直すと抜けにくくなります）`,
       );
       if (range) {
-        if (rc && rc.channel_id !== ch.id) throw new InputError(BAD_CURSOR);
+        if (rc && rc.channel_id !== ch.id) throw new InputError(msg().common.badCursor);
         const inRange = (p: MmPost) => p.create_at >= range.since && (range.until === undefined || p.create_at < range.until);
         const posts = async (q: Record<string, string>) => {
           const r = await mm.call<PostList>(uid, 'GET', `/channels/${ch.id}/posts?${new URLSearchParams({ ...q, skipFetchThreads: 'true' })}`);
@@ -765,7 +766,7 @@ export function registerReadTools(server: McpServer, ctx: ToolContext): void {
       }
       let head: string[] = [];
       if (c && 'crt' in c) {
-        if (c.channel_id !== ch.id) throw new InputError(BAD_CURSOR);
+        if (c.channel_id !== ch.id) throw new InputError(msg().common.badCursor);
         const q = new URLSearchParams({ after: c.after, per_page: String(per + 1), collapsedThreads: String(c.crt), skipFetchThreads: 'true' });
         return unreadPage(c.crt, await mm.call<PostList>(uid, 'GET', `/channels/${ch.id}/posts?${q}`));
       }
@@ -773,7 +774,7 @@ export function registerReadTools(server: McpServer, ctx: ToolContext): void {
         const me = await mm.call<{ last_viewed_at: number }>(uid, 'GET', `/channels/${ch.id}/members/me`).catch((e) => {
           if (e instanceof MmError && e.status === 404) throw new InputError('このチャンネルに参加していないため、未読の位置がありません。from: "latest" で読んでください。');
           // Not saying the user has not joined on 403: Mattermost refuses a public channel the user has not joined with 403 before the membership lookup, and a passing failure answers 403 too.
-          if (e instanceof MmError && e.status === 403) throw new InputError(`このチャンネルの未読の位置を取得できませんでした（参加していないか、Mattermost の一時的な障害）。参加していないなら from: "latest" で読んでください。${RETRY_SOON}${ASK_ADMIN}`);
+          if (e instanceof MmError && e.status === 403) throw new InputError(`このチャンネルの未読の位置を取得できませんでした（参加していないか、Mattermost の一時的な障害）。参加していないなら from: "latest" で読んでください。${msg().common.retrySoon}${msg().common.askAdmin}`);
           throw e;
         });
         // Falling back to newest first rather than walking back to the first post: a channel never opened counts its whole history as unread, with no bound on the walk.
@@ -808,7 +809,7 @@ export function registerReadTools(server: McpServer, ctx: ToolContext): void {
       // Asking for one more than needed and dropping the root: Mattermost counts the root in perPage on the first page only.
       const q = new URLSearchParams({ perPage: String(per + 1), direction: 'down', ...(c ? { fromPost: c.from_post, fromCreateAt: String(c.from_create_at) } : {}) });
       const r = await mm.call<PostList>(uid, 'GET', `/posts/${rootId}/thread?${q}`).catch((e) => {
-        if (e instanceof MmError && e.status === 403) throw new InputError(`このスレッドを見る権限がありません。${RETRY}${ASK_ADMIN}`);
+        if (e instanceof MmError && e.status === 403) throw new InputError(`このスレッドを見る権限がありません。${msg().common.retry}${msg().common.askAdmin}`);
         if (e instanceof MmError && e.status === 404) throw new InputError('このスレッドが見つかりません（取得の合間に削除されたなど）。');
         throw e;
       });
@@ -842,7 +843,7 @@ export function registerReadTools(server: McpServer, ctx: ToolContext): void {
         ...(p.root_id ? [`スレッド内の返信です。親 post_id: ${p.root_id}。read_thread でスレッド全体を読めます。`]
           : replies ? [`返信があります。read_thread に post_id: ${p.id} を渡すと、スレッド全体を読めます。`] : []),
         // Not noting cut message attachments again: formatPost already says where it cut them.
-        ...(truncate(p.message).truncated ? [`（${BODY_CUT_NOTE}）`] : []),
+        ...(truncate(p.message).truncated ? [`（${bodyCutNote()}）`] : []),
       ].join('\n');
     });
 
@@ -964,7 +965,7 @@ export function registerReadTools(server: McpServer, ctx: ToolContext): void {
       const c = cursorOf(z.object({ channel_id: z.string(), create_at: z.number().int(), id: z.string(), per_page: perPage(50) }), cursor);
       const per = c?.per_page ?? pinned_limit ?? 10;
       const ch = await resolveChannel(mm, uid, channel).catch((e) => channelError(e, channel));
-      if (c && c.channel_id !== ch.id) throw new InputError(BAD_CURSOR);
+      if (c && c.channel_id !== ch.id) throw new InputError(msg().common.badCursor);
       const kind: Record<string, string> = { O: '公開', P: '非公開', D: 'DM', G: 'グループ DM' };
       const lines = resolvedLines(ch);
       if (!c) {
@@ -982,7 +983,7 @@ export function registerReadTools(server: McpServer, ctx: ToolContext): void {
       // Sorting here rather than asking Mattermost for a page: /pinned has neither a limit nor paging.
       const r = await mm.call<PostList>(uid, 'GET', `/channels/${ch.id}/pinned`).catch((e) => {
         if (!(e instanceof MmError && e.status === 403)) throw e;
-        if (c) throw new InputError(`このチャンネルのピン留めを取得できません（参加していないか、一時的な障害か、権限の設定）。${RETRY}${ASK_ADMIN}`);
+        if (c) throw new InputError(`このチャンネルのピン留めを取得できません（参加していないか、一時的な障害か、権限の設定）。${msg().common.retry}${msg().common.askAdmin}`);
         return undefined;
       });
       // Not going through render: its closing line would read as no more pinned posts.
@@ -1005,12 +1006,12 @@ export function registerReadTools(server: McpServer, ctx: ToolContext): void {
       const per = c?.per_page ?? limit ?? 50;
       const page = c?.page ?? 0;
       const ch = await resolveChannel(mm, uid, channel).catch((e) => channelError(e, channel));
-      if (c && c.channel_id !== ch.id) throw new InputError(BAD_CURSOR);
+      if (c && c.channel_id !== ch.id) throw new InputError(msg().common.badCursor);
       // Not joining /channels/{id}/members with the users: /users?in_channel gives the profiles in one call.
       const q = new URLSearchParams({ in_channel: ch.id, active: 'true', page: String(page), per_page: String(per) });
       // Not rewording the 403 of /users alone: the user may leave the channel before /stats.
       const refused = (e: unknown): never => {
-        if (e instanceof MmError && e.status === 403) throw new InputError(`このチャンネルのメンバーを見る権限がありません。参加していないチャンネルのメンバーは、公開チャンネルでも見られません。${RETRY}${ASK_ADMIN}`);
+        if (e instanceof MmError && e.status === 403) throw new InputError(`このチャンネルのメンバーを見る権限がありません。参加していないチャンネルのメンバーは、公開チャンネルでも見られません。${msg().common.retry}${msg().common.askAdmin}`);
         throw e;
       };
       const users = await mm.call<UserRef[]>(uid, 'GET', `/users?${q}`).catch(refused);
