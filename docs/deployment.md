@@ -147,7 +147,8 @@ services:
 ```
 
 ```bash
-mkdir data && sudo chown 1000:1000 data
+# DB には予約の本文など暗号化していないデータもあるので、ホストのほかのユーザーから読めないようにする
+mkdir data && sudo chown 1000:1000 data && sudo chmod 700 data
 # .env に MM_OAUTH_CLIENT_ID、MM_OAUTH_CLIENT_SECRET、TOKEN_ENC_KEY を書き、chmod 600 にする
 docker compose up -d --build
 docker compose ps    # healthy になるまで待つ（healthcheck の間隔は既定の 30 秒）

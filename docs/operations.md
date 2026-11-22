@@ -149,8 +149,8 @@ MCP サーバーの状態は、`/data` の SQLite ファイル（`mcp.sqlite`、
 
 ```bash
 docker compose stop mcp
-# 復元したファイルを ./data に置き、所有者を UID 1000 にそろえる
-sudo chown -R 1000:1000 data
+# 復元したファイルを ./data に置き、所有者を UID 1000 にそろえ、ほかのユーザーから読めなくする
+sudo chown -R 1000:1000 data && sudo chmod 700 data
 docker run --rm --network none -v "$PWD/data:/data" mcp-server-for-mattermost node src/admin.ts list-clients | wc -l
 docker run --rm --network none -v "$PWD/data:/data" mcp-server-for-mattermost node src/admin.ts purge-credentials
 docker run --rm --network none -v "$PWD/data:/data" mcp-server-for-mattermost node src/admin.ts invalidate-scheduled
