@@ -7,7 +7,7 @@ import { guarded, text, type ToolContext } from './tool.ts';
 import { worded, type Wording } from './tools-send.ts';
 
 const POST_ID = idArg;
-const schema = { post_id: POST_ID.describe('投稿の post_id') };
+const schema = { post_id: POST_ID };
 type Args = { post_id: string };
 
 const GONE = '投稿が見つかりません（削除されたか、存在しません）。';
@@ -61,10 +61,10 @@ async function setPinned(mm: Mm, uid: string, args: Args, pinned: boolean): Prom
 export function registerSavePinTools(server: McpServer, ctx: ToolContext): void {
   const mmOf = (signal: AbortSignal): Mm => ({ call: (u, m, p, b) => ctx.mm.call(u, m, p, b, signal) });
   const tools: [name: string, description: string, fn: (mm: Mm, uid: string, args: Args) => Promise<CallToolResult>][] = [
-    ['save_post', '投稿を自分の「保存した投稿」に加える（Mattermost の保存。自分にだけ見える印）。参加しているチャンネルの投稿だけを保存できる。保存した投稿は list_saved_posts で一覧できる。保存済みでも成功する', savePost],
-    ['unsave_post', '投稿を自分の「保存した投稿」から外す。投稿もチャンネルへの参加も確かめないので、抜けたチャンネルの投稿に残った保存も外せる。保存していなくても成功する', unsavePost],
-    ['pin_post', '投稿をチャンネルにピン留めする（チャンネルの全員に見える）。参加しているチャンネルの投稿だけを扱う。ピン留めは get_channel で読める。既にピン留めされていても成功する', (mm, uid, args) => setPinned(mm, uid, args, true)],
-    ['unpin_post', '投稿のピン留めを外す。他人がピン留めしたものも外れる。参加しているチャンネルの投稿だけを扱う。ピン留めされていなくても成功する', (mm, uid, args) => setPinned(mm, uid, args, false)],
+    ['save_post', 'Add a post to your saved posts.', savePost],
+    ['unsave_post', 'Remove a post from your saved posts.', unsavePost],
+    ['pin_post', 'Pin a post to its channel (visible to everyone in it).', (mm, uid, args) => setPinned(mm, uid, args, true)],
+    ['unpin_post', 'Unpin a post, even one pinned by someone else.', (mm, uid, args) => setPinned(mm, uid, args, false)],
   ];
   for (const [name, description, fn] of tools) {
     server.registerTool(name, {

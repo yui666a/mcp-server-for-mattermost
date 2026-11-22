@@ -20,8 +20,8 @@ const NOT_CHANGEABLE = '予約が見つかりません。または、投稿中�
 
 const POST_ID = idArg;
 const MESSAGE = z.string().min(1).max(16383);
-const AT = z.string().describe('予定時刻。ISO 8601 の YYYY-MM-DDTHH:mm（秒は任意）。タイムゾーン（Z、+09:00 など）が無ければ JST。今から 1 分後から 30 日後まで');
-const ID = z.string().overwrite(unformat).min(1).max(100).describe('予約 ID');
+const AT = z.string().describe('Scheduled time, YYYY-MM-DDTHH:mm (JST if no offset), 1 minute to 30 days from now');
+const ID = z.string().overwrite(unformat).min(1).max(100).describe('Scheduled message ID');
 
 function when(at: string): number {
   const ms = parseWhen(at);
@@ -31,12 +31,12 @@ function when(at: string): number {
 }
 
 const scheduleShape = {
-  channel: z.string().min(1).describe('チャンネル ID、「チーム名/チャンネル名」、チャンネル名、@ユーザー名（DM）、@a,b（グループ DM）のどれか。DM とグループ DM は無ければ作る'),
+  channel: z.string().min(1).describe('A channel ID, team/channel, channel name, @username (DM), or @a,b (group DM). A DM or group DM is created if missing.'),
   message: MESSAGE,
-  root_id: POST_ID.optional().describe('返信にするときの、スレッドの親投稿の post_id'),
+  root_id: POST_ID.optional().describe('post_id of the thread root, to schedule a reply'),
   at: AT,
   file_ids: z.array(idArg).min(1).max(MAX_UPLOAD_FILES).optional()
-    .describe(`prepare_upload で、投稿先と同じチャンネルへ 24 時間以内にアップロードした file_id（1〜${MAX_UPLOAD_FILES} 件）`),
+    .describe(`file_ids uploaded with prepare_upload to the destination channel within the last 24 hours`),
 };
 const scheduleSchema = strictArgs(scheduleShape, {
   files: `files は予約では使えません。中身を読めて合計 ${MAX_FILES_BYTES / 1024}KiB に収まる 1〜${MAX_UPLOAD_FILES} 件のファイルを今すぐ送るなら、send_message の files を使えます。予約するときと、それ以外のファイルは、prepare_upload の説明の案内に従ってください。`,
@@ -165,7 +165,7 @@ async function row(s: Scheduled, name: string | undefined, teamOf: (channelId: s
 }
 
 const UNCHANGEABLE = '投稿先と添付は変えられません。cancel_scheduled_message で取り消して予約し直してください。';
-const updateSchema = strictArgs({ id: ID, message: MESSAGE.optional().describe('新しい本文（全体を置き換える）'), at: AT.optional() },
+const updateSchema = strictArgs({ id: ID, message: MESSAGE.optional().describe('New message, replacing the whole text'), at: AT.optional() },
   { file_ids: UNCHANGEABLE, files: UNCHANGEABLE, channel: UNCHANGEABLE, root_id: UNCHANGEABLE });
 
 export function updateScheduledMessage(store: Store, uid: string, args: { id: string; message?: string; at?: string }): CallToolResult {
@@ -187,20 +187,20 @@ export function registerScheduleTools(server: McpServer, ctx: ToolContext): void
   const mmOf = (signal: AbortSignal): Mm => ({ call: (u, m, p, b) => ctx.mm.call(u, m, p, b, signal) });
   // Cast for the same reason as in tools-read.ts: the SDK's callback type does not resolve for these shapes.
   server.registerTool('schedule_message', {
-    description: '指定した時刻にチャンネルへ投稿するよう予約する。root_id を渡すとスレッドへの返信になる。投稿先は予約の時点で固定する。待機中の予約は 1 人 20 件まで。添付は file_ids（prepare_upload の結果）だけ。結果は list_scheduled_messages で確かめる',
+    description: 'Schedule a post for a given time. Attach files only via file_ids (from prepare_upload).',
     inputSchema: scheduleSchema,
     annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false },
   }, guarded(ctx, 'schedule_message', async (args: ScheduleArgs, extra: { signal: AbortSignal }) => scheduleMessage(mmOf(extra.signal), ctx.store, uid, args),
   ) as unknown as ToolCallback<typeof scheduleSchema>);
 
   const listSchema = {
-    id: ID.optional().describe('この予約 ID の 1 件だけを、本文を切らずに返す。update_scheduled_message で本文を直す前に全文を得るのに使う。status、limit、cursor は使わない（不正な値ならエラー）'),
-    status: z.enum(STATUSES).optional().describe('状態で絞る（pending: 待機中、sending: 投稿中、posted: 投稿済み、failed: 失敗）。cursor を渡したときは無視する'),
+    id: ID.optional().describe('Return only this scheduled message, with its full text.'),
+    status: z.enum(STATUSES).optional(),
     limit: limitArg(20, 50),
     cursor: cursorArg,
   };
   server.registerTool('list_scheduled_messages', {
-    description: '本人の予約投稿を、予定時刻の順に返す。状態、失敗の理由、添付するファイル（あるとき）、投稿済みなら post_id とパーマリンクを出す。投稿済みと失敗の予約は 7 日で消える',
+    description: 'List your scheduled messages by scheduled time, with status and failure reason.',
     inputSchema: listSchema,
     annotations: { readOnlyHint: true },
   }, guarded(ctx, 'list_scheduled_messages', async (args: ListArgs, extra: { signal: AbortSignal }) =>
@@ -209,7 +209,7 @@ export function registerScheduleTools(server: McpServer, ctx: ToolContext): void
 
   const destructive = { readOnlyHint: false, destructiveHint: true, idempotentHint: true };
   server.registerTool('update_scheduled_message', {
-    description: '待機中の本人の予約の本文か予定時刻を変える。message は本文全体を置き換える。書き換える前は、常に list_scheduled_messages に id を渡して全文を得る（一覧の本文は先頭 200 文字までで、2 行目以降を字下げし、後ろに別の行が続く）。投稿先と添付ファイルは変えられない（変えるときは取り消して予約し直す）。投稿中や投稿を試みた後の予約は変えられない',
+    description: 'Change the text or time of your pending scheduled message. Before changing the text, always get the full text by passing id to list_scheduled_messages (the list may cut the text and indents lines after the first). Destination and attachments cannot change; cancel and schedule again.',
     inputSchema: updateSchema,
     annotations: destructive,
   }, guarded(ctx, 'update_scheduled_message', async (args: { id: string; message?: string; at?: string }) => updateScheduledMessage(ctx.store, uid, args),
@@ -217,7 +217,7 @@ export function registerScheduleTools(server: McpServer, ctx: ToolContext): void
 
   const cancelSchema = { id: ID };
   server.registerTool('cancel_scheduled_message', {
-    description: '待機中の本人の予約を取り消す。取り消した予約は一覧からも消える。投稿中や投稿を試みた後の予約は取り消せない',
+    description: 'Cancel your pending scheduled message.',
     inputSchema: cancelSchema,
     annotations: destructive,
   }, guarded(ctx, 'cancel_scheduled_message', async (args: { id: string }) => cancelScheduledMessage(ctx.store, uid, args),

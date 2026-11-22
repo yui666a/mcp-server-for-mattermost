@@ -19,12 +19,12 @@ const AFTER_PAGE = 200;
 // Not leaving the items of channels and threads to zod's z.object, which drops unknown keys: a misspelled last_post_id would mark the item read up to the newest post, which only the user can undo, item by item, in the Mattermost UI.
 const schema = {
   channels: z.array(strictArgs({
-    channel: z.string().min(1).describe('チャンネル ID、「チーム名/チャンネル名」、チャンネル名、@ユーザー名（DM）、@a,b（グループ DM）のどれか'),
-    last_post_id: POST_ID.optional().describe('このチャンネルで読んだ投稿のうち最も新しいものの post_id'),
+    channel: z.string().min(1).describe('A channel ID, team/channel, channel name, @username (DM), or @a,b (group DM)'),
+    last_post_id: POST_ID.optional().describe('post_id of the newest post you read in this channel'),
   })).max(MAX_ITEMS).optional(),
   threads: z.array(strictArgs({
-    post_id: POST_ID.describe('スレッドの親投稿か、スレッド内の投稿の post_id'),
-    last_post_id: POST_ID.optional().describe('このスレッドで読んだ投稿のうち最も新しいものの post_id'),
+    post_id: POST_ID.describe('post_id of the thread root or any post in the thread'),
+    last_post_id: POST_ID.optional().describe('post_id of the newest post you read in this thread'),
   })).max(MAX_ITEMS).optional(),
 };
 type Args = z.infer<z.ZodObject<typeof schema>>;
@@ -230,7 +230,7 @@ export async function markAsRead(mm: Mm, uid: string, args: Args): Promise<CallT
 
 export function registerMarkReadTool(server: McpServer, ctx: ToolContext): void {
   server.registerTool('mark_as_read', {
-    description: '本人のチャンネルとスレッドを既読にする（合わせて 20 件まで）。last_post_id には、そのチャンネルやスレッドで読んだ投稿のうち最も新しいものの post_id を渡す。チャンネルは、それより後に自分以外の投稿があれば既読にしないが、それより前の投稿はすべて既読にするので、未読を片付けるときは read_channel の from: "unread" で未読を最後まで読んでから渡すこと。スレッドは、その投稿までを既読にする。last_post_id を省くと呼んだ時点までのすべてが既読になるので、利用者がすべての既読を求めたときだけ省くこと。last_post_id を付けた呼び出しは、失敗したらそのまま再実行してよい',
+    description: 'Mark your channels and threads read (up to 20 in total). A channel is marked read only if no one else posted after last_post_id, and then everything up to it counts as read, so when clearing unreads, first read to the end with read_channel from: "unread". A thread is marked read up to and including last_post_id. Omitting last_post_id marks everything up to now as read; omit it only when the user asks for that. A call with last_post_id can be retried as is if it fails.',
     inputSchema: schema,
     annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false },
   }, guarded(ctx, 'mark_as_read', async (args: Args, extra: { signal: AbortSignal }) =>
