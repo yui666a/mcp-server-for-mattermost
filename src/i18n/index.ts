@@ -15,6 +15,10 @@ export function setLocale(l: Locale): void {
   current = l;
 }
 
+export function locale(): Locale {
+  return current;
+}
+
 export function msg(): Messages {
   return current === 'ja' ? ja : en;
 }

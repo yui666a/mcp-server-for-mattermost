@@ -4,6 +4,7 @@ import type { Request, Response, Router } from 'express';
 import express, { Router as makeRouter } from 'express';
 import type { Config } from '../config.ts';
 import type { Deps } from '../deps.ts';
+import { msg } from '../i18n/index.ts';
 import { log } from '../log.ts';
 import { authorizeUrl, exchangeCode, UpstreamUnavailable, userId } from '../mattermost/upstream.ts';
 import type { Store } from '../store.ts';
@@ -55,7 +56,7 @@ export function authorizeRouter(ctx: { config: Config; store: Store; deps: Deps 
     const redirectUri = str(q.redirect_uri);
     const client = clientId ? store.getClient(clientId) : undefined;
     if (!client || !redirectUri || !matchesRegistered(redirectUri, client.redirectUris)) {
-      return showError(res, 400, 'このアプリの登録情報と要求が一致しません。接続をやり直してください。');
+      return showError(res, 400, msg().oauth.clientMismatch);
     }
 
     const state = str(q.state) ?? null;
@@ -83,11 +84,11 @@ export function authorizeRouter(ctx: { config: Config; store: Store; deps: Deps 
   r.post('/mcp/oauth/consent', express.urlencoded({ extended: false, limit: '4kb', parameterLimit: 10 }), (req, res) => {
     const sessionId = str(req.body?.session_id) ?? '';
     const approved = store.approveAuthSession(sessionId, cookie(req, cookieName(sessionId)), str(req.body?.csrf) ?? '');
-    if (!approved) return showError(res, 400, '同意画面の有効期限が切れたか、別のブラウザから送信されました。接続をやり直してください。');
+    if (!approved) return showError(res, 400, msg().oauth.consentExpiredOrOtherBrowser);
 
     if (req.body.decision !== 'approve') {
       const s = store.takeAuthSession(sessionId, cookie(req, cookieName(sessionId)), approved.upstreamState);
-      if (!s) return showError(res, 400, '同意画面の有効期限が切れました。接続をやり直してください。');
+      if (!s) return showError(res, 400, msg().oauth.consentExpired);
       clearCookie(res, sessionId);
       return redirectToClient(res, config, s.redirectUri, 303, { error: 'access_denied', state: s.state });
     }
@@ -99,7 +100,7 @@ export function authorizeRouter(ctx: { config: Config; store: Store; deps: Deps 
     const upstreamState = str(req.query.state) ?? '';
     const sessionId = store.findSessionIdByUpstreamState(upstreamState);
     const s = sessionId && store.takeAuthSession(sessionId, cookie(req, cookieName(sessionId)), upstreamState);
-    if (!s) return showError(res, 400, '認可の途中の情報が見つかりません。接続をやり直してください。');
+    if (!s) return showError(res, 400, msg().oauth.sessionNotFound);
     clearCookie(res, s.sessionId);
 
     const code = str(req.query.code);
@@ -117,7 +118,7 @@ export function authorizeRouter(ctx: { config: Config; store: Store; deps: Deps 
     } catch (e) {
       // UpstreamUnavailable messages carry only the status; anything else could embed request data.
       log('authorize_upstream_failed', { step, name: (e as Error)?.name, message: e instanceof UpstreamUnavailable ? e.message : undefined });
-      return showError(res, 502, 'Mattermost との通信に失敗しました。時間をおいて接続をやり直してください。');
+      return showError(res, 502, msg().oauth.upstreamFailed);
     }
     let ourCode: string;
     try {
@@ -130,7 +131,7 @@ export function authorizeRouter(ctx: { config: Config; store: Store; deps: Deps 
       });
     } catch (e) {
       log('unhandled_error', { name: (e as Error)?.name, code: (e as { code?: string })?.code });
-      return showError(res, 500, 'サーバーで問題が起きました。時間をおいて接続をやり直してください。');
+      return showError(res, 500, msg().oauth.serverError);
     }
     log('authorize_completed');
     redirectToClient(res, config, s.redirectUri, 302, { code: ourCode, state: s.state });
