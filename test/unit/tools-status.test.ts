@@ -112,7 +112,7 @@ describe('set_status', () => {
   test.each([
     ['2026-11-04T10:00:59', '1 分後以降'],
     ['2026-11-04T09:00', '1 分後以降'],
-    ['2026-11-04 11:00', 'dnd_until「2026-11-04 11:00」を日時として読めません'],
+    ['2026-11-04 11:00', 'dnd_until "2026-11-04 11:00" cannot be read as a date-time'],
   ])('dnd_until %j is rejected without calling Mattermost', async (dnd_until, message) => {
     const r = await setup().call('set_status', { status: 'dnd', dnd_until });
     expect(r.isError).toBe(true);
@@ -201,7 +201,7 @@ describe('set_custom_status', () => {
   test.each([
     ['2026-11-04T10:00:30', '1 分後以降'],
     ['2026-11-03T11:00', '1 分後以降'],
-    ['tomorrow', 'until「tomorrow」を日時として読めません'],
+    ['tomorrow', 'until "tomorrow" cannot be read as a date-time'],
   ])('until %j is rejected without calling Mattermost', async (until, message) => {
     const r = await setup().call('set_custom_status', { text: 'x', until });
     expect(r.isError).toBe(true);

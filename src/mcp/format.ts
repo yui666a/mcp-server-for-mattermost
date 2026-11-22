@@ -1,3 +1,4 @@
+import { msg } from '../i18n/index.ts';
 import { timeZone, zonedIso } from '../zone.ts';
 
 export class InputError extends Error {
@@ -13,20 +14,13 @@ export type MmPost = {
 };
 export type PostCtx = { baseUrl: string; teamName: string; usernames: Map<string, string>; channel?: string };
 
-// For a 403 or 404 that may be Mattermost's passing failure as much as a lost membership.
-export const RETRY = '参加しているはずなら、Mattermost の一時的な障害の可能性があります。少し待ってから再試行してください。';
-// RETRY for a message that has already named the passing failure as a cause.
-export const RETRY_SOON = '参加しているはずなら、少し待ってから再試行してください。';
-export const ASK_ADMIN = '続くなら、チャンネルから外されたか、サーバーの権限の設定で読む権限が外されている可能性があるので、管理者に確かめてください。';
-export const POST_FORBIDDEN = `この投稿を見る権限がありません（参加していない非公開チャンネルなど）。${RETRY}${ASK_ADMIN}`;
-export const BAD_CURSOR = 'cursor が不正です。前回の出力の next_cursor をそのまま渡してください。';
 const segmenter = new Intl.Segmenter();
 
 export const graphemeCount = (s: string): number => [...segmenter.segment(s)].length;
 
 // Not written out in each tool description: the guidance quoting the note would fall behind when the limit changes.
 export const BODY_MAX_CHARS = 4000;
-export const BODY_CUT_NOTE = `本文を ${BODY_MAX_CHARS} 文字で切りました`;
+export const bodyCutNote = (): string => msg().format.bodyCutNote(BODY_MAX_CHARS);
 
 export function truncate(s: string, max = BODY_MAX_CHARS): { text: string; truncated: boolean } {
   let n = 0;
@@ -57,15 +51,15 @@ export const oneLine = (s: string): string => lines(s).join(' ');
 
 // Not the name first: a name written as "（file_id: …）" would then come before the real id.
 export const fileLine = (f: MmFileInfo): string =>
-  `file_id: ${f.id}、種類: ${oneLine(f.mime_type) || '不明'}、${f.size} バイト${f.width && f.height ? `、${f.width}x${f.height}` : ''}、名前: ${oneLine(f.name)}`;
+  msg().format.fileLine(f.id, oneLine(f.mime_type) || msg().format.unknownType, f.size, f.width && f.height ? `${f.width}x${f.height}` : '', oneLine(f.name));
 
 function attachmentLines(p: MmPost): string[] {
-  const shown = p.metadata?.files?.length ? p.metadata.files.map((f) => `添付: ${fileLine(f)}`)
-    : p.file_ids?.length ? [`添付 ${p.file_ids.length} 件（get_post で確認できます）`] : [];
+  const shown = p.metadata?.files?.length ? p.metadata.files.map((f) => msg().format.attachment(fileLine(f)))
+    : p.file_ids?.length ? [msg().format.attachmentCount(p.file_ids.length)] : [];
   // Not trusting the type: only a whole count of 1 or more, as Mattermost writes it when an ABAC policy strips the files.
   const hidden = p.metadata?.redacted_file_count;
   return Number.isInteger(hidden) && hidden! >= 1
-    ? [...shown, `添付 ${hidden} 件（Mattermost のアクセス制御の方針（ABAC）により、表示もダウンロードもできません）`]
+    ? [...shown, msg().format.attachmentHidden(hidden!)]
     : shown;
 }
 
@@ -87,17 +81,18 @@ function messageAttachment(a: Record<string, unknown>, n: number, total: number)
   const title = str(a.title), link = str(a.title_link);
   const fields = records(a.fields).map((f) => [str(f.title), str(f.value)].filter(Boolean).join(': ')).filter(Boolean);
   const actions = records(a.actions).map((x) => str(x.name)).filter(Boolean);
+  const f = msg().format;
   const body: [string, string][] = [
-    ['作成者', str(a.author_name)],
-    ['前置き', str(a.pretext)],
-    ['タイトル', title && link ? `${title}（${link}）` : title || link],
-    ['本文', str(a.text)],
-    ...fields.map((f): [string, string] => ['項目', f]),
+    [f.attachmentAuthor, str(a.author_name)],
+    [f.attachmentPretext, str(a.pretext)],
+    [f.attachmentTitle, title && link ? f.titleWithLink(title, link) : title || link],
+    [f.attachmentText, str(a.text)],
+    ...fields.map((x): [string, string] => [f.attachmentField, x]),
   ];
   // Not showing the fallback beside the rest: it is a plain-text summary of the same content.
-  if (![str(a.pretext), title || link, str(a.text), ...fields].some(Boolean)) body.push(['要約', str(a.fallback)]);
-  body.push(['フッター', str(a.footer)], ['ボタンやメニュー', actions.length ? `${actions.join('、')}（MCP からは操作できません）` : '']);
-  return [`メッセージ添付（Bot などの整形表示）${n}/${total}:`, ...body.filter(([, v]) => v).flatMap(([k, v]) => item(k, v))];
+  if (![str(a.pretext), title || link, str(a.text), ...fields].some(Boolean)) body.push([f.attachmentSummary, str(a.fallback)]);
+  body.push([f.attachmentFooter, str(a.footer)], [f.attachmentActions, actions.length ? f.actionsNote(f.list(actions)) : '']);
+  return [f.attachmentHead(n, total), ...body.filter(([, v]) => v).flatMap(([k, v]) => item(k, v))];
 }
 
 function messageAttachments(p: MmPost): { text: string; truncated: boolean } {
@@ -121,15 +116,14 @@ function reactionsByEmoji(p: MmPost): { emoji: string; shown: string[]; total: n
   return [...by].map(([emoji, ids]) => ({ emoji, shown: ids.slice(0, REACTION_NAMES), total: ids.length }));
 }
 
-const REACTION_HEAD = 'リアクション: ';
-
 // One place for how the reactions line is built and cut, so the users looked up always cover the users shown.
 function fitReactions(by: ReturnType<typeof reactionsByEmoji>, name: (id: string) => string): { each: string[]; k: number } {
-  const each = by.map(({ emoji, shown, total }) =>
-    `:${emoji}: ${total}（${shown.map(name).join('、')}${total > shown.length ? `、ほか ${total - shown.length} 人` : ''}）`);
-  let n = graphemeCount(REACTION_HEAD) + graphemeCount(each[0] ?? '');
+  const f = msg().format;
+  const each = by.map(({ emoji, shown, total }) => f.reactionItem(emoji, total, f.list(shown.map(name)), total - shown.length));
+  const sep = graphemeCount(f.list(['', '']));
+  let n = graphemeCount(f.reactionsHead) + graphemeCount(each[0] ?? '');
   let k = Math.min(1, each.length);
-  while (k < each.length && (n += 1 + graphemeCount(each[k])) <= REACTION_MAX_CHARS) k++;
+  while (k < each.length && (n += sep + graphemeCount(each[k])) <= REACTION_MAX_CHARS) k++;
   return { each, k };
 }
 
@@ -144,26 +138,27 @@ export const postUserIds = (p: MmPost): string[] => {
 function reactionLines(p: MmPost, usernames: Map<string, string>): string[] {
   const by = reactionsByEmoji(p);
   // Only without metadata at all: the threads API returns none, while the post APIs always do and leave reactions out when there are none.
-  if (!by.length) return p.has_reactions && !p.metadata ? ['リアクションあり（get_post で確認できます）'] : [];
+  if (!by.length) return p.has_reactions && !p.metadata ? [msg().format.reactionsExist] : [];
   const name = (id: string) => (usernames.has(id) ? `@${usernames.get(id)}` : `user_id: ${id}`);
   const { each, k } = fitReactions(by, name);
   const left = by.slice(k);
-  const rest = left.length ? `、ほか ${left.length} 種類（リアクション ${left.reduce((m, r) => m + r.total, 0)} 件）` : '';
-  return [`${REACTION_HEAD}${each.slice(0, k).join('、')}${rest}`];
+  const f = msg().format;
+  const rest = left.length ? f.reactionsRest(left.length, left.reduce((m, r) => m + r.total, 0)) : '';
+  return [`${f.reactionsHead}${f.list(each.slice(0, k))}${rest}`];
 }
 
 export function formatPost(p: MmPost, ctx: PostCtx): string {
   const who = ctx.usernames.get(p.user_id);
   const ma = messageAttachments(p);
   return [
-    `--- post_id: ${p.id}${p.root_id ? `（返信先 post_id: ${p.root_id}）` : ''}`,
+    msg().format.postHead(p.id, p.root_id),
     `${who ? `@${who}` : `user_id: ${p.user_id}`} | ${formatTime(p.create_at)}`,
-    ...(p.edit_at ? [`編集済み: ${formatTime(p.edit_at)}`] : []),
-    ...(p.type?.startsWith('system_') ? [`システムメッセージ（${p.type}）`] : []),
+    ...(p.edit_at ? [msg().format.edited(formatTime(p.edit_at))] : []),
+    ...(p.type?.startsWith('system_') ? [msg().format.systemMessage(p.type)] : []),
     ...(ctx.channel ? [ctx.channel] : []),
     ...(p.message ? lines(truncate(p.message).text).map((l) => `  ${l}`) : ['']),
     ...(ma.text ? [ma.text] : []),
-    ...(ma.truncated ? ['（メッセージ添付をここで切りました。続きは Mattermost の画面で確認してください）'] : []),
+    ...(ma.truncated ? [msg().format.attachmentsCut] : []),
     ...attachmentLines(p),
     ...reactionLines(p, ctx.usernames),
     `${ctx.baseUrl}/${ctx.teamName}/pl/${p.id}`,
@@ -177,9 +172,9 @@ export function decodeCursor(s: string): object {
   try {
     o = JSON.parse(Buffer.from(s, 'base64url').toString('utf8'));
   } catch {
-    throw new InputError(BAD_CURSOR);
+    throw new InputError(msg().common.badCursor);
   }
-  if (!o || typeof o !== 'object' || Array.isArray(o)) throw new InputError(BAD_CURSOR);
+  if (!o || typeof o !== 'object' || Array.isArray(o)) throw new InputError(msg().common.badCursor);
   return o;
 }
 

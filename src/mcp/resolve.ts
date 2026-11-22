@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
+import { msg } from '../i18n/index.ts';
 import { CallAborted, MmError, UpstreamUnavailable, type MmClient } from '../mattermost/client.ts';
-import { ASK_ADMIN, InputError, oneLine, RETRY, unformat } from './format.ts';
+import { InputError, oneLine, unformat } from './format.ts';
 
 export type Mm = Pick<MmClient, 'call'>;
 export type ChannelRef = { id: string; name: string; displayName: string; teamId: string; teamName: string };
@@ -23,8 +24,8 @@ export class Ambiguous extends InputError {
   readonly candidates: Candidate[];
   constructor(spec: string, candidates: Candidate[]) {
     super([
-      `「${spec}」に当たるチャンネルが複数あります。チャンネル ID か「チーム名/チャンネル名」で指定してください。`,
-      ...candidates.map((c) => `- ${c.team}/${c.name}（channel_id: ${c.id}）`),
+      msg().resolve.ambiguous(spec),
+      ...candidates.map((c) => msg().resolve.candidate(c.team, c.name, c.id)),
     ].join('\n'));
     this.candidates = candidates;
   }
@@ -33,7 +34,7 @@ export class Ambiguous extends InputError {
 // A subclass so that a search can say it in its own words: it reaches an archived channel only by its ID in in:, not by reading it as the read tools do.
 export class ChannelNotFound extends InputError {
   constructor(spec: string) {
-    super(`チャンネル「${spec}」が見つかりません。名前の誤りなら search_channels で確かめてください。参加していない非公開チャンネルとアーカイブ済みのチャンネルは名前では見つかりません（アーカイブ済みのチャンネルは書き込めませんが、読むだけなら利用者に ID を確かめて ID で指定できます）。${RETRY}${ASK_ADMIN}`);
+    super(`${msg().resolve.channelNotFound(spec)}${msg().common.retry}${msg().common.askAdmin}`);
   }
 }
 
@@ -42,8 +43,8 @@ const NAME = /^[A-Za-z0-9._-]+$/;
 
 // Checked rather than only encodeURIComponent'ed: "." and ".." survive encoding and fetch would normalise them into another endpoint.
 function plain(name: string, what: string): string {
-  if (!name) throw new InputError(`${what}が空です。`);
-  if (!NAME.test(name) || name === '.' || name === '..') throw new InputError(`${what}「${oneLine(name)}」は Mattermost の名前として使えない文字を含みます。`);
+  if (!name) throw new InputError(msg().resolve.nameEmpty(what));
+  if (!NAME.test(name) || name === '.' || name === '..') throw new InputError(msg().resolve.nameInvalid(what, oneLine(name)));
   return name;
 }
 const missing = (e: unknown) => e instanceof MmError && (e.status === 403 || e.status === 404);
@@ -63,25 +64,26 @@ export async function teamNameOf(mm: Mm, userId: string, teamId: string): Promis
 export async function resolveUser(mm: Mm, userId: string, spec: string): Promise<UserRef> {
   const s = unformat(spec);
   // Lowered rather than passed as typed: Mattermost user names are lower case only, and it answers 400 to any upper case letter.
-  if (s.startsWith('@')) return mm.call<UserRef>(userId, 'GET', `/users/username/${plain(s.slice(1), 'ユーザー名').toLowerCase()}`);
+  if (s.startsWith('@')) return mm.call<UserRef>(userId, 'GET', `/users/username/${plain(s.slice(1), msg().resolve.userName).toLowerCase()}`);
   // Lowered rather than passed as typed: Mattermost IDs are lower case only, so an upper case ID would only find nothing.
   if (ID.test(s)) return mm.call<UserRef>(userId, 'GET', `/users/${s.toLowerCase()}`);
-  throw new InputError('ユーザーはユーザー ID か @ユーザー名 で指定してください。');
+  throw new InputError(msg().resolve.userSpec);
 }
 
 // Same reason for both the permission to create and the visibility of the other user: Mattermost answers both with one id.
-const CREATE_REFUSED: readonly [number, string, (who: string) => string][] = [
-  [403, 'api.context.permissions.app_error', (who) => `${who} との DM を作る権限が無いか、相手を見る権限がありません。`],
-  [403, 'api.channel.create_channel.direct_channel.team_restricted_error', () => 'このサーバーでは、同じチームにいない相手との DM は作れません。'],
-  [403, 'api.channel.create_channel.direct_channel.remote_restricted.app_error', (who) => `${who} は別のサーバーのユーザーのため、このサーバーでは DM を作れません。`],
+// Functions rather than constants: the text is looked up when the error happens, in the locale then set.
+const CREATE_REFUSED = (): readonly [number, string, (who: string) => string][] => [
+  [403, 'api.context.permissions.app_error', (who) => msg().resolve.dmDenied(who)],
+  [403, 'api.channel.create_channel.direct_channel.team_restricted_error', () => msg().resolve.dmTeamRestricted],
+  [403, 'api.channel.create_channel.direct_channel.remote_restricted.app_error', (who) => msg().resolve.dmRemote(who)],
 ];
-const GROUP_REFUSED: typeof CREATE_REFUSED = [
-  [403, 'api.context.permissions.app_error', (who) => `${who} とのグループ DM を作る権限が無いか、相手を見る権限がありません。`],
-  [403, 'api.channel.create_group.remote_restricted.app_error', () => '別のサーバーのユーザーを含むため、このサーバーではグループ DM を作れません。'],
-  [400, 'api.channel.create_group.bad_user.app_error', () => 'グループ DM に加えられないユーザーが含まれています。'],
+const GROUP_REFUSED: typeof CREATE_REFUSED = () => [
+  [403, 'api.context.permissions.app_error', (who) => msg().resolve.groupDenied(who)],
+  [403, 'api.channel.create_group.remote_restricted.app_error', () => msg().resolve.groupRemote],
+  [400, 'api.channel.create_group.bad_user.app_error', () => msg().resolve.groupBadUser],
 ];
 const refusalWorded = (who: string, table = CREATE_REFUSED) => (e: unknown): never => {
-  const w = e instanceof MmError && table.find(([status, id]) => status === e.status && id === e.id);
+  const w = e instanceof MmError && table().find(([status, id]) => status === e.status && id === e.id);
   throw w ? new InputError(w[2](who)) : e;
 };
 
@@ -99,11 +101,11 @@ export async function resolveChannel(mm: Mm, userId: string, spec: string, opts:
       if (!found.length) throw e;
       // Not used in place of the ID: a user ID or post ID mistaken for a channel would send to whoever named a channel after it.
       throw new InputError([
-        `チャンネル ID「${s}」のチャンネルはありません。ユーザー ID や投稿 ID を渡したのなら、チャンネルの指定ではありません。`,
-        `同じ文字列を名前に持つチャンネルはあります。そのチャンネルを指すときだけ、${found.map((f) => `「${f.teamName}/${lower}」`).join('か')}の形で指定してください。`,
+        msg().resolve.channelIdMissing(s),
+        msg().resolve.sameNameExists(found.map((f) => `${f.teamName}/${lower}`)),
         // Not "- " at the head: mark_as_read puts this message in one item of its list, where such a line would read as another item.
         // Not indented either: an indented line can show as code where the result is shown as Markdown.
-        ...found.map((f) => `\n候補「${f.teamName}/${lower}」の表示名: ${oneLine(f.displayName || f.name)}`),
+        ...found.map((f) => msg().resolve.candidateName(`${f.teamName}/${lower}`, oneLine(f.displayName || f.name))),
       ].join(''));
     });
     // Not looked up when only the ID is wanted (in: in a search): a lookup the output does not use could still fail on a rate limit.
@@ -115,31 +117,31 @@ export async function resolveChannel(mm: Mm, userId: string, spec: string, opts:
   const slash = s.indexOf('/');
   // Lowered rather than passed as typed, here and for a bare channel name: Mattermost names are lower case only, and it answers 400 to any upper case letter.
   if (slash > 0) {
-    const team = plain(s.slice(0, slash), 'チーム名').toLowerCase();
-    const c = await fetchChannel(mm, userId, `/teams/name/${team}/channels/name/${plain(s.slice(slash + 1), 'チャンネル名').toLowerCase()}`);
+    const team = plain(s.slice(0, slash), msg().resolve.teamName).toLowerCase();
+    const c = await fetchChannel(mm, userId, `/teams/name/${team}/channels/name/${plain(s.slice(slash + 1), msg().resolve.channelName).toLowerCase()}`);
     return ref(c, team);
   }
   // Only when every part could be a user name: @bob、議事録 is a missing space before a search word, not a separator.
   const parts = s.slice(1).split(/[,、，]/).map((p) => p.trim().replace(/^@/, '')).filter(Boolean);
   // Not counting empty parts as names: a trailing 、 as in @bob、 is a separator, not a character a user name cannot have.
-  if (s.startsWith('@') && /[、，]/.test(s) && parts.length && parts.every((p) => NAME.test(p))) throw new InputError('@a,b の区切りは半角のカンマ（,）で書いてください。読点（、）や全角のカンマ（，）は使えません。');
-  if (!s.startsWith('@')) plain(s, 'チャンネル名');
+  if (s.startsWith('@') && /[、，]/.test(s) && parts.length && parts.every((p) => NAME.test(p))) throw new InputError(msg().resolve.commaSeparator);
+  if (!s.startsWith('@')) plain(s, msg().resolve.channelName);
   const teams = await myTeams(mm, userId);
   if (s.startsWith('@') && s.includes(',')) return resolveGroup(mm, userId, s, teams, opts.create);
   if (s.startsWith('@')) {
     // 400 and 403 too: a reserved name such as @all fails Mattermost's check with 400, and with view restrictions a missing name gets 403.
     const other = await resolveUser(mm, userId, s).catch((e) => {
-      if (e instanceof MmError && [400, 403, 404].includes(e.status)) throw new InputError(`ユーザー「${s}」が見つかりません。`);
+      if (e instanceof MmError && [400, 403, 404].includes(e.status)) throw new InputError(msg().resolve.userNotFound(s));
       throw e;
     });
-    if (!teams.length) throw new InputError('所属しているチームがないため DM を探せません。');
+    if (!teams.length) throw new InputError(msg().resolve.noTeamsForDm);
     // Looked up before POST /channels/direct even when creating: a user without the permission to create can still write to an existing DM.
     const name = [userId, other.id].sort().join('__');
     const c = await mm.call<MmChannelFull>(userId, 'GET', `/teams/${teams[0].id}/channels/name/${name}`).catch((e) => {
       if (!missing(e)) throw e;
-      if (!opts.create) throw new NoDirectChannel(`@${other.username} との DM はまだありません。`);
+      if (!opts.create) throw new NoDirectChannel(msg().resolve.noDm(`@${other.username}`));
       // Refused although Mattermost would create it: the other user cannot read it, and an empty DM would be all that is left.
-      if (other.delete_at) throw new InputError(`@${other.username} は無効化されているため、DM を作りません。`);
+      if (other.delete_at) throw new InputError(msg().resolve.deactivatedDm(`@${other.username}`));
       return mm.call<MmChannelFull>(userId, 'POST', '/channels/direct', [userId, other.id]).catch(refusalWorded(`@${other.username}`));
     });
     return { ...ref(c, teams[0].name), displayName: `@${other.username}` };
@@ -186,31 +188,28 @@ async function byName(mm: Mm, userId: string, name: string, teams: MmTeam[]): Pr
   return found;
 }
 
-const ONE_OTHER = 'グループ DM には、自分以外に 2 人以上を指定してください。1 人との DM は @ユーザー名 で指定します。';
-const TOO_MANY = 'グループ DM に指定できるのは、自分以外に 7 人までです。';
-
 async function resolveGroup(mm: Mm, userId: string, spec: string, teams: MmTeam[], create?: boolean): Promise<ResolvedChannel> {
   const parts = spec.slice(1).split(',').map((p) => p.trim().replace(/^@/, ''));
-  if (parts.some((p) => !p)) throw new InputError('グループ DM の指定に空の名前があります。@a,b の形で、カンマの間にユーザー名を書いてください（カンマの前後に空白を入れない）。');
-  const names = [...new Set(parts.map((p) => plain(p, 'ユーザー名').toLowerCase()))];
+  if (parts.some((p) => !p)) throw new InputError(msg().resolve.groupEmptyName);
+  const names = [...new Set(parts.map((p) => plain(p, msg().resolve.userName).toLowerCase()))];
   // Bounded before the lookup only by the names given: whether one of them is the caller is known after it, and the caller's own name may make 8.
-  if (names.length < 2) throw new InputError(ONE_OTHER);
-  if (names.length > 8) throw new InputError(TOO_MANY);
+  if (names.length < 2) throw new InputError(msg().resolve.oneOther);
+  if (names.length > 8) throw new InputError(msg().resolve.tooMany);
   const found = await mm.call<UserRef[]>(userId, 'POST', '/users/usernames', names);
   const missingNames = names.filter((n) => !found.some((u) => u.username === n));
-  if (missingNames.length) throw new InputError(`ユーザーが見つかりません: ${missingNames.map((n) => `@${n}`).join(', ')}。`);
+  if (missingNames.length) throw new InputError(msg().resolve.usersNotFound(missingNames.map((n) => `@${n}`).join(', ')));
   const others = found.filter((u) => u.id !== userId);
-  if (others.length < 2) throw new InputError(ONE_OTHER);
-  if (others.length > 7) throw new InputError(TOO_MANY);
-  if (!teams.length) throw new InputError('所属しているチームがないため、グループ DM を探せません。');
+  if (others.length < 2) throw new InputError(msg().resolve.oneOther);
+  if (others.length > 7) throw new InputError(msg().resolve.tooMany);
+  if (!teams.length) throw new InputError(msg().resolve.noTeamsForGroup);
   const label = others.map((u) => `@${u.username}`).sort().join(', ');
   // Same hash as Mattermost's GetGroupNameFromUserIds, so that a read finds the group DM without POST /channels/group, which creates it.
   const name = createHash('sha1').update([userId, ...others.map((u) => u.id)].sort().join('')).digest('hex');
   const c = await mm.call<MmChannelFull>(userId, 'GET', `/teams/${teams[0].id}/channels/name/${name}`).catch((e) => {
     if (!missing(e)) throw e;
-    if (!create) throw new NoDirectChannel(`${label} とのグループ DM はまだありません。`);
+    if (!create) throw new NoDirectChannel(msg().resolve.noGroupDm(label));
     const gone = others.find((u) => u.delete_at);
-    if (gone) throw new InputError(`@${gone.username} は無効化されているため、グループ DM を作りません。`);
+    if (gone) throw new InputError(msg().resolve.deactivatedGroup(`@${gone.username}`));
     return mm.call<MmChannelFull>(userId, 'POST', '/channels/group', others.map((u) => u.id)).catch(refusalWorded(label, GROUP_REFUSED));
   });
   return { ...ref(c, teams[0].name), displayName: label };

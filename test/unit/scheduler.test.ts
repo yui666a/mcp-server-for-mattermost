@@ -17,7 +17,7 @@ const UID = 'u1';
 const UID2 = 'u2';
 const CH = 'c'.repeat(26);
 const ROOT = 'r'.repeat(26);
-const REAUTH = 'Mattermost への再ログインが必要です。コネクタを再接続してください。';
+const REAUTH = 'You need to log in to Mattermost again. Reconnect the connector.';
 const UNKNOWN = '投稿されたか不明です。Mattermost の画面で確かめてください。';
 const LATE = '予定時刻を 1 時間過ぎたため投稿していません。';
 
@@ -130,7 +130,7 @@ describe('a refusal fails the schedule without retrying, with a reason for the u
     ['archived channel', () => mmError(400, 'api.post.create_post.can_not_post_to_deleted.error'), 'チャンネルがアーカイブされたため投稿していません。'],
     ['no permission (left the channel)', () => mmError(403, 'api.context.permissions.app_error'), 'このチャンネルに投稿する権限がありません（チャンネルから抜けた、権限が変わった、など）。'],
     ['deleted root', () => mmError(400, 'api.post.create_post.root_id.app_error'), '返信先のスレッドの親投稿が削除されたため投稿していません。'],
-    ['other 4xx keeps Mattermost\'s message', () => mmError(400, 'some.other.error', 'Invalid foo.'), 'Mattermost がエラーを返しました（400）: Invalid foo.'],
+    ['other 4xx keeps Mattermost\'s message', () => mmError(400, 'some.other.error', 'Invalid foo.'), 'Mattermost returned an error (400): Invalid foo.'],
   ];
   for (const [name, answer, reason] of cases) {
     test(name, async () => {
@@ -167,7 +167,7 @@ describe('a refusal fails the schedule without retrying, with a reason for the u
     const id = s.make();
     await s.run();
     expect(s.row(id)).toMatchObject({ status: 'failed', first_attempt_at: null });
-    expect(s.row(id).error).toContain('再ログイン');
+    expect(s.row(id).error).toContain('log in to Mattermost again');
   });
 });
 
@@ -238,7 +238,7 @@ describe('a retry after an unknown outcome looks for the earlier post first', ()
     const id = attempted(s, { fileIds: [F1] });
     await s.run();
     expect(s.row(id)).toMatchObject({ status: 'failed' });
-    expect(s.row(id).error).toContain('再ログイン');
+    expect(s.row(id).error).toContain('log in to Mattermost again');
     expect(s.row(id).first_attempt_at).not.toBeNull();
     expect(s.store.heldScheduledFiles(UID, [F1])).toEqual([{ fileId: F1, scheduledId: id }]);
   });

@@ -3,6 +3,7 @@ import type { Config } from '../config.ts';
 import { log } from '../log.ts';
 import { MmError, RateLimited, Reauthorize, UpstreamUnavailable, type MmClient } from '../mattermost/client.ts';
 import type { Store } from '../store.ts';
+import { msg } from '../i18n/index.ts';
 import { InputError } from './format.ts';
 
 // Apart from server.ts: the tool modules (and post.ts and upload.ts) use these, and server.ts imports every tool module to register it.
@@ -10,25 +11,23 @@ export type ToolContext = { mm: MmClient; mmUserId: string; cfg: Config; store: 
 
 export const text = (t: string, isError = false): CallToolResult => ({ content: [{ type: 'text', text: t }], ...(isError ? { isError } : {}) });
 
-const UNEXPECTED = 'ツールの実行中に予期しないエラーが発生しました。';
-
 function classify(e: unknown): [outcome: string, text: string] | undefined {
   if (e instanceof InputError) return ['input_error', e.message];
-  if (e instanceof Reauthorize) return ['reauthorize', 'Mattermost への再ログインが必要です。コネクタを再接続してください。'];
-  if (e instanceof RateLimited) return ['rate_limited', `呼び出しが多すぎます。${e.retryAfterSec} 秒後に再試行してください。`];
-  if (e instanceof UpstreamUnavailable) return ['upstream_unavailable', 'Mattermost に一時的に接続できません。しばらくしてから再試行してください。'];
+  if (e instanceof Reauthorize) return ['reauthorize', msg().common.reauthorize];
+  if (e instanceof RateLimited) return ['rate_limited', msg().common.rateLimited(e.retryAfterSec)];
+  if (e instanceof UpstreamUnavailable) return ['upstream_unavailable', msg().common.upstreamUnavailable];
   // Not a bare colon when Mattermost sends no message: the sentence would end in ": " in lines that go on after it.
-  if (e instanceof MmError) return ['mm_error', `Mattermost がエラーを返しました（${e.status}）${e.message.trim() ? `: ${e.message}` : '。'}`];
+  if (e instanceof MmError) return ['mm_error', e.message.trim() ? msg().common.mmErrorWith(e.status, e.message) : msg().common.mmError(e.status)];
   return undefined;
 }
 
-export const failureText = (e: unknown): string => classify(e)?.[1] ?? UNEXPECTED;
+export const failureText = (e: unknown): string => classify(e)?.[1] ?? msg().common.unexpected;
 
 // SDK's Streamable HTTP has already committed 200 by the time a tool runs, so failures surface as tool results.
 export function failure(e: unknown): { outcome: string; result: CallToolResult } {
   const c = classify(e);
   if (!c) log('tool_unhandled_error', { name: (e as Error)?.name });
-  const [outcome, t] = c ?? ['error', UNEXPECTED];
+  const [outcome, t] = c ?? ['error', msg().common.unexpected];
   return { outcome, result: text(t, true) };
 }
 

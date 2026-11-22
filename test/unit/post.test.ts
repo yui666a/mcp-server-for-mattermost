@@ -57,7 +57,7 @@ describe('postOnce は 1 回だけ投稿し、結果を構造で返す', () => {
   test('再ログインが必要なときは、やり直さない失敗として再ログインの理由を返す', async () => {
     const e = new Reauthorize(true);
     const r = await postOnce(fails(e), UID, { channelId: CH, message: 'hi', fileIds: [] }, PENDING);
-    expect(r).toEqual({ kind: 'failed', reason: expect.stringContaining('Mattermost への再ログインが必要'), error: e });
+    expect(r).toEqual({ kind: 'failed', reason: expect.stringContaining('log in to Mattermost again'), error: e });
   });
 
   // Not [false, true]: doubt is set only after a request went out.

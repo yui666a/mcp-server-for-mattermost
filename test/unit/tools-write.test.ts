@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
-import { BODY_CUT_NOTE } from '../../src/mcp/format.ts';
+import { bodyCutNote } from '../../src/mcp/format.ts';
 import { MAX_OPEN_UPLOAD_URLS, type Store } from '../../src/store.ts';
 import { freezeCleanupClock, freezeCleanupDeadline, makeApp, SLOW, SLOW_TEST } from './helpers.ts';
 
@@ -133,7 +133,7 @@ describe('add_reaction', () => {
     routes = { 'POST /reactions': mmError(status, id) };
     const r = await setup().call('add_reaction', { post_id: POST, emoji: 'smile' });
     expect(r.isError).toBe(true);
-    expect(r.text).toBe(`Mattermost がエラーを返しました（${status}）: m`);
+    expect(r.text).toBe(`Mattermost returned an error (${status}): m`);
   });
 
   test('403 says the post cannot be reacted to, naming the possible causes', async () => {
@@ -294,7 +294,7 @@ describe('edit_message and delete_message', () => {
       const d = t.inputSchema.properties.message.description;
       for (const s of ['first reread the post with get_post', 'remove the 2-space indent', 'do not rewrite from the output']) expect(d).toContain(s);
       // Not a literal: a changed limit or note would otherwise leave this guidance quoting a note get_post no longer writes.
-      expect(d).toContain(`"${BODY_CUT_NOTE}"`);
+      expect(d).toContain(`"${bodyCutNote()}"`);
       expect(d).toContain('ask the user to edit it in Mattermost');
       expect(t.description).toBe('Edit the text of your own post. Mentions added by an edit do not notify.');
     });
@@ -954,7 +954,7 @@ describe('a DM not opened yet', { timeout: SLOW_TEST }, () => {
     serve();
     const r = await setup().call(tool, { channel: '@carol', ...args });
     expect(r.isError).toBe(true);
-    expect(r.text).toContain('@carol との DM はまだありません');
+    expect(r.text).toContain('There is no DM with @carol yet');
     expect(hits).not.toContain(CREATE);
   });
 
@@ -1087,7 +1087,7 @@ describe('a DM not opened yet', { timeout: SLOW_TEST }, () => {
       serveWith(() => ({ EnableFileAttachments: 'false' }));
       const r = await setup().call('send_message', { channel: '@nobody', message: 'hi', files: [file(1)] });
       expect(r.isError).toBe(true);
-      expect(r.text).toContain('ユーザー「@nobody」が見つかりません');
+      expect(r.text).toContain('User "@nobody" not found');
       expect(hits).not.toContain(CONFIG);
     });
 
@@ -1095,7 +1095,7 @@ describe('a DM not opened yet', { timeout: SLOW_TEST }, () => {
       serveWith(() => ({}));
       routes['GET /users/username/carol'] = () => ({ id: CAROL, username: 'carol', delete_at: 1 });
       const r = await setup().call('send_message', { channel: '@carol', message: 'hi', files: [file(1)] });
-      expect(r.text).toContain('無効化されているため、DM を作りません');
+      expect(r.text).toContain('is deactivated, so the DM is not created');
       expect(hits).toContain(CONFIG);
       expect(hits).not.toContain(CREATE);
     });
@@ -1142,7 +1142,7 @@ describe('a DM not opened yet', { timeout: SLOW_TEST }, () => {
       serveWith(mmError(500, 'app.config.get.app_error'));
       const r = await setup().call('send_message', { channel: '@carol', message: 'hi', files: [file(1)] });
       expect(r.isError).toBe(true);
-      expect(r.text).toContain('Mattermost に一時的に接続できません');
+      expect(r.text).toContain('Cannot connect to Mattermost for the moment');
       const lookup = hits.findIndex((h) => h.startsWith('GET /teams/t1/channels/name/'));
       expect(lookup).toBeGreaterThanOrEqual(0);
       expect(hits.indexOf(CONFIG)).toBeGreaterThan(lookup);

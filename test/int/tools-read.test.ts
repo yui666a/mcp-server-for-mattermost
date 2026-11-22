@@ -229,7 +229,7 @@ describe('read tools against the local Mattermost', () => {
     const r = await call('alice', 'search_posts', { terms: `${TAG} in:@${one.name}` });
     expect(await dmMissing(one.id)).toBe(true);
     expect(r.isError).toBe(true);
-    expect(r.content[0].text).toContain(`@${one.name} との DM はまだありません`);
+    expect(r.content[0].text).toContain(`There is no DM with @${one.name} yet`);
 
     const two = await stranger('ex');
     const x = await call('alice', 'search_posts', { terms: `${TAG} -in:@${two.name}` });
@@ -268,7 +268,7 @@ describe('read tools against the local Mattermost', () => {
     const fourth = await user('nogm');
     const r = await call('alice', 'search_posts', { terms: `${term} in:@${e.users.bob.username},${fourth.name}` });
     expect(r.isError).toBe(true);
-    expect(r.content[0].text).toContain('グループ DM はまだありません');
+    expect(r.content[0].text).toContain('There is no group DM with');
     const name = createHash('sha1').update([e.users.alice.id, e.users.bob.id, fourth.id].sort().join('')).digest('hex');
     const res = await fetch(`${e.mmUrl}/api/v4/teams/${e.teams.a.id}/channels/name/${name}`, { headers: { authorization: `Bearer ${aliceMm}` } });
     expect(res.status).toBe(404);
@@ -297,7 +297,7 @@ describe('read tools against the local Mattermost', () => {
     const id = (await mmApi<{ id: string }>(aliceMm, 'POST', '/posts', { channel_id: e.teams.a.privateChannelId!, message: `${TAG} private` })).id;
     const r = await call('bob', 'get_post', { post: id });
     expect(r.isError).toBe(true);
-    expect(r.content[0].text).toBe('この投稿を見る権限がありません（参加していない非公開チャンネルなど）。参加しているはずなら、Mattermost の一時的な障害の可能性があります。少し待ってから再試行してください。続くなら、チャンネルから外されたか、サーバーの権限の設定で読む権限が外されている可能性があるので、管理者に確かめてください。');
+    expect(r.content[0].text).toBe('You do not have permission to view this post (for example, in a private channel you have not joined). If you should be a member, this may be a temporary Mattermost failure. Wait a moment and retry. If it persists, you may have been removed from the channel, or the read permission may have been removed in the server\'s permission settings; ask an administrator to check.');
   });
 
   test('get_post reports a deleted post as not found', async () => {
@@ -441,7 +441,7 @@ describe('read tools against the local Mattermost', () => {
     test('for the id of a private channel bob has not joined, says he has no permission', async () => {
       const r = await call('bob', 'get_channel', { channel: e.teams.a.privateChannelId! });
       expect(r.isError).toBe(true);
-      expect(r.content[0].text).toBe('このチャンネルを見る権限がありません（参加していない非公開チャンネルなど）。参加しているはずなら、Mattermost の一時的な障害の可能性があります。少し待ってから再試行してください。続くなら、チャンネルから外されたか、サーバーの権限の設定で読む権限が外されている可能性があるので、管理者に確かめてください。');
+      expect(r.content[0].text).toBe('このチャンネルを見る権限がありません（参加していない非公開チャンネルなど）。 If you should be a member, this may be a temporary Mattermost failure. Wait a moment and retry. If it persists, you may have been removed from the channel, or the read permission may have been removed in the server\'s permission settings; ask an administrator to check.');
     });
 
     test('pages through 3 pinned posts with pinned_limit 2', async () => {
@@ -559,7 +559,7 @@ describe('read tools against the local Mattermost', () => {
       await mmApi(aliceMm, 'POST', '/posts', { channel_id: priv, message: `${TAG} private png`, file_ids: [fileId] });
       const r = await call('bob', 'get_file', { file_id: fileId });
       expect(r.isError).toBe(true);
-      expect(r.content[0].text).toBe('このファイルを見る権限がありません（参加していない非公開チャンネルのファイルなど）。参加しているはずなら、Mattermost の一時的な障害の可能性があります。少し待ってから再試行してください。続くなら、チャンネルから外されたか、サーバーの権限の設定で読む権限が外されている可能性があるので、管理者に確かめてください。');
+      expect(r.content[0].text).toBe('このファイルを見る権限がありません（参加していない非公開チャンネルのファイルなど）。 If you should be a member, this may be a temporary Mattermost failure. Wait a moment and retry. If it persists, you may have been removed from the channel, or the read permission may have been removed in the server\'s permission settings; ask an administrator to check.');
     });
   });
 
@@ -645,7 +645,7 @@ describe('read tools against the local Mattermost', () => {
       made.push(u.id);
       const fail = await call('alice', 'search_files', { terms: `${TAG}f* in:@${name}` });
       expect(fail.isError).toBe(true);
-      expect(fail.content[0].text).toBe(`@${name} との DM はまだありません。`);
+      expect(fail.content[0].text).toBe(`There is no DM with @${name} yet.`);
       const r = await call('alice', 'search_files', { terms: `${TAG}f* -in:@${name}` });
       expect(fileIds(r)).toContain(files[`${TAG}f-report.pdf`]);
       const dm = [e.users.alice.id, u.id].sort().join('__');
@@ -666,7 +666,7 @@ describe('read tools against the local Mattermost', () => {
     try {
       const refused = await call('bob', 'list_channel_members', { channel: ch.id });
       expect(refused.isError).toBe(true);
-      expect(refused.content[0].text).toBe('このチャンネルのメンバーを見る権限がありません。参加していないチャンネルのメンバーは、公開チャンネルでも見られません。参加しているはずなら、Mattermost の一時的な障害の可能性があります。少し待ってから再試行してください。続くなら、チャンネルから外されたか、サーバーの権限の設定で読む権限が外されている可能性があるので、管理者に確かめてください。');
+      expect(refused.content[0].text).toBe('このチャンネルのメンバーを見る権限がありません。参加していないチャンネルのメンバーは、公開チャンネルでも見られません。 If you should be a member, this may be a temporary Mattermost failure. Wait a moment and retry. If it persists, you may have been removed from the channel, or the read permission may have been removed in the server\'s permission settings; ask an administrator to check.');
       await mmApi(aliceMm, 'POST', `/channels/${ch.id}/members`, { user_id: e.users.bob.id });
       const members = (r: Result) => [...r.content[0].text.matchAll(/^- @(\S+?)（/gm)].map((m) => m[1]);
       const pages: string[][] = [];
@@ -711,15 +711,15 @@ describe('read tools against the local Mattermost', () => {
     });
 
     const attachment = [
-      'メッセージ添付（Bot などの整形表示）1/1:',
-      `  前置き: ${TAG} pre`,
-      '  タイトル: Build failed（https://ci.example/1）',
-      '  本文: line 1',
+      'Message attachment (formatted display, e.g. from a bot) 1/1:',
+      `  Pretext: ${TAG} pre`,
+      '  Title: Build failed (https://ci.example/1)',
+      '  Text: line 1',
       '    line 2',
-      '  項目: Branch: main',
-      '  ボタンやメニュー: Retry（MCP からは操作できません）',
+      '  Field: Branch: main',
+      '  Buttons and menus: Retry (cannot be operated from MCP)',
     ].join('\n');
-    const reactions = `リアクション: :eyes: 2（@${e.users.alice.username}、@${e.users.bob.username}）`;
+    const reactions = `Reactions: :eyes: 2 (@${e.users.alice.username}, @${e.users.bob.username})`;
     const section = (text: string, id: string) => {
       const at = text.indexOf(`--- post_id: ${id}`);
       if (at < 0) throw new Error(`post ${id} is not in the output`);
@@ -737,16 +737,16 @@ describe('read tools against the local Mattermost', () => {
       const text = (await call('alice', 'read_thread', { post_id: reply })).content[0].text;
       expect(section(text, bot)).toContain(attachment);
       expect(section(text, bot)).toContain(reactions);
-      expect(section(text, reply).split('\n')[2]).toMatch(/^編集済み: \S+Z \| \S+\+09:00$/);
-      expect(section(text, bot)).not.toContain('編集済み');
+      expect(section(text, reply).split('\n')[2]).toMatch(/^Edited: \S+Z \| \S+\+09:00$/);
+      expect(section(text, bot)).not.toContain('Edited');
     });
 
     test('read_channel marks the system messages of the channel', async () => {
       const text = (await call('alice', 'read_channel', { channel: ch.id, limit: 20 })).content[0].text;
       expect(text).toContain(attachment);
-      const system = text.split(/\n(?=--- post_id: )/).filter((x) => x.includes('\nシステムメッセージ（system_'));
+      const system = text.split(/\n(?=--- post_id: )/).filter((x) => x.includes('\nSystem message (system_'));
       expect(system.some((x) => /joined the channel|added to the channel/.test(x))).toBe(true);
-      expect(section(text, reply)).not.toContain('システムメッセージ');
+      expect(section(text, reply)).not.toContain('System message');
     });
   });
 

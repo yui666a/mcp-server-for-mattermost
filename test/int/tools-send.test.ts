@@ -160,7 +160,7 @@ describe('send_message against the local Mattermost', () => {
     const read = () => req.post('/mcp')
       .set({ authorization: `Bearer ${access}`, accept: 'application/json, text/event-stream', 'content-type': 'application/json' })
       .send(JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'read_channel', arguments: { channel: spec } } }));
-    expect((await read()).body.result.content[0].text).toContain(`@${names[0]}, @${names[1]} とのグループ DM はまだありません`);
+    expect((await read()).body.result.content[0].text).toContain(`There is no group DM with @${names[0]}, @${names[1]} yet`);
     expect((await gm()).status).toBe(404);
 
     const r = await call({ channel: spec, message: `${TAG} first group dm` });
@@ -187,7 +187,7 @@ describe('send_message against the local Mattermost', () => {
     const read = await req.post('/mcp')
       .set({ authorization: `Bearer ${access}`, accept: 'application/json, text/event-stream', 'content-type': 'application/json' })
       .send(JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'read_channel', arguments: { channel: `@${name}` } } }));
-    expect(read.body.result.content[0].text).toContain(`@${name} との DM はまだありません`);
+    expect(read.body.result.content[0].text).toContain(`There is no DM with @${name} yet`);
     expect((await dm()).status).toBe(404);
 
     const r = await call({ channel: `@${name}`, message: `${TAG} first dm` });

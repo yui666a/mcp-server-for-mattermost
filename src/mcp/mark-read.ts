@@ -2,8 +2,9 @@ import type { McpServer, ToolCallback } from '@modelcontextprotocol/sdk/server/m
 import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
 import { z } from 'zod';
 import { MmError, RateLimited } from '../mattermost/client.ts';
+import { msg } from '../i18n/index.ts';
 import { idArg, strictArgs } from './args.ts';
-import { ASK_ADMIN, InputError, oneLine, RETRY_SOON, unformat, type MmPost } from './format.ts';
+import { InputError, oneLine, unformat, type MmPost } from './format.ts';
 import { myTeams, resolveChannel, type Mm } from './resolve.ts';
 import { log } from '../log.ts';
 import { failure, failureText, guarded, text, type ToolContext } from './tool.ts';
@@ -45,7 +46,7 @@ function lastPost(mm: Mm, uid: string, id: string, reread: string): Promise<Post
     if (missing(e)) {
       const again = `${reread} で読み直して、読んだ投稿のうち最も新しいものの post_id を渡してください。`;
       // Not RETRY's opening: last_post_id may be a post in another channel than the item's, so being in the item's channel says nothing about it.
-      if ((e as MmError).status === 403) throw new InputError(`last_post_id ${id} の投稿を見る権限がありません（参加していない非公開チャンネルなど）。${again}この投稿のチャンネルに参加しているはずなら、Mattermost の一時的な障害の可能性があります。少し待ってから再試行してください。${ASK_ADMIN}`);
+      if ((e as MmError).status === 403) throw new InputError(`last_post_id ${id} の投稿を見る権限がありません（参加していない非公開チャンネルなど）。${again}この投稿のチャンネルに参加しているはずなら、Mattermost の一時的な障害の可能性があります。少し待ってから再試行してください。${msg().common.askAdmin}`);
       throw new InputError(`last_post_id ${id} の投稿が見つかりません（削除されたか、存在しません）。${again}`);
     }
     throw e;
@@ -119,7 +120,7 @@ export async function markAsRead(mm: Mm, uid: string, args: Args): Promise<CallT
         seen.add(ch.id);
         const me = await mm.call<Member>(uid, 'GET', `/channels/${ch.id}/members/me`).catch((e) => {
           // Not saying a 403 means not joined: Mattermost also answers 403 when its permission check fails on a transient error.
-          if (e instanceof MmError && e.status === 403) throw new InputError(`このチャンネルに参加しているかを確かめられませんでした（参加していないか、Mattermost の一時的な障害）。${RETRY_SOON}${ASK_ADMIN}`);
+          if (e instanceof MmError && e.status === 403) throw new InputError(`このチャンネルに参加しているかを確かめられませんでした（参加していないか、Mattermost の一時的な障害）。${msg().common.retrySoon}${msg().common.askAdmin}`);
           if (e instanceof MmError && e.status === 404) throw new InputError('このチャンネルに参加していません。');
           throw e;
         });
@@ -175,7 +176,7 @@ export async function markAsRead(mm: Mm, uid: string, args: Args): Promise<CallT
           if (!p.root_id && !p.reply_count) throw new InputError('このスレッドには返信が無いため、既読にするものがありません。');
           // Not pointing a thread of a channel the user has not joined to follow_thread: follow_thread refuses it. A public channel's posts are readable without joining, so the 404 alone does not tell.
           await mm.call(uid, 'GET', `/channels/${p.channel_id}/members/me`).catch((m) => {
-            if (m instanceof MmError && m.status === 403) throw new InputError(`このスレッドのチャンネルに参加しているかを確かめられませんでした（参加していないか、Mattermost の一時的な障害）。参加していないなら、既読にするものはありません。${RETRY_SOON}${ASK_ADMIN}`);
+            if (m instanceof MmError && m.status === 403) throw new InputError(`このスレッドのチャンネルに参加しているかを確かめられませんでした（参加していないか、Mattermost の一時的な障害）。参加していないなら、既読にするものはありません。${msg().common.retrySoon}${msg().common.askAdmin}`);
             if (m instanceof MmError && m.status === 404) throw new InputError('このスレッドのチャンネルに参加していません。参加していないチャンネルのスレッドは未読に数えられないので、既読にするものがありません。');
             throw m;
           });
