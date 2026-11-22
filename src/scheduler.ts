@@ -1,3 +1,4 @@
+import { msg } from './i18n/index.ts';
 import { log } from './log.ts';
 import { RateLimited, Reauthorize, UpstreamUnavailable } from './mattermost/client.ts';
 import { lookPosted, postOnce } from './mcp/post.ts';
@@ -7,27 +8,24 @@ import type { ClaimedScheduled, ScheduledOutcome, Store } from './store.ts';
 
 const PER_TICK = 20;
 const LATE_AFTER = 3600_000;
-const UNKNOWN = '投稿されたか不明です。Mattermost の画面で確かめてください。';
-const LATE = '予定時刻を 1 時間過ぎたため投稿していません。';
-const UNSEALED = '本文を復号できないため投稿していません。予約を入れ直してください。';
-const POST_WORDING: Wording = {
-  id: [
-    [400, 'api.post.create_post.can_not_post_to_deleted.error', 'チャンネルがアーカイブされたため投稿していません。'],
-    [403, 'api.context.permissions.app_error', 'このチャンネルに投稿する権限がありません（チャンネルから抜けた、権限が変わった、など）。'],
-    [400, 'api.post.create_post.root_id.app_error', '返信先のスレッドの親投稿が削除されたため投稿していません。'],
-  ],
-};
-// Not the plain wording for a post with files: Mattermost also checks the upload permission then, and answers the same 403 for either.
-const FILE_POST_WORDING: Wording = {
-  id: POST_WORDING.id!.map(([status, id, text]) => [status, id,
-    id === 'api.context.permissions.app_error' ? 'このチャンネルに投稿する権限か、ファイルを添付する権限がありません（チャンネルから抜けた、権限が変わった、など）。' : text]),
+// Not module-level constants: a reason is worded in the locale current when it is recorded, and the locale is set after this module loads.
+const postWording = (withFiles: boolean): Wording => {
+  const t = msg().scheduler;
+  return {
+    id: [
+      [400, 'api.post.create_post.can_not_post_to_deleted.error', t.archived],
+      // Not the plain wording for a post with files: Mattermost also checks the upload permission then, and answers the same 403 for either.
+      [403, 'api.context.permissions.app_error', withFiles ? t.noPermissionFiles : t.noPermission],
+      [400, 'api.post.create_post.root_id.app_error', t.rootDeleted],
+    ],
+  };
 };
 
 const failed = (error: string): ScheduledOutcome => ({ status: 'failed', error });
 
 export async function tick(store: Store, mm: Mm, now: number): Promise<void> {
   store.resetSendingScheduled(now);
-  store.failUnattemptedScheduled(now - LATE_AFTER, LATE, now);
+  store.failUnattemptedScheduled(now - LATE_AFTER, msg().scheduler.late, now);
   for (const id of store.dueScheduled(now, PER_TICK)) {
     // Not the tick's now for the attempt: findPosted passes it to Mattermost as since, which must not be ahead of Mattermost's clock.
     const s = store.claimScheduled(id, now, Date.now());
@@ -38,7 +36,7 @@ export async function tick(store: Store, mm: Mm, now: number): Promise<void> {
     } catch (e) {
       log('scheduled_post_error', { name: (e as Error)?.name });
       // Not "not posted" for an error before the post: what runs before sending reports it as a typed failure, and the lookups of a retry catch their own errors, so only a database fault or a bug in this code can throw before sending.
-      o = failed(UNKNOWN);
+      o = failed(msg().scheduler.unknown);
     }
     store.settleScheduled(id, now, o);
     log('scheduled_post', { mm_user_id: s.mmUserId, outcome: o.status });
@@ -47,7 +45,7 @@ export async function tick(store: Store, mm: Mm, now: number): Promise<void> {
 
 async function attempt(store: Store, mm: Mm, s: ClaimedScheduled, now: number): Promise<ScheduledOutcome> {
   // Not "not posted" for an attempted row: the earlier attempt may have posted before the key was made again.
-  if (s.message === undefined) return failed(s.firstAttemptAt === null ? UNSEALED : UNKNOWN);
+  if (s.message === undefined) return failed(s.firstAttemptAt === null ? msg().scheduler.unsealed : msg().scheduler.unknown);
   const spec = { channelId: s.channelId, rootId: s.rootId, message: s.message };
   const fileIds = s.fileIds;
   const late = s.scheduledAt < now - LATE_AFTER;
@@ -65,32 +63,32 @@ async function attempt(store: Store, mm: Mm, s: ClaimedScheduled, now: number): 
     } catch (e) {
       // Not posting without a lookup: the earlier attempt may have posted, and a new post would be a second one.
       if (!late && (e instanceof RateLimited || e instanceof UpstreamUnavailable)) return { status: 'pending', forgetAttempt: false };
-      return failed(UNKNOWN);
+      return failed(msg().scheduler.unknown);
     }
     // Not the found post's own file_ids: the lookup only matches posts that carry every file of the schedule (or, when Mattermost hid them, as many files), so those are the kept ones.
     if (found) return { status: 'posted', postId: found, fileIds };
     // Not posting again: a deleted or edited post may be this schedule's, changed by the user, and its text can no longer be compared; a post with other files may be the earlier attempt with files Mattermost dropped.
-    if (touched) return failed(UNKNOWN);
+    if (touched) return failed(msg().scheduler.unknown);
   }
-  if (late) return failed(LATE);
+  if (late) return failed(msg().scheduler.late);
   const r = await postOnce(mm, s.mmUserId, { ...spec, fileIds }, s.pendingPostId!);
   if (r.kind === 'posted') {
     // Not the response's file_ids when Mattermost hid them (ABAC denies the user the download): it empties them and counts the attached files instead, so which ones were dropped is unknown, and keeping them all is the safe side.
     if (r.redactedFileCount > 0 && !r.fileIds.length) {
       const dropped = fileIds.length - r.redactedFileCount;
-      const note = dropped > 0 ? `添付した ${fileIds.length} 件のうち ${dropped} 件を Mattermost が外したため、投稿に付いていません（ファイルをダウンロードする権限が無いため、どれが外れたかは分かりません）。` : undefined;
+      const note = dropped > 0 ? msg().scheduler.droppedHidden(fileIds.length, dropped) : undefined;
       return { status: 'posted', postId: r.postId, fileIds, note };
     }
     const kept = fileIds.filter((id) => r.fileIds.includes(id));
     const dropped = fileIds.filter((id) => !kept.includes(id));
-    const note = dropped.length ? `添付した ${fileIds.length} 件のうち ${dropped.length} 件（${dropped.join(', ')}）を Mattermost が外したため、投稿に付いていません。` : undefined;
+    const note = dropped.length ? msg().scheduler.dropped(fileIds.length, dropped.length, dropped.join(', ')) : undefined;
     return { status: 'posted', postId: r.postId, fileIds: kept, note };
   }
   // Not forgetting a retry's attempt: the next retry would then skip the lookup and post under a new pending_post_id.
   if (r.kind === 'retryable') return { status: 'pending', forgetAttempt: !r.sent && !s.retry };
-  if (r.error instanceof Reauthorize && r.error.sent) return failed(UNKNOWN);
+  if (r.error instanceof Reauthorize && r.error.sent) return failed(msg().scheduler.unknown);
   // Not forgetting a retry's attempt: the earlier attempt may have posted, and this refusal does not say otherwise.
-  return { status: 'failed', error: wordOf(r.error, fileIds.length ? FILE_POST_WORDING : POST_WORDING) ?? r.reason, forgetAttempt: !s.retry };
+  return { status: 'failed', error: wordOf(r.error, postWording(fileIds.length > 0)) ?? r.reason, forgetAttempt: !s.retry };
 }
 
 // Not setInterval: a tick slower than the interval would overlap the next one and claim rows the first is still posting.
