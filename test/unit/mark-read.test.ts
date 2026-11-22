@@ -119,7 +119,7 @@ describe('mark_as_read for channels', () => {
     expect(r.text).not.toContain('\u200b');
   });
 
-  test.each([[403, 'api.context.permissions.app_error', 'このチャンネルを見る権限がありません（参加していないチームのチャンネルや、見る権限の無い公開チャンネルなど）'], [404, 'app.channel.get_by_name.missing.app_error', 'チャンネルが見つかりません']])('words a channel spec Mattermost answers with %i, as get_channel does', async (status, mmId, wording) => {
+  test.each([[403, 'api.context.permissions.app_error', 'You do not have permission to view this channel (for example, a channel of a team you have not joined, or a public channel you have no permission to view).'], [404, 'app.channel.get_by_name.missing.app_error', 'Channel not found']])('words a channel spec Mattermost answers with %i, as get_channel does', async (status, mmId, wording) => {
     routes = { ...base(), 'GET /teams/name/team-a/channels/name/nowhere': mmError(status, mmId) };
     const r = await setup().call({ channels: [{ channel: 'team-a/nowhere' }] });
     expect(r.text).toContain(wording);
@@ -129,10 +129,10 @@ describe('mark_as_read for channels', () => {
     const GONE = 'g'.repeat(26);
     routes = { ...base(), 'GET /users/me/teams': () => [{ id: TEAM, name: 'team-a' }], [`GET /channels/${GONE}`]: mmError(404, 'app.channel.get.existing.app_error'), [`GET /teams/${TEAM}/channels/name/${GONE}`]: mmError(404, 'app.channel.get_by_name.missing.app_error') };
     const byId = (await setup().call({ channels: [{ channel: GONE }] })).text;
-    expect(byId).toContain('チャンネルが見つかりません。ID の誤りなら');
-    expect(byId).not.toContain('アーカイブ済みなら');
+    expect(byId).toContain('Channel not found. If the ID is wrong');
+    expect(byId).not.toContain('For an archived channel');
     routes = { ...base(), 'GET /teams/name/team-a/channels/name/nowhere': mmError(404, 'app.channel.get_by_name.missing.app_error') };
-    expect((await setup().call({ channels: [{ channel: 'team-a/nowhere' }] })).text).toContain('アーカイブ済みなら、チャンネル ID を利用者に確かめて ID で指定してください');
+    expect((await setup().call({ channels: [{ channel: 'team-a/nowhere' }] })).text).toContain('For an archived channel, ask the user for the channel ID and give the ID');
   });
 
   test('marks an archived channel given by id, saying it is archived', async () => {

@@ -96,7 +96,7 @@ describe('list_followed_threads', () => {
   test('names a DM partner whose username cannot be found by user_id, not as @<user_id>', async () => {
     routes = { ...base(), 'POST /users/ids': () => [{ id: 'u2', username: 'bob' }] };
     const { text: out } = await setup().call('list_followed_threads', {});
-    expect(out).toContain('ユーザー名不明（user_id: u3）');
+    expect(out).toContain('unknown user name (user_id: u3)');
     expect(out).not.toContain('@u3');
   });
 
@@ -107,7 +107,7 @@ describe('list_followed_threads', () => {
     expect(urls).toContain(`GET /users/u1/teams/${T2}/threads?per_page=200&excludeDirect=true`);
     expect(order(out)).toEqual([TH2, TH1, TH_DM, TH_ARCH]);
     expect(out.split('\n').slice(0, 3)).toEqual([
-      'スレッドの折りたたみ（CRT）: 有効（サーバー設定: always_on）',
+      'スレッドの折りたたみ（CRT）: 有効（Server setting: always_on）',
       'フォロー中のスレッド: 4 件',
       'フォロー中のスレッド（最終返信の新しい順）:',
     ]);
