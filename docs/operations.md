@@ -136,7 +136,7 @@ The DB schema is created with `CREATE TABLE IF NOT EXISTS` on every start, and t
 `migrate` handles only the addition of columns. A new table in a new version is added by `CREATE TABLE`, but changes or deletions of existing columns are not applied to an existing DB.
 Before updating, look at the diff of `src/db.ts`, and if existing tables change beyond the columns `migrate` adds, do not update to that version unless a migration procedure is given.
 
-Before upgrading to a version where the language and the time zone are chosen with the environment variables `LOCALE` and `TIME_ZONE`, a deployment that runs in Japanese and JST adds `LOCALE=ja` and `TIME_ZONE=Asia/Tokyo` to its environment variables.
+Before upgrading to a version where the language and the time zone are chosen with the environment variables `LOCALE` and `TIME_ZONE`: if your deployment runs in Japanese and JST, add `LOCALE=ja` and `TIME_ZONE=Asia/Tokyo` to its environment variables before upgrading.
 The defaults are `en` and `UTC`, so if you upgrade without adding them, tool output becomes English and times without an offset are read as UTC.
 After updating, confirm that `locale` and `time_zone` in the `listening` startup log are the values you added.
 
@@ -156,12 +156,14 @@ So before starting a restored SQLite file as the MCP server, delete the credenti
 docker compose stop mcp
 # Put the restored files in ./data, set the owner to UID 1000, and make them unreadable to other users
 sudo chown -R 1000:1000 data && sudo chmod 700 data
-docker run --rm --network none -v "$PWD/data:/data" mcp-server-for-mattermost node src/admin.ts list-clients | wc -l
-docker run --rm --network none -v "$PWD/data:/data" mcp-server-for-mattermost node src/admin.ts purge-credentials
-docker run --rm --network none -v "$PWD/data:/data" mcp-server-for-mattermost node src/admin.ts invalidate-scheduled
-docker run --rm --network none -v "$PWD/data:/data" mcp-server-for-mattermost node src/admin.ts list-clients | wc -l
+docker run --rm --network none -e LOCALE=en -v "$PWD/data:/data" mcp-server-for-mattermost node src/admin.ts list-clients | wc -l
+docker run --rm --network none -e LOCALE=en -v "$PWD/data:/data" mcp-server-for-mattermost node src/admin.ts purge-credentials
+docker run --rm --network none -e LOCALE=en -v "$PWD/data:/data" mcp-server-for-mattermost node src/admin.ts invalidate-scheduled
+docker run --rm --network none -e LOCALE=en -v "$PWD/data:/data" mcp-server-for-mattermost node src/admin.ts list-clients | wc -l
 docker compose up -d mcp
 ```
+
+Pass the same `LOCALE` as the server in `-e LOCALE=` of these commands (change `en` if the server runs with another value). Only `invalidate-scheduled` writes text (the reason stored with each failed schedule); with another value it would be stored in the wrong language.
 
 - `purge-credentials` prints `purged <count> rows`. Confirm the count of `list-clients` before and after does not change (DCR registrations are not deleted). Registrations remain, so each client returns through a normal re-login after its local refresh token is rejected with `invalid_grant`
 - `invalidate-scheduled` prints `invalidated <count> scheduled posts`. The schedules it failed appear in `list_scheduled_messages` with a reason, so if the count is not 0, tell users to check their schedules and enter them again. A schedule that was attempted and a schedule past its scheduled time get a reason saying "It is unknown whether this was posted" (it may have been posted after the backup)

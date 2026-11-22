@@ -50,7 +50,7 @@ export const en = {
     whenUnreadable: (name: string, s: string, tz: string) =>
       `${name} "${s}" cannot be read as a date-time. Give it as YYYY-MM-DDTHH:mm, down to the time (seconds and offset are optional. Without an offset it is read as ${tz} time; a time skipped by a daylight-saving change is refused, and a time that occurs twice is read as the earlier one).`,
     whenSkipped: (name: string, s: string, tz: string) =>
-      `${name} "${s}" does not exist in ${tz}: the clocks skip it because of a daylight-saving change. Pick another time, or add an offset such as Z or +09:00.`,
+      `${name} "${s}" does not exist in ${tz}: the clocks skip it because of a daylight-saving change. Confirm another time with the user, or give the time with an explicit UTC offset the user specifies (such as Z).`,
   },
   resolve: {
     ambiguous: (spec: string) => `Several channels match "${spec}". Specify the channel ID or "team-name/channel-name".`,
@@ -340,7 +340,7 @@ export const en = {
     alreadyUploaded: 'The following files are already uploaded. You can pass them to file_ids.',
   },
   schedule: {
-    statuses: { pending: 'pending', sending: 'posting', posted: 'posted', failed: 'failed' },
+    statuses: { pending: 'pending', sending: 'sending', posted: 'posted', failed: 'failed' },
     atLimit: (max: number) => `You have reached the limit of ${max} pending scheduled messages. Cancel the ones you no longer need with cancel_scheduled_message.`,
     notChangeable: 'Scheduled message not found, or it cannot be changed because it is being posted, its result is being checked after an attempt to post, or it has finished.',
     outOfRange: (at: string) => `A message can be scheduled only from 1 minute to 30 days from now. Time given: ${at}`,
@@ -511,7 +511,7 @@ export const en = {
     loopbackWarning: 'This grants permission to an app on this device. Approve only if you started the Claude Code or Codex connection yourself.',
     appName: 'App name',
     nameNotice: '(The name is self-declared by whoever registered the app and has not been verified.)',
-    grants: 'Permission granted',
+    grants: 'Permissions requested',
     grantsValue: 'Read and write messages as your Mattermost account',
     approve: 'Approve and log in to Mattermost',
     deny: 'Deny',
