@@ -71,7 +71,7 @@ docker compose logs --no-log-prefix mcp | grep '"event":"tool_call"'
 | `dcr_registered`、`dcr_unauthorized_near_limit` | クライアントの登録と、未認可の登録が上限に近いことの警告（下の「未認可の登録が上限に近いとき」） |
 | `authorize_completed`、`authorize_upstream_failed` | 利用者のログインの完了と、Mattermost との通信の失敗（`step` が `exchange` か `users_me`） |
 | `unhandled_error`、`tool_unhandled_error`、`upload_unhandled_error`、`scheduled_post_error`、`scheduler_failed`、`sweep_failed` | 想定外の失敗。エラーの名前とコードだけを持つ |
-| `listening`、`shutting_down` | 起動と停止 |
+| `listening`、`shutting_down` | 起動と停止。`listening` は `port`、`locale`、`time_zone` を持つ |
 
 ### Mattermost のサーバーログ
 
@@ -135,6 +135,11 @@ pnpm test:int
 DB のスキーマは、起動のたびに `CREATE TABLE IF NOT EXISTS` で作り、そのあと `src/db.ts` の `migrate` に書いた列を、既存の表に無ければ足す。
 `migrate` が扱うのは、列の追加だけである。新しい版で表が増えれば `CREATE TABLE` で足されるが、既存の列の変更や削除は既存の DB に反映されない。
 更新の前に `src/db.ts` の差分を見て、`migrate` で足す列のほかに既存の表が変わっていれば、移行の手順が示されていない限りその版へは更新しない。
+
+言語と時刻のタイムゾーンを環境変数 `LOCALE` と `TIME_ZONE` で選べる版へ上げる前に、日本語と JST で運用している導入は、環境変数に `LOCALE=ja` と `TIME_ZONE=Asia/Tokyo` を足す。
+どちらも既定は `en` と `UTC` なので、足さずに上げると、ツールの出力が英語になり、オフセットの無い時刻が UTC として読まれる。
+更新したら、起動のログの `listening` の `locale` と `time_zone` が足した値になっていることを確かめる。
+
 戻すときは、前の版のイメージと、更新前に写した `/data` を一緒に戻す。
 
 ## バックアップと復元

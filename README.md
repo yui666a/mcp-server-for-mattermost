@@ -5,7 +5,8 @@
 A remote [MCP](https://modelcontextprotocol.io/) server that lets AI clients (claude.ai, Claude Code, Codex CLI, and other MCP clients) read and post to Mattermost **as each user**.
 Users add one URL as a connector and sign in with their own Mattermost account; the server only ever sees and does what that user can.
 
-> Tool descriptions are written in English. Tool output, the consent page, and the documents under `docs/` are written in Japanese.
+> The language of tool descriptions, tool output, and the consent page is chosen with the `LOCALE` environment variable (`en` or `ja`, default `en`).
+> The documents under `docs/` exist in both English and Japanese (the Japanese versions end in `-ja.md`).
 
 ## Why this exists
 
@@ -58,7 +59,7 @@ This project targets the other case:
 | `set_status` | Set the user's own status (online, away, do not disturb with an optional end time, offline) |
 | `set_custom_status` / `clear_custom_status` | Set or clear the user's own custom status (emoji, text, expiry) |
 
-Times are in JST: a time for `schedule_message`, `set_status` (`dnd_until`), or `set_custom_status` (`until`) written without an offset (`YYYY-MM-DDTHH:mm[:ss[.sss]]`) is read as `+09:00`, so append `Z` or `+hh:mm` (`-hh:mm`) for another zone. Search dates (`on:`, `before:`, `after:`) are JST days, and output shows each time in both UTC and JST.
+Times are handled in the time zone set by `TIME_ZONE` (an IANA time zone name, default `UTC`): a time for `schedule_message`, `set_status` (`dnd_until`), or `set_custom_status` (`until`) written without an offset (`YYYY-MM-DDTHH:mm[:ss[.sss]]`) is read as a `TIME_ZONE` time, so append `Z` or `+hh:mm` (`-hh:mm`) for another zone. Search dates (`on:`, `before:`, `after:`) are days in `TIME_ZONE`, and output shows each time in both UTC and `TIME_ZONE` (UTC only when `TIME_ZONE` is UTC).
 
 Each post in the output of the read tools also shows its message attachments (the formatted content bots and webhooks post, which Mattermost's default database search does not cover), its reactions with who reacted, when it was edited, and whether it is a system message. For the threads listed by `get_unreads` and `list_followed_threads`, each post shows only that there are reactions, because Mattermost's thread list usually does not return them (who reacted is shown when it does). `get_post` shows who reacted.
 
