@@ -258,7 +258,7 @@ describe('list_followed_threads', () => {
     routes = base();
     const t = (await setup().tools()).find((x) => x.name === 'list_followed_threads')!;
     expect(t.annotations.readOnlyHint).toBe(true);
-    expect(t.description).toContain('返信がまだないルート投稿は');
+    expect(t.description).toContain('Root posts without replies do not appear');
   });
 });
 

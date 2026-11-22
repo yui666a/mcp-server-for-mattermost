@@ -25,10 +25,10 @@ export async function searchEmoji(mm: Mm, uid: string, args: { name: string }): 
 }
 
 export function registerEmojiTools(server: McpServer, ctx: ToolContext): void {
-  const schema = { name: z.string().min(1).max(100).describe('探す絵文字名の一部（例: party）。前後のコロンは付けても付けなくてもよい。大文字と小文字は区別する') };
+  const schema = { name: z.string().min(1).max(100).describe('Part of the emoji name (e.g. party). Case-sensitive.') };
   // Cast for the same reason as in tools-read.ts: the SDK's callback type does not resolve for these shapes.
   server.registerTool('search_emoji', {
-    description: `add_reaction や set_custom_status に渡すカスタム絵文字の名前を、名前の一部で探す。名前の順に最大 ${SEARCH_MAX} 件。標準の絵文字（white_check_mark、+1 など）は含まない`,
+    description: `Find custom emoji names for add_reaction and set_custom_status by part of the name. Standard emoji are not included.`,
     inputSchema: schema,
     annotations: { readOnlyHint: true },
   }, guarded(ctx, 'search_emoji', async (args: { name: string }, extra: { signal: AbortSignal }) =>

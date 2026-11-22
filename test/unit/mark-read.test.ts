@@ -684,8 +684,9 @@ describe('mark_as_read input and annotations', () => {
     routes = base();
     const t = (await setup().tools()).find((x) => x.name === 'mark_as_read')!;
     expect(t.annotations).toEqual({ readOnlyHint: false, destructiveHint: false, idempotentHint: false });
-    expect(t.description).toContain('last_post_id を付けた呼び出しは、失敗したらそのまま再実行してよい');
-    expect(t.description).toContain('last_post_id には、そのチャンネルやスレッドで読んだ投稿のうち最も新しいものの post_id を渡す');
-    expect(t.description).toContain('read_channel の from: "unread" で未読を最後まで読んでから渡すこと');
+    expect(t.description).toContain('A call with last_post_id can be retried as is if it fails');
+    expect(t.description).toContain('A channel is marked read only if no one else posted after last_post_id');
+    expect(t.description).toContain('first read to the end with read_channel from: "unread"');
+    expect(t.description).toContain('omit it only when the user asks for that');
   });
 });
