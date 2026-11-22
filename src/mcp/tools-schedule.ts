@@ -9,7 +9,7 @@ import { dmLabel, type Mm, type MmChannel, teamNameOf } from './resolve.ts';
 import { guarded, text, type ToolContext } from './tool.ts';
 import { cursorArg, cursorOf, limitArg, perPage } from './tools-read.ts';
 import { checkRoot, checkUnposted, checkUploaded, heldError, MAX_FILES_BYTES, MAX_UPLOAD_FILES, mayCreateDirect, resolveTarget } from './tools-send.ts';
-import { parseWhen } from './when.ts';
+import { parseWhen, whenForm } from './when.ts';
 
 const MIN_AHEAD = 60_000;
 const MAX_AHEAD = 30 * 24 * 3600_000;
@@ -20,7 +20,7 @@ const NOT_CHANGEABLE = '予約が見つかりません。または、投稿中�
 
 const POST_ID = idArg;
 const MESSAGE = z.string().min(1).max(16383);
-const AT = z.string().describe('Scheduled time, YYYY-MM-DDTHH:mm (JST if no offset), 1 minute to 30 days from now');
+const at = () => z.string().describe(`Scheduled time, ${whenForm()}, 1 minute to 30 days from now`);
 const ID = z.string().overwrite(unformat).min(1).max(100).describe('Scheduled message ID');
 
 function when(at: string): number {
@@ -30,15 +30,14 @@ function when(at: string): number {
   return ms;
 }
 
-const scheduleShape = {
+const scheduleArgs = () => strictArgs({
   channel: z.string().min(1).describe('A channel ID, team/channel, channel name, @username (DM), or @a,b (group DM). A DM or group DM is created if missing.'),
   message: MESSAGE,
   root_id: POST_ID.optional().describe('post_id of the thread root, to schedule a reply'),
-  at: AT,
+  at: at(),
   file_ids: z.array(idArg).min(1).max(MAX_UPLOAD_FILES).optional()
     .describe(`file_ids uploaded with prepare_upload to the destination channel within the last 24 hours`),
-};
-const scheduleSchema = strictArgs(scheduleShape, {
+}, {
   files: `files は予約では使えません。中身を読めて合計 ${MAX_FILES_BYTES / 1024}KiB に収まる 1〜${MAX_UPLOAD_FILES} 件のファイルを今すぐ送るなら、send_message の files を使えます。予約するときと、それ以外のファイルは、prepare_upload の説明の案内に従ってください。`,
 });
 type ScheduleArgs = { channel: string; message: string; root_id?: string; at: string; file_ids?: string[] };
@@ -165,7 +164,7 @@ async function row(s: Scheduled, name: string | undefined, teamOf: (channelId: s
 }
 
 const UNCHANGEABLE = '投稿先と添付は変えられません。cancel_scheduled_message で取り消して予約し直してください。';
-const updateSchema = strictArgs({ id: ID, message: MESSAGE.optional().describe('New message, replacing the whole text'), at: AT.optional() },
+const updateArgs = () => strictArgs({ id: ID, message: MESSAGE.optional().describe('New message, replacing the whole text'), at: at().optional() },
   { file_ids: UNCHANGEABLE, files: UNCHANGEABLE, channel: UNCHANGEABLE, root_id: UNCHANGEABLE });
 
 export function updateScheduledMessage(store: Store, uid: string, args: { id: string; message?: string; at?: string }): CallToolResult {
@@ -185,6 +184,7 @@ export function cancelScheduledMessage(store: Store, uid: string, args: { id: st
 export function registerScheduleTools(server: McpServer, ctx: ToolContext): void {
   const uid = ctx.mmUserId;
   const mmOf = (signal: AbortSignal): Mm => ({ call: (u, m, p, b) => ctx.mm.call(u, m, p, b, signal) });
+  const scheduleSchema = scheduleArgs();
   // Cast for the same reason as in tools-read.ts: the SDK's callback type does not resolve for these shapes.
   server.registerTool('schedule_message', {
     description: 'Schedule a post for a given time. Attach files only via file_ids (from prepare_upload).',
@@ -208,6 +208,7 @@ export function registerScheduleTools(server: McpServer, ctx: ToolContext): void
   ) as unknown as ToolCallback<typeof listSchema>);
 
   const destructive = { readOnlyHint: false, destructiveHint: true, idempotentHint: true };
+  const updateSchema = updateArgs();
   server.registerTool('update_scheduled_message', {
     description: 'Change the text or time of your pending scheduled message. Before changing the text, always get the full text by passing id to list_scheduled_messages (the list may cut the text and indents lines after the first). Destination and attachments cannot change; cancel and schedule again.',
     inputSchema: updateSchema,

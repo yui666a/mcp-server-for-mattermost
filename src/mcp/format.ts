@@ -1,3 +1,5 @@
+import { timeZone, zonedIso } from '../zone.ts';
+
 export class InputError extends Error {
   name = 'InputError';
 }
@@ -18,7 +20,6 @@ export const RETRY_SOON = '参加しているはずなら、少し待ってか�
 export const ASK_ADMIN = '続くなら、チャンネルから外されたか、サーバーの権限の設定で読む権限が外されている可能性があるので、管理者に確かめてください。';
 export const POST_FORBIDDEN = `この投稿を見る権限がありません（参加していない非公開チャンネルなど）。${RETRY}${ASK_ADMIN}`;
 export const BAD_CURSOR = 'cursor が不正です。前回の出力の next_cursor をそのまま渡してください。';
-const JST_MS = 9 * 3600_000;
 const segmenter = new Intl.Segmenter();
 
 export const graphemeCount = (s: string): number => [...segmenter.segment(s)].length;
@@ -35,25 +36,18 @@ export function truncate(s: string, max = BODY_MAX_CHARS): { text: string; trunc
   return { text: s, truncated: false };
 }
 
-const iso = (ms: number, offset: number, suffix: string) => new Date(ms + offset).toISOString().slice(0, 19) + suffix;
+export function formatTime(ms: number): string {
+  const utc = `${new Date(ms).toISOString().slice(0, 19)}Z`;
+  return timeZone() === 'UTC' ? utc : `${utc} | ${zonedIso(ms)}`;
+}
 
-export const formatTime = (ms: number): string => `${iso(ms, 0, 'Z')} | ${iso(ms, JST_MS, '+09:00')}`;
-
-// Not timeZoneName 'longOffset' alone: it writes UTC as plain "GMT", not "GMT+00:00".
 export function localTime(tz: string, nowMs: number): string | undefined {
   if (!tz) return undefined;
-  let parts: Intl.DateTimeFormatPart[];
   try {
-    parts = new Intl.DateTimeFormat('en-US', {
-      timeZone: tz, hourCycle: 'h23', year: 'numeric', month: '2-digit', day: '2-digit',
-      hour: '2-digit', minute: '2-digit', second: '2-digit', timeZoneName: 'longOffset',
-    }).formatToParts(nowMs);
+    return zonedIso(nowMs, tz);
   } catch {
     return undefined;
   }
-  const p = Object.fromEntries(parts.map((x) => [x.type, x.value]));
-  const offset = p.timeZoneName.replace('GMT', '') || '+00:00';
-  return `${p.year}-${p.month}-${p.day}T${p.hour}:${p.minute}:${p.second}${offset}`;
 }
 
 const LINE_BREAK = /\r\n|[\r\n\v\f\x1c-\x1e\u0085\u2028\u2029]/;
