@@ -1,0 +1,31 @@
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  image:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      # Plain docker CLI rather than docker/build-push-action: one amd64 image needs no buildx, and fewer actions to pin.
+      # ponytail: amd64 only; add docker/setup-qemu-action + buildx --platform when someone needs arm64.
+      - name: Build and push to GHCR
+        env:
+          IMAGE: ghcr.io/${{ github.repository }}
+          TAG: ${{ github.ref_name }}
+          ACTOR: ${{ github.actor }}
+          TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          version="${TAG#v}"
+          pkg="$(node -p 'require("./package.json").version')"
+          [ "$version" = "$pkg" ] || { echo "::error::tag $TAG does not match package.json version $pkg"; exit 1; }
+          echo "$TOKEN" | docker login ghcr.io -u "$ACTOR" --password-stdin
+          docker build -t "$IMAGE:$version" -t "$IMAGE:latest" .
+          docker push --all-tags "$IMAGE"
