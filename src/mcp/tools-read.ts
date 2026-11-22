@@ -37,13 +37,14 @@ const USER_IDS_CHUNK = 1_000;
 const TEXT_FETCH_BYTES = 4 * TEXT_MAX_CHARS;
 // Shift_JIS and EUC-JP only for these: their decoders also accept the head of binary files such as PDF.
 const SJIS_EXTENSIONS = new Set(['csv', 'tsv', 'txt', 'log']);
-const FILE_WORDING: Wording = {
+// A function rather than a constant: the texts follow the language at the time of the call.
+const fileWording = (): Wording => ({
   id: [
-    [404, 'app.file_info.get.app_error', 'ファイルが見つかりません（投稿が削除されたか、存在しません）'],
-    [403, 'api.file.get_file.abac_denied.app_error', 'Mattermost のアクセス制御の方針（ABAC）により、このファイルを見られません'],
+    [404, 'app.file_info.get.app_error', msg().read.fileNotFound],
+    [403, 'api.file.get_file.abac_denied.app_error', msg().read.fileAbac],
   ],
-  get status(): [number, string][] { return [[403, `このファイルを見る権限がありません（参加していない非公開チャンネルのファイルなど）。${msg().common.retry}${msg().common.askAdmin}`]]; },
-};
+  status: [[403, `${msg().read.fileForbidden}${msg().common.retry}${msg().common.askAdmin}`]],
+});
 
 // Not trusting Content-Type: Mattermost labels every preview image/jpeg, PNG ones included.
 function imageType(b: Uint8Array): string | undefined {
@@ -116,33 +117,33 @@ function decodeText(b: Uint8Array, name: string, whole: boolean): Decoded | unde
 }
 
 async function fileText(mm: ReadMm, uid: string, fileId: string, f: MmFileInfo, about: string): Promise<string | CallToolResult> {
-  if (f.size === 0) return `${about}\n中身は空です。`;
+  if (f.size === 0) return `${about}\n${msg().read.fileEmpty}`;
   let b: Uint8Array;
   try {
     b = await mm.callBytes(uid, `/files/${fileId}`, undefined, { maxBytes: TEXT_FETCH_BYTES });
   } catch (e) {
     // Only a plain-text 500: that is net/http failing to seek a file the storage does not have, while Mattermost's own errors are JSON (an empty id in hardened mode).
     if (e instanceof UpstreamUnavailable && e.status === 500 && e.plainBody) {
-      return `${about}\n中身を取得できませんでした（HTTP 500）。保存先にファイルの実体が無いか、保存先の一時的な障害です。`;
+      return `${about}\n${msg().read.fileFetch500}`;
     }
     if (!(e instanceof MmError)) throw e;
-    if (e.id === 'api.file.get_file.rejected_by_plugin') return `${about}\nMattermost が中身のダウンロードを拒否しました（プラグインによる制限）。`;
+    if (e.id === 'api.file.get_file.rejected_by_plugin') return `${about}\n${msg().read.filePluginDownload}`;
     // Not saying the file is missing for sure: the local store answers any failure to open it (permissions, I/O) with the same 404.
-    if (e.status === 404 && e.id === 'api.file.file_reader.app_error') return `${about}\n中身を取得できませんでした（HTTP 404）。保存先にファイルの実体が無いか、保存先から読めません。`;
-    return `${about}\n中身を取得できませんでした（HTTP ${e.status}）。`;
+    if (e.status === 404 && e.id === 'api.file.file_reader.app_error') return `${about}\n${msg().read.fileFetch404}`;
+    return `${about}\n${msg().read.fileFetchFailed(e.status)}`;
   }
   // Fewer bytes than asked means the body ended: the file is whole whatever its info says. At the limit only a matching size tells.
   const whole = b.length < TEXT_FETCH_BYTES || b.length === f.size;
   const t = decodeText(b, f.name, whole);
-  if (!t) return `${about}\nテキストとして読めない形式のため、中身は返しません。`;
-  if (!t.text) return `${about}\n${t.cutTail ? 'ファイルの末尾に不完全な文字があり、それを除くと読める中身がありません。' : '中身は空です。'}`;
+  if (!t) return `${about}\n${msg().read.fileNotText}`;
+  if (!t.text) return `${about}\n${t.cutTail ? msg().read.fileTailOnly : msg().read.fileEmpty}`;
   const { text: shown, truncated } = truncate(t.text, TEXT_MAX_CHARS);
-  const head = [about, `文字コード: ${t.encoding}`];
-  if (t.guessed) head.push('文字コードは中身から推定しました。文字化けしているなら、Shift_JIS、EUC-JP、Latin-1 など別の文字コードかもしれません。');
-  if (t.cutTail) head.push('ファイルの末尾に不完全な文字があったため、その部分を除きました。');
+  const head = [about, msg().read.fileEncoding(t.encoding)];
+  if (t.guessed) head.push(msg().read.fileEncodingGuessed);
+  if (t.cutTail) head.push(msg().read.fileTailCut);
   if (truncated || !whole) {
-    const total = whole ? ` ${b.length} バイト` : f.size > b.length ? ` ${f.size} バイト` : `少なくとも ${b.length} バイト`;
-    head.push(`先頭の ${graphemeCount(shown)} 文字だけを返しました（ファイル全体は${total}）。`);
+    const atLeast = !whole && f.size <= b.length;
+    head.push(msg().read.fileFirstChars(graphemeCount(shown), whole || atLeast ? b.length : f.size, atLeast));
   }
   return { content: [{ type: 'text', text: head.join('\n') }, { type: 'text', text: shown }] };
 }
@@ -162,8 +163,9 @@ const tieStart = (ps: MmPost[]) => {
 };
 
 export const limitArg = (def: number, max: number) => z.number().int().min(1).max(max).optional()
-  .describe(`Number of items (default ${def})`);
-export const cursorArg = z.string().optional().describe('next_cursor from the previous output. With a cursor, limit and the from/since/until/types/status/unread_only options come from that earlier call; pass the other arguments unchanged.');
+  .describe(msg().descriptions.limit(def));
+// A function rather than a constant: the description follows the language at registration time.
+export const cursorArg = () => z.string().optional().describe(msg().descriptions.cursor);
 export const perPage = (max: number) => z.number().int().min(1).max(max);
 const channelKinds = z.array(z.enum(['public', 'private', 'dm', 'group_dm'])).min(1);
 
@@ -178,8 +180,8 @@ export function render({ lines, next, posts = [], notes = [] }: Page): string {
   return [
     ...lines,
     ...notes,
-    ...(posts.some(postTruncated) ? [`（本文かメッセージ添付を ${BODY_MAX_CHARS} 文字で切った投稿があります）`] : []),
-    next ? `next_cursor: ${encodeCursor(next)}` : '（続きはありません）',
+    ...(posts.some(postTruncated) ? [msg().read.cutBodies(BODY_MAX_CHARS)] : []),
+    next ? `next_cursor: ${encodeCursor(next)}` : msg().read.noMore,
   ].join('\n');
 }
 
@@ -190,8 +192,8 @@ export const dmPartner = (username: string | undefined, userId: string) => (user
 export function channelLines(c: ChannelRef & { archived?: boolean }): string[] {
   return [
     // Not the display name first: a name written as "（name: …、channel_id: …）" would then come before the real id.
-    `チャンネル: channel_id: ${c.id}、name: ${c.name}${c.archived ? '、アーカイブ済み' : ''}、表示名: ${oneLine(c.displayName) || c.name}`,
-    c.teamId ? `チーム: ${c.teamName}（team_id: ${c.teamId}）` : 'チーム: なし（DM またはグループ DM）',
+    msg().read.channelLine(c.id, c.name, !!c.archived, oneLine(c.displayName) || c.name),
+    c.teamId ? msg().read.teamLine(c.teamName, c.teamId) : msg().read.noTeam,
   ];
 }
 
@@ -200,14 +202,14 @@ const resolvedLines = (ch: ResolvedChannel) => channelLines({ ...ch, archived: !
 // For a post fetched by id: get_post and read_thread word its 403 and 404 alike.
 function postError(e: unknown): never {
   if (e instanceof MmError && e.status === 403) throw new InputError(msg().common.postForbidden);
-  if (e instanceof MmError && e.status === 404) throw new InputError('投稿が見つかりません（削除されたか、存在しません）。');
+  if (e instanceof MmError && e.status === 404) throw new InputError(msg().read.postNotFound);
   throw e;
 }
 
 // For the channel of a post already read: Mattermost may still refuse it on a passing failure, or after the channel went away in between.
 function postChannelError(e: unknown): never {
-  if (e instanceof MmError && e.status === 403) throw new InputError(`この投稿のチャンネルを見る権限がありません。${msg().common.retry}${msg().common.askAdmin}`);
-  if (e instanceof MmError && e.status === 404) throw new InputError('この投稿のチャンネルが見つかりません（取得の合間に削除されたなど）。');
+  if (e instanceof MmError && e.status === 403) throw new InputError(`${msg().read.postChannelForbidden}${msg().common.retry}${msg().common.askAdmin}`);
+  if (e instanceof MmError && e.status === 404) throw new InputError(msg().read.postChannelGone);
   throw e;
 }
 
@@ -222,6 +224,7 @@ const BY_ID_404 = 'app.channel.get.existing.app_error';
 
 // Not the private-channel wording for team/channel: by name Mattermost answers 404 to a private channel the user is not in.
 const forbiddenExample = (spec: string) => (spec.includes('/') ? '参加していないチームのチャンネルや、見る権限の無い公開チャンネルなど' : '参加していない非公開チャンネルなど');
+const inForbiddenExample = (spec: string) => (spec.includes('/') ? msg().read.forbiddenExampleTeam : msg().read.forbiddenExample);
 
 export function channelError(e: unknown, spec: string): never {
   // Not converting a missing team: /teams/name/{team}/channels/name/{channel} answers it with 404 too.
@@ -249,10 +252,10 @@ export async function usernamesOf(mm: Mm, uid: string, all: string[]): Promise<M
   return out;
 }
 
-const FILE_SEARCH_OFF = 'この Mattermost ではファイルの検索が無効になっています（システムコンソールの設定）。ファイル名を含む投稿は search_posts で探せます。';
 const capNote = (n: number, what: string) => (n >= MM_SEARCH_CAP
   ? [`（Mattermost の検索は ${MM_SEARCH_CAP} 件までしか返さないため、${what}は出ていない可能性があります。条件を絞ってください）`]
   : []);
+const olderCapNote = (n: number) => (n >= MM_SEARCH_CAP ? [msg().read.searchCap(MM_SEARCH_CAP)] : []);
 
 // Go's unicode.IsSpace, which Mattermost's strings.Fields splits on. Not JS's \s: it adds U+FEFF and lacks U+0085.
 const SEARCH_SPACE = /[\t\n\v\f\r \u0085\u00a0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000]+/;
@@ -309,21 +312,21 @@ async function filterChannelIds(mm: Mm, userId: string, spec: string, written: s
   } catch (e) {
     if (e instanceof Ambiguous) {
       const ids = [...new Set(e.candidates.map((c) => c.id))];
-      if (ids.length > 1 && !exclude) notes.push(`${written} は複数のチームにあるため、すべてで探しました（${e.candidates.map((c) => c.team).join('、')}）。`);
+      if (ids.length > 1 && !exclude) notes.push(msg().read.inSeveralTeams(written, msg().format.list(e.candidates.map((c) => c.team))));
       return ids;
     }
     // No DM means no posts to exclude, so the condition is dropped rather than failing the search.
     if (e instanceof NoDirectChannel && exclude) return [];
     // Not the read tools' wording: for a search, the way to an archived channel is its ID in in:, not read_channel.
-    const byName = `チャンネル「${spec}」が見つかりません。名前の誤りなら search_channels で確かめてください。参加していない非公開チャンネルとアーカイブ済みのチャンネルは名前では見つかりません（アーカイブ済みのチャンネルは、参加していたなら、利用者に ID を確かめて in: に ID で指定すれば検索できます）。${msg().common.retry}${msg().common.askAdmin}`;
+    const byName = `${msg().read.inChannelNotFound(spec)}${msg().common.retry}${msg().common.askAdmin}`;
     if (e instanceof ChannelNotFound) throw new InputError(byName);
     if (e instanceof ChannelFetchError && e.id === 'app.team.get_by_name.missing.app_error') {
-      throw new InputError(`チャンネル「${spec}」のチームが見つかりません。チーム名の誤りなら、list_my_channels で参加しているチームを確かめてください（チーム名はチャンネルの行の先頭に出ます）。`);
+      throw new InputError(msg().read.inTeamNotFound(spec));
     }
-    if (e instanceof ChannelFetchError && e.status === 403) throw new InputError(`チャンネル「${spec}」を見る権限がありません（${forbiddenExample(spec)}）。${msg().common.retry}${msg().common.askAdmin}`);
+    if (e instanceof ChannelFetchError && e.status === 403) throw new InputError(`${msg().read.inChannelForbidden(spec, inForbiddenExample(spec))}${msg().common.retry}${msg().common.askAdmin}`);
     // Told apart by the form of the spec, not by Mattermost's id: a 404 without an id, as a proxy may give, still gets a fitting message.
     if (e instanceof ChannelFetchError && e.status === 404) {
-      throw new InputError(spec.includes('/') ? byName : `チャンネル「${spec}」が見つかりません。ID の誤りなら search_channels で確かめてください。`);
+      throw new InputError(spec.includes('/') ? byName : msg().read.inChannelIdNotFound(spec));
     }
     throw e;
   }
@@ -343,7 +346,7 @@ export async function resolveInFilters(mm: Mm, userId: string, terms: string): P
   const words = splitWords(terms);
   const filters = channelFilters(words);
   if (!filters.length) return { terms, notes: [], archived: false };
-  if (filters.length > MAX_CHANNEL_FILTERS) throw new InputError(`in: と channel: は、-in: などの除外も含めて 1 回の検索で ${MAX_CHANNEL_FILTERS} 個まで指定できます。in: が多いときは検索を分け、除外は分けた各検索に付け直してください（各検索も除外を含めて ${MAX_CHANNEL_FILTERS} 個まで）。除外が多いときは数を減らしてください（in: があるなら、in: のチャンネルと重ならない除外は効かないので外せます。除外を別々の検索に分けると、もう一方の検索では効きません。in: が無く、探したいチャンネルのほうが少ないなら、それを in: で挙げてください）。in: で挙げると、検索の範囲は挙げたチャンネルだけになります。`);
+  if (filters.length > MAX_CHANNEL_FILTERS) throw new InputError(msg().read.tooManyFilters(MAX_CHANNEL_FILTERS));
   const notes: string[] = [];
   const found = { archived: false };
   const out = words.map((w) => [w]);
@@ -358,8 +361,8 @@ export async function resolveInFilters(mm: Mm, userId: string, terms: string): P
     const word = unformat(next ?? '');
     // Not treating every 、 or ， as a comma: they also start search words such as 、議事録.
     if (specOf(f).startsWith('@') && /^,|^[、，][A-Za-z0-9._,@、，-]*$/.test(word)) {
-      const fullWidth = /^[、，]/.test(word) ? '区切りは半角のカンマ（,）で書いてください。' : '';
-      throw new InputError(`${written(f)} の後の「${next}」: 検索の条件では @a,b のようにカンマの前後に空白を入れずに書いてください。${fullWidth}`);
+      const fullWidth = /^[、，]/.test(word) ? msg().read.commaFullWidth : '';
+      throw new InputError(`${msg().read.commaAfter(written(f), next)}${fullWidth}`);
     }
   }
   // Kept for this search only, not across searches: a channel created or joined in between would stay unseen.
@@ -379,7 +382,7 @@ export async function resolveInFilters(mm: Mm, userId: string, terms: string): P
     out.splice(f.at, f.span, ids.map((id) => `${f.exclude ? '-' : ''}in:${id}`), ...(f.span === 2 ? [[]] : []));
   }
   const rewritten = out.flat().join(' ');
-  if (!rewritten) throw new InputError('検索語か条件を 1 つ以上指定してください。');
+  if (!rewritten) throw new InputError(msg().read.noTerms);
   return { terms: rewritten, notes, archived: found.archived };
 }
 
@@ -542,8 +545,8 @@ export function registerReadTools(server: McpServer, ctx: ToolContext): void {
     });
   }
 
-  tool('search_posts', `Search messages in your teams with Mattermost search syntax (from:, in:, before:, after:, on:, ...), newest first. in: also takes a channel ID, team/channel, channel name, @username (DM), or @a,b (group DM, no spaces). Filtering to a channel you have not joined returns nothing. Archived channels are searched only when listed in in: by channel ID. Dates are in ${timeZone()}. Message attachments from bots and webhooks are not searched; read those with read_channel since/until.`,
-    { terms: z.string().min(1), limit: limitArg(20, 50), cursor: cursorArg },
+  tool('search_posts', msg().descriptions.searchPosts(timeZone()),
+    { terms: z.string().min(1), limit: limitArg(20, 50), cursor: cursorArg() },
     async ({ terms, limit, cursor }, mm) => {
       const c = cursorOf(z.object({ page: z.number().int().min(0), per_page: perPage(50) }).strict(), cursor);
       const per = c?.per_page ?? limit ?? 20;
@@ -553,13 +556,13 @@ export function registerReadTools(server: McpServer, ctx: ToolContext): void {
       const r = await mm.call<PostList>(uid, 'POST', '/posts/search', { terms: filtered.terms, is_or_search: false, include_deleted_channels: filtered.archived, time_zone_offset: offsetSec(), page: 0, per_page: MM_SEARCH_CAP });
       const all = r.order.map((id) => r.posts[id]).filter(Boolean);
       const shown = all.slice(page * per, (page + 1) * per);
-      const lines = [`検索: ${terms}`, ...(shown.length ? await withChannels(mm, shown) : ['一致する投稿はありません。'])];
+      const lines = [msg().read.searchHead(terms), ...(shown.length ? await withChannels(mm, shown) : [msg().read.noPosts])];
       const more = all.length > (page + 1) * per;
-      return render({ lines, posts: shown, next: more ? { page: page + 1, per_page: per } : undefined, notes: [...filtered.notes, ...capNote(all.length, 'これより古い一致')] });
+      return render({ lines, posts: shown, next: more ? { page: page + 1, per_page: per } : undefined, notes: [...filtered.notes, ...olderCapNote(all.length)] });
     });
 
-  tool('list_saved_posts', 'List posts you saved (flagged), newest first.',
-    { limit: limitArg(20, 50), cursor: cursorArg },
+  tool('list_saved_posts', msg().descriptions.listSavedPosts,
+    { limit: limitArg(20, 50), cursor: cursorArg() },
     async ({ limit, cursor }, mm) => {
       const c = cursorOf(z.object({ create_at: z.number().int(), id: z.string(), per_page: perPage(50), at: z.number().int().min(0).optional() }).strict(), cursor);
       const per = c?.per_page ?? limit ?? 20;
@@ -615,13 +618,13 @@ export function registerReadTools(server: McpServer, ctx: ToolContext): void {
       const shown = rest.slice(0, per);
       const last = shown.at(-1);
       // Archived channels too: a saved post can sit in one the user is still in.
-      const lines = ['保存した投稿（新しい順）', ...(shown.length ? await withChannels(mm, shown, true) : c ? [] : ['保存した投稿はありません。'])];
-      const notes = capped ? [`（保存した投稿のうち新しい ${SAVED_SCAN} 件だけを見ています）`] : [];
+      const lines = [msg().read.savedHead, ...(shown.length ? await withChannels(mm, shown, true) : c ? [] : [msg().read.noSaved])];
+      const notes = capped ? [msg().read.savedCap(SAVED_SCAN)] : [];
       return render({ lines, posts: shown, notes, next: rest.length > per && last ? { create_at: last.create_at, id: last.id, per_page: per, at: row.get(last.id) } : undefined });
     });
 
-  tool('search_files', 'Search files by name, newest first. Search syntax and in: (including archived channels) work as in search_posts, plus ext:. Names match whole words; Japanese names match only in full or by prefix (e.g. 2026年10月*). Pass file_id to get_file.',
-    { terms: z.string().min(1), limit: limitArg(20, 50), cursor: cursorArg },
+  tool('search_files', msg().descriptions.searchFiles,
+    { terms: z.string().min(1), limit: limitArg(20, 50), cursor: cursorArg() },
     async ({ terms, limit, cursor }, mm) => {
       // Marked here rather than on search_posts' cursor: that one is used more, and its cursors issued before a deploy would stop working.
       const c = cursorOf(z.object({ page: z.number().int().min(0), per_page: perPage(50), files: z.literal(true) }).strict(), cursor);
@@ -630,7 +633,7 @@ export function registerReadTools(server: McpServer, ctx: ToolContext): void {
       const search = (t: string, perPageOf: number, archived = false) => mm.call<FileList>(uid, 'POST', '/files/search', {
         terms: t, is_or_search: false, include_deleted_channels: archived, time_zone_offset: offsetSec(), page: 0, per_page: perPageOf,
       }).catch((e) => {
-        if (e instanceof MmError && e.status === 501 && e.id === 'store.sql_file_info.search.disabled') throw new InputError(FILE_SEARCH_OFF);
+        if (e instanceof MmError && e.status === 501 && e.id === 'store.sql_file_info.search.disabled') throw new InputError(msg().read.fileSearchOff);
         throw e;
       });
       const q = await resolveInFilters(mm, uid, terms).catch(async (e) => {
@@ -646,7 +649,7 @@ export function registerReadTools(server: McpServer, ctx: ToolContext): void {
       const r = await search(q.terms, MM_SEARCH_CAP, q.archived);
       const all = r.order.map((id) => r.file_infos[id]).filter(Boolean);
       const shown = all.slice(page * per, (page + 1) * per);
-      const lines = [`ファイルの検索: ${terms}`];
+      const lines = [msg().read.filesHead(terms)];
       if (shown.length) {
         const placeOf = await places(mm, shown.map((f) => f.channel_id), false);
         // Not looking up the uploader of a channel bookmark file: its user_id is the fixed string "bookmark".
@@ -657,14 +660,14 @@ export function registerReadTools(server: McpServer, ctx: ToolContext): void {
           const who = users.get(f.user_id);
           lines.push(
             `--- ${fileLine(f)}`,
-            `${f.post_id ? (who ? `@${who}` : `user_id: ${f.user_id}`) : 'チャンネルのブックマークのファイル（投稿なし）'} | ${formatTime(f.create_at)}`,
+            `${f.post_id ? (who ? `@${who}` : `user_id: ${f.user_id}`) : msg().read.bookmarkFile} | ${formatTime(f.create_at)}`,
             where,
             ...(f.post_id ? [`post_id: ${f.post_id}`, `${base}/${team}/pl/${f.post_id}`] : []),
           );
         }
-      } else lines.push('一致するファイルはありません。');
+      } else lines.push(msg().read.noFiles);
       const more = all.length > (page + 1) * per;
-      return render({ lines, notes: [...q.notes, ...capNote(all.length, 'これより古い一致')], next: more ? { page: page + 1, per_page: per, files: true } : undefined });
+      return render({ lines, notes: [...q.notes, ...olderCapNote(all.length)], next: more ? { page: page + 1, per_page: per, files: true } : undefined });
     });
 
   tool('read_channel', 'Read posts in a channel without marking them read. channel is a channel ID, team/channel, channel name, @username (DM), or @a,b (group DM). Newest first by default. from: "unread" reads from the first unread post, oldest first (root posts only when collapsed threads are on). since reads up to until (default: now), oldest first, including replies.',
@@ -674,7 +677,7 @@ export function registerReadTools(server: McpServer, ctx: ToolContext): void {
       since: z.string().optional().describe(`Range start (inclusive), ${whenForm()}. Not with from.`),
       until: z.string().optional().describe('Range end (exclusive), same format as since.'),
       limit: limitArg(30, 100),
-      cursor: cursorArg,
+      cursor: cursorArg(),
     },
     async ({ channel, from, since, until, limit, cursor }, mm) => {
       const postId = z.string().regex(/^[A-Za-z0-9]{26}$/);
@@ -798,7 +801,7 @@ export function registerReadTools(server: McpServer, ctx: ToolContext): void {
     });
 
   tool('read_thread', 'Read a thread\'s root post and replies, oldest first. post_id can be any post in the thread.',
-    { post_id: idArg, limit: limitArg(50, 200), cursor: cursorArg },
+    { post_id: idArg, limit: limitArg(50, 200), cursor: cursorArg() },
     async ({ post_id, limit, cursor }, mm) => {
       const c = cursorOf(z.object({ from_post: z.string().regex(/^[A-Za-z0-9]{26}$/), from_create_at: z.number().int(), per_page: perPage(200) }), cursor);
       const per = c?.per_page ?? limit ?? 50;
@@ -826,7 +829,7 @@ export function registerReadTools(server: McpServer, ctx: ToolContext): void {
       });
     });
 
-  tool('get_post', `Read one post. post is a post_id or a permalink URL.`,
+  tool('get_post', msg().descriptions.getPost,
     { post: z.string().min(1) },
     async ({ post }, mm) => {
       const id = parsePostRef(post, base);
@@ -839,24 +842,24 @@ export function registerReadTools(server: McpServer, ctx: ToolContext): void {
       return [
         ...channelLines(ch),
         formatPost(p, { baseUrl: base, teamName: ch.teamName, usernames: users }),
-        `返信数: ${replies}`,
-        ...(p.root_id ? [`スレッド内の返信です。親 post_id: ${p.root_id}。read_thread でスレッド全体を読めます。`]
-          : replies ? [`返信があります。read_thread に post_id: ${p.id} を渡すと、スレッド全体を読めます。`] : []),
+        msg().read.replyCount(replies),
+        ...(p.root_id ? [msg().read.inThread(p.root_id)]
+          : replies ? [msg().read.hasReplies(p.id)] : []),
         // Not noting cut message attachments again: formatPost already says where it cut them.
-        ...(truncate(p.message).truncated ? [`（${bodyCutNote()}）`] : []),
+        ...(truncate(p.message).truncated ? [msg().read.cutNote(bodyCutNote())] : []),
       ].join('\n');
     });
 
-  tool('get_file', `Read a file attached to a post. Returns a preview for images, the first ${TEXT_MAX_CHARS} characters for text, and only name, type and size for anything else (PDF, ...).`,
+  tool('get_file', msg().descriptions.getFile(TEXT_MAX_CHARS),
     { file_id: idArg },
     async ({ file_id }, mm) => {
-      const f = await worded(mm.call<MmFileInfo>(uid, 'GET', `/files/${file_id}/info`), FILE_WORDING);
-      const about = `ファイル: ${fileLine(f)}`;
+      const f = await worded(mm.call<MmFileInfo>(uid, 'GET', `/files/${file_id}/info`), fileWording());
+      const about = msg().read.fileLabel(fileLine(f));
       // Not filtering on mime_type or has_preview_image: Mattermost decodes by content, and a GIF has a preview despite has_preview_image false.
       if (!f.width || !f.height) return fileText(mm, uid, file_id, f, about);
       const w = Math.min(f.width, PREVIEW_MAX_WIDTH);
       if (Math.max(w, Math.round((f.height * w) / f.width)) > IMAGE_MAX_SIDE) {
-        return `${about}\n縦横が大きすぎるため画像は返しません（プレビューの長い辺が ${IMAGE_MAX_SIDE}px を超えます）。`;
+        return `${about}\n${msg().read.imageTooBig(IMAGE_MAX_SIDE)}`;
       }
       // Not the permission wording for a plugin's refusal: the information above was readable, as when a plugin refuses the content.
       const preview = mm.callBytes(uid, `/files/${file_id}/preview`).catch((e) => {
@@ -864,17 +867,17 @@ export function registerReadTools(server: McpServer, ctx: ToolContext): void {
         if (e instanceof MmError && e.status === 400 && e.id === 'api.file.get_file_preview.no_preview.app_error') return undefined;
         throw e;
       });
-      const b = await worded(preview, FILE_WORDING);
-      if (b === 'refused') return `${about}\nMattermost がプレビューの取得を拒否しました（プラグインによる制限）。`;
-      if (!b) return `${about}\nMattermost がプレビューを作らない形式のため、画像は返しません。`;
+      const b = await worded(preview, fileWording());
+      if (b === 'refused') return `${about}\n${msg().read.previewPlugin}`;
+      if (!b) return `${about}\n${msg().read.previewNone}`;
       const mimeType = imageType(b);
-      if (!mimeType) return `${about}\nプレビューの形式を判定できないため、画像は返しません。`;
-      if (b.length > IMAGE_MAX_BYTES) return `${about}\n画像が大きすぎるため返しません（プレビューが ${b.length} バイト）。`;
+      if (!mimeType) return `${about}\n${msg().read.previewUnknown}`;
+      if (b.length > IMAGE_MAX_BYTES) return `${about}\n${msg().read.imageTooLarge(b.length)}`;
       return { content: [{ type: 'text', text: about }, { type: 'image', data: Buffer.from(b).toString('base64'), mimeType }] };
     });
 
   tool('search_channels', 'Find channels by name (public, private ones you joined, DMs, group DMs).',
-    { query: z.string().min(1), limit: limitArg(20, 50), cursor: cursorArg },
+    { query: z.string().min(1), limit: limitArg(20, 50), cursor: cursorArg() },
     async ({ query, limit, cursor }, mm) => {
       const c = cursorOf(z.object({ offset: z.number().int().min(0), per_page: perPage(50) }), cursor);
       const q = query.toLowerCase();
@@ -918,7 +921,7 @@ export function registerReadTools(server: McpServer, ctx: ToolContext): void {
     {
       types: channelKinds.optional(),
       limit: limitArg(50, 200),
-      cursor: cursorArg,
+      cursor: cursorArg(),
     },
     async ({ types, limit, cursor }, mm) => {
       const startedAt = Date.now();
@@ -960,7 +963,7 @@ export function registerReadTools(server: McpServer, ctx: ToolContext): void {
     });
 
   tool('get_channel', 'Read a channel\'s type, purpose, header, member count and pinned posts. channel is a channel ID, team/channel, channel name, @username (DM), or @a,b (group DM).',
-    { channel: z.string().min(1), pinned_limit: limitArg(10, 50), cursor: cursorArg },
+    { channel: z.string().min(1), pinned_limit: limitArg(10, 50), cursor: cursorArg() },
     async ({ channel, pinned_limit, cursor }, mm) => {
       const c = cursorOf(z.object({ channel_id: z.string(), create_at: z.number().int(), id: z.string(), per_page: perPage(50) }), cursor);
       const per = c?.per_page ?? pinned_limit ?? 10;
@@ -1000,7 +1003,7 @@ export function registerReadTools(server: McpServer, ctx: ToolContext): void {
     });
 
   tool('list_channel_members', 'List a channel\'s members by username. channel is a channel ID, team/channel, channel name, @username (DM), or @a,b (group DM).',
-    { channel: z.string().min(1), limit: limitArg(50, 200), cursor: cursorArg },
+    { channel: z.string().min(1), limit: limitArg(50, 200), cursor: cursorArg() },
     async ({ channel, limit, cursor }, mm) => {
       const c = cursorOf(z.object({ channel_id: z.string(), page: z.number().int().min(0), per_page: perPage(200) }).strict(), cursor);
       const per = c?.per_page ?? limit ?? 50;
@@ -1027,7 +1030,7 @@ export function registerReadTools(server: McpServer, ctx: ToolContext): void {
     });
 
   tool('get_unreads', 'List channels with unread posts and, when collapsed threads are on, threads with unread replies. Does not mark anything read.',
-    { limit: limitArg(30, 100), cursor: cursorArg },
+    { limit: limitArg(30, 100), cursor: cursorArg() },
     async ({ limit, cursor }, mm) => {
       const startedAt = Date.now();
       const c = cursorOf(pageCursor(z.object({ s: z.number().int(), m: z.number().int(), t: z.number().int(), id: z.string() })).extend({ per_page: perPage(100), crt: z.boolean() }), cursor);
@@ -1112,7 +1115,7 @@ export function registerReadTools(server: McpServer, ctx: ToolContext): void {
     {
       unread_only: z.boolean().optional(),
       limit: limitArg(20, 50),
-      cursor: cursorArg,
+      cursor: cursorArg(),
     },
     async ({ unread_only, limit, cursor }, mm) => {
       const c = cursorOf(z.object({
@@ -1194,7 +1197,7 @@ export function registerReadTools(server: McpServer, ctx: ToolContext): void {
     });
 
   tool('search_users', 'Find users by name or username.',
-    { query: z.string().min(1), limit: limitArg(20, 50), cursor: cursorArg },
+    { query: z.string().min(1), limit: limitArg(20, 50), cursor: cursorArg() },
     async ({ query, limit, cursor }, mm) => {
       const c = cursorOf(z.object({ offset: z.number().int().min(0), per_page: perPage(50) }), cursor);
       const all = await mm.call<UserRef[]>(uid, 'POST', '/users/search', { term: query, limit: MM_SEARCH_CAP });

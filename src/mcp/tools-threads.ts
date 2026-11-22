@@ -47,7 +47,7 @@ export function registerThreadTools(server: McpServer, ctx: ToolContext): void {
   }
 
   tool('list_followed_threads', 'List threads you follow, latest reply first. Does not mark them read. Root posts without replies do not appear, even if followed.',
-    { limit: limitArg(20, 50), cursor: cursorArg }, { readOnlyHint: true },
+    { limit: limitArg(20, 50), cursor: cursorArg() }, { readOnlyHint: true },
     async ({ limit, cursor }, mm) => {
       const startedAt = Date.now();
       const c = cursorOf(pageCursor(z.object({ t: z.number().int(), id: z.string() }).strict()).extend({ per_page: perPage(50) }).strict(), cursor);
