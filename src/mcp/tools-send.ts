@@ -318,10 +318,11 @@ async function whereOf(mm: Mm, uid: string, post: OwnPost): Promise<Where> {
   return { line: `チャンネル: channel_id: ${ch.id}、表示名: ${oneLine(ch.display_name || ch.name)}`, teamName: await teamNameOf(mm, uid, ch.team_id) };
 }
 
-const editSchema = {
+// A function rather than a constant: the description quotes a table string, which must be looked up after the locale is set.
+const editSchema = () => ({
   post_id: POST_ID,
   message: z.string().min(1).max(MAX_MESSAGE).describe(`New message, replacing the whole text. To rewrite from earlier output, first reread the post with get_post and remove the 2-space indent from each line. If get_post shows "${bodyCutNote()}", do not rewrite from the output (the cut part would be lost); ask the user to edit it in Mattermost instead, unless they give you the whole new text.`),
-};
+});
 type EditArgs = { post_id: string; message: string };
 
 export async function editMessage(mm: Mm, store: Store, uid: string, baseUrl: string, args: EditArgs): Promise<CallToolResult> {
@@ -602,10 +603,10 @@ export function registerSendTools(server: McpServer, ctx: ToolContext): void {
   const destructive = { readOnlyHint: false, destructiveHint: true, idempotentHint: true };
   server.registerTool('edit_message', {
     description: 'Edit the text of your own post. Mentions added by an edit do not notify.',
-    inputSchema: editSchema,
+    inputSchema: editSchema(),
     annotations: destructive,
   }, guarded(ctx, 'edit_message', async (args: EditArgs, extra: { signal: AbortSignal }) => editMessage(mmOf(extra.signal), ctx.store, ctx.mmUserId, ctx.cfg.mmBrowserUrl, args),
-  ) as unknown as ToolCallback<typeof editSchema>);
+  ) as unknown as ToolCallback<ReturnType<typeof editSchema>>);
   const deleteSchema = { post_id: POST_ID };
   server.registerTool('delete_message', {
     description: 'Delete your own post. This cannot be undone: confirm with the user first.',
