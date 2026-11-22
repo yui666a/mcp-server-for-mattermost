@@ -136,7 +136,7 @@ DB のスキーマは、起動のたびに `CREATE TABLE IF NOT EXISTS` で作�
 `migrate` が扱うのは、列の追加だけである。新しい版で表が増えれば `CREATE TABLE` で足されるが、既存の列の変更や削除は既存の DB に反映されない。
 更新の前に `src/db.ts` の差分を見て、`migrate` で足す列のほかに既存の表が変わっていれば、移行の手順が示されていない限りその版へは更新しない。
 
-言語と時刻のタイムゾーンを環境変数 `LOCALE` と `TIME_ZONE` で選べる版へ上げる前に、日本語と JST で運用している導入は、環境変数に `LOCALE=ja` と `TIME_ZONE=Asia/Tokyo` を足す。
+言語と時刻のタイムゾーンを環境変数 `LOCALE` と `TIME_ZONE` で選べる版へ上げる前に、日本語と JST で運用している導入は、上げる前に、環境変数に `LOCALE=ja` と `TIME_ZONE=Asia/Tokyo` を足すこと。
 どちらも既定は `en` と `UTC` なので、足さずに上げると、ツールの出力が英語になり、オフセットの無い時刻が UTC として読まれる。
 更新したら、起動のログの `listening` の `locale` と `time_zone` が足した値になっていることを確かめる。
 
@@ -156,12 +156,14 @@ MCP サーバーの状態は、`/data` の SQLite ファイル（`mcp.sqlite`、
 docker compose stop mcp
 # 復元したファイルを ./data に置き、所有者を UID 1000 にそろえ、ほかのユーザーから読めなくする
 sudo chown -R 1000:1000 data && sudo chmod 700 data
-docker run --rm --network none -v "$PWD/data:/data" mcp-server-for-mattermost node src/admin.ts list-clients | wc -l
-docker run --rm --network none -v "$PWD/data:/data" mcp-server-for-mattermost node src/admin.ts purge-credentials
-docker run --rm --network none -v "$PWD/data:/data" mcp-server-for-mattermost node src/admin.ts invalidate-scheduled
-docker run --rm --network none -v "$PWD/data:/data" mcp-server-for-mattermost node src/admin.ts list-clients | wc -l
+docker run --rm --network none -e LOCALE=en -v "$PWD/data:/data" mcp-server-for-mattermost node src/admin.ts list-clients | wc -l
+docker run --rm --network none -e LOCALE=en -v "$PWD/data:/data" mcp-server-for-mattermost node src/admin.ts purge-credentials
+docker run --rm --network none -e LOCALE=en -v "$PWD/data:/data" mcp-server-for-mattermost node src/admin.ts invalidate-scheduled
+docker run --rm --network none -e LOCALE=en -v "$PWD/data:/data" mcp-server-for-mattermost node src/admin.ts list-clients | wc -l
 docker compose up -d mcp
 ```
+
+これらのコマンドの `-e LOCALE=` には、サーバーと同じ `LOCALE` を渡す（サーバーが `en` 以外なら書き換える）。文言を書き込むのは `invalidate-scheduled` だけ（失敗にした予約に残す理由）で、値が違うと理由が別の言語で保存される。
 
 - `purge-credentials` は `purged <件数> rows` を出す。前後の `list-clients` の件数が変わらない（DCR の登録は消さない）ことを確かめる。登録が残るので、各クライアントは手元のリフレッシュトークンが `invalid_grant` で拒否された後、通常の再ログインで戻る
 - `invalidate-scheduled` は `invalidated <件数> scheduled posts` を出す。失敗にした予約は `list_scheduled_messages` に理由とともに出るので、件数が 0 でなければ利用者に予約を確かめて入れ直すよう知らせる。投稿を試みた予約と、予定時刻を過ぎた予約は、理由が「投稿されたか不明」になる（バックアップの後に投稿されていたかもしれないため）

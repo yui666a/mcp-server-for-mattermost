@@ -94,7 +94,7 @@ unset MM_ADMIN_TOKEN
 | `MM_BROWSER_URL` | | `MM_URL` | The Mattermost URL the user's browser is sent to. Permalinks are also built with it |
 | `DB_PATH` | | `/data/mcp.sqlite` | SQLite file |
 | `PORT` | | `3000` | Port to listen on |
-| `LOCALE` | | `en` | Language of tool descriptions, tool output, the consent screen and the admin commands. `en` or `ja`. An empty string is treated as the default, and any other value makes startup fail with `LOCALE must be en or ja` |
+| `LOCALE` | | `en` | Language of tool descriptions, tool output and the consent screen, and of the reasons the admin commands store (`invalidate-scheduled`; the admin commands' usage and counts stay English). `en` or `ja`. An empty string is treated as the default, and any other value makes startup fail with `LOCALE must be en or ja` |
 | `TIME_ZONE` | | `UTC` | IANA name of the time zone in which times are read and written (for example `Asia/Tokyo`). Times without an offset and search dates are read in this time zone, and output shows both UTC and this time zone. An empty string is treated as the default, and any other value makes startup fail with `TIME_ZONE must be an IANA time zone name` |
 | `ACCESS_TOKEN_TTL_SEC` | | `3600` | Lifetime of the MCP access token (seconds). Shorten it only when verifying refresh |
 | `EXTRA_REDIRECT_URIS` | | | Additional redirect URIs allowed for registration (comma-separated, exact match). claude.ai, claude.com and loopback are allowed by default |
