@@ -130,7 +130,7 @@ test('root_id in another channel is rejected', async () => {
 
 test('a root_id in another channel names the channel with a line break in its display name on one line', async () => {
   const mm: Mm = { call: (async () => ({ id: id(1), channel_id: OTHER, root_id: '', user_id: UID, message: 'm', create_at: 0 })) as Mm['call'] };
-  await expect(checkRoot(mm, UID, id(1), { id: CH, name: 'dup', displayName: 'D\nup' })).rejects.toThrow(`の投稿は channel_id: ${CH} のチャンネルにありません（表示名: D up）。`);
+  await expect(checkRoot(mm, UID, id(1), { id: CH, name: 'dup', displayName: 'D\nup' })).rejects.toThrow(`is not in the channel with channel_id: ${CH} (display name: D up).`);
 });
 
 describe('root_id', () => {
@@ -144,9 +144,9 @@ describe('root_id', () => {
   };
 
   test.each([
-    ['missing', id(9), {}, `root_id ${id(9)} の投稿が見つかりません。`],
-    ['not visible', id(9), { hiddenPost: id(9) }, `root_id ${id(9)} の投稿を見られません。`],
-    ['a reply', REPLY, {}, `root_id ${REPLY} は返信です。スレッドの親投稿の post_id を指定してください。`],
+    ['missing', id(9), {}, `The post for root_id ${id(9)} was not found.`],
+    ['not visible', id(9), { hiddenPost: id(9) }, `You cannot view the post for root_id ${id(9)}.`],
+    ['a reply', REPLY, {}, `root_id ${REPLY} is a reply. Specify the post_id of the thread's root post.`],
   ])('a root_id that is %s is refused with its reason, posting nothing', async (_, rootId, opts, msg) => {
     const f = withRoots(opts);
     await expect(f.send({ channel: 'team-a/dup', message: 'hi', root_id: rootId })).rejects.toMatchObject({ name: 'InputError', message: msg });
@@ -159,14 +159,14 @@ describe('root_id', () => {
     await expect(f.send({ channel: 'team-a/dup', message: 'hi', root_id: ROOT })).rejects.toMatchObject({ name: 'InputError' });
     opts.hiddenPost = undefined;
     const r = await f.send({ channel: 'team-a/dup', message: 'hi', root_id: ROOT });
-    expect(textOf(r)).toContain('投稿しました。');
+    expect(textOf(r)).toContain('Posted.');
     expect(f.created).toHaveLength(1);
   });
 
   test('a root_id in another channel than a DM given by its channel_id names the DM by the other user, as when given as @user', async () => {
     const f = fakeMm();
     await expect(f.send({ channel: DM, message: 'hi', root_id: id(0) })).rejects.toMatchObject({
-      message: `root_id ${id(0)} の投稿は channel_id: ${DM} のチャンネルにありません（表示名: @olive）。`,
+      message: `The post for root_id ${id(0)} is not in the channel with channel_id: ${DM} (display name: @olive).`,
     });
     expect(f.created).toHaveLength(0);
   });
@@ -175,7 +175,7 @@ describe('root_id', () => {
     const f = withRoots();
     f.posts.push({ id: id(6), user_id: UID, channel_id: OTHER, root_id: id(0), message: 'reply elsewhere', create_at: 0 });
     await expect(f.send({ channel: 'team-a/dup', message: 'hi', root_id: id(6) })).rejects.toMatchObject({
-      message: `root_id ${id(6)} の投稿は channel_id: ${CH} のチャンネルにありません（表示名: Dup）。`,
+      message: `The post for root_id ${id(6)} is not in the channel with channel_id: ${CH} (display name: Dup).`,
     });
     expect(f.created).toHaveLength(0);
   });
@@ -186,7 +186,7 @@ test('a re-login that Mattermost only answered with 401 leaves no duplicate-guar
   const f = fakeMm({ failPost: () => (first ? ((first = false), 'relogin') : undefined) });
   await expect(f.send({ channel: 'team-a/dup', message: 'hello' })).rejects.toBeInstanceOf(Reauthorize);
   const r = await f.send({ channel: 'team-a/dup', message: 'hello' });
-  expect(textOf(r)).toContain('投稿しました。');
+  expect(textOf(r)).toContain('Posted.');
   expect(f.created).toHaveLength(1);
 });
 
@@ -216,10 +216,10 @@ describe('a retry with inline files tells posts apart by the size of the files',
     f.advance(31_000);
     const r = await resend(f);
     expect(r.isError).toBe(true);
-    expect(textOf(r)).toContain('添付ファイルの大きさが違うため、この送信が投稿されたかは分かりません');
+    expect(textOf(r)).toContain('differ in size, so it is not known whether this send was posted');
     expect(textOf(r)).toContain('allow_duplicate: true');
     f.advance(31_000);
-    expect(textOf(await resend(f))).toContain('添付ファイルの大きさが違うため');
+    expect(textOf(await resend(f))).toContain('differ in size');
     expect(f.created).toHaveLength(1);
   });
 
@@ -285,12 +285,12 @@ describe('a retry does not take a post another record owns for its own earlier p
     f.advance(31_000);
     const r = await f.send({ channel: 'team-a/dup', message: 'hello' });
     expect(r.isError).toBe(true);
-    expect(textOf(r)).toContain('この送信が投稿されたかは分かりません');
+    expect(textOf(r)).toContain('it is not known whether this send was posted');
     expect(textOf(r)).toContain('allow_duplicate: true');
     expect(f.created).toHaveLength(1);
     f.advance(31_000);
     const again = await f.send({ channel: 'team-a/dup', message: 'hello' });
-    expect(textOf(again)).toContain('この送信が投稿されたかは分かりません');
+    expect(textOf(again)).toContain('it is not known whether this send was posted');
     expect(f.created).toHaveLength(1);
   });
 
@@ -303,9 +303,9 @@ describe('a retry does not take a post another record owns for its own earlier p
   });
 });
 
-test('the output names the destination as 投稿先, the same label as scheduling and prepare_upload use', async () => {
+test('the output names the destination as Destination, the same label as scheduling and prepare_upload use', async () => {
   const r = await fakeMm().send({ channel: 'team-a/dup', message: 'hello' });
-  expect(textOf(r)).toContain(`投稿先: channel_id: ${CH}、表示名: Dup`);
+  expect(textOf(r)).toContain(`Destination: channel_id: ${CH}, display name: Dup`);
 });
 
 test('retry after a lost response does not double post', async () => {
@@ -330,7 +330,7 @@ test('retry within the grace period is reported as in progress without posting',
   f.advance(10_000);
   const r = await f.send({ channel: 'team-a/dup', message: 'hello' });
   expect(r.isError).toBe(true);
-  expect(textOf(r)).toContain('処理中');
+  expect(textOf(r)).toContain('is being processed');
   expect(f.created).toHaveLength(1);
 });
 
@@ -355,7 +355,7 @@ test('concurrent identical calls post once', async () => {
   const ra = await a;
   expect(ra.isError).toBeFalsy();
   expect(rb.isError).toBe(true);
-  expect(textOf(rb)).toContain('処理中');
+  expect(textOf(rb)).toContain('is being processed');
   expect(f.created).toHaveLength(1);
 });
 
@@ -398,7 +398,7 @@ test('a 429 after an earlier request of the call may have posted keeps the claim
   let first = true;
   const f = fakeMm({ failPost: () => (first ? ((first = false), 'rate429doubt') : undefined) });
   await expect(f.send({ channel: 'team-a/dup', message: '429' })).rejects.toBeInstanceOf(RateLimited);
-  expect(textOf(await f.send({ channel: 'team-a/dup', message: '429' }))).toContain('処理中');
+  expect(textOf(await f.send({ channel: 'team-a/dup', message: '429' }))).toContain('is being processed');
 });
 
 test('a failed lookup on the retry path keeps the claim', async () => {
@@ -410,7 +410,7 @@ test('a failed lookup on the retry path keeps the claim', async () => {
   search = false;
   const r = await f.send({ channel: 'team-a/dup', message: 'look' });
   expect(r.isError).toBe(true);
-  expect(textOf(r)).toContain('処理中');
+  expect(textOf(r)).toContain('is being processed');
   expect(f.created).toHaveLength(1);
 });
 
@@ -428,7 +428,7 @@ describe('send_message with files', () => {
       [CH, 'b.png', PNG],
     ]);
     expect(f.created).toEqual([expect.objectContaining({ message: 'with files', file_ids: [`f${'0'.repeat(24)}0`, `f${'0'.repeat(24)}1`] })]);
-    expect(textOf(r)).toContain('2 件');
+    expect(textOf(r)).toContain('Attached 2 file(s)');
   });
 
   test('the same message and files within 10 minutes count as the same post and are neither uploaded nor posted again', async () => {
@@ -436,7 +436,7 @@ describe('send_message with files', () => {
     const args = { channel: 'team-a/dup', message: 'same', files: [txt('a.txt', 'x')] };
     await f.send(args);
     const r = await f.send(args);
-    expect(textOf(r)).toContain('投稿していません');
+    expect(textOf(r)).toContain('nothing was posted');
     expect(f.uploads).toHaveLength(1);
     expect(f.created).toHaveLength(1);
   });
@@ -476,7 +476,7 @@ describe('send_message with files', () => {
     const results = [first, await second] as { isError?: boolean; content: unknown[] }[];
     expect(f.created).toHaveLength(1);
     expect(results.filter((r) => !r.isError)).toHaveLength(1);
-    expect(textOf(results.find((r) => r.isError)!)).toContain('処理中');
+    expect(textOf(results.find((r) => r.isError)!)).toContain('is being processed');
   });
 
   test('a retry that finds the earlier post with the same message and number of files neither uploads nor posts', async () => {
@@ -486,7 +486,7 @@ describe('send_message with files', () => {
     await expect(f.send(args)).rejects.toBeInstanceOf(UpstreamUnavailable);
     f.advance(31_000);
     const r = await f.send(args);
-    expect(textOf(r)).toContain('既にあったため');
+    expect(textOf(r)).toContain('already existed');
     expect(f.uploads).toHaveLength(1);
     expect(f.created).toHaveLength(1);
   });
@@ -499,7 +499,7 @@ describe('send_message with files', () => {
     f.posts.push({ id: id(99), user_id: UID, channel_id: CH, root_id: '', message: 'count', create_at: 1_000_000 });
     f.advance(31_000);
     const r = await f.send(args);
-    expect(textOf(r)).toContain('投稿しました');
+    expect(textOf(r)).toContain('Posted');
     expect(f.created).toHaveLength(2);
   });
 
@@ -539,8 +539,8 @@ describe('send_message with files', () => {
     const f = fakeMm({ keepFiles: (ids) => ids.slice(0, 1) });
     const r = await f.send({ channel: 'team-a/dup', message: 'dropped', files: [txt('a.txt', 'x'), txt('b.txt', 'y')] });
     expect(r.isError).toBeFalsy();
-    expect(textOf(r)).toContain('投稿しました');
-    expect(textOf(r)).toContain('2 件のうち 1 件');
+    expect(textOf(r)).toContain('Posted');
+    expect(textOf(r)).toContain('Mattermost removed 1 of the 2');
   });
 
   test('allow_duplicate uploads the files again and posts them', async () => {
@@ -564,14 +564,14 @@ describe('send_message with file_ids from prepare_upload', () => {
     const f = fakeMm();
     uploaded(f, [F1, F2]);
     const r = await f.send({ channel: 'team-a/dup', message: 'pc files', files: [{ name: 'a.txt', content_text: 'x' }], file_ids: [F1, F2] });
-    expect(textOf(r)).toContain('ファイル 3 件を添付しました');
+    expect(textOf(r)).toContain('Attached 3 file(s)');
     expect(f.created).toEqual([expect.objectContaining({ file_ids: [`f${'0'.repeat(25)}`, F1, F2] })]);
     expect(f.store.uploadedFiles(UID, [F1, F2]).map((x) => x.postId)).toEqual([id(1), id(1)]);
   });
 
   test.each([
-    ['a file_id this MCP did not record', () => {}, 'prepare_upload の URL で 24 時間以内にアップロードしたファイルではありません'],
-    ['a file uploaded for another channel', (f: ReturnType<typeof fakeMm>) => uploaded(f, [F1], OTHER), '別のチャンネル'],
+    ['a file_id this MCP did not record', () => {}, 'is not a file that you uploaded within the last 24 hours through a prepare_upload URL'],
+    ['a file uploaded for another channel', (f: ReturnType<typeof fakeMm>) => uploaded(f, [F1], OTHER), 'another channel'],
   ])('refuses %s without posting', async (_, arrange, message) => {
     const f = fakeMm();
     arrange(f);
@@ -582,14 +582,14 @@ describe('send_message with file_ids from prepare_upload', () => {
   test('refuses the same file_id twice in one call', async () => {
     const f = fakeMm();
     uploaded(f, [F1]);
-    await expect(f.send({ channel: 'team-a/dup', message: 'x', file_ids: [F1, F1] })).rejects.toThrow('重なっています');
+    await expect(f.send({ channel: 'team-a/dup', message: 'x', file_ids: [F1, F1] })).rejects.toThrow('more than once');
   });
 
   test('refuses a file already used by another post, and a later send of the same message is not blocked by a claim', async () => {
     const f = fakeMm();
     uploaded(f, [F1, F2]);
     await f.send({ channel: 'team-a/dup', message: 'first', file_ids: [F1] });
-    await expect(f.send({ channel: 'team-a/dup', message: 'second', file_ids: [F1] })).rejects.toThrow('既に投稿');
+    await expect(f.send({ channel: 'team-a/dup', message: 'second', file_ids: [F1] })).rejects.toThrow('is already used by a post');
     expect(f.created).toHaveLength(1);
     expect((await f.send({ channel: 'team-a/dup', message: 'second', file_ids: [F2] })).isError).toBeFalsy();
   });
@@ -598,13 +598,13 @@ describe('send_message with file_ids from prepare_upload', () => {
     const f = fakeMm({ keepFiles: (ids) => ids.slice(0, 1) });
     uploaded(f, [F1, F2]);
     const r = await f.send({ channel: 'team-a/dup', message: 'dropped', file_ids: [F1, F2] });
-    expect(textOf(r)).toContain('2 件のうち 1 件');
+    expect(textOf(r)).toContain('Mattermost removed 1 of the 2');
     expect(f.store.uploadedFiles(UID, [F1, F2]).map((x) => x.postId)).toEqual([id(1), null]);
   });
 
   test.each([
-    [2, 'ファイル 2 件を添付しました'],
-    [1, '添付した 2 件のうち 1 件を Mattermost が外したため、投稿に付いていません（ファイルをダウンロードする権限が無いため、どれが外れたかは分かりません）。'],
+    [2, 'Attached 2 file(s)'],
+    [1, 'Mattermost removed 1 of the 2 attached file(s), so they are not on the post (you lack permission to download the files, so which ones were removed is unknown).'],
   ])('when Mattermost hides the files (ABAC) and counts %i, it reports by the count and marks every file as posted', async (count, message) => {
     const f = fakeMm({ redact: count });
     uploaded(f, [F1, F2]);
@@ -620,7 +620,7 @@ describe('send_message with file_ids from prepare_upload', () => {
     await expect(f.send({ channel: 'team-a/dup', message: 'hidden', file_ids: [F1, F2] })).rejects.toBeInstanceOf(UpstreamUnavailable);
     f.advance(31_000);
     const r = await f.send({ channel: 'team-a/dup', message: 'hidden', file_ids: [F1, F2] });
-    expect(textOf(r)).toContain('既にあったため');
+    expect(textOf(r)).toContain('already existed');
     expect(f.created).toHaveLength(1);
   });
 
@@ -631,8 +631,8 @@ describe('send_message with file_ids from prepare_upload', () => {
     await expect(f.send({ channel: 'team-a/dup', message: 'hidden', file_ids: [F1, F2] })).rejects.toBeInstanceOf(UpstreamUnavailable);
     f.advance(31_000);
     const r = await f.send({ channel: 'team-a/dup', message: 'hidden', file_ids: [F1, F2] });
-    expect(textOf(r)).toContain('添付した 2 件のうち 1 件を Mattermost が外したため、投稿に付いていません。');
-    expect(textOf(r)).not.toContain('どれが外れたかは分かりません');
+    expect(textOf(r)).toContain('Mattermost removed 1 of the 2 attached file(s), so they are not on the post.');
+    expect(textOf(r)).not.toContain('which ones were removed is unknown');
     expect(f.store.uploadedFiles(UID, [F1, F2]).map((x) => x.postId)).toEqual([id(1), null]);
     const sent = f.created as { pending_post_id?: string }[];
     expect(sent).toHaveLength(2);
@@ -650,7 +650,7 @@ describe('send_message with file_ids from prepare_upload', () => {
     const f = fakeMm();
     uploaded(f, [F1]);
     const r = await f.send({ channel: 'team-a/dup', message: 'again', file_ids: [F1], allow_duplicate: true });
-    expect(textOf(r)).toContain('ファイル 1 件を添付しました');
+    expect(textOf(r)).toContain('Attached 1 file(s)');
     expect(f.created).toEqual([expect.objectContaining({ file_ids: [F1] })]);
     expect(f.store.uploadedFiles(UID, [F1])[0].postId).toBe(id(1));
   });
@@ -664,7 +664,7 @@ describe('send_message with file_ids from prepare_upload', () => {
     await f.send({ ...args, file_ids: [F2], allow_duplicate: true });
     f.advance(31_000);
     const r = await f.send(args);
-    expect(textOf(r)).toContain('投稿しました');
+    expect(textOf(r)).toContain('Posted');
     expect(f.store.uploadedFiles(UID, [F1, F2]).map((x) => x.postId)).toEqual([id(2), id(1)]);
   });
 
@@ -672,7 +672,7 @@ describe('send_message with file_ids from prepare_upload', () => {
     const f = fakeMm();
     uploaded(f, [F1]);
     await f.send({ channel: 'team-a/dup', message: 'once', file_ids: [F1] });
-    await expect(f.send({ channel: 'team-a/dup', message: 'once', file_ids: [F1], allow_duplicate: true })).rejects.toThrow('既に投稿');
+    await expect(f.send({ channel: 'team-a/dup', message: 'once', file_ids: [F1], allow_duplicate: true })).rejects.toThrow('is already used by a post');
   });
 
   test('sending the same message and file_ids again within 10 minutes is reported as already posted', async () => {
@@ -680,7 +680,7 @@ describe('send_message with file_ids from prepare_upload', () => {
     uploaded(f, [F1]);
     const args = { channel: 'team-a/dup', message: 'same', file_ids: [F1] };
     await f.send(args);
-    expect(textOf(await f.send(args))).toContain('投稿していません');
+    expect(textOf(await f.send(args))).toContain('nothing was posted');
     expect(f.created).toHaveLength(1);
   });
 
@@ -699,7 +699,7 @@ describe('send_message with file_ids from prepare_upload', () => {
     const f = fakeMm();
     uploaded(f, [F1]);
     const sid = holdBySchedule(f, [F1]);
-    await expect(f.send({ channel: 'team-a/dup', message: 'x', file_ids: [F1] })).rejects.toThrow(`予約（予約 ID: ${sid}）の添付に使われています`);
+    await expect(f.send({ channel: 'team-a/dup', message: 'x', file_ids: [F1] })).rejects.toThrow(`is attached to a scheduled message (scheduled ID: ${sid})`);
     expect(f.created).toHaveLength(0);
   });
 
@@ -708,14 +708,14 @@ describe('send_message with file_ids from prepare_upload', () => {
     uploaded(f, [F1]);
     holdBySchedule(f, [F1]);
     f.store.markFilesPosted(UID, [F1], 'p'.repeat(26));
-    await expect(f.send({ channel: 'team-a/dup', message: 'x', file_ids: [F1] })).rejects.toThrow('既に投稿');
+    await expect(f.send({ channel: 'team-a/dup', message: 'x', file_ids: [F1] })).rejects.toThrow('is already used by a post');
   });
 
   test('allow_duplicate also refuses a file a schedule holds', async () => {
     const f = fakeMm();
     uploaded(f, [F1]);
     holdBySchedule(f, [F1]);
-    await expect(f.send({ channel: 'team-a/dup', message: 'x', file_ids: [F1], allow_duplicate: true })).rejects.toThrow('添付に使われています');
+    await expect(f.send({ channel: 'team-a/dup', message: 'x', file_ids: [F1], allow_duplicate: true })).rejects.toThrow('is attached to a scheduled message');
     expect(f.created).toHaveLength(0);
   });
 
@@ -727,7 +727,7 @@ describe('send_message with file_ids from prepare_upload', () => {
     await expect(f.send(args)).rejects.toBeInstanceOf(UpstreamUnavailable);
     holdBySchedule(f, [F1]);
     f.advance(31_000);
-    expect(textOf(await f.send(args))).toContain('既にあったため');
+    expect(textOf(await f.send(args))).toContain('already existed');
     expect(f.created).toHaveLength(1);
   });
 
@@ -738,7 +738,7 @@ describe('send_message with file_ids from prepare_upload', () => {
     const args = { channel: 'team-a/dup', message: 'lost', file_ids: [F1] };
     await expect(f.send(args)).rejects.toBeInstanceOf(UpstreamUnavailable);
     f.advance(31_000);
-    expect(textOf(await f.send(args))).toContain('既にあったため');
+    expect(textOf(await f.send(args))).toContain('already existed');
     expect(f.created).toHaveLength(1);
     expect(f.store.uploadedFiles(UID, [F1])[0].postId).toBe(id(1));
   });
@@ -751,8 +751,8 @@ describe('a draft with the sent message is cleared after the post', () => {
   const draft = (over: Record<string, unknown> = {}) => ({ user_id: UID, channel_id: CH, root_id: '', message: 'hello', ...over });
   const paths = (f: ReturnType<typeof fakeMm>) => f.calls.map((c) => `${c.method} ${c.path}`);
   const deletes = (f: ReturnType<typeof fakeMm>) => paths(f).filter((c) => c.startsWith('DELETE '));
-  const CLEARED = '同じ本文の下書きを消しました';
-  const FAILED = '同じ本文の下書きを確かめられなかったか、消せませんでした。下書きが残っていれば、そのまま送ると同じ投稿が 2 回になります。';
+  const CLEARED = 'Deleted the draft with the same body';
+  const FAILED = 'The draft with the same body could not be checked or deleted. If the draft remains, sending it as it is posts the same message twice.';
   let logged: string[];
   beforeEach(() => {
     logged = [];
@@ -765,8 +765,8 @@ describe('a draft with the sent message is cleared after the post', () => {
     const r = await f.send({ channel: 'team-a/dup', message: 'hello' });
     expect(r.isError).toBeFalsy();
     expect(deletes(f)).toEqual([`DELETE /users/${UID}/channels/${CH}/drafts`]);
-    expect(textOf(r)).toContain(`${CLEARED}。そのチャンネルを画面で開いている場合は、入力欄に本文が残っているので、送らずに消してください。`);
-    expect(textOf(r)).not.toContain('優先度');
+    expect(textOf(r)).toContain(`${CLEARED}. If you have that channel open on the screen, its input box still holds the text; delete it without sending.`);
+    expect(textOf(r)).not.toContain('priority');
   });
 
   test('a reply draft with the same message is deleted by its root_id', async () => {
@@ -774,7 +774,7 @@ describe('a draft with the sent message is cleared after the post', () => {
     f.posts.push({ id: ROOT, user_id: UID, channel_id: CH, root_id: '', message: 'root', create_at: 0 });
     const r = await f.send({ channel: 'team-a/dup', message: 'hello', root_id: ROOT });
     expect(deletes(f)).toEqual([`DELETE /users/${UID}/channels/${CH}/drafts/${ROOT}`]);
-    expect(textOf(r)).toContain(`${CLEARED}。そのスレッドを画面で開いている場合は`);
+    expect(textOf(r)).toContain(`${CLEARED}. If you have that thread open on the screen`);
   });
 
   test.each([
@@ -787,28 +787,28 @@ describe('a draft with the sent message is cleared after the post', () => {
     expect(paths(f)).toContain(`GET ${LIST}`);
     expect(paths(f)).not.toContain(`GET ${PREF}`);
     expect(deletes(f)).toEqual([]);
-    expect(textOf(r)).not.toContain('下書き');
+    expect(textOf(r)).not.toContain('draft');
   });
 
   test('no drafts at all (null) adds nothing and reads no sync setting', async () => {
     const f = fakeMm({ drafts: () => null });
     const r = await f.send({ channel: 'team-a/dup', message: 'hello' });
     expect(paths(f)).not.toContain(`GET ${PREF}`);
-    expect(textOf(r)).not.toContain('下書き');
+    expect(textOf(r)).not.toContain('draft');
   });
 
   test('a matching draft with attachments is kept and the output says why', async () => {
     const f = fakeMm({ drafts: () => [draft({ file_ids: ['f'.repeat(26)] })] });
     const r = await f.send({ channel: 'team-a/dup', message: 'hello' });
     expect(deletes(f)).toEqual([]);
-    expect(textOf(r)).toContain('同じ本文の下書きがありますが、添付ファイルが付いているため消していません');
+    expect(textOf(r)).toContain('A draft with the same body exists, but it has attached files, so it was not deleted');
   });
 
   test('a matching draft of a caller with draft sync off is kept and the output says why', async () => {
     const f = fakeMm({ drafts: () => [draft()], syncOff: true });
     const r = await f.send({ channel: 'team-a/dup', message: 'hello' });
     expect(deletes(f)).toEqual([]);
-    expect(textOf(r)).toContain('下書きの同期を切っているため消していません');
+    expect(textOf(r)).toContain('draft sync is turned off, so it was not deleted');
   });
 
   test.each([
@@ -819,14 +819,14 @@ describe('a draft with the sent message is cleared after the post', () => {
     const f = fakeMm({ drafts: () => [draft({ priority })] });
     const r = await f.send({ channel: 'team-a/dup', message: 'hello' });
     expect(deletes(f)).toHaveLength(1);
-    expect(textOf(r)).toContain('下書きに付いていた優先度は、この投稿には付いていません。');
+    expect(textOf(r)).toContain('The priority attached to the draft is not on this post.');
   });
 
   test('a matching burn-on-read draft is deleted and the output says the post was sent without it', async () => {
     const f = fakeMm({ drafts: () => [draft({ type: 'burn_on_read' })] });
     const r = await f.send({ channel: 'team-a/dup', message: 'hello' });
     expect(deletes(f)).toHaveLength(1);
-    expect(textOf(r)).toContain('下書きに付いていた burn-on-read（読まれた後に消える設定）は、この投稿には付いていません。投稿は消えずに残ります。');
+    expect(textOf(r)).toContain('The burn-on-read setting (the post disappears after being read) attached to the draft is not on this post. The post stays and is not deleted.');
   });
 
   test('a draft without a type adds no burn-on-read note', async () => {
@@ -839,7 +839,7 @@ describe('a draft with the sent message is cleared after the post', () => {
     f.posts.push({ id: ROOT, user_id: UID, channel_id: CH, root_id: '', message: 'root', create_at: 0 });
     const r = await f.send({ channel: 'team-a/dup', message: 'hello', root_id: ROOT });
     expect(deletes(f)).toEqual([]);
-    expect(textOf(r)).not.toContain('下書き');
+    expect(textOf(r)).not.toContain('draft');
   });
 
   test('when reading the sync setting fails, the post still succeeds and the output says the draft may be left', async () => {
@@ -853,7 +853,7 @@ describe('a draft with the sent message is cleared after the post', () => {
     const f = fakeMm({ drafts: () => { throw new Reauthorize(true); } });
     const r = await f.send({ channel: 'team-a/dup', message: 'hello' });
     expect(r.isError).toBeFalsy();
-    expect(textOf(r)).toContain('投稿の後で Mattermost への再ログインが必要になったため、同じ本文の下書きを確かめられませんでした。コネクタを再接続してください。');
+    expect(textOf(r)).toContain('Mattermost login was needed again after posting, so the draft with the same body could not be checked. Reconnect the connector.');
     expect(logged.map((l) => JSON.parse(l))).toEqual([expect.objectContaining({ event: 'draft_cleanup_failed', name: 'Reauthorize', channel_id: CH })]);
   });
 
@@ -977,14 +977,14 @@ describe('a draft with the sent message is cleared after the post', () => {
 
   test('an empty priority on the draft does not add the priority note', async () => {
     const f = fakeMm({ drafts: () => [draft({ priority: { priority: '', requested_ack: false } })] });
-    expect(textOf(await f.send({ channel: 'team-a/dup', message: 'hello' }))).not.toContain('優先度');
+    expect(textOf(await f.send({ channel: 'team-a/dup', message: 'hello' }))).not.toContain('priority');
   });
 
   test('drafts disabled on the server (501) adds nothing', async () => {
     const f = fakeMm({ drafts: () => { throw new MmError(501, 'api.drafts.disabled.app_error', 'off'); } });
     const r = await f.send({ channel: 'team-a/dup', message: 'hello' });
     expect(r.isError).toBeFalsy();
-    expect(textOf(r)).not.toContain('下書き');
+    expect(textOf(r)).not.toContain('draft');
   });
 
   test('a DM of a caller with no team does not read any draft list', async () => {
@@ -992,7 +992,7 @@ describe('a draft with the sent message is cleared after the post', () => {
     const r = await f.send({ channel: DM, message: 'hello' });
     expect(r.isError).toBeFalsy();
     expect(paths(f).filter((c) => c.endsWith('/drafts'))).toEqual([]);
-    expect(textOf(r)).not.toContain('下書き');
+    expect(textOf(r)).not.toContain('draft');
   });
 
   test('a DM draft is looked up in the caller\'s first team\'s list', async () => {
@@ -1011,7 +1011,7 @@ describe('a draft with the sent message is cleared after the post', () => {
     const f = fakeMm(opts);
     const r = await f.send({ channel: 'team-a/dup', message: 'hello' });
     expect(r.isError).toBeFalsy();
-    expect(textOf(r)).toContain('投稿しました。');
+    expect(textOf(r)).toContain('Posted.');
     expect(textOf(r)).toContain(FAILED);
     expect(f.created).toHaveLength(1);
     expect(logged.map((l) => JSON.parse(l).event)).toEqual(['draft_cleanup_failed']);
@@ -1059,7 +1059,7 @@ describe('a draft with the sent message is cleared after the post', () => {
     expect(textOf(await f.send({ channel: 'team-a/dup', message: 'hello' }))).toContain(FAILED);
     fail = false;
     const r = await f.send({ channel: 'team-a/dup', message: 'hello' });
-    expect(textOf(r)).toContain('直前に投稿済み');
+    expect(textOf(r)).toContain('posted just before');
     expect(textOf(r)).toContain(CLEARED);
     expect(f.created).toHaveLength(1);
   });
@@ -1071,7 +1071,7 @@ describe('a draft with the sent message is cleared after the post', () => {
     expect(deletes(f)).toEqual([]);
     f.advance(31_000);
     const r = await f.send({ channel: 'team-a/dup', message: 'hello' });
-    expect(textOf(r)).toContain('既にあったため');
+    expect(textOf(r)).toContain('already existed');
     expect(deletes(f)).toHaveLength(1);
   });
 
@@ -1080,7 +1080,7 @@ describe('a draft with the sent message is cleared after the post', () => {
     await expect(f.send({ channel: 'team-a/dup', message: 'hello' })).rejects.toBeInstanceOf(UpstreamUnavailable);
     f.advance(10_000);
     const r = await f.send({ channel: 'team-a/dup', message: 'hello' });
-    expect(textOf(r)).toContain('処理中');
+    expect(textOf(r)).toContain('is being processed');
     expect(paths(f).filter((c) => c.endsWith('/drafts'))).toEqual([]);
   });
 });

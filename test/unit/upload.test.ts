@@ -52,9 +52,9 @@ describe('POST /mcp/upload/:token', () => {
       .attach('file', Buffer.from([0x89, 0x50]), 'スクリーンショット.png');
     expect(r.status).toBe(200);
     expect(r.headers['content-type']).toMatch(/^text\/plain/);
-    expect(r.text).toContain(`file_id: ${fileId(0)}（report.pdf、8 バイト）`);
-    expect(r.text).toContain(`file_id: ${fileId(1)}（スクリーンショット.png、2 バイト）`);
-    expect(r.text).toContain('予約するときは schedule_message の file_ids に渡します');
+    expect(r.text).toContain(`file_id: ${fileId(0)} (report.pdf, 8 bytes)`);
+    expect(r.text).toContain(`file_id: ${fileId(1)} (スクリーンショット.png, 2 bytes)`);
+    expect(r.text).toContain("To schedule, pass it to schedule_message's file_ids");
     expect(uploads.map((u) => [u.auth, u.query.get('channel_id'), u.query.get('filename'), [...u.bytes]])).toEqual([
       ['Bearer mm-access', CH, 'report.pdf', [...Buffer.from('%PDF-1.7')]],
       ['Bearer mm-access', CH, 'スクリーンショット.png', [0x89, 0x50]],
@@ -98,17 +98,17 @@ describe('POST /mcp/upload/:token', () => {
   });
 
   test.each([
-    ['a body over UPLOAD_MAX_BYTES', 413, (r: ReturnType<ReturnType<typeof setup>['req']['post']>) => r.attach('file', Buffer.alloc(2048), 'big.bin'), '上限の 1024 バイト'],
-    ['no file field', 400, (r: ReturnType<ReturnType<typeof setup>['req']['post']>) => r.field('other', 'x'), 'file という名前のファイルがありません'],
+    ['a body over UPLOAD_MAX_BYTES', 413, (r: ReturnType<ReturnType<typeof setup>['req']['post']>) => r.attach('file', Buffer.alloc(2048), 'big.bin'), 'limit of 1024 bytes'],
+    ['no file field', 400, (r: ReturnType<ReturnType<typeof setup>['req']['post']>) => r.field('other', 'x'), 'There is no file named "file"'],
     ['a body that is not multipart', 400, (r: ReturnType<ReturnType<typeof setup>['req']['post']>) => r.set('content-type', 'application/octet-stream').send(Buffer.from('x')), 'multipart/form-data'],
-    ['more than 5 files', 400, (r: ReturnType<ReturnType<typeof setup>['req']['post']>) => [0, 1, 2, 3, 4, 5].reduce((q, i) => q.attach('file', Buffer.from('x'), `${i}.txt`), r), '5 件まで'],
+    ['more than 5 files', 400, (r: ReturnType<ReturnType<typeof setup>['req']['post']>) => [0, 1, 2, 3, 4, 5].reduce((q, i) => q.attach('file', Buffer.from('x'), `${i}.txt`), r), 'up to 5 file(s)'],
   ])('%s is refused with %i and the same URL can be used again', async (_, status, send, message) => {
     const s = setup({ UPLOAD_MAX_BYTES: '1024' });
     const url = s.url();
     const r = await send(s.req.post(url));
     expect(r.status).toBe(status);
     expect(r.text).toContain(message);
-    expect(r.text).toContain('同じ URL で');
+    expect(r.text).toContain('to the same URL');
     expect(uploads).toHaveLength(0);
     expect((await s.req.post(url).attach('file', Buffer.from('x'), 'a.txt')).status).toBe(200);
   });
@@ -119,11 +119,11 @@ describe('POST /mcp/upload/:token', () => {
     const url = s.url();
     const r = await s.req.post(url).attach('file', Buffer.from('x'), 'a.mov');
     expect(r.status).toBe(400);
-    expect(r.text).toContain('ファイル「a.mov」は大きすぎるため添付できません');
-    expect(r.text).toContain('同じ URL で');
+    expect(r.text).toContain('The file "a.mov" is too large to attach');
+    expect(r.text).toContain('to the same URL');
   });
 
-  test.each([[false, '同じ URL で', 200, '3'], [true, 'URL を発行し直して', 404, undefined]])('a 429 leaves the URL usable, with Retry-After, unless an earlier request of the call may have uploaded the file (doubt: %s)', async (doubt, wording, next, retryAfter) => {
+  test.each([[false, 'to the same URL', 200, '3'], [true, 'Issue a new URL', 404, undefined]])('a 429 leaves the URL usable, with Retry-After, unless an earlier request of the call may have uploaded the file (doubt: %s)', async (doubt, wording, next, retryAfter) => {
     const s = setup();
     vi.spyOn(s.mm, 'call').mockRejectedValueOnce(new RateLimited(3, true, doubt));
     const url = s.url();
@@ -143,8 +143,8 @@ describe('POST /mcp/upload/:token', () => {
     const r = await s.req.post(url).attach('file', Buffer.from('x'), 'a.txt').attach('file', Buffer.from('y'), 'b.txt');
     expect(r.status).toBe(429);
     expect(r.headers['retry-after']).toBeUndefined();
-    expect(r.text).toContain('URL を発行し直して');
-    expect(r.text).toContain('次のファイルはアップロード済みです');
+    expect(r.text).toContain('Issue a new URL');
+    expect(r.text).toContain('The following files are already uploaded');
   });
 
   test('a failure after some files went to Mattermost lists them and asks for a new URL', async () => {
@@ -153,8 +153,8 @@ describe('POST /mcp/upload/:token', () => {
     const url = s.url();
     const r = await s.req.post(url).attach('file', Buffer.from('x'), 'a.txt').attach('file', Buffer.from('y'), 'b.txt');
     expect(r.status).toBe(502);
-    expect(r.text).toContain('URL を発行し直して');
-    expect(r.text).toContain(`file_id: ${fileId(0)}（a.txt、1 バイト）`);
+    expect(r.text).toContain('Issue a new URL');
+    expect(r.text).toContain(`file_id: ${fileId(0)} (a.txt, 1 bytes)`);
     expect(s.store.uploadedFiles(UID, [fileId(0)])).toHaveLength(1);
     expect((await s.req.post(url).attach('file', Buffer.from('x'), 'a.txt')).status).toBe(404);
   });
@@ -261,7 +261,7 @@ describe('replies before the whole body has arrived', { timeout: EVENT_DEADLINE 
     const url = s.url();
     const r = await rawPost(s.port, url, Buffer.alloc(1024 * 1024 + 1000), { chunked: true });
     expect([r.status, r.error]).toEqual([413, undefined]);
-    expect(r.text).toContain('同じ URL で');
+    expect(r.text).toContain('to the same URL');
     expect((await rawPost(s.port, url, Buffer.from('ok'))).status).toBe(200);
   });
 
@@ -313,7 +313,7 @@ describe('a client that stops sending mid-body', { timeout: 30_000 }, () => {
     const r = await rawPost(s.port, url, Buffer.alloc(1024 * 1024), { stallAfter: 100_000 });
     expect(Date.now() - started).toBeLessThan(IDLE_ENDED_WITHIN);
     expect([r.status, r.connection]).toEqual([408, 'close']);
-    expect(r.text).toContain('同じ URL で');
+    expect(r.text).toContain('to the same URL');
     expect(logged()[0]).toMatchObject({ outcome: 'stalled', files: 0 });
     expect((await rawPost(s.port, url, Buffer.from('ok'))).status).toBe(200);
   });
@@ -342,9 +342,9 @@ describe('prepare_upload', () => {
     const s = setup();
     const r = await call(s, { channel: CH });
     expect(r.isError).toBe(false);
-    expect(r.text).toContain(`投稿先: channel_id: ${CH}、表示名: Town`);
-    expect(r.text).toContain('利用者に示して、確認を取ってください');
-    const url = /curl -sS -F 'file=@<ファイルのパス>' (\S+)/.exec(r.text)![1];
+    expect(r.text).toContain(`Destination: channel_id: ${CH}, display name: Town`);
+    expect(r.text).toContain('show the user the file paths and the destination, and get confirmation');
+    const url = /curl -sS -F 'file=@<file path>' (\S+)/.exec(r.text)![1];
     expect(url).toMatch(/^https:\/\/mm\.example\/mcp\/upload\/[A-Za-z0-9_-]{43}$/);
     const up = await s.req.post(new URL(url).pathname).attach('file', Buffer.from('x'), 'a.txt');
     expect(up.status).toBe(200);
@@ -356,6 +356,6 @@ describe('prepare_upload', () => {
     for (let i = 0; i < 5; i++) expect((await call(s, { channel: CH })).isError).toBe(false);
     const r = await call(s, { channel: CH });
     expect(r.isError).toBe(true);
-    expect(r.text).toContain('使われていないアップロード URL が 5 件あります');
+    expect(r.text).toContain('You have 5 upload URL(s) that are not used yet');
   });
 });

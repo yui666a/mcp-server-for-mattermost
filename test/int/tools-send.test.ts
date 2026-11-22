@@ -84,7 +84,7 @@ describe('send_message against the local Mattermost', () => {
     const found = await messages(message);
     expect(found).toHaveLength(1);
     expect(second.content[0].text).toContain(found[0].id);
-    expect(second.content[0].text).toContain('投稿していません');
+    expect(second.content[0].text).toContain('nothing was posted');
   });
 
   const lostFirstAttempt = async (message: string, rootId?: string) => {
@@ -103,7 +103,7 @@ describe('send_message against the local Mattermost', () => {
     const r = await call({ channel: channel.id, message });
     expect(r.isError).toBeFalsy();
     expect(r.content[0].text).toContain(`post_id: ${prev.id}`);
-    expect(r.content[0].text).toContain('既にあったため');
+    expect(r.content[0].text).toContain('already existed');
     expect(await messages(message)).toHaveLength(1);
   });
 
@@ -114,7 +114,7 @@ describe('send_message against the local Mattermost', () => {
     const r = await call({ channel: channel.id, message, root_id: root.id });
     expect(r.isError).toBeFalsy();
     expect(r.content[0].text).toContain(`post_id: ${prev.id}`);
-    expect(r.content[0].text).toContain('既にあったため');
+    expect(r.content[0].text).toContain('already existed');
     const found = await messages(message);
     expect(found).toHaveLength(1);
     expect(found[0].root_id).toBe(root.id);
@@ -167,7 +167,7 @@ describe('send_message against the local Mattermost', () => {
     expect(r.isError).toBeFalsy();
     const created = await (await gm()).json() as { id: string; type: string };
     expect(created.type).toBe('G');
-    expect(r.content[0].text).toContain(`投稿先: channel_id: ${created.id}、表示名: @${names[0]}, @${names[1]}`);
+    expect(r.content[0].text).toContain(`Destination: channel_id: ${created.id}, display name: @${names[0]}, @${names[1]}`);
     expect((await read()).body.result.content[0].text).toContain(`${TAG} first group dm`);
   }));
 
@@ -193,7 +193,7 @@ describe('send_message against the local Mattermost', () => {
     const r = await call({ channel: `@${name}`, message: `${TAG} first dm` });
     expect(r.isError).toBeFalsy();
     const created = await (await dm()).json() as { id: string };
-    expect(r.content[0].text).toContain(`投稿先: channel_id: ${created.id}、表示名: @${name}`);
+    expect(r.content[0].text).toContain(`Destination: channel_id: ${created.id}, display name: @${name}`);
     const posts = await mmApi<{ posts: Record<string, Post> }>(aliceMm, 'GET', `/channels/${created.id}/posts`);
     expect(Object.values(posts.posts).map((p) => p.message)).toEqual([`${TAG} first dm`]);
   }));
