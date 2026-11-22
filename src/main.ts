@@ -1,6 +1,7 @@
 import { createApp } from './app.ts';
 import { loadConfig } from './config.ts';
 import { openDb } from './db.ts';
+import { setLocale } from './i18n/index.ts';
 import { log } from './log.ts';
 import { MmClient } from './mattermost/client.ts';
 import { Limiter } from './mattermost/limiter.ts';
@@ -9,6 +10,7 @@ import { Store } from './store.ts';
 import { setTimeZone } from './zone.ts';
 
 const config = loadConfig(process.env);
+setLocale(config.locale);
 setTimeZone(config.timeZone);
 const store = new Store(openDb(config.dbPath), config.encKey, Date.now, config.accessTokenTtlSec);
 const deps = { fetch, now: Date.now };
