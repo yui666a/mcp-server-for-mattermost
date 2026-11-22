@@ -6,15 +6,17 @@ import { MmClient } from './mattermost/client.ts';
 import { Limiter } from './mattermost/limiter.ts';
 import { every, tick } from './scheduler.ts';
 import { Store } from './store.ts';
+import { setTimeZone } from './zone.ts';
 
 const config = loadConfig(process.env);
+setTimeZone(config.timeZone);
 const store = new Store(openDb(config.dbPath), config.encKey, Date.now, config.accessTokenTtlSec);
 const deps = { fetch, now: Date.now };
 const limiter = new Limiter({ perUserConcurrency: 4, globalConcurrency: 16, perUserPerMin: 300, globalPerMin: 600 }, Date.now);
 const mm = new MmClient(config, store, limiter, deps);
 const app = createApp({ config, store, deps, mm });
 
-const server = app.listen(config.port, () => log('listening', { port: config.port }));
+const server = app.listen(config.port, () => log('listening', { port: config.port, locale: config.locale, time_zone: config.timeZone }));
 setInterval(() => {
   try {
     store.sweep();
