@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto';
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
+import { setLocale } from '../../src/i18n/index.ts';
 import { bodyCutNote } from '../../src/mcp/format.ts';
 import { MAX_OPEN_UPLOAD_URLS, type Store } from '../../src/store.ts';
 import { freezeCleanupClock, freezeCleanupDeadline, makeApp, SLOW, SLOW_TEST } from './helpers.ts';
@@ -17,7 +18,10 @@ beforeEach(() => {
   hits = [];
   uploads = [];
 });
-afterEach(() => vi.restoreAllMocks());
+afterEach(() => {
+  vi.restoreAllMocks();
+  setLocale('en');
+});
 
 type Rpc = { isError: boolean; text: string };
 
@@ -297,6 +301,12 @@ describe('edit_message and delete_message', () => {
       expect(d).toContain(`"${bodyCutNote()}"`);
       expect(d).toContain('ask the user to edit it in Mattermost');
       expect(t.description).toBe('Edit the text of your own post. Mentions added by an edit do not notify.');
+    });
+
+    test('the message argument quotes the note get_post writes in the locale set when the tools are registered', async () => {
+      setLocale('ja');
+      const t = (await setup().tools()).find((x) => x.name === 'edit_message')! as unknown as { inputSchema: { properties: { message: { description: string } } } };
+      expect(t.inputSchema.properties.message.description).toContain('本文を 4000 文字で切りました');
     });
 
     test('replaces only the message through the patch API and reports the post_id, channel and permalink', async () => {

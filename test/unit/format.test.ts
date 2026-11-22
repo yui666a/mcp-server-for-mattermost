@@ -316,7 +316,7 @@ describe('reactions, edits and system messages', () => {
   });
 
   test('with has_reactions and metadata without reactions, says nothing about reactions', () => {
-    expect(formatPost({ ...p, has_reactions: true, metadata: {} }, ctx)).not.toContain('Reactions');
+    expect(formatPost({ ...p, has_reactions: true, metadata: {} }, ctx)).not.toMatch(/reactions/i);
   });
 
   test('orders reactions made in the same millisecond the same way whatever order Mattermost gives them', () => {
