@@ -197,7 +197,7 @@ export function registerScheduleTools(server: McpServer, ctx: ToolContext): void
     id: ID.optional().describe('Return only this scheduled message, with its full text.'),
     status: z.enum(STATUSES).optional(),
     limit: limitArg(20, 50),
-    cursor: cursorArg,
+    cursor: cursorArg(),
   };
   server.registerTool('list_scheduled_messages', {
     description: 'List your scheduled messages by scheduled time, with status and failure reason.',
