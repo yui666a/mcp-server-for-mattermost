@@ -18,17 +18,17 @@ const MAX_ITEMS = 20;
 const AFTER_PAGE = 200;
 
 // Not leaving the items of channels and threads to zod's z.object, which drops unknown keys: a misspelled last_post_id would mark the item read up to the newest post, which only the user can undo, item by item, in the Mattermost UI.
-const schema = {
+const schema = () => ({
   channels: z.array(strictArgs({
-    channel: z.string().min(1).describe('A channel ID, team/channel, channel name, @username (DM), or @a,b (group DM)'),
-    last_post_id: POST_ID.optional().describe('post_id of the newest post you read in this channel'),
+    channel: z.string().min(1).describe(msg().descriptions.markReadChannel),
+    last_post_id: POST_ID.optional().describe(msg().descriptions.markReadChannelLast),
   })).max(MAX_ITEMS).optional(),
   threads: z.array(strictArgs({
-    post_id: POST_ID.describe('post_id of the thread root or any post in the thread'),
-    last_post_id: POST_ID.optional().describe('post_id of the newest post you read in this thread'),
+    post_id: POST_ID.describe(msg().descriptions.threadPostId),
+    last_post_id: POST_ID.optional().describe(msg().descriptions.markReadThreadLast),
   })).max(MAX_ITEMS).optional(),
-};
-type Args = z.infer<z.ZodObject<typeof schema>>;
+});
+type Args = z.infer<z.ZodObject<ReturnType<typeof schema>>>;
 
 type Post = MmPost & { props?: { from_webhook?: string; from_bot?: string } };
 // Not treating these as unread posts: Mattermost leaves them out of the unread count (Post.IsJoinLeaveMessage).
@@ -44,10 +44,10 @@ type Result = { line: string; ok: boolean };
 function lastPost(mm: Mm, uid: string, id: string, reread: string): Promise<Post> {
   return mm.call<Post>(uid, 'GET', `/posts/${id}`).catch((e) => {
     if (missing(e)) {
-      const again = `${reread} で読み直して、読んだ投稿のうち最も新しいものの post_id を渡してください。`;
-      // Not RETRY's opening: last_post_id may be a post in another channel than the item's, so being in the item's channel says nothing about it.
-      if ((e as MmError).status === 403) throw new InputError(`last_post_id ${id} の投稿を見る権限がありません（参加していない非公開チャンネルなど）。${again}この投稿のチャンネルに参加しているはずなら、Mattermost の一時的な障害の可能性があります。少し待ってから再試行してください。${msg().common.askAdmin}`);
-      throw new InputError(`last_post_id ${id} の投稿が見つかりません（削除されたか、存在しません）。${again}`);
+      const again = msg().markRead.rereadHint(reread);
+      // Not common.retry's opening: last_post_id may be a post in another channel than the item's, so being in the item's channel says nothing about it.
+      if ((e as MmError).status === 403) throw new InputError(`${msg().markRead.lastPostForbidden(id, again)}${msg().common.askAdmin}`);
+      throw new InputError(msg().markRead.lastPostNotFound(id, again));
     }
     throw e;
   });
@@ -73,19 +73,19 @@ export async function markAsRead(mm: Mm, uid: string, args: Args): Promise<CallT
   const channels = args.channels ?? [];
   const threads = args.threads ?? [];
   const n = channels.length + threads.length;
-  if (!n || n > MAX_ITEMS) throw new InputError(`channels と threads を合わせて 1〜${MAX_ITEMS} 件を指定してください。`);
+  if (!n || n > MAX_ITEMS) throw new InputError(msg().markRead.itemCount(MAX_ITEMS));
   const crt = (await collapsedThreads(mm, uid)).on;
   const results: Result[] = [];
-  const pending = [...channels.map((c) => `チャンネル「${oneLine(unformat(c.channel))}」`), ...threads.map((t) => `スレッド（post_id: ${t.post_id}）`)];
+  const pending = [...channels.map((c) => msg().markRead.channelNamed(oneLine(unformat(c.channel)))), ...threads.map((t) => msg().markRead.threadNamed(t.post_id))];
   let started = 0;
   let writing = false;
   // Per item rather than failing the call: one bad item should not keep the others unread. Anything else (re-login, 429, outage, a bug) concerns every item, so the run stops there.
   const failed = (label: string, e: unknown, tail = ''): Result => {
     if (e instanceof Interrupted) throw e;
-    if (itemError(e)) return { line: `- ${label}: 既読にできませんでした。${failureText(e)}${tail}`, ok: false };
+    if (itemError(e)) return { line: msg().markRead.itemFailed(label, failureText(e), tail), ok: false };
     // Not saying the item stayed unread once its write was sent: it may have reached Mattermost before the timeout or the 5xx.
     const maybe = writing && mayHaveRun(e);
-    throw new Interrupted(`- ${label}: 処理中に中断しました（${maybe ? '既読になったかは分かりません' : '既読にしていません'}）。${tail}`, maybe, e);
+    throw new Interrupted(msg().markRead.itemInterrupted(label, maybe, tail), maybe, e);
   };
   try {
     await markItems();
@@ -97,11 +97,11 @@ export async function markAsRead(mm: Mm, uid: string, args: Args): Promise<CallT
     const rest = pending.slice(started);
     // Not pointing to a plain retry of the whole call: items without last_post_id would also mark read what arrived meanwhile.
     return text([
-      '既読にした結果:', ...results.map((r) => r.line), e.line,
-      `ここで中断しました。${(f.result.content[0] as { text: string }).text}${rest.length ? `次の ${rest.length} 件は処理していません: ${rest.join('、')}。` : ''}再実行するときは、中断した項目と処理していない項目だけを渡してください。利用者がすべての既読を求めたのでなければ、last_post_id を省いた項目は、渡し直す前に読んで last_post_id を付けてください。`,
+      msg().markRead.resultHead, ...results.map((r) => r.line), e.line,
+      msg().markRead.stopped((f.result.content[0] as { text: string }).text, rest),
     ].join('\n'), true);
   }
-  return text(['既読にした結果:', ...results.map((r) => r.line)].join('\n'), !results.some((r) => r.ok));
+  return text([msg().markRead.resultHead, ...results.map((r) => r.line)].join('\n'), !results.some((r) => r.ok));
 
   async function markItems(): Promise<void> {
     const seen = new Set<string>();
@@ -109,41 +109,41 @@ export async function markAsRead(mm: Mm, uid: string, args: Args): Promise<CallT
     for (const item of channels) {
       started++;
       writing = false;
-      let label = `チャンネル「${oneLine(unformat(item.channel))}」`;
+      let label = msg().markRead.channelNamed(oneLine(unformat(item.channel)));
       // Not the display name in the label: users write it, and the result sentence after it could then be written into it.
       let tail = '';
       try {
         const ch = await resolveChannel(mm, uid, item.channel).catch((e) => channelError(e, item.channel));
-        label = `チャンネル（channel_id: ${ch.id}${(ch.raw as { delete_at?: number }).delete_at ? '、アーカイブ済み' : ''}）`;
-        tail = `（表示名: ${oneLine(ch.displayName || ch.name)}）`;
-        if (seen.has(ch.id)) throw new InputError('同じチャンネルがほかの項目と重なっています。1 件にまとめてください。');
+        label = msg().markRead.channelLabel(ch.id, Boolean((ch.raw as { delete_at?: number }).delete_at));
+        tail = msg().markRead.displayName(oneLine(ch.displayName || ch.name));
+        if (seen.has(ch.id)) throw new InputError(msg().markRead.sameChannel);
         seen.add(ch.id);
         const me = await mm.call<Member>(uid, 'GET', `/channels/${ch.id}/members/me`).catch((e) => {
           // Not saying a 403 means not joined: Mattermost also answers 403 when its permission check fails on a transient error.
-          if (e instanceof MmError && e.status === 403) throw new InputError(`このチャンネルに参加しているかを確かめられませんでした（参加していないか、Mattermost の一時的な障害）。${msg().common.retrySoon}${msg().common.askAdmin}`);
-          if (e instanceof MmError && e.status === 404) throw new InputError('このチャンネルに参加していません。');
+          if (e instanceof MmError && e.status === 403) throw new InputError(`${msg().common.joinCheckFailed}${msg().common.retrySoon}${msg().common.askAdmin}`);
+          if (e instanceof MmError && e.status === 404) throw new InputError(msg().common.notJoined);
           throw e;
         });
         const raw = ch.raw as unknown as Counts;
         const unread = crt ? raw.total_msg_count_root - me.msg_count_root : raw.total_msg_count - me.msg_count;
         if (unread <= 0 && !(crt ? me.mention_count_root : me.mention_count)) {
-          results.push({ line: `- ${label}: すでに既読です。${tail}`, ok: true });
+          results.push({ line: `- ${label}: ${msg().markRead.alreadyRead(false)}${tail}`, ok: true });
           continue;
         }
         if (item.last_post_id) {
           const last = await lastPost(mm, uid, item.last_post_id, 'read_channel');
-          if (last.channel_id !== ch.id) throw new InputError(`last_post_id ${last.id} の投稿はこのチャンネルにありません。`);
+          if (last.channel_id !== ch.id) throw new InputError(msg().markRead.lastNotInChannel(last.id));
           // Not comparing with the channel's last_post_at: editing or pinning moves it forward and deleting never moves it back.
           const q = new URLSearchParams({ after: last.id, per_page: String(AFTER_PAGE), collapsedThreads: String(crt), skipFetchThreads: 'true' });
           const r = await mm.call<{ order: string[]; posts: Record<string, Post> }>(uid, 'GET', `/channels/${ch.id}/posts?${q}`);
           const after = r.order.map((id) => r.posts[id]).filter(Boolean);
           const mine = (p: Post) => p.user_id === uid && !p.props?.from_webhook && !p.props?.from_bot;
           if (after.some((p) => !mine(p) && !JOIN_LEAVE.has(p.type ?? ''))) {
-            results.push({ line: `- ${label}: last_post_id より後に、読んでいない投稿があります。既読にしていません。read_channel の from: "unread" で最後まで読んでから、読んだ中で最も新しい投稿を渡してください。${tail}`, ok: false });
+            results.push({ line: `- ${label}: ${msg().markRead.unreadAfter}${tail}`, ok: false });
             continue;
           }
           if (after.length >= AFTER_PAGE) {
-            results.push({ line: `- ${label}: last_post_id より後に自分の投稿（と参加・退出の通知）が ${AFTER_PAGE} 件以上あり、その先を確かめられないため既読にしていません。${tail}`, ok: false });
+            results.push({ line: `- ${label}: ${msg().markRead.afterCap(AFTER_PAGE)}${tail}`, ok: false });
             continue;
           }
         }
@@ -151,7 +151,7 @@ export async function markAsRead(mm: Mm, uid: string, args: Args): Promise<CallT
         // Not batching every channel into one mark_read after all the checks: the gap between a channel's check and its marking would grow to the whole run.
         writing = true;
         await mm.call(uid, 'POST', `/channels/members/${uid}/mark_read`, [ch.id]);
-        results.push({ line: `- ${label}: ${item.last_post_id ? '既読にしました。' : '呼んだ時点までのすべてを既読にしました。'}${tail}`, ok: true });
+        results.push({ line: `- ${label}: ${item.last_post_id ? msg().markRead.markedRead : msg().markRead.markedAll}${tail}`, ok: true });
       } catch (e) {
         results.push(failed(label, e, tail));
       }
@@ -162,44 +162,44 @@ export async function markAsRead(mm: Mm, uid: string, args: Args): Promise<CallT
     for (const item of threads) {
       started++;
       writing = false;
-      let label = `スレッド（post_id: ${item.post_id}）`;
+      let label = msg().markRead.threadNamed(item.post_id);
       try {
-        if (!crt) throw new InputError('スレッドの折りたたみ（CRT）が無効なため、スレッドの既読は画面に出ません。チャンネルを既読にすれば足ります。');
+        if (!crt) throw new InputError(msg().markRead.crtOff);
         const p = await worded(mm.call<Post & { reply_count?: number }>(uid, 'GET', `/posts/${item.post_id}`), POST_WORDING);
         const root = p.root_id || p.id;
-        label = `スレッド（親 post_id: ${root}）`;
+        label = msg().threads.rootLabel(root);
         const { team } = await threadTeam(mm, uid, p.channel_id, firstTeam);
-        if (!team) throw new InputError('所属しているチームがないため、スレッドを既読にできません。');
+        if (!team) throw new InputError(msg().markRead.noTeam);
         const state = await mm.call<ThreadState>(uid, 'GET', `/users/${uid}/teams/${team}/threads/${root}`).catch(async (e) => {
           if (!(e instanceof MmError && e.status === 404)) throw e;
           // Not pointing a root post without replies to follow_thread: Mattermost has no thread state for it until the first reply, followed or not.
-          if (!p.root_id && !p.reply_count) throw new InputError('このスレッドには返信が無いため、既読にするものがありません。');
+          if (!p.root_id && !p.reply_count) throw new InputError(msg().markRead.noReplies);
           // Not pointing a thread of a channel the user has not joined to follow_thread: follow_thread refuses it. A public channel's posts are readable without joining, so the 404 alone does not tell.
           await mm.call(uid, 'GET', `/channels/${p.channel_id}/members/me`).catch((m) => {
-            if (m instanceof MmError && m.status === 403) throw new InputError(`このスレッドのチャンネルに参加しているかを確かめられませんでした（参加していないか、Mattermost の一時的な障害）。参加していないなら、既読にするものはありません。${msg().common.retrySoon}${msg().common.askAdmin}`);
-            if (m instanceof MmError && m.status === 404) throw new InputError('このスレッドのチャンネルに参加していません。参加していないチャンネルのスレッドは未読に数えられないので、既読にするものがありません。');
+            if (m instanceof MmError && m.status === 403) throw new InputError(`${msg().markRead.threadJoinCheck}${msg().common.retrySoon}${msg().common.askAdmin}`);
+            if (m instanceof MmError && m.status === 404) throw new InputError(msg().markRead.threadNotJoined);
             throw m;
           });
-          throw new InputError('このスレッドはフォローしていないため、既読の状態がありません（フォローしていないスレッドの返信は未読に数えられません）。フォローするなら follow_thread を使ってください（フォローした時点までの返信が既読になります）。');
+          throw new InputError(msg().markRead.notFollowing);
         });
         let at = state.last_reply_at;
         if (item.last_post_id) {
           const last = await lastPost(mm, uid, item.last_post_id, 'read_thread');
-          if (last.id !== root && last.root_id !== root) throw new InputError(`last_post_id ${last.id} の投稿はこのスレッドにありません。`);
+          if (last.id !== root && last.root_id !== root) throw new InputError(msg().markRead.lastNotInThread(last.id));
           at = last.create_at;
         }
-        const upTo = item.last_post_id ? 'last_post_id までは' : 'すでに';
+        const hasLast = Boolean(item.last_post_id);
         const put = (ts: number) => {
           writing = true;
           return mm.call<ThreadState>(uid, 'PUT', `/users/${uid}/teams/${team}/threads/${root}/read/${ts}`);
         };
         // Not failing the item when only clearing the mention fails: the position already stands at or past the one to write, so the thread is read.
         // Not pointing a call without last_post_id to a plain retry: it would also mark read the replies that arrived meanwhile.
-        const retry = item.last_post_id ? 'このスレッドを同じ last_post_id で再実行すると消せることがあります。' : 'このスレッドを read_thread で読み、読んだ最終返信を last_post_id に渡して再実行すると消せることがあります。';
+        const retry = msg().markRead.clearRetry(hasLast);
         const clearing = (ts: number, read: string) => put(ts).catch((e) => {
-          if (!itemError(e)) throw new Interrupted(`- ${label}: ${read}ただし、位置ちょうどの返信のメンションを${mayHaveRun(e) ? '消す書き込みの途中で中断しました（消せたかは分かりません）' : '消す前に中断しました'}。${retry}`, true, e);
+          if (!itemError(e)) throw new Interrupted(`- ${label}: ${msg().markRead.mentionInterrupted(read, mayHaveRun(e))}${retry}`, true, e);
           const why = failureText(e);
-          return `ただし、位置ちょうどの返信のメンションは消せませんでした。${why}${why.endsWith('。') ? '' : '。'}${retry}`;
+          return `${msg().markRead.mentionNotCleared(why)}${why.endsWith(msg().markRead.sentenceEnd) ? '' : msg().markRead.sentenceEnd}${retry}`;
         });
         // Not writing the read post's own time: Mattermost counts unread replies after the position but mentions from it, so a mention on that post would stay.
         // Not writing a position before the current one: the threads API moves it backwards too, which would unread what the user has read since.
@@ -208,16 +208,16 @@ export async function markAsRead(mm: Mm, uid: string, args: Args): Promise<CallT
         if (to === state.last_viewed_at) {
           // Not rewriting the position while replies after it are unread: the mention count would not change, and the user may read further meanwhile.
           if (!state.unread_mentions || state.unread_replies) {
-            results.push({ line: `- ${label}: ${upTo}既読です。`, ok: true });
+            results.push({ line: `- ${label}: ${msg().markRead.alreadyRead(hasLast)}`, ok: true });
             continue;
           }
           // Not rewriting the same position for a mention with no unread reply: Mattermost counts mentions from the position, so one on a reply at it would stay. No reply is after it, so one millisecond on reads none.
-          const r = await clearing(to + 1, `${upTo}既読です。`);
-          done = typeof r === 'string' ? `${upTo}既読です。${r}` : `${upTo}既読です${r.unread_mentions ? '' : '（残っていたメンションを消しました）'}。`;
+          const r = await clearing(to + 1, msg().markRead.alreadyRead(hasLast));
+          done = typeof r === 'string' ? `${msg().markRead.alreadyRead(hasLast)}${r}` : r.unread_mentions ? msg().markRead.alreadyRead(hasLast) : msg().markRead.mentionCleared(hasLast);
         } else {
           const r = await put(to);
           // Not leaving a mention with no unread reply: it is on a reply at the position, which already counts as read.
-          const read = item.last_post_id ? '既読にしました。' : '呼んだ時点の最終返信までを既読にしました。';
+          const read = hasLast ? msg().markRead.markedRead : msg().markRead.markedAllThread;
           const left = r.unread_mentions && !r.unread_replies ? await clearing(to + 1, read) : undefined;
           done = read + (typeof left === 'string' ? left : '');
         }
@@ -230,12 +230,13 @@ export async function markAsRead(mm: Mm, uid: string, args: Args): Promise<CallT
 }
 
 export function registerMarkReadTool(server: McpServer, ctx: ToolContext): void {
+  const shape = schema();
   server.registerTool('mark_as_read', {
-    description: 'Mark your channels and threads read (up to 20 in total). A channel is marked read only if no one else posted after last_post_id, and then everything up to it counts as read, so when clearing unreads, first read to the end with read_channel from: "unread". A thread is marked read up to and including last_post_id. Omitting last_post_id marks everything up to now as read; omit it only when the user asks for that. A call with last_post_id can be retried as is if it fails.',
-    inputSchema: schema,
+    description: msg().descriptions.markAsRead,
+    inputSchema: shape,
     annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false },
   }, guarded(ctx, 'mark_as_read', async (args: Args, extra: { signal: AbortSignal }) =>
     markAsRead({ call: (u, m, p, b) => ctx.mm.call(u, m, p, b, extra.signal) }, ctx.mmUserId, args),
   // Cast for the same reason as in tools-read.ts: the SDK's callback type does not resolve for this shape.
-  ) as unknown as ToolCallback<typeof schema>);
+  ) as unknown as ToolCallback<typeof shape>);
 }

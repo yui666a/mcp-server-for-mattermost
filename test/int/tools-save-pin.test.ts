@@ -149,7 +149,7 @@ describe('save_post and unsave_post agree with list_saved_posts', () => {
     const id = await bobPost(outside.id);
     const r = await call('save_post', { post_id: id });
     expect(r.isError).toBe(true);
-    expect(r.content[0].text).toBe('このチャンネルに参加しているかを確かめられませんでした（参加していないか、Mattermost の一時的な障害）。参加していないチャンネルの投稿は保存できません。 If you should be a member, wait a moment and retry. If it persists, you may have been removed from the channel, or the read permission may have been removed in the server\'s permission settings; ask an administrator to check.');
+    expect(r.content[0].text).toBe('Could not check whether you have joined this channel (you have not joined, or Mattermost had a temporary failure). You cannot save posts in a channel you have not joined. If you should be a member, wait a moment and retry. If it persists, you may have been removed from the channel, or the read permission may have been removed in the server\'s permission settings; ask an administrator to check.');
     expect(await saved()).not.toContain(id);
     expect(await savedInMattermost()).not.toContain(id);
   });
@@ -160,7 +160,7 @@ describe('save_post and unsave_post agree with list_saved_posts', () => {
     expect(hidden.content[0].text).toBe('You do not have permission to view this post (for example, in a private channel you have not joined). If you should be a member, this may be a temporary Mattermost failure. Wait a moment and retry. If it persists, you may have been removed from the channel, or the read permission may have been removed in the server\'s permission settings; ask an administrator to check.');
     const missing = await call('save_post', { post_id: 'a'.repeat(26) });
     expect(missing.isError).toBe(true);
-    expect(missing.content[0].text).toBe('投稿が見つかりません（削除されたか、存在しません）。');
+    expect(missing.content[0].text).toBe('The post was not found (it was deleted, or it does not exist).');
   });
 });
 
@@ -168,20 +168,20 @@ describe('pin_post and unpin_post agree with get_channel', () => {
   test('a pinned post shows in get_channel, and an unpinned one no longer does', async () => {
     const id = await bobPost(joined.id);
     const r = await call('pin_post', { post_id: id });
-    expect(r.content[0].text).toBe(`投稿をピン留めしました。\npost_id: ${id}\nchannel_id: ${joined.id}`);
+    expect(r.content[0].text).toBe(`Pinned the post.\npost_id: ${id}\nchannel_id: ${joined.id}`);
     expect(await pinned(joined.id)).toContain(id);
-    expect((await call('pin_post', { post_id: id })).content[0].text).toContain('投稿は既にピン留めされています。');
+    expect((await call('pin_post', { post_id: id })).content[0].text).toContain('The post is already pinned.');
 
-    expect((await call('unpin_post', { post_id: id })).content[0].text).toContain('投稿のピン留めを外しました。');
+    expect((await call('unpin_post', { post_id: id })).content[0].text).toContain('Unpinned the post.');
     expect(await pinned(joined.id)).not.toContain(id);
-    expect((await call('unpin_post', { post_id: id })).content[0].text).toContain('投稿はピン留めされていません。');
+    expect((await call('unpin_post', { post_id: id })).content[0].text).toContain('The post is not pinned.');
   });
 
   test('a post of a public channel alice has not joined is not pinned', async () => {
     const id = await bobPost(outside.id);
     const r = await call('pin_post', { post_id: id });
     expect(r.isError).toBe(true);
-    expect(r.content[0].text).toBe('このチャンネルに参加しているかを確かめられませんでした（参加していないか、Mattermost の一時的な障害）。参加していないチャンネルの投稿はピン留めできません。 If you should be a member, wait a moment and retry. If it persists, you may have been removed from the channel, or the read permission may have been removed in the server\'s permission settings; ask an administrator to check.');
+    expect(r.content[0].text).toBe('Could not check whether you have joined this channel (you have not joined, or Mattermost had a temporary failure). You cannot pin posts in a channel you have not joined. If you should be a member, wait a moment and retry. If it persists, you may have been removed from the channel, or the read permission may have been removed in the server\'s permission settings; ask an administrator to check.');
     const post = await mmApi<{ is_pinned: boolean }>(bobMm, 'GET', `/posts/${id}`);
     expect(post.is_pinned).toBe(false);
   });
@@ -191,7 +191,7 @@ describe('pin_post and unpin_post agree with get_channel', () => {
     await mmApi(bobMm, 'POST', `/posts/${id}/pin`);
     const r = await call('unpin_post', { post_id: id });
     expect(r.isError).toBe(true);
-    expect(r.content[0].text).toBe('このチャンネルに参加しているかを確かめられませんでした（参加していないか、Mattermost の一時的な障害）。参加していないチャンネルの投稿のピン留めは外せません。 If you should be a member, wait a moment and retry. If it persists, you may have been removed from the channel, or the read permission may have been removed in the server\'s permission settings; ask an administrator to check.');
+    expect(r.content[0].text).toBe('Could not check whether you have joined this channel (you have not joined, or Mattermost had a temporary failure). You cannot unpin posts in a channel you have not joined. If you should be a member, wait a moment and retry. If it persists, you may have been removed from the channel, or the read permission may have been removed in the server\'s permission settings; ask an administrator to check.');
     const post = await mmApi<{ is_pinned: boolean }>(bobMm, 'GET', `/posts/${id}`);
     expect(post.is_pinned).toBe(true);
   });
@@ -209,6 +209,6 @@ describe('in an archived channel', () => {
 
     const r = await call('pin_post', { post_id: id });
     expect(r.isError).toBe(true);
-    expect(r.content[0].text).toBe('アーカイブ済みのチャンネルの投稿のピン留めは変えられません。');
+    expect(r.content[0].text).toBe('The pin state of posts in an archived channel cannot be changed.');
   });
 });

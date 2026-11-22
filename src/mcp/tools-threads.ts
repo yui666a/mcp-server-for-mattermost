@@ -20,9 +20,7 @@ type Key = { t: number; id: string };
 // Mattermost's PerPageMaximum (server/channels/web/params.go): a page shorter than this is the whole list.
 const THREAD_PAGE = 200;
 
-const CRT_OFF = 'スレッドの折りたたみ（CRT）が無効なため、スレッドのフォローは画面にも通知にも効きません。返信の通知はスレッドごとには止められず、Mattermost の通知の設定（すべてのスレッドに効く）で変えます。';
-
-const POST_ID = idArg.describe('post_id of the thread root or any post in the thread');
+const postId = () => idArg.describe(msg().descriptions.threadPostId);
 export const missing = (e: unknown) => e instanceof MmError && (e.status === 403 || e.status === 404);
 const followAnnotations: ToolAnnotations = { readOnlyHint: false, destructiveHint: false, idempotentHint: true };
 
@@ -46,16 +44,16 @@ export function registerThreadTools(server: McpServer, ctx: ToolContext): void {
       }) as unknown as ToolCallback<S>);
   }
 
-  tool('list_followed_threads', 'List threads you follow, latest reply first. Does not mark them read. Root posts without replies do not appear, even if followed.',
+  tool('list_followed_threads', msg().descriptions.listFollowedThreads,
     { limit: limitArg(20, 50), cursor: cursorArg() }, { readOnlyHint: true },
     async ({ limit, cursor }, mm) => {
       const startedAt = Date.now();
       const c = cursorOf(pageCursor(z.object({ t: z.number().int(), id: z.string() }).strict()).extend({ per_page: perPage(50) }).strict(), cursor);
       const per = c?.per_page ?? limit ?? 20;
       const crt = await collapsedThreads(mm, uid);
-      if (!crt.on) throw new InputError(CRT_OFF);
+      if (!crt.on) throw new InputError(msg().threads.crtOff);
       const teams = await myTeams(mm, uid);
-      if (!teams.length) throw new InputError('所属しているチームがないため、フォロー中のスレッドを一覧できません（DM のスレッドもチームを指定して引く API のため）。');
+      if (!teams.length) throw new InputError(msg().threads.noTeamList);
       const channels = new Map((await mm.call<(MmChannel & { delete_at: number })[]>(uid, 'GET', '/users/me/channels?include_deleted=true')).map((x) => [x.id, x]));
       const teamName = new Map(teams.map((t) => [t.id, t.name]));
       const threads: (FollowedThread & { teamName: string })[] = [];
@@ -68,12 +66,12 @@ export function registerThreadTools(server: McpServer, ctx: ToolContext): void {
         const got = r.threads ?? [];
         threads.push(...got.map((x) => ({ ...x, teamName: t.name })));
         total += r.total;
-        const who = `${t.name}${i ? '' : ' と DM、グループ DM'}`;
+        const who = `${t.name}${i ? '' : msg().threads.withDirect}`;
         // Not taking a short page with a larger total as cut off: Mattermost counts the follows of threads whose root post is gone, which the list never returns.
         if (r.total > got.length && got.length < THREAD_PAGE) {
-          notes.push(`（${who} の total: ${r.total} のうち ${r.total - got.length} 件は一覧に出せません。データ保持ポリシーでルート投稿が消えたスレッドのフォロー（unfollow_thread でも外せません）か、取得の合間に増えたフォローです）`);
+          notes.push(msg().threads.notListed(who, r.total - got.length, r.total));
         } else if (r.total > got.length) {
-          notes.push(`（${who} のフォロー中のスレッドは、最終返信の新しい ${got.length} 件だけを取得しています（total: ${r.total}）。${got.at(-1)!.last_reply_at ? `最終返信が ${formatTime(got.at(-1)!.last_reply_at)} 以前のスレッド` : '返信がすべて削除されたほかのスレッド'}は出ていないことがあります）`);
+          notes.push(msg().threads.cutOff(who, got.length, r.total, got.at(-1)!.last_reply_at ? msg().threads.olderThan(formatTime(got.at(-1)!.last_reply_at)) : msg().threads.allRepliesDeleted));
         }
       }
       const rows = threads.map((th) => ({ th, updatedAt: th.last_reply_at, key: { t: th.last_reply_at, id: th.id } }));
@@ -95,45 +93,45 @@ export function registerThreadTools(server: McpServer, ctx: ToolContext): void {
         posts.push(th.post);
         return [
           formatPost(th.post, { baseUrl: base, teamName: team ?? th.teamName, usernames: users, channel: at }),
-          `返信: ${th.reply_count}、未読の返信: ${th.unread_replies}、未読のメンション: ${th.unread_mentions}、最終返信: ${th.last_reply_at ? formatTime(th.last_reply_at) : 'なし（返信がすべて削除された）'}`,
+          msg().threads.threadLine(th.reply_count, th.unread_replies, th.unread_mentions, th.last_reply_at ? formatTime(th.last_reply_at) : msg().threads.noLastReply),
         ].join('\n');
       };
       const lines = [
-        `スレッドの折りたたみ（CRT）: 有効（${crt.label}）`,
-        `フォロー中のスレッド: ${total} 件`,
-        ...(p.updated.length ? ['前のページの後に返信があったスレッド（前のページまでに出したものを含むことがあります）:', ...p.updated.map(line)] : []),
-        ...(p.body.length ? ['フォロー中のスレッド（最終返信の新しい順）:', ...p.body.map(line)] : []),
-        ...(rows.length ? [] : ['フォロー中のスレッドはありません。']),
+        msg().read.crtLine(true, crt.label),
+        msg().threads.followedCount(total),
+        ...(p.updated.length ? [msg().threads.updatedHead, ...p.updated.map(line)] : []),
+        ...(p.body.length ? [msg().threads.listHead, ...p.body.map(line)] : []),
+        ...(rows.length ? [] : [msg().threads.none]),
       ];
-      if (p.rest) return [...lines, ...notes, `（前のページの後に返信があったスレッドがほかに ${p.rest} 件あり、このページに収まりませんでした。cursor を付けずに最初のページから取り直してください）`].join('\n');
+      if (p.rest) return [...lines, ...notes, msg().threads.rest(p.rest)].join('\n');
       return render({ lines, posts, notes, next: p.next && { ...p.next, per_page: per } });
     });
 
   async function rootOf(mm: Mm, postId: string): Promise<{ root: string; channelId: string; replies: number }> {
-    if (!(await collapsedThreads(mm, uid)).on) throw new InputError(CRT_OFF);
+    if (!(await collapsedThreads(mm, uid)).on) throw new InputError(msg().threads.crtOff);
     const p = await worded(mm.call<MmPost & { reply_count?: number }>(uid, 'GET', `/posts/${postId}`), POST_WORDING);
     return { root: p.root_id || p.id, channelId: p.channel_id, replies: p.reply_count ?? 0 };
   }
 
   async function channelOf(mm: Mm, channelId: string): Promise<{ team: string; direct: boolean }> {
     const { team, direct } = await threadTeam(mm, uid, channelId);
-    if (!team) throw new InputError('所属しているチームがないため、スレッドのフォローを変えられません。');
+    if (!team) throw new InputError(msg().threads.noTeamFollow);
     return { team, direct };
   }
 
-  tool('follow_thread', 'Follow a thread. This marks its replies so far as read. Does nothing if already followed.',
-    { post_id: POST_ID }, followAnnotations,
+  tool('follow_thread', msg().descriptions.followThread,
+    { post_id: postId() }, followAnnotations,
     async ({ post_id }, mm) => {
       const r = await rootOf(mm, post_id);
       await mm.call(uid, 'GET', `/channels/${r.channelId}/members/me`).catch((e) => {
         // Not saying a 403 means not joined: Mattermost also answers 403 when its permission check fails on a transient error.
-        if (e instanceof MmError && e.status === 403) throw new InputError(`このチャンネルに参加しているかを確かめられませんでした（参加していないか、Mattermost の一時的な障害）。参加していないチャンネルのスレッドは、フォローしても一覧にも通知にも出ません。${msg().common.retrySoon}${msg().common.askAdmin}`);
-        if (e instanceof MmError && e.status === 404) throw new InputError('このチャンネルに参加していません。参加していないチャンネルのスレッドは、フォローしても一覧にも通知にも出ません。');
+        if (e instanceof MmError && e.status === 403) throw new InputError(`${msg().common.joinCheckFailed}${msg().threads.followNotShown}${msg().common.retrySoon}${msg().common.askAdmin}`);
+        if (e instanceof MmError && e.status === 404) throw new InputError(`${msg().common.notJoined}${msg().threads.followNotShown}`);
         throw e;
       });
       const { team } = await channelOf(mm, r.channelId);
-      const label = `スレッド（親 post_id: ${r.root}）`;
-      const noReplies = '返信がまだないため、最初の返信があるまで list_followed_threads には出ません。';
+      const label = msg().threads.rootLabel(r.root);
+      const noReplies = msg().threads.noReplies;
       let following = await mm.call(uid, 'GET', `/users/${uid}/teams/${team}/threads/${r.root}`).then(() => true, (e) => {
         if (e instanceof MmError && e.status === 404) return false;
         throw e;
@@ -146,27 +144,27 @@ export function registerThreadTools(server: McpServer, ctx: ToolContext): void {
         following = t.posts[r.root]?.is_following === true;
       }
       // Not calling PUT for a followed thread: Mattermost marks the thread read on every follow, which would drop unread replies the user has not seen.
-      if (following) return [`${label}はすでにフォローしています。`, ...(stateless ? [noReplies] : [])].join('\n');
+      if (following) return [msg().threads.alreadyFollowing(label), ...(stateless ? [noReplies] : [])].join('\n');
       await mm.call(uid, 'PUT', `/users/${uid}/teams/${team}/threads/${r.root}/following`);
       // Not trusting reply_count alone after following: a thread whose replies were all deleted keeps its thread state, so it is listed once followed.
       // Not failing the call when this check fails: the follow is done, and the check only decides the note.
       const waits = stateless && await mm.call(uid, 'GET', `/users/${uid}/teams/${team}/threads/${r.root}`).then(() => false, (e) => e instanceof MmError && e.status === 404);
       return [
-        `${label}をフォローしました。フォローした時点までの返信は既読になります（Mattermost の動作）。`,
+        msg().threads.followed(label),
         ...(waits ? [noReplies] : []),
       ].join('\n');
     });
 
-  tool('unfollow_thread', 'Unfollow a thread. Mattermost follows it again when you are mentioned or reply.',
-    { post_id: POST_ID }, followAnnotations,
+  tool('unfollow_thread', msg().descriptions.unfollowThread,
+    { post_id: postId() }, followAnnotations,
     async ({ post_id }, mm) => {
       const r = await rootOf(mm, post_id);
       const { team, direct } = await channelOf(mm, r.channelId);
       await mm.call(uid, 'DELETE', `/users/${uid}/teams/${team}/threads/${r.root}/following`);
-      const label = `スレッド（親 post_id: ${r.root}）のフォローを外しました。`;
+      const label = msg().threads.unfollowed(msg().threads.rootLabel(r.root));
       // Not refusing a DM or group DM thread: the unfollow still takes it off list_followed_threads until the next reply.
       return direct
-        ? `${label}ただし、DM とグループ DM のスレッドでは、Mattermost は相手の返信をすべて自分へのメンションとして扱い、相手が返信するたびに再びフォローして通知します。このスレッドの通知は、外しても止まりません。`
-        : `${label}このスレッドの返信の通知は届かなくなります。ただし、メンションの通知は届き、メンションされるか自分が返信すると、Mattermost は再びフォローします。`;
+        ? `${label}${msg().threads.unfollowDirect}`
+        : `${label}${msg().threads.unfollowChannel}`;
     });
 }

@@ -112,13 +112,13 @@ describe('read_channel from unread and mark_as_read against the local Mattermost
     const last = await say(bobMm, ch, `two @${e.users.alice.username}`);
     let r = await call('mark_as_read', { channels: [{ channel: ch, last_post_id: last }] });
     expect(r.isError, r.content[0].text).toBeFalsy();
-    expect(r.content[0].text).toContain('既読にしました。');
+    expect(r.content[0].text).toContain('Marked it read.');
     expect(await unreadOf(ch)).toMatchObject({ msg_count_root: 0, mention_count_root: 0 });
 
     await say(bobMm, ch, 'three');
     r = await call('mark_as_read', { channels: [{ channel: ch, last_post_id: last }] });
     expect(r.isError).toBe(true);
-    expect(r.content[0].text).toContain('読んでいない投稿があります。既読にしていません。');
+    expect(r.content[0].text).toContain('There are posts you have not read after last_post_id. The channel was not marked read.');
     expect((await unreadOf(ch)).msg_count_root).toBe(1);
   });
 
@@ -129,13 +129,13 @@ describe('read_channel from unread and mark_as_read against the local Mattermost
     const dropped = await say(bobMm, ch, 'dropped');
     await mmApi(bobMm, 'DELETE', `/posts/${dropped}`);
     let r = await call('mark_as_read', { channels: [{ channel: ch, last_post_id: kept }] });
-    expect(r.content[0].text, r.content[0].text).toContain('既読にしました。');
+    expect(r.content[0].text, r.content[0].text).toContain('Marked it read.');
 
     const edited = await say(bobMm, ch, 'before edit');
     await tick();
     await mmApi(bobMm, 'PUT', `/posts/${edited}/patch`, { message: `${TAG} after edit` });
     r = await call('mark_as_read', { channels: [{ channel: ch, last_post_id: edited }] });
-    expect(r.content[0].text, r.content[0].text).toContain('既読にしました。');
+    expect(r.content[0].text, r.content[0].text).toContain('Marked it read.');
     expect((await unreadOf(ch)).msg_count_root).toBe(0);
   });
 
@@ -147,7 +147,7 @@ describe('read_channel from unread and mark_as_read against the local Mattermost
     await say(bobMm, ch, 'r3', root);
     const r = await call('mark_as_read', { threads: [{ post_id: root, last_post_id: r2 }] });
     expect(r.isError, r.content[0].text).toBeFalsy();
-    expect(r.content[0].text).toContain(`スレッド（親 post_id: ${root}）: 既読にしました。`);
+    expect(r.content[0].text).toContain(`Thread (root post_id: ${root}): Marked it read.`);
     const state = await mmApi<{ unread_replies: number; unread_mentions: number }>(aliceMm, 'GET', `/users/${e.users.alice.id}/teams/${e.teams.a.id}/threads/${root}`);
     expect(state).toMatchObject({ unread_replies: 1, unread_mentions: 0 });
     await mmApi(aliceMm, 'PUT', `/users/${e.users.alice.id}/teams/${e.teams.a.id}/threads/${root}/read/${Date.now() + 60_000}`);
@@ -191,7 +191,7 @@ describe('read_channel from unread and mark_as_read against the local Mattermost
     test('is cleared along with the reply when mark_as_read moves the position up to it', async () => {
       const { root, r2 } = await thread('ms-move');
       const r = await call('mark_as_read', { threads: [{ post_id: root, last_post_id: r2 }] });
-      expect(r.content[0].text).toContain('既読にしました。');
+      expect(r.content[0].text).toContain('Marked it read.');
       expect(await threadState(root)).toMatchObject({ unread_replies: 0, unread_mentions: 0 });
     });
 
@@ -200,7 +200,7 @@ describe('read_channel from unread and mark_as_read against the local Mattermost
       await mmApi(aliceMm, 'PUT', `/users/${e.users.alice.id}/teams/${e.teams.a.id}/threads/${root}/read/${t + 1}`);
       expect(await threadState(root)).toMatchObject({ unread_replies: 0, unread_mentions: 1 });
       const r = await call('mark_as_read', { threads: [{ post_id: root, last_post_id: r2 }] });
-      expect(r.content[0].text).toContain('last_post_id までは既読です（残っていたメンションを消しました）。');
+      expect(r.content[0].text).toContain('Already read up to last_post_id (the remaining mention was cleared).');
       expect(await threadState(root)).toMatchObject({ last_viewed_at: t + 2, unread_replies: 0, unread_mentions: 0 });
     });
   });

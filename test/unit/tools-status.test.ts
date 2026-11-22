@@ -76,15 +76,15 @@ describe('set_status', () => {
   test('online says the status is back to automatic', async () => {
     routes = { [`PUT ${STATUS}`]: echo() };
     const r = await setup().call('set_status', { status: 'online' });
-    expect(r.text).toContain('「online」');
-    expect(r.text).toContain('自動の判定に戻りました');
+    expect(r.text).toContain('"online"');
+    expect(r.text).toContain('returned to automatic detection');
   });
 
   test('away does not claim the status is automatic', async () => {
     routes = { [`PUT ${STATUS}`]: echo() };
     const r = await setup().call('set_status', { status: 'away' });
-    expect(r.text).toContain('「away」');
-    expect(r.text).not.toContain('自動');
+    expect(r.text).toContain('"away"');
+    expect(r.text).not.toContain('automatic');
   });
 
   test('dnd_until is read as JST and sent in Unix seconds, and the reply shows the end Mattermost kept, floored to the minute', async () => {
@@ -92,26 +92,26 @@ describe('set_status', () => {
     const r = await setup().call('set_status', { status: 'dnd', dnd_until: '2026-11-04T11:00:30' });
     expect(r.isError).toBe(false);
     expect(bodies[STATUS]).toEqual({ user_id: 'u1', status: 'dnd', dnd_end_time: Date.parse('2026-11-04T02:00:30Z') / 1000 });
-    expect(r.text).toContain('「do not disturb」（終了: 2026-11-04T02:00:00Z | 2026-11-04T11:00:00+09:00）');
+    expect(r.text).toContain('"do not disturb" (until: 2026-11-04T02:00:00Z | 2026-11-04T11:00:00+09:00)');
   });
 
   test('dnd without dnd_until says it has no end time', async () => {
     routes = { [`PUT ${STATUS}`]: echo() };
     const r = await setup().call('set_status', { status: 'dnd' });
     expect(bodies[STATUS]).toEqual({ user_id: 'u1', status: 'dnd', dnd_end_time: 0 });
-    expect(r.text).toContain('（終了時刻なし）');
+    expect(r.text).toContain('(no end time)');
   });
 
   test.each(['online', 'away', 'offline'])('dnd_until with %s is rejected without calling Mattermost', async (status) => {
     const r = await setup().call('set_status', { status, dnd_until: '2026-11-04T11:00' });
     expect(r.isError).toBe(true);
-    expect(r.text).toContain('dnd_until は status が dnd のときだけ');
+    expect(r.text).toContain('dnd_until can be given only when status is dnd');
     expect(hits).toEqual([]);
   });
 
   test.each([
-    ['2026-11-04T10:00:59', '1 分後以降'],
-    ['2026-11-04T09:00', '1 分後以降'],
+    ['2026-11-04T10:00:59', 'at least 1 minute from now'],
+    ['2026-11-04T09:00', 'at least 1 minute from now'],
     ['2026-11-04 11:00', 'dnd_until "2026-11-04 11:00" cannot be read as a date-time'],
   ])('dnd_until %j is rejected without calling Mattermost', async (dnd_until, message) => {
     const r = await setup().call('set_status', { status: 'dnd', dnd_until });
@@ -129,7 +129,7 @@ describe('set_status', () => {
     routes = { [`PUT ${STATUS}`]: mmError(404, 'api.status.user_not_found.app_error') };
     const r = await setup().call('set_status', { status: 'dnd' });
     expect(r.isError).toBe(true);
-    expect(r.text).toContain('在席状況の機能が無効');
+    expect(r.text).toContain('presence feature is turned off');
   });
 
   test.each(['ooo', 'busy'])('status %j is rejected by the schema', async (status) => {
@@ -147,17 +147,17 @@ describe('set_custom_status', () => {
     const r = await setup().call('set_custom_status', { emoji: ':calendar:', text: ' 会議中 ', until: '2026-11-04T11:00' });
     expect(r.isError).toBe(false);
     expect(bodies[CUSTOM]).toEqual({ emoji: 'calendar', text: '会議中', duration: 'date_and_time', expires_at: '2026-11-04T02:00:00.000Z' });
-    expect(r.text).toContain('絵文字: :calendar:');
-    expect(r.text).toContain('文言: 会議中');
-    expect(r.text).toContain('期限: 2026-11-04T02:00:00Z | 2026-11-04T11:00:00+09:00');
+    expect(r.text).toContain('Emoji: :calendar:');
+    expect(r.text).toContain('Text: 会議中');
+    expect(r.text).toContain('Expires: 2026-11-04T02:00:00Z | 2026-11-04T11:00:00+09:00');
   });
 
   test('without until it sends no expiry and reports no expiry', async () => {
     routes = ok;
     const r = await setup().call('set_custom_status', { text: '在宅' });
     expect(bodies[CUSTOM]).toEqual({ emoji: '', text: '在宅', duration: '' });
-    expect(r.text).toContain('絵文字: なし');
-    expect(r.text).toContain('期限: 期限なし');
+    expect(r.text).toContain('Emoji: none');
+    expect(r.text).toContain('Expires: no expiry');
   });
 
   test('spaces inside the colons of the emoji are dropped', async () => {
@@ -170,13 +170,13 @@ describe('set_custom_status', () => {
     routes = ok;
     const r = await setup().call('set_custom_status', { emoji: ' palm_tree ' });
     expect(bodies[CUSTOM]).toEqual({ emoji: 'palm_tree', text: '', duration: '' });
-    expect(r.text).toContain('文言: なし');
+    expect(r.text).toContain('Text: none');
   });
 
   test.each([[{}], [{ emoji: '::' }], [{ text: '   ' }]])('with neither an emoji nor a text (%j) it is rejected without calling Mattermost', async (args) => {
     const r = await setup().call('set_custom_status', args);
     expect(r.isError).toBe(true);
-    expect(r.text).toContain('emoji か text のどちらかを指定してください');
+    expect(r.text).toContain('Give either emoji or text');
     expect(hits).toEqual([]);
   });
 
@@ -199,8 +199,8 @@ describe('set_custom_status', () => {
   });
 
   test.each([
-    ['2026-11-04T10:00:30', '1 分後以降'],
-    ['2026-11-03T11:00', '1 分後以降'],
+    ['2026-11-04T10:00:30', 'at least 1 minute from now'],
+    ['2026-11-03T11:00', 'at least 1 minute from now'],
     ['tomorrow', 'until "tomorrow" cannot be read as a date-time'],
   ])('until %j is rejected without calling Mattermost', async (until, message) => {
     const r = await setup().call('set_custom_status', { text: 'x', until });
@@ -213,7 +213,7 @@ describe('set_custom_status', () => {
     routes = { [`PUT ${CUSTOM}`]: mmError(400, 'api.custom_status.set_custom_statuses.emoji_not_found') };
     const r = await setup().call('set_custom_status', { emoji: 'no_such' });
     expect(r.isError).toBe(true);
-    expect(r.text).toContain('絵文字「no_such」がありません');
+    expect(r.text).toContain('The emoji "no_such" does not exist');
     expect(r.text).toContain('search_emoji');
   });
 
@@ -221,7 +221,7 @@ describe('set_custom_status', () => {
     routes = { [`PUT ${CUSTOM}`]: mmError(501, 'api.custom_status.disabled') };
     const r = await setup().call('set_custom_status', { text: 'x' });
     expect(r.isError).toBe(true);
-    expect(r.text).toContain('カスタムステータスが無効です');
+    expect(r.text).toContain('Custom status is turned off');
   });
 });
 
@@ -231,14 +231,14 @@ describe('clear_custom_status', () => {
     const r = await setup().call('clear_custom_status', {});
     expect(r.isError).toBe(false);
     expect(hits).toEqual([`DELETE ${CUSTOM}`]);
-    expect(r.text).toContain('カスタムステータスを消しました');
+    expect(r.text).toContain('Custom status cleared');
   });
 
   test('a server with custom statuses disabled says so', async () => {
     routes = { [`DELETE ${CUSTOM}`]: mmError(501, 'api.custom_status.disabled') };
     const r = await setup().call('clear_custom_status', {});
     expect(r.isError).toBe(true);
-    expect(r.text).toContain('カスタムステータスが無効です');
+    expect(r.text).toContain('Custom status is turned off');
   });
 });
 
