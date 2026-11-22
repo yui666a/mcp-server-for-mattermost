@@ -96,7 +96,7 @@ Running `purge-credentials` on a live server makes every user log in again.
 Normally use it only when restoring from a backup, and then also run `invalidate-scheduled`.
 `invalidate-scheduled` fails every waiting and posting schedule, and keeps posted and failed schedules.
 In a restore, run both `purge-credentials` and `invalidate-scheduled` in a standalone container before starting the MCP server ("Backup and restore" below).
-Do not run `invalidate-scheduled` on a live server. It also fails a schedule the sweep is posting at that moment, so the post has arrived but the list shows a failure of "unknown whether it was posted", and if the user re-enters it without checking, the same post goes out twice.
+Do not run `invalidate-scheduled` on a live server. It also fails a schedule the sweep is posting at that moment, so the post has arrived but the list shows a failure whose reason says "It is unknown whether this was posted", and if the user re-enters it without checking, the same post goes out twice.
 The wording of the failure reason is also written for the restore case.
 
 ## When unauthorized registrations near the limit
@@ -164,7 +164,7 @@ docker compose up -d mcp
 ```
 
 - `purge-credentials` prints `purged <count> rows`. Confirm the count of `list-clients` before and after does not change (DCR registrations are not deleted). Registrations remain, so each client returns through a normal re-login after its local refresh token is rejected with `invalid_grant`
-- `invalidate-scheduled` prints `invalidated <count> scheduled posts`. The schedules it failed appear in `list_scheduled_messages` with a reason, so if the count is not 0, tell users to check their schedules and enter them again. A schedule that was attempted and a schedule past its scheduled time get the reason "It is unknown whether this was posted. Check in Mattermost." (it may have been posted after the backup)
+- `invalidate-scheduled` prints `invalidated <count> scheduled posts`. The schedules it failed appear in `list_scheduled_messages` with a reason, so if the count is not 0, tell users to check their schedules and enter them again. A schedule that was attempted and a schedule past its scheduled time get a reason saying "It is unknown whether this was posted" (it may have been posted after the backup)
 - Run the admin commands not with `docker compose exec` but in a standalone container that does not start the MCP server, with no network. The image name is the one set in the `compose.yml` example in [deployment.md](deployment.md#4-start)
 - Do not regenerate the key (`TOKEN_ENC_KEY`). The bodies of the failed schedules stay encrypted with the same key for 7 days after the update, and regenerating it makes the bodies unreadable in `list_scheduled_messages`
 - Clients registered after the backup do not come back, so ask those users to add the connector again
