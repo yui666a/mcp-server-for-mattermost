@@ -10,6 +10,8 @@ export const en = {
     retry: " If you should be a member, this may be a temporary Mattermost failure. Wait a moment and retry.",
     retrySoon: ' If you should be a member, wait a moment and retry.',
     askAdmin: " If it persists, you may have been removed from the channel, or the read permission may have been removed in the server's permission settings; ask an administrator to check.",
+    joinCheckFailed: 'Could not check whether you have joined this channel (you have not joined, or Mattermost had a temporary failure).',
+    notJoined: 'You have not joined this channel.',
     postForbidden: "You do not have permission to view this post (for example, in a private channel you have not joined). If you should be a member, this may be a temporary Mattermost failure. Wait a moment and retry. If it persists, you may have been removed from the channel, or the read permission may have been removed in the server's permission settings; ask an administrator to check.",
     badCursor: 'The cursor is invalid. Pass next_cursor from the previous output as it is.',
     argsRejected: (keys: string) => `Arguments not accepted: ${keys}. Pass only those defined in the tool's arguments (inputSchema).`,
@@ -385,11 +387,124 @@ export const en = {
     invalidatedUnattempted: 'Invalidated because the server was restored. Schedule the message again.',
     invalidatedUnknown: 'Invalidated because the server was restored. It is unknown whether this was posted, so check in Mattermost.',
   },
-  markRead: {},
-  threads: {},
-  savePin: {},
-  status: {},
-  emoji: {},
+  markRead: {
+    resultHead: 'Result of marking read:',
+    itemCount: (max: number) => `Give 1 to ${max} items in total across channels and threads.`,
+    channelNamed: (c: string) => `Channel "${c}"`,
+    threadNamed: (id: string) => `Thread (post_id: ${id})`,
+    channelLabel: (id: string, archived: boolean) => `Channel (channel_id: ${id}${archived ? ', archived' : ''})`,
+    // Appended after the result sentence with no separator, so the English form starts with a space.
+    displayName: (name: string) => ` (display name: ${name})`,
+    itemFailed: (label: string, why: string, tail: string) => `- ${label}: Could not mark it read. ${why}${tail}`,
+    itemInterrupted: (label: string, maybe: boolean, tail: string) =>
+      `- ${label}: Interrupted while processing (${maybe ? 'it is unknown whether it was marked read' : 'it was not marked read'}).${tail}`,
+    stopped: (failure: string, rest: string[]) =>
+      `Stopped here. ${failure}${rest.length ? ` Not processed (${rest.length}): ${rest.join(', ')}.` : ''} When running again, pass only the interrupted item and the items not processed. Unless the user asked to mark everything read, for any item you left without last_post_id, read it and add last_post_id before passing it again.`,
+    sentenceEnd: '.',
+    rereadHint: (tool: string) => `Reread with ${tool} and pass the post_id of the newest post among those you read.`,
+    lastPostForbidden: (id: string, again: string) =>
+      `You do not have permission to view the post last_post_id ${id} (for example, in a private channel you have not joined). ${again} If you should be a member of this post's channel, this may be a temporary Mattermost failure. Wait a moment and retry.`,
+    lastPostNotFound: (id: string, again: string) => `The post last_post_id ${id} was not found (it was deleted, or it does not exist). ${again}`,
+    sameChannel: 'The same channel appears in another item. Merge them into one.',
+    alreadyRead: (hasLast: boolean): string => (hasLast ? 'Already read up to last_post_id.' : 'Already read.'),
+    markedRead: 'Marked it read.',
+    markedAll: 'Marked everything up to the time of this call as read.',
+    markedAllThread: 'Marked everything up to the last reply at the time of this call as read.',
+    unreadAfter: 'There are posts you have not read after last_post_id. The channel was not marked read. Read to the end with read_channel from: "unread", then pass the newest post among those you read.',
+    afterCap: (n: number) =>
+      `There are ${n} or more of your own posts (and join/leave notices) after last_post_id, and what lies beyond cannot be checked, so the channel was not marked read.`,
+    lastNotInChannel: (id: string) => `The post last_post_id ${id} is not in this channel.`,
+    lastNotInThread: (id: string) => `The post last_post_id ${id} is not in this thread.`,
+    crtOff: "Collapsed threads (CRT) are off, so a thread's read state does not show on screen. Marking the channel read is enough.",
+    noTeam: 'You belong to no team, so the thread cannot be marked read.',
+    noReplies: 'This thread has no replies, so there is nothing to mark read.',
+    threadJoinCheck: "Could not check whether you have joined this thread's channel (you have not joined, or Mattermost had a temporary failure). If you have not joined, there is nothing to mark read.",
+    threadNotJoined: 'You have not joined the channel of this thread. Threads of channels you have not joined are not counted as unread, so there is nothing to mark read.',
+    notFollowing: 'You do not follow this thread, so it has no read state (replies in threads you do not follow are not counted as unread). To follow it, use follow_thread (replies up to the time you follow are marked read).',
+    mentionCleared: (hasLast: boolean) => `${hasLast ? 'Already read up to last_post_id' : 'Already read'} (the remaining mention was cleared).`,
+    // Appended after the sentence before it, so the English forms start with a space.
+    mentionNotCleared: (why: string) => ` However, the mention on the reply exactly at the position could not be cleared. ${why}`,
+    mentionInterrupted: (read: string, maybe: boolean) =>
+      `${read} However, it was interrupted ${maybe ? 'in the middle of the write that clears the mention on the reply exactly at the position (it is unknown whether it was cleared)' : 'before clearing the mention on the reply exactly at the position'}.`,
+    clearRetry: (hasLast: boolean): string =>
+      hasLast
+        ? ' Running this thread again with the same last_post_id may clear it.'
+        : ' Read this thread with read_thread, then run it again with the last reply you read as last_post_id; this may clear it.',
+  },
+  threads: {
+    crtOff:
+      'Collapsed threads (CRT) are off, so following a thread has no effect on the screen or in notifications. Reply notifications cannot be stopped per thread; change them in the Mattermost notification settings (which apply to all threads).',
+    noTeamList: 'You belong to no team, so followed threads cannot be listed (the API for them, DM threads included, takes a team).',
+    noTeamFollow: 'You belong to no team, so thread follows cannot be changed.',
+    withDirect: ' with DMs and group DMs',
+    notListed: (who: string, missing: number, total: number) =>
+      `(For ${who}, ${missing} of total: ${total} cannot be listed. They are follows of threads whose root post was removed by the data retention policy (unfollow_thread cannot remove them either), or follows added while fetching.)`,
+    cutOff: (who: string, n: number, total: number, older: string) =>
+      `(For ${who}, only the ${n} followed threads with the newest last replies were fetched (total: ${total}). ${older} may be missing.)`,
+    olderThan: (t: string) => `Threads whose last reply is at or before ${t}`,
+    allRepliesDeleted: 'Other threads whose replies were all deleted',
+    threadLine: (replies: number, unread: number, mentions: number, last: string) =>
+      `Replies: ${replies}, unread replies: ${unread}, unread mentions: ${mentions}, last reply: ${last}`,
+    noLastReply: 'none (all replies were deleted)',
+    followedCount: (n: number) => `Followed threads: ${n}`,
+    updatedHead: 'Threads with replies after the previous page (may include ones already shown on earlier pages):',
+    listHead: 'Followed threads (newest last reply first):',
+    none: 'You follow no threads.',
+    rest: (n: number) =>
+      `(${n} more threads had replies after the previous page and did not fit on this page. Start again from the first page without a cursor.)`,
+    rootLabel: (root: string) => `Thread (root post_id: ${root})`,
+    // Appended after the sentence before it, so the English forms start with a space.
+    followNotShown: ' Threads of channels you have not joined do not appear in the list or in notifications even if followed.',
+    alreadyFollowing: (label: string) => `${label} is already followed.`,
+    followed: (label: string) => `${label} is now followed. Replies up to this point are marked as read (Mattermost behavior).`,
+    noReplies: 'It has no replies yet, so it does not appear in list_followed_threads until the first reply.',
+    unfollowed: (label: string) => `${label} was unfollowed.`,
+    unfollowDirect:
+      ' However, in DM and group DM threads, Mattermost treats every reply from the other person as a mention of you, and follows the thread again and notifies you each time they reply. Notifications for this thread do not stop even after unfollowing.',
+    unfollowChannel:
+      ' Reply notifications for this thread will stop arriving. However, mention notifications still arrive, and Mattermost follows the thread again when you are mentioned or reply yourself.',
+  },
+  savePin: {
+    saved: (id: string) => `Saved the post. You can list saved posts with list_saved_posts.\npost_id: ${id}`,
+    unsaved: (id: string) => `If the post was saved, it was removed from your saved posts.\npost_id: ${id}`,
+    notMemberSave: 'You cannot save posts in a channel you have not joined.',
+    notMemberPin: 'You cannot pin posts in a channel you have not joined.',
+    notMemberUnpin: 'You cannot unpin posts in a channel you have not joined.',
+    // notMember is also the whole text for a 404, so the English form puts the separator here.
+    joinCheck: (notMember: string) =>
+      `Could not check whether you have joined this channel (you have not joined, or Mattermost had a temporary failure). ${notMember}`,
+    pinSystem: 'System messages cannot be pinned.',
+    pinArchived: 'The pin state of posts in an archived channel cannot be changed.',
+    pinTimeLimit: 'On this server, the pin state of a post cannot be changed after some time has passed since it was posted (depending on the edit time limit setting).',
+    pinForbidden:
+      'You cannot change the pin state of this post (it was deleted right after the post was checked, you lost the permission to view it, or Mattermost had a temporary failure). If it was deleted, there is nothing to change.',
+    pinned: 'Pinned the post.',
+    alreadyPinned: 'The post is already pinned.',
+    unpinned: 'Unpinned the post.',
+    notPinned: 'The post is not pinned.',
+  },
+  status: {
+    customDisabled: 'Custom status is turned off on this Mattermost.',
+    presenceDisabled: 'The presence feature is turned off on this Mattermost, so your status cannot be changed.',
+    tooSoon: (name: string, given: string) => `${name} must be at least 1 minute from now. Given time: ${given}`,
+    dndUntilOnly: 'dnd_until can be given only when status is dnd.',
+    noEnd: ' (no end time)',
+    statusChanged: (name: string, until: string, auto: boolean) =>
+      `Your presence is now "${name}"${until}.${auto ? ' The manual setting was removed and it returned to automatic detection.' : ''}`,
+    needEmojiOrText: 'Give either emoji or text.',
+    emojiNotFound: (emoji: string) =>
+      `The emoji "${emoji}" does not exist. Give a standard emoji name (e.g. calendar, palm_tree) or a custom emoji name found with search_emoji.`,
+    customSet: (emoji: string, text: string, until: string | undefined) =>
+      ['Custom status set.', `Emoji: ${emoji ? `:${emoji}:` : 'none'}`, `Text: ${text || 'none'}`, `Expires: ${until ?? 'no expiry'}`].join('\n'),
+    customCleared: 'Custom status cleared.',
+  },
+  emoji: {
+    nameEmpty: 'Give part of an emoji name in name.',
+    nameTooLong: 'name must be at most 64 characters (the limit of an emoji name).',
+    disabled: 'Custom emoji is turned off on this Mattermost.',
+    noneFound: (term: string) => `No custom emoji has "${term}" in its name. Standard emoji are not searched.`,
+    capped: (n: number) => `(Showed up to ${n}. Narrow the name further.)`,
+  },
   oauth: {},
   descriptions: {
     limit: (def: number) => `Number of items (default ${def})`,
@@ -449,6 +564,28 @@ export const en = {
       'Change the text or time of your pending scheduled message. Before changing the text, always get the full text by passing id to list_scheduled_messages (the list may cut the text and indents lines after the first). Destination and attachments cannot change; cancel and schedule again.',
     cancelScheduled: 'Cancel your pending scheduled message.',
     prepareChannel: 'Destination: a channel ID, team/channel, channel name, @username (DM), or @a,b (group DM). A DM or group DM is created if missing.',
+    markAsRead:
+      'Mark your channels and threads read (up to 20 in total). A channel is marked read only if no one else posted after last_post_id, and then everything up to it counts as read, so when clearing unreads, first read to the end with read_channel from: "unread". A thread is marked read up to and including last_post_id. Omitting last_post_id marks everything up to now as read; omit it only when the user asks for that. A call with last_post_id can be retried as is if it fails.',
+    markReadChannel: 'A channel ID, team/channel, channel name, @username (DM), or @a,b (group DM)',
+    markReadChannelLast: 'post_id of the newest post you read in this channel',
+    markReadThreadLast: 'post_id of the newest post you read in this thread',
+    threadPostId: 'post_id of the thread root or any post in the thread',
+    listFollowedThreads: 'List threads you follow, latest reply first. Does not mark them read. Root posts without replies do not appear, even if followed.',
+    followThread: 'Follow a thread. This marks its replies so far as read. Does nothing if already followed.',
+    unfollowThread: 'Unfollow a thread. Mattermost follows it again when you are mentioned or reply.',
+    savePost: 'Add a post to your saved posts.',
+    unsavePost: 'Remove a post from your saved posts.',
+    pinPost: 'Pin a post to its channel (visible to everyone in it).',
+    unpinPost: 'Unpin a post, even one pinned by someone else.',
+    setStatus:
+      'Change your availability. When dnd ends, the previous status returns; if you set dnd while already dnd, it returns to dnd. online clears the manual setting and returns to automatic. Out of office cannot be set, and changing the status while out of office stops the auto-reply.',
+    dndUntil: (form: string) => `End of dnd, ${form}. Omit to stay dnd until changed.`,
+    setCustomStatus: 'Set your custom status (emoji and text). Replaces the whole current status: passing only emoji clears the text. Needs emoji or text.',
+    customEmoji: 'Emoji name (e.g. calendar). Look up custom emoji names with search_emoji.',
+    customUntil: (form: string) => `Expiry, ${form}. Omit for no expiry.`,
+    clearCustomStatus: 'Clear your custom status.',
+    searchEmoji: 'Find custom emoji names for add_reaction and set_custom_status by part of the name. Standard emoji are not included.',
+    emojiName: 'Part of the emoji name (e.g. party). Case-sensitive.',
   },
 };
 
