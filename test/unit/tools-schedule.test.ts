@@ -125,7 +125,7 @@ describe('schedule_message', () => {
       s.store.recordUploadedFile({ mmUserId: UID, channelId: CH }, f);
       const r = await s.call('schedule_message', { channel: '@carol', message: 'hello', at: '2026-11-03T10:00', file_ids: [f] });
       expect(r.isError).toBe(true);
-      expect(r.text).toContain(`別のチャンネル（channel_id: ${CH}）`);
+      expect(r.text).toContain(`another channel (channel_id: ${CH})`);
       expect(hits).not.toContain('POST /channels/direct');
     });
 
@@ -141,7 +141,7 @@ describe('schedule_message', () => {
     test.each([
       ['a channel name that does not exist', { channel: 'nowhere' }, 'Channel "nowhere" was not found'],
       ['a file_id that was not uploaded', { channel: CH, file_ids: ['z'.repeat(26)] }, 'z'.repeat(26)],
-      ['a root_id that does not exist', { channel: CH, root_id: 'q'.repeat(26) }, `root_id ${'q'.repeat(26)} の投稿が見つかりません`],
+      ['a root_id that does not exist', { channel: CH, root_id: 'q'.repeat(26) }, `The post for root_id ${'q'.repeat(26)} was not found`],
     ])('with the pending schedules at the limit, %s is reported before the limit', async (_, args, error) => {
       const s = setup();
       for (let i = 0; i < MAX_PENDING_SCHEDULED; i++) s.store.createScheduled({ mmUserId: UID, channelId: CH, message: `m${i}`, scheduledAt: NOW + DAY }, NOW);
@@ -189,8 +189,8 @@ describe('schedule_message', () => {
   });
 
   test.each([
-    ['a root in another channel', { channel_id: CH2, root_id: '' }, `root_id ${ROOT} の投稿は channel_id: ${CH} のチャンネルにありません（表示名: Town）。`],
-    ['a reply', { channel_id: CH, root_id: 'x'.repeat(26) }, `root_id ${ROOT} は返信です。スレッドの親投稿の post_id を指定してください。`],
+    ['a root in another channel', { channel_id: CH2, root_id: '' }, `The post for root_id ${ROOT} is not in the channel with channel_id: ${CH} (display name: Town).`],
+    ['a reply', { channel_id: CH, root_id: 'x'.repeat(26) }, `root_id ${ROOT} is a reply. Specify the post_id of the thread's root post.`],
   ])('refuses %s as root_id and saves nothing', async (_, root, msg) => {
     routes[`GET /posts/${ROOT}`] = () => ({ id: ROOT, user_id: 'u9', message: 'm', create_at: 1, ...root });
     const s = setup();
@@ -301,11 +301,11 @@ describe('schedule_message with file_ids', () => {
     const s = setup();
     uploaded(s, [F1]);
     uploaded(s, [F2], CH2);
-    expect(await refused(s, { file_ids: ['z'.repeat(26)] })).toContain('24 時間以内にアップロードしたファイルではありません');
-    expect(await refused(s, { file_ids: [F2] })).toContain('別のチャンネル');
-    expect(await refused(s, { file_ids: [F1, F1] })).toContain('重なっています');
+    expect(await refused(s, { file_ids: ['z'.repeat(26)] })).toContain('is not a file that you uploaded within the last 24 hours through a prepare_upload URL');
+    expect(await refused(s, { file_ids: [F2] })).toContain('another channel');
+    expect(await refused(s, { file_ids: [F1, F1] })).toContain('more than once');
     s.store.markFilesPosted(UID, [F1], POSTED);
-    expect(await refused(s, { file_ids: [F1] })).toContain('既に投稿');
+    expect(await refused(s, { file_ids: [F1] })).toContain('is already used by a post');
     expect(s.store.listScheduled(UID, { limit: 10 })).toHaveLength(0);
   });
 
@@ -325,7 +325,7 @@ describe('schedule_message with file_ids', () => {
     const s = setup();
     uploaded(s);
     const first = await s.schedule({ file_ids: [F1] });
-    expect(await refused(s, { file_ids: [F2, F1] })).toContain(`予約（予約 ID: ${first}）の添付に使われています`);
+    expect(await refused(s, { file_ids: [F2, F1] })).toContain(`is attached to a scheduled message (scheduled ID: ${first})`);
     s.setRow(first, "status = 'failed', first_attempt_at = ?", NOW);
     expect(await refused(s, { file_ids: [F1] })).toContain(first);
   });
@@ -335,7 +335,7 @@ describe('schedule_message with file_ids', () => {
     uploaded(s);
     const first = await s.schedule({ file_ids: [F1] });
     vi.spyOn(s.store, 'heldScheduledFiles').mockReturnValueOnce([]);
-    expect(await refused(s, { file_ids: [F1] })).toContain(`予約（予約 ID: ${first}）の添付に使われています`);
+    expect(await refused(s, { file_ids: [F1] })).toContain(`is attached to a scheduled message (scheduled ID: ${first})`);
   });
 
   test('takes a file again once the schedule holding it failed before any attempt or was cancelled', async () => {

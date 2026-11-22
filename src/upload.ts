@@ -1,11 +1,12 @@
 import type express from 'express';
 import type { AppContext } from './app.ts';
+import { msg } from './i18n/index.ts';
 import { log } from './log.ts';
 import { MmError, RateLimited, Reauthorize, UpstreamUnavailable } from './mattermost/client.ts';
 import { InputError } from './mcp/format.ts';
 import type { Mm } from './mcp/resolve.ts';
 import { failureText } from './mcp/tool.ts';
-import { FILE_NAME, MAX_UPLOAD_FILES, uploadFile } from './mcp/tools-send.ts';
+import { fileName, MAX_UPLOAD_FILES, uploadFile } from './mcp/tools-send.ts';
 
 const TOKEN = /^[A-Za-z0-9_-]{43}$/;
 // Not more: a request holds its body and the parsed files in memory, about 8 times UPLOAD_MAX_BYTES, until Mattermost has them all.
@@ -88,19 +89,19 @@ async function readBody(req: express.Request, max: number, idleMs: number): Prom
 
 async function filesOf(req: express.Request, body: Buffer<ArrayBuffer>): Promise<File[]> {
   const type = req.headers['content-type'] ?? '';
-  if (!/^multipart\/form-data\s*;/i.test(type)) throw new InputError("multipart/form-data で送ってください（curl -F 'file=@<ファイルのパス>' <URL>）。");
+  if (!/^multipart\/form-data\s*;/i.test(type)) throw new InputError(msg().upload.needMultipart);
   let form: FormData;
   try {
     form = await new Response(body, { headers: { 'content-type': type } }).formData();
   } catch {
-    throw new InputError('multipart/form-data として読めません。');
+    throw new InputError(msg().upload.badMultipart);
   }
   const files = form.getAll('file').filter((v): v is File => typeof v !== 'string');
-  if (!files.length) throw new InputError("file という名前のファイルがありません（curl -F 'file=@<ファイルのパス>' <URL>）。");
-  if (files.length > MAX_UPLOAD_FILES) throw new InputError(`1 回に送れるファイルは ${MAX_UPLOAD_FILES} 件までです。`);
+  if (!files.length) throw new InputError(msg().upload.noFileField);
+  if (files.length > MAX_UPLOAD_FILES) throw new InputError(msg().upload.tooManyFiles(MAX_UPLOAD_FILES));
   for (const f of files) {
-    const r = FILE_NAME.safeParse(f.name);
-    if (!r.success) throw new InputError(`ファイル名「${f.name}」は使えません。1〜100 文字で、/ や \\、制御文字を含まない名前にしてください（curl なら -F 'file=@<パス>;filename=<名前>'）。`);
+    const r = fileName().safeParse(f.name);
+    if (!r.success) throw new InputError(msg().upload.badFileName(f.name));
   }
   return files;
 }
@@ -130,10 +131,10 @@ export function uploadHandler(ctx: AppContext, idleMs = BODY_IDLE_MS): express.R
     const token = req.params.token as string;
     if (active >= MAX_CONCURRENT) {
       res.set('Retry-After', '5');
-      return await reply(429, ['ほかのアップロードを処理中です。5 秒ほど待ってから、同じ URL で送り直してください。']);
+      return await reply(429, [msg().upload.busy]);
     }
     const target = TOKEN.test(token) ? ctx.store.takeUploadUrl(token) : undefined;
-    if (!target) return await reply(404, ['この URL は使えません（期限切れ、使用済み、または存在しない）。prepare_upload で URL を発行し直してください。']);
+    if (!target) return await reply(404, [msg().upload.urlUnusable]);
 
     active++;
     const done: { id: string; name: string; size: number }[] = [];
@@ -151,27 +152,27 @@ export function uploadHandler(ctx: AppContext, idleMs = BODY_IDLE_MS): express.R
         done.push({ id, name: f.name, size: f.size });
       }
       await reply(200, [
-        `アップロードしました。send_message の file_ids に次の file_id を渡して、チャンネル（channel_id: ${target.channelId}）へ投稿してください。`,
-        ...done.map((f) => `file_id: ${f.id}（${f.name}、${f.size} バイト）`),
-        '予約するときは schedule_message の file_ids に渡します。',
+        msg().upload.uploaded(target.channelId),
+        ...done.map((f) => msg().upload.fileLine(f.id, f.name, f.size)),
+        msg().upload.scheduleHint,
       ]);
     } catch (e) {
       outcome = e instanceof TooLarge ? 'too_large' : e instanceof ClientGone ? 'client_gone' : e instanceof Stalled ? 'stalled' : (e as Error)?.name ?? 'error';
       // Not releasing once a file has gone to Mattermost: the files that did go are listed below, and a resend would upload them again.
       const reusable = !done.length && nothingSent(e);
       if (reusable) ctx.store.releaseUploadUrl(token);
-      const again = reusable ? '同じ URL で' : 'prepare_upload で URL を発行し直して';
+      const again = reusable ? msg().upload.sameUrl : msg().upload.newUrl;
       const head = e instanceof TooLarge
-        ? `送られた本文（multipart 全体）が上限の ${ctx.config.uploadMaxBytes} バイトを超えています。ファイルを減らすか小さくして、${again}送り直してください。`
+        ? msg().upload.bodyTooLarge(ctx.config.uploadMaxBytes, again)
         : e instanceof Stalled
-          ? `本文の送信が ${idleMs / 1000} 秒止まったため打ち切りました。${again}送り直してください。`
-          : `${failureText(e)} ${again}送り直してください。`;
+          ? msg().upload.stalled(idleMs / 1000, again)
+          : msg().upload.failed(failureText(e), again);
       if (statusOf(e) === 500 && !(e instanceof TooLarge) && !(e instanceof ClientGone) && !(e instanceof Stalled)) log('upload_unhandled_error', { name: (e as Error)?.name });
       // Not on a refusal after which the URL is not given back: Retry-After would tell when the same URL could be used again, and it never can.
       if (e instanceof RateLimited && reusable) res.set('Retry-After', String(e.retryAfterSec));
       await reply(e instanceof TooLarge ? 413 : e instanceof Stalled ? 408 : statusOf(e), [
         head,
-        ...(done.length ? ['次のファイルはアップロード済みです。file_ids に渡せます。', ...done.map((f) => `file_id: ${f.id}（${f.name}、${f.size} バイト）`)] : []),
+        ...(done.length ? [msg().upload.alreadyUploaded, ...done.map((f) => msg().upload.fileLine(f.id, f.name, f.size))] : []),
       ]);
     } finally {
       active--;
