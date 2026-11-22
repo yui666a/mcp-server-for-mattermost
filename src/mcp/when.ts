@@ -1,12 +1,14 @@
+import { localToEpoch, timeZone } from '../zone.ts';
 import { InputError } from './format.ts';
 
+export const whenForm = (): string => `YYYY-MM-DDTHH:mm (${timeZone()} if no offset; a time skipped by DST is refused, a repeated one is the earlier)`;
+
 const FORM = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})(?::(\d{2})(?:\.(\d{3}))?)?(Z|([+-])(\d{2}):?(\d{2}))?$/;
-const JST_MIN = 9 * 60;
 
 // Not Date.parse: it reads a time without a zone as the container's local time, and accepts forms beyond these.
 export function parseWhen(s: string, name = 'at'): number {
   const m = FORM.exec(s);
-  const bad = new InputError(`${name}「${s}」を日時として読めません。YYYY-MM-DDTHH:mm の形で、時刻まで指定してください（秒、タイムゾーンは任意。タイムゾーンが無ければ JST）。`);
+  const bad = new InputError(`${name}「${s}」を日時として読めません。YYYY-MM-DDTHH:mm の形で、時刻まで指定してください（秒、タイムゾーンは任意。タイムゾーンが無ければ ${timeZone()} の時刻として読み、夏時間の切り替えで飛ぶ時刻は受けず、2 回ある時刻は早いほうにします）。`);
   if (!m) throw bad;
   const [y, mo, d, h, mi, sec = 0, ms = 0] = m.slice(1, 8).map((x) => (x === undefined ? undefined : Number(x))) as number[];
   const offH = m[10] === undefined ? 0 : Number(m[10]);
@@ -17,6 +19,11 @@ export function parseWhen(s: string, name = 'at'): number {
   const back = new Date(local);
   if (back.getUTCFullYear() !== y || back.getUTCMonth() !== mo - 1 || back.getUTCDate() !== d
     || back.getUTCHours() !== h || back.getUTCMinutes() !== mi || back.getUTCSeconds() !== sec) throw bad;
-  const offset = m[8] === undefined ? JST_MIN : m[8] === 'Z' ? 0 : (m[9] === '-' ? -1 : 1) * (offH * 60 + offM);
+  if (m[8] === undefined) {
+    const at = localToEpoch({ y, mo, d, h, mi, s: sec, ms });
+    if (at === undefined) throw bad;
+    return at;
+  }
+  const offset = m[8] === 'Z' ? 0 : (m[9] === '-' ? -1 : 1) * (offH * 60 + offM);
   return local - offset * 60_000;
 }

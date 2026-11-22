@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto';
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 import { BODY_CUT_NOTE } from '../../src/mcp/format.ts';
 import { splitWords } from '../../src/mcp/tools-read.ts';
+import { setTimeZone } from '../../src/zone.ts';
 import { makeApp } from './helpers.ts';
 
 type Route = (req: Request) => unknown;
@@ -92,7 +93,7 @@ test('search_posts looks up a channel archived after the search, which the listi
   expect(out).toContain(`https://mm.example/team-b/pl/${id(0)}`);
 });
 
-test('search_posts sends the JST offset, shows the channel and team names, and notes the 100-result cap', async () => {
+test('search_posts sends the offset of TIME_ZONE, shows the channel and team names, and notes the 100-result cap', async () => {
   routes = {
     'POST /posts/search': () => posts(100),
     'GET /users/me/channels': () => [{ id: 'c'.repeat(26), name: 'general-dup', display_name: 'General', team_id: 't'.repeat(26), type: 'O' }],
@@ -110,6 +111,21 @@ test('search_posts sends the JST offset, shows the channel and team names, and n
   expect(out).toContain('これより古い一致');
   routes['POST /posts/search'] = () => posts(99);
   expect(await call('search_posts', { terms: 'x' })).not.toContain('100 件まで');
+});
+
+test('search_posts sends the offset TIME_ZONE has at the time of the call, in seconds', async () => {
+  routes = { 'POST /posts/search': () => posts(1), 'GET /users/me/channels': () => [], 'GET /users/me/teams': () => [], 'POST /users/ids': () => [] };
+  try {
+    setTimeZone('America/New_York');
+    vi.spyOn(Date, 'now').mockReturnValue(Date.UTC(2026, 6, 1));
+    await setup()('search_posts', { terms: 'x on:2026-07-01' });
+    expect(bodies['/posts/search']).toMatchObject({ time_zone_offset: -14400 });
+    vi.spyOn(Date, 'now').mockReturnValue(Date.UTC(2026, 0, 1));
+    await setup()('search_posts', { terms: 'x on:2026-01-01' });
+    expect(bodies['/posts/search']).toMatchObject({ time_zone_offset: -18000 });
+  } finally {
+    setTimeZone('Asia/Tokyo');
+  }
 });
 
 test('search_posts pages with its own next_cursor and rejects a search_files cursor', async () => {
@@ -1662,7 +1678,7 @@ describe('get_mentions', () => {
     n = 0;
   });
 
-  test('searches the user\'s mention terms, each quoted, as an OR search over all teams in JST, asking for 100', async () => {
+  test('searches the user\'s mention terms, each quoted, as an OR search over all teams in TIME_ZONE, asking for 100', async () => {
     add(22, 1);
     routes = base();
     await setup()('get_mentions', {});
@@ -1841,6 +1857,18 @@ describe('get_mentions', () => {
       routes = unreadBase('always_on', members, threads);
       await setup()('get_mentions', { unread_only: true });
       expect(searches[0]).toBe(`"@alice" "aiso"${after}`);
+    });
+
+    test('takes the day of the oldest read position in TIME_ZONE', async () => {
+      put({ create_at: at(22, 1) });
+      routes = unreadBase('always_on', [member(C, at(22, 0), 1)], []);
+      try {
+        setTimeZone('America/New_York');
+        await setup()('get_mentions', { unread_only: true });
+      } finally {
+        setTimeZone('Asia/Tokyo');
+      }
+      expect(searches[0]).toBe('"@alice" "aiso" after:2026-10-20');
     });
 
     test('leaves out archived channels and their threads, which the search does not cover, from the candidates and the floor', async () => {

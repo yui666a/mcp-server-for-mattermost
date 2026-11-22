@@ -2,6 +2,7 @@ import type { McpServer, ToolCallback } from '@modelcontextprotocol/sdk/server/m
 import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
 import { z } from 'zod';
 import { CallAborted, MmError, UpstreamUnavailable, type MmClient } from '../mattermost/client.ts';
+import { offsetMinutesAt, timeZone, zonedDay } from '../zone.ts';
 import { idArg } from './args.ts';
 import { ASK_ADMIN, BAD_CURSOR, BODY_CUT_NOTE, BODY_MAX_CHARS, decodeCursor, encodeCursor, fileLine, formatPost, formatTime, graphemeCount, indented, InputError, localTime, oneLine, POST_FORBIDDEN, postTruncated, postUserIds, RETRY, RETRY_SOON, truncate, unformat, type MmFileInfo, type MmPost } from './format.ts';
 import { pageCursor, paginate } from './paging.ts';
@@ -10,7 +11,7 @@ import { parsePostRef } from './permalink.ts';
 import { Ambiguous, ChannelFetchError, ChannelNotFound, myTeams, NoDirectChannel, resolveChannel, resolveUser, teamNameOf, type ChannelRef, type Mm, type MmChannel, type MmTeam, type ResolvedChannel, type UserRef } from './resolve.ts';
 import { guarded, text, type ToolContext } from './tool.ts';
 import { worded, type Wording } from './tools-send.ts';
-import { parseWhen } from './when.ts';
+import { parseWhen, whenForm } from './when.ts';
 
 type PostList = { order: string[]; posts: Record<string, MmPost>; has_next?: boolean | null; prev_post_id?: string };
 type Page = { lines: string[]; next?: object; posts?: MmPost[]; notes?: string[] };
@@ -24,7 +25,6 @@ const SAVED_PAGE = 200;
 const SAVED_OVERLAP = 20;
 const SAVED_SCAN = 1000;
 const POST_PAGE = 200;
-const JST_OFFSET_SEC = 9 * 3600;
 const DAY_MS = 86_400_000;
 const PREVIEW_MAX_WIDTH = 1920;
 const IMAGE_MAX_SIDE = 3000;
@@ -146,7 +146,8 @@ async function fileText(mm: ReadMm, uid: string, fileId: string, f: MmFileInfo, 
   return { content: [{ type: 'text', text: head.join('\n') }, { type: 'text', text: shown }] };
 }
 
-const jstDay = (ms: number) => new Date(ms + JST_OFFSET_SEC * 1000).toISOString().slice(0, 10);
+// Not the offset of each date searched: Mattermost takes one offset per search, as its own client sends the user's current one.
+const offsetSec = () => offsetMinutesAt(Date.now()) * 60;
 const nextDay = (day: string) => new Date(Date.parse(day) + DAY_MS).toISOString().slice(0, 10);
 const prevDay = (day: string) => new Date(Date.parse(day) - DAY_MS).toISOString().slice(0, 10);
 const newestFirst = (a: MmPost, b: MmPost) => b.create_at - a.create_at || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
@@ -540,7 +541,7 @@ export function registerReadTools(server: McpServer, ctx: ToolContext): void {
     });
   }
 
-  tool('search_posts', 'Search messages in your teams with Mattermost search syntax (from:, in:, before:, after:, on:, ...), newest first. in: also takes a channel ID, team/channel, channel name, @username (DM), or @a,b (group DM, no spaces). Filtering to a channel you have not joined returns nothing. Archived channels are searched only when listed in in: by channel ID. Dates are JST. Message attachments from bots and webhooks are not searched; read those with read_channel since/until.',
+  tool('search_posts', `Search messages in your teams with Mattermost search syntax (from:, in:, before:, after:, on:, ...), newest first. in: also takes a channel ID, team/channel, channel name, @username (DM), or @a,b (group DM, no spaces). Filtering to a channel you have not joined returns nothing. Archived channels are searched only when listed in in: by channel ID. Dates are in ${timeZone()}. Message attachments from bots and webhooks are not searched; read those with read_channel since/until.`,
     { terms: z.string().min(1), limit: limitArg(20, 50), cursor: cursorArg },
     async ({ terms, limit, cursor }, mm) => {
       const c = cursorOf(z.object({ page: z.number().int().min(0), per_page: perPage(50) }).strict(), cursor);
@@ -548,7 +549,7 @@ export function registerReadTools(server: McpServer, ctx: ToolContext): void {
       const page = c?.page ?? 0;
       const filtered = await resolveInFilters(mm, uid, terms);
       // Not passing the cursor's page to Mattermost: its database search ignores per_page and returns nothing for page > 0.
-      const r = await mm.call<PostList>(uid, 'POST', '/posts/search', { terms: filtered.terms, is_or_search: false, include_deleted_channels: filtered.archived, time_zone_offset: JST_OFFSET_SEC, page: 0, per_page: MM_SEARCH_CAP });
+      const r = await mm.call<PostList>(uid, 'POST', '/posts/search', { terms: filtered.terms, is_or_search: false, include_deleted_channels: filtered.archived, time_zone_offset: offsetSec(), page: 0, per_page: MM_SEARCH_CAP });
       const all = r.order.map((id) => r.posts[id]).filter(Boolean);
       const shown = all.slice(page * per, (page + 1) * per);
       const lines = [`検索: ${terms}`, ...(shown.length ? await withChannels(mm, shown) : ['一致する投稿はありません。'])];
@@ -626,7 +627,7 @@ export function registerReadTools(server: McpServer, ctx: ToolContext): void {
       const per = c?.per_page ?? limit ?? 20;
       const page = c?.page ?? 0;
       const search = (t: string, perPageOf: number, archived = false) => mm.call<FileList>(uid, 'POST', '/files/search', {
-        terms: t, is_or_search: false, include_deleted_channels: archived, time_zone_offset: JST_OFFSET_SEC, page: 0, per_page: perPageOf,
+        terms: t, is_or_search: false, include_deleted_channels: archived, time_zone_offset: offsetSec(), page: 0, per_page: perPageOf,
       }).catch((e) => {
         if (e instanceof MmError && e.status === 501 && e.id === 'store.sql_file_info.search.disabled') throw new InputError(FILE_SEARCH_OFF);
         throw e;
@@ -669,7 +670,7 @@ export function registerReadTools(server: McpServer, ctx: ToolContext): void {
     {
       channel: z.string().min(1),
       from: z.enum(['latest', 'unread']).optional(),
-      since: z.string().optional().describe('Range start (inclusive), YYYY-MM-DDTHH:mm (JST if no offset). Not with from.'),
+      since: z.string().optional().describe(`Range start (inclusive), ${whenForm()}. Not with from.`),
       until: z.string().optional().describe('Range end (exclusive), same format as since.'),
       limit: limitArg(30, 100),
       cursor: cursorArg,
@@ -1148,7 +1149,7 @@ export function registerReadTools(server: McpServer, ctx: ToolContext): void {
         // Not taking a read position of 0 as the floor: a channel never viewed or a thread first mentioned in a reply has 0, though nothing in it predates the channel or the root post.
         const floors = [...[...chans].map(([id, at]) => at || created.get(id)!), ...[...threads.values()].map((t) => Math.max(t.last_viewed_at, t.post.create_at))];
         // Not Math.min(...floors): the floors grow with the channels and threads, and spreading them as arguments throws a RangeError past a limit.
-        unreadAfter = ` after:${prevDay(jstDay(floors.reduce((a, b) => Math.min(a, b))))}`;
+        unreadAfter = ` after:${prevDay(zonedDay(floors.reduce((a, b) => Math.min(a, b))))}`;
       }
       let before = c?.before;
       let last = c?.last;
@@ -1157,14 +1158,14 @@ export function registerReadTools(server: McpServer, ctx: ToolContext): void {
       for (let round = 1; ; round++) {
         // Not paging Mattermost's search: its database search returns nothing for page > 0, so older hits are reached by moving before: back a day at a time.
         const r = await mm.call<PostList>(uid, 'POST', '/posts/search', {
-          terms: `${terms}${unreadAfter}${before ? ` before:${before}` : ''}`, is_or_search: true, include_deleted_channels: false, time_zone_offset: JST_OFFSET_SEC, page: 0, per_page: MM_SEARCH_CAP,
+          terms: `${terms}${unreadAfter}${before ? ` before:${before}` : ''}`, is_or_search: true, include_deleted_channels: false, time_zone_offset: offsetSec(), page: 0, per_page: MM_SEARCH_CAP,
         });
         const all = r.order.map((id) => r.posts[id]).filter(Boolean).sort(newestFirst);
         const full = all.length >= MM_SEARCH_CAP;
-        const d = full ? jstDay(all.at(-1)!.create_at) : '';
-        const oneDay = full && jstDay(all[0].create_at) === d;
+        const d = full ? zonedDay(all.at(-1)!.create_at) : '';
+        const oneDay = full && zonedDay(all[0].create_at) === d;
         // Not showing day D's hits when the 100 are full: D's older posts may lie beyond the 100, so D is searched again in full next time.
-        const rest = (full && !oneDay ? all.filter((p) => jstDay(p.create_at) > d) : all)
+        const rest = (full && !oneDay ? all.filter((p) => zonedDay(p.create_at) > d) : all)
           .filter((p) => !last || p.create_at < last.create_at || (p.create_at === last.create_at && p.id > last.id))
           .filter((p) => mentionsMe(p.message, me) && isUnread(p));
         const take = rest.slice(0, per);

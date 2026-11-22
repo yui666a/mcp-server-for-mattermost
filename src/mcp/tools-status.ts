@@ -6,13 +6,12 @@ import type { Mm } from './resolve.ts';
 import { guarded, text, type ToolContext } from './tool.ts';
 import { PRESENCE } from './tools-read.ts';
 import { worded, type Wording } from './tools-send.ts';
-import { parseWhen } from './when.ts';
+import { parseWhen, whenForm } from './when.ts';
 
 const MIN_AHEAD = 60_000;
 const STATUSES = ['online', 'away', 'dnd', 'offline'] as const;
 type Status = (typeof STATUSES)[number];
 const DISABLED: Wording = { id: [[501, 'api.custom_status.disabled', 'この Mattermost ではカスタムステータスが無効です。']] };
-const TIME = ', YYYY-MM-DDTHH:mm (JST if no offset)';
 
 function future(s: string, name: string): number {
   const ms = parseWhen(s, name);
@@ -70,7 +69,7 @@ export function registerStatusTools(server: McpServer, ctx: ToolContext): void {
 
   const statusSchema = {
     status: z.enum(STATUSES),
-    dnd_until: z.string().optional().describe(`End of dnd${TIME}. Omit to stay dnd until changed.`),
+    dnd_until: z.string().optional().describe(`End of dnd, ${whenForm()}. Omit to stay dnd until changed.`),
   };
   // Cast for the same reason as in tools-read.ts: the SDK's callback type does not resolve for these shapes.
   server.registerTool('set_status', {
@@ -86,7 +85,7 @@ export function registerStatusTools(server: McpServer, ctx: ToolContext): void {
   const customSchema = {
     emoji: z.string().min(1).max(100).optional().describe('Emoji name (e.g. calendar). Look up custom emoji names with search_emoji.'),
     text: z.string().min(1).max(100).optional(),
-    until: z.string().optional().describe(`Expiry${TIME}. Omit for no expiry.`),
+    until: z.string().optional().describe(`Expiry, ${whenForm()}. Omit for no expiry.`),
   };
   server.registerTool('set_custom_status', {
     description: 'Set your custom status (emoji and text). Replaces the whole current status: passing only emoji clears the text. Needs emoji or text.',

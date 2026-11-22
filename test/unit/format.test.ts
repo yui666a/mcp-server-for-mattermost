@@ -1,4 +1,5 @@
 import { describe, expect, test } from 'vitest';
+import { setTimeZone } from '../../src/zone.ts';
 import { decodeCursor, encodeCursor, fileLine, formatPost, formatTime, indented, InputError, localTime, oneLine, postTruncated, postUserIds, truncate, unformat } from '../../src/mcp/format.ts';
 
 test('truncation keeps grapheme clusters', () => {
@@ -33,8 +34,29 @@ test('cursor round-trips as base64url JSON and rejects anything else as an input
   }
 });
 
-test('a time shows UTC and JST in ISO 8601, in the same form as a post', () => {
-  expect(formatTime(Date.UTC(2026, 10, 1, 20, 4, 5))).toBe('2026-11-01T20:04:05Z | 2026-11-02T05:04:05+09:00');
+describe('formatTime', () => {
+  test('shows UTC and the local time of TIME_ZONE in ISO 8601, in the same form as a post', () => {
+    expect(formatTime(Date.UTC(2026, 10, 1, 20, 4, 5))).toBe('2026-11-01T20:04:05Z | 2026-11-02T05:04:05+09:00');
+  });
+
+  test('follows daylight saving time in the local part', () => {
+    try {
+      setTimeZone('America/New_York');
+      expect(formatTime(Date.UTC(2026, 6, 1, 16, 0))).toBe('2026-07-01T16:00:00Z | 2026-07-01T12:00:00-04:00');
+      expect(formatTime(Date.UTC(2026, 0, 1, 17, 0))).toBe('2026-01-01T17:00:00Z | 2026-01-01T12:00:00-05:00');
+    } finally {
+      setTimeZone('Asia/Tokyo');
+    }
+  });
+
+  test('shows UTC alone when TIME_ZONE is UTC', () => {
+    try {
+      setTimeZone('UTC');
+      expect(formatTime(Date.UTC(2026, 10, 22, 15, 0))).toBe('2026-11-22T15:00:00Z');
+    } finally {
+      setTimeZone('Asia/Tokyo');
+    }
+  });
 });
 
 describe('localTime', () => {
