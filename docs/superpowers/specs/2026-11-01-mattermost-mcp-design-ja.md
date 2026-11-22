@@ -59,10 +59,10 @@ Mattermost の公式 MCP サーバーは Agents プラグインに含まれ、�
 | リバースプロキシ | TLS を終端するリバースプロキシ（例は nginx）の後ろに置く |
 | OAuth 2.0 Service Provider | 有効。`/.well-known/oauth-authorization-server` を公開しており、`registration_endpoint` はない（Dynamic Client Registration は無効） |
 | Mattermost の OAuth | 認可コードフロー、PKCE は `S256` のみ。public client にはリフレッシュトークンが発行されず、confidential client（`client_secret_post`）には発行される。スコープは `user` のみ |
-| Mattermost のトークン再利用 | 同じユーザーと同じ OAuth アプリの組では、新たに認可しても既存のアクセストークンとリフレッシュトークンが返る。リフレッシュするとリフレッシュトークンは新しいものに替わり、使用済みのものは使えなくなる。古いアクセストークンは、ローカルの v11.7.8 での実測ではリフレッシュ後も少なくとも 826 秒は有効なまま残り、利用者がアプリの許可を取り消すと無効になった（[v11.7.8 `oauth.go`](https://github.com/mattermost/mattermost/blob/v11.7.8/server/channels/app/oauth.go)、実測の詳細は `docs/measurements.md`）。Mattermost のトークンは MCP サーバーの外に出さないため、古いアクセストークンが残ることは設計に影響しない |
-| 下書きの同期 | サーバー設定 `ServiceSettings.AllowSyncedDrafts`（既定 true）が有効なときだけ、API で保存した下書きが本人の画面に届く。無効なら下書きの API は 501 を返す。導入先で有効かは、導入前に確かめる（`docs/deployment.md` の「Mattermost の事前確認」） |
-| 添付の設定 | ローカルの v11.7.8 では `FileSettings.EnableFileAttachments` が true、`MaxFileSize` が 100 MiB。`EnableFileAttachments` が false だとアップロードが 403 になり、`send_message` の添付が使えない。プレビュー（`get_file` が返す縮小版）は設定ではなく、画像のアップロード時に Mattermost が作る。導入先の値は導入前に確かめる（`docs/deployment.md` の「Mattermost の事前確認」） |
-| Mattermost の台数 | 下書きの一覧を読むレプリカを持たない構成を前提にする。導入先にレプリカが無いことは、導入前に確かめる（`docs/deployment.md` の「Mattermost の事前確認」） |
+| Mattermost のトークン再利用 | 同じユーザーと同じ OAuth アプリの組では、新たに認可しても既存のアクセストークンとリフレッシュトークンが返る。リフレッシュするとリフレッシュトークンは新しいものに替わり、使用済みのものは使えなくなる。古いアクセストークンは、ローカルの v11.7.8 での実測ではリフレッシュ後も少なくとも 826 秒は有効なまま残り、利用者がアプリの許可を取り消すと無効になった（[v11.7.8 `oauth.go`](https://github.com/mattermost/mattermost/blob/v11.7.8/server/channels/app/oauth.go)、実測の詳細は `docs/measurements-ja.md`）。Mattermost のトークンは MCP サーバーの外に出さないため、古いアクセストークンが残ることは設計に影響しない |
+| 下書きの同期 | サーバー設定 `ServiceSettings.AllowSyncedDrafts`（既定 true）が有効なときだけ、API で保存した下書きが本人の画面に届く。無効なら下書きの API は 501 を返す。導入先で有効かは、導入前に確かめる（`docs/deployment-ja.md` の「Mattermost の事前確認」） |
+| 添付の設定 | ローカルの v11.7.8 では `FileSettings.EnableFileAttachments` が true、`MaxFileSize` が 100 MiB。`EnableFileAttachments` が false だとアップロードが 403 になり、`send_message` の添付が使えない。プレビュー（`get_file` が返す縮小版）は設定ではなく、画像のアップロード時に Mattermost が作る。導入先の値は導入前に確かめる（`docs/deployment-ja.md` の「Mattermost の事前確認」） |
+| Mattermost の台数 | 下書きの一覧を読むレプリカを持たない構成を前提にする。導入先にレプリカが無いことは、導入前に確かめる（`docs/deployment-ja.md` の「Mattermost の事前確認」） |
 | 利用者 | 1 つの Mattermost につき数十人規模。世界中から利用しうる |
 
 ## 構成
@@ -110,9 +110,9 @@ MCP クライアント ──(MCP トークン)──> MCP サーバー ──(M
 
 認可要求とトークン要求の `resource` パラメータは必須とし、欠落しているか MCP エンドポイントの URL と完全一致しなければ `invalid_target` で拒否する。
 発行した認可コードとトークンは、この 1 つのリソースにだけ使える。
-対象の 3 つのクライアントは、どれも認可要求とコード交換で `resource` を送る（`docs/measurements.md` の「クライアント互換性」）。
+対象の 3 つのクライアントは、どれも認可要求とコード交換で `resource` を送る（`docs/measurements-ja.md` の「クライアント互換性」）。
 
-この形式は RFC 8414 と MCP 仕様の探索手順に沿っており、3 つのクライアントがこの形式のメタデータを見つけて接続できることを実測で確かめた（`docs/measurements.md` の「クライアント互換性」）。
+この形式は RFC 8414 と MCP 仕様の探索手順に沿っており、3 つのクライアントがこの形式のメタデータを見つけて接続できることを実測で確かめた（`docs/measurements-ja.md` の「クライアント互換性」）。
 
 ### 認可フロー
 
@@ -219,7 +219,7 @@ SQLite ファイルを失った場合は、直近のバックアップから次�
 DCR の登録を残すので、各クライアントはコネクタを追加し直す必要がなく、手元のリフレッシュトークンが `invalid_grant` で拒否された後の通常の再ログインだけで戻る。
 DCR の登録は利用者の権限を持たないため、巻き戻っても実害はない。
 暗号化鍵は作り直さない。Mattermost のトークンは削除するが、失敗にした予約の本文は同じ鍵で暗号化されたまま更新から 7 日残り、作り直すと一覧で本文が読めなくなるため。
-この手順を運用手順書（`docs/operations.md`）に書く。
+この手順を運用手順書（`docs/operations-ja.md`）に書く。
 
 Mattermost の PostgreSQL に DB を追加する方式は採らない。
 Mattermost の DB と運用（ダンプ、リストア、メジャーバージョン更新）を共有することになり、MCP サーバーの都合で Mattermost の DB に手を入れる場面を作りたくないからだ。
@@ -608,7 +608,7 @@ DM での通知はしない。この MCP は Bot を持たないので、本人�
 - Mattermost の処理が投稿中の猶予（30 秒）より遅れて完了した場合の二重投稿は防げない（`send_message` と同じ）
 - `send_message` と予約が同じファイルで同時に検査を通ると、後に投稿した方がファイルを失う（予約の側なら一覧に「注意」として出る）
 - ABAC の権限ポリシーを有効にしたサーバーで、Mattermost が本人の情報を一時的に取れず、件数を付けずにファイルを隠すと（「ファイルを添付した投稿」の既知の限界）、予約の最初の投稿では全部を「Mattermost が外した」と一覧の注意に出し、ファイルを手放す。やり直しでは照合の一覧のファイルが一致せず、投稿されたか不明として止まる
-- `file_ids` 列を読まない古い版に、更新後の DB のまま戻すと、ファイル付きの待機中の予約をファイル無しで投稿する。版を戻すときは更新前の `/data` も戻す（`docs/operations.md`）
+- `file_ids` 列を読まない古い版に、更新後の DB のまま戻すと、ファイル付きの待機中の予約をファイル無しで投稿する。版を戻すときは更新前の `/data` も戻す（`docs/operations-ja.md`）
 - 復元の手順で失敗にした、試みていない予約のファイルは、ファイルを持つものとして扱わない。それを別の投稿に使うと、復元の前に投稿されていた場合は Mattermost が外す（出力に出る）
 - `send_message` が投稿を済ませて、まだ記録に投稿 ID を書いていないあいだ（結果が不明のまま送り直されなかった記録は 10 分そのまま）は、予約のやり直しはその投稿を除けない。同じ本文の予約の最初の試みが投稿していなければ、予約はその投稿を自分のものとして取る。二重投稿にはならないが、同じ投稿を 2 つの記録が持つ
 - 401 の後のリフレッシュの保存が競り負け、確かめの投稿が `5xx`・タイムアウト・リダイレクトになり、保存済みのトークンで送り直すとき（確かめの投稿が処理されていたかもしれない）
@@ -632,7 +632,7 @@ MCP サーバーは Mattermost と同じホストで動かすことが多く、C
   - 上限を超えたら待たせ続けずに、すぐレート制限のエラーをツールの結果として返す
   - Mattermost が `429` を返したら自動で再試行せず、リセット時刻を添えてレート制限のエラーとして返す
   - 具体値は実装者が決める。目安は、利用者 1 人が会話の中で普通に使う量（数十回／分）を妨げず、全員が同時に上限まで使っても Mattermost の応答時間が目に見えて悪化しないこと。ローカルで負荷をかけて確かめる
-  - 利用者 1 人あたり 300 回／分、全体で 600 回／分とする。`list_my_channels` を起点に既定の 50 チャンネルを `read_channel` で巡回すると約 200 回かかるため 1 人あたりをこの値にし、全体の上限は `docs/measurements.md` の「負荷」で応答時間が悪化しないと確かめた値なので、1 人の上限を上げても Mattermost にかかる負荷の最大は変わらない
+  - 利用者 1 人あたり 300 回／分、全体で 600 回／分とする。`list_my_channels` を起点に既定の 50 チャンネルを `read_channel` で巡回すると約 200 回かかるため 1 人あたりをこの値にし、全体の上限は `docs/measurements-ja.md` の「負荷」で応答時間が悪化しないと確かめた値なので、1 人の上限を上げても Mattermost にかかる負荷の最大は変わらない
 - 認可途中の状態と認可コードは短い期限（10 分程度）で消す。失効や期限切れになった grant とトークン、期限の過ぎた `send_message` の重複防止の記録も定期的に消す。DCR の登録は自動では消さず、総数の上限で抑える（「保存先」を参照）
 - ログは標準出力に出し、容量の制限はコンテナのログドライバーに任せる
 
@@ -653,7 +653,7 @@ MCP サーバー ──(MM_URL、HTTPS)──> Mattermost API
 - TLS 1.3 の Early Data（0-RTT）を無効にする。0-RTT で送られた要求は再送（リプレイ）されうるため、`send_message` の二重投稿や、リフレッシュ要求の再送によるリフレッシュトークン再利用検知の誤発火を招く。Mattermost 本体の POST も同じ危険を抱えており、0-RTT による短縮は 1 往復分にすぎないため、MCP のパスだけで `425` を返すより、Mattermost と同じオリジンなら全体で無効にする
 - MCP サーバーが止まっても Mattermost とリバースプロキシは動き続けるようにする（nginx なら、起動時に MCP サーバーの名前解決を必要としない書き方にする）
 - Mattermost 側の準備は、OAuth 2.0 サービスプロバイダーを有効にし、Integrations の OAuth 2.0 アプリの画面（`/<チーム名>/integrations/oauth2-apps`）か API で OAuth 2.0 アプリを 1 つ作るだけ（confidential、コールバック URL は MCP サーバーのコールバック）。MCP サーバーが自分の同意画面を出すため、Mattermost 側の「信頼済み」は「はい」にして同意の二重表示を避けてよい。クライアント ID とシークレットは環境変数で渡す
-- 導入と運用の手順は `docs/deployment.md` と `docs/operations.md` に書く
+- 導入と運用の手順は `docs/deployment-ja.md` と `docs/operations-ja.md` に書く
 
 ### 運用
 

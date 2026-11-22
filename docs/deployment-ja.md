@@ -2,7 +2,7 @@
 
 MCP サーバーを自分の環境に導入する手順。
 MCP サーバーは Docker イメージとして動かし、TLS を終端するリバースプロキシ（例は nginx）の後ろに置く。
-動かし方は [operations.md](operations.md)、測った挙動は [measurements.md](measurements.md) にある。
+動かし方は [operations-ja.md](operations-ja.md)、測った挙動は [measurements-ja.md](measurements-ja.md) にある。
 
 ## 配置の形
 
@@ -26,8 +26,8 @@ claude.ai から接続するなら、インターネットから届く必要も�
 
 ## 1. Mattermost の事前確認
 
-OAuth の挙動は Mattermost 11.7.15 で実測している（[measurements.md](measurements.md)）。
-ほかの版で動かす前に、その版で結合テストを通す（[operations.md の「Mattermost を更新するとき」](operations.md#mattermost-を更新するとき)）。
+OAuth の挙動は Mattermost 11.7.15 で実測している（[measurements-ja.md](measurements-ja.md)）。
+ほかの版で動かす前に、その版で結合テストを通す（[operations-ja.md の「Mattermost を更新するとき」](operations-ja.md#mattermost-を更新するとき)）。
 
 | 項目 | 必要な状態 | 満たさないとき |
 |---|---|---|
@@ -154,7 +154,7 @@ docker compose up -d --build
 docker compose ps    # healthy になるまで待つ（healthcheck の間隔は既定の 30 秒）
 ```
 
-- リソースの上限は、6 人が全体の上限まで呼び続けた負荷でメモリ最大 86 MiB だった値に余裕を持たせたもの（[measurements.md の「負荷」](measurements.md#負荷)）。`prepare_upload` の URL へのアップロードは、要求の本文とファイルをメモリに置き、全体で同時に 1 件だけ処理する。既定の 10MiB の本文を送ったとき、メモリの使用量は約 80MB 増えた（本文の約 8 倍）。`UPLOAD_MAX_BYTES` を既定より上げるなら、その 8 倍を目安に `mem_limit` も上げる
+- リソースの上限は、6 人が全体の上限まで呼び続けた負荷でメモリ最大 86 MiB だった値に余裕を持たせたもの（[measurements-ja.md の「負荷」](measurements-ja.md#負荷)）。`prepare_upload` の URL へのアップロードは、要求の本文とファイルをメモリに置き、全体で同時に 1 件だけ処理する。既定の 10MiB の本文を送ったとき、メモリの使用量は約 80MB 増えた（本文の約 8 倍）。`UPLOAD_MAX_BYTES` を既定より上げるなら、その 8 倍を目安に `mem_limit` も上げる
 - MCP サーバーは 1 プロセスで動かす。予約投稿の二重実行の防止、トークンのリフレッシュの直列化、下書きの保存と `send_message` の後の下書きの削除の直列化はプロセスの中で行っているため、同じ SQLite ファイルに複数のプロセスを向けない
 - `SIGTERM` を受けると新しい接続を断り、処理中の要求が終わってから終了コード 0 で止まる
 
@@ -248,4 +248,4 @@ curl -s https://mcp.example.com/.well-known/oauth-authorization-server/mcp | jq 
 - 認可サーバーのメタデータは、`issuer` が `<PUBLIC_URL>/mcp`、各エンドポイントがその下の `/oauth/authorize`、`/oauth/token`、`/oauth/register`、`code_challenge_methods_supported` が `["S256"]`
 - 同じオリジンに置いたなら、Mattermost の Web でのログイン、投稿、別の端末からの投稿が再読み込みなしで現れること（WebSocket）も確かめる
 
-続けて MCP クライアントからつなぎ、ツールを一通り呼ぶ（[operations.md の「導入後の確認」](operations.md#導入後の確認)）。
+続けて MCP クライアントからつなぎ、ツールを一通り呼ぶ（[operations-ja.md の「導入後の確認」](operations-ja.md#導入後の確認)）。
