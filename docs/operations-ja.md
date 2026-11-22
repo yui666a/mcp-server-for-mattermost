@@ -1,8 +1,8 @@
 # 運用
 
 導入した MCP サーバーを動かし続けるための手順。
-導入は [deployment.md](deployment.md) にある。
-コマンドは [deployment.md](deployment.md) の `compose.yml` の例（サービス名 `mcp`）を前提にする。
+導入は [deployment-ja.md](deployment-ja.md) にある。
+コマンドは [deployment-ja.md](deployment-ja.md) の `compose.yml` の例（サービス名 `mcp`）を前提にする。
 
 ## 導入後の確認
 
@@ -109,13 +109,13 @@ docker compose exec mcp node src/admin.ts list-clients --unauthorized | wc -l
 docker compose exec mcp node src/admin.ts list-clients --unauthorized | cut -f2,3 | tail -20
 ```
 
-- 正規の利用で未認可の登録が数百件に積み上がることはない（claude.ai でも 1 回の接続で 2 件。[measurements.md の「クライアント互換性」](measurements.md#クライアント互換性)）。名前と時刻が揃った登録がまとまっていれば、第三者による積み上げとみなす
+- 正規の利用で未認可の登録が数百件に積み上がることはない（claude.ai でも 1 回の接続で 2 件。[measurements-ja.md の「クライアント互換性」](measurements-ja.md#クライアント互換性)）。名前と時刻が揃った登録がまとまっていれば、第三者による積み上げとみなす
 - 上限に達すると最も古い未認可の登録から消えるので、正規の利用者の新しい接続は妨げられない。認可済みの登録は自動では消えない
-- リバースプロキシのアクセスログで `POST /mcp/oauth/register` の接続元を集計し、偏りがあれば記録しておく。登録エンドポイントには IP ごとのレート制限をかけておく（[deployment.md の「リバースプロキシ」](deployment.md#5-リバースプロキシ)）
+- リバースプロキシのアクセスログで `POST /mcp/oauth/register` の接続元を集計し、偏りがあれば記録しておく。登録エンドポイントには IP ごとのレート制限をかけておく（[deployment-ja.md の「リバースプロキシ」](deployment-ja.md#5-リバースプロキシ)）
 
 ## Mattermost を更新するとき
 
-MCP サーバーは Mattermost 11.7.15 で実測した OAuth の挙動（[measurements.md](measurements.md)）と、公開文書にない `pending_post_id` の重複排除を前提にしている。
+MCP サーバーは Mattermost 11.7.15 で実測した OAuth の挙動（[measurements-ja.md](measurements-ja.md)）と、公開文書にない `pending_post_id` の重複排除を前提にしている。
 更新する前に、開発機で新しい版に対して結合テストを通す。
 
 ```bash
@@ -160,7 +160,7 @@ docker compose up -d mcp
 
 - `purge-credentials` は `purged <件数> rows` を出す。前後の `list-clients` の件数が変わらない（DCR の登録は消さない）ことを確かめる。登録が残るので、各クライアントは手元のリフレッシュトークンが `invalid_grant` で拒否された後、通常の再ログインで戻る
 - `invalidate-scheduled` は `invalidated <件数> scheduled posts` を出す。失敗にした予約は `list_scheduled_messages` に理由とともに出るので、件数が 0 でなければ利用者に予約を確かめて入れ直すよう知らせる。投稿を試みた予約と、予定時刻を過ぎた予約は、理由が「投稿されたか不明」になる（バックアップの後に投稿されていたかもしれないため）
-- 管理コマンドは `docker compose exec` ではなく、MCP サーバーを起動しない単独のコンテナで、ネットワークなしで動かす。イメージ名は [deployment.md](deployment.md#4-起動) の `compose.yml` の例で付けたもの
+- 管理コマンドは `docker compose exec` ではなく、MCP サーバーを起動しない単独のコンテナで、ネットワークなしで動かす。イメージ名は [deployment-ja.md](deployment-ja.md#4-起動) の `compose.yml` の例で付けたもの
 - 鍵（`TOKEN_ENC_KEY`）は作り直さない。失敗にした予約の本文は同じ鍵で暗号化されたまま更新から 7 日残り、作り直すと `list_scheduled_messages` で本文が読めなくなる
 - バックアップより後に登録したクライアントは戻らないので、その利用者にはコネクタを追加し直してもらう
 - 復元したディスクごと起動する方式（VM のスナップショットからの起動など）では、MCP サーバーのコンテナが自動起動する前に上の処理を済ませる。巻き戻った状態の MCP サーバーに、どこからも届かないようにするため
@@ -183,7 +183,7 @@ docker compose logs --tail 50 mcp
 
 | ログ | 原因 | 対処 |
 |---|---|---|
-| `PUBLIC_URL is required` など `... is required` | 必須の環境変数が欠けている | [deployment.md の「環境変数」](deployment.md#3-環境変数) |
+| `PUBLIC_URL is required` など `... is required` | 必須の環境変数が欠けている | [deployment-ja.md の「環境変数」](deployment-ja.md#3-環境変数) |
 | `PUBLIC_URL must not end with a slash` | `PUBLIC_URL` の末尾のスラッシュ | 外す |
 | `TOKEN_ENC_KEY must be 32 bytes in base64` | 鍵の形式の誤り | 鍵を作り直してよいのは、DB に Mattermost のトークンも待機中の予約も無いときだけ。あるなら元の鍵を探す |
 | `... must be a positive integer` | `PORT` か `ACCESS_TOKEN_TTL_SEC` の値 | 正の整数にする |

@@ -1,7 +1,7 @@
 # 実測した挙動
 
 設計と実装が前提にしている、Mattermost と MCP クライアントの挙動を測った結果。
-Mattermost を更新するときは、結合テスト（`pnpm test:int`）でこれらの前提を確かめ直す（[operations.md の「Mattermost を更新するとき」](operations.md#mattermost-を更新するとき)）。
+Mattermost を更新するときは、結合テスト（`pnpm test:int`）でこれらの前提を確かめ直す（[operations-ja.md の「Mattermost を更新するとき」](operations-ja.md#mattermost-を更新するとき)）。
 
 ## Mattermost の OAuth の実測
 
@@ -64,7 +64,7 @@ MCP サーバーの前に一時的な HTTPS トンネルを置いて `/mcp` を�
 
 ## 負荷
 
-ローカルの Mattermost 11.7.8（`dev/compose.yml`）に、[deployment.md](deployment.md#4-起動) の `compose.yml` の例と同じ上限（`cpus: 0.5`、`mem_limit: 256m`、`pids_limit: 128`、`read_only`）の `mcp` コンテナをつないで測った（2026-11-01、開発機は Docker、12 CPU）。`dev/setup.ts` で作る `load1`〜`load6` の 6 人が、それぞれ 4 並列で `read_channel`（`team-a` の `general-dup`、既定の 30 件）を 190 秒呼び続けた。レート制限のエラーが返ったら 250 ms 待って呼び直す。その間、別のセッション（`alice` のログイン）で `GET /api/v4/users/me` を 200 ms おきに呼んで応答時間を測った。
+ローカルの Mattermost 11.7.8（`dev/compose.yml`）に、[deployment-ja.md](deployment-ja.md#4-起動) の `compose.yml` の例と同じ上限（`cpus: 0.5`、`mem_limit: 256m`、`pids_limit: 128`、`read_only`）の `mcp` コンテナをつないで測った（2026-11-01、開発機は Docker、12 CPU）。`dev/setup.ts` で作る `load1`〜`load6` の 6 人が、それぞれ 4 並列で `read_channel`（`team-a` の `general-dup`、既定の 30 件）を 190 秒呼び続けた。レート制限のエラーが返ったら 250 ms 待って呼び直す。その間、別のセッション（`alice` のログイン）で `GET /api/v4/users/me` を 200 ms おきに呼んで応答時間を測った。
 
 | | 件数 | 中央値 | 95 パーセンタイル | 最大 |
 |---|---|---|---|---|
