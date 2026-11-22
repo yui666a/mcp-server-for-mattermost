@@ -24,15 +24,15 @@ export const FILE_NAME = z.string().min(1).max(100).regex(/^[^/\\\p{Cc}]+$/u, '�
 const inputSchema = {
   channel: z.string().min(1),
   message: z.string().min(1).max(MAX_MESSAGE),
-  root_id: idArg.optional().describe('返信先のスレッドの親投稿の post_id'),
-  allow_duplicate: z.boolean().optional().describe('同じ本文を意図して繰り返し投稿するときに true'),
+  root_id: idArg.optional().describe('post_id of the thread root to reply to'),
+  allow_duplicate: z.boolean().optional().describe('true to post the same message again on purpose'),
   files: z.array(z.union([
-    z.strictObject({ name: FILE_NAME, content_text: z.string().min(1).describe('UTF-8 のテキストとしてそのまま添付する中身') }),
-    z.strictObject({ name: FILE_NAME, content_base64: z.string().min(1).describe('バイナリの中身の base64（data URL の接頭辞や改行は付けない）') }),
+    z.strictObject({ name: FILE_NAME, content_text: z.string().min(1) }),
+    z.strictObject({ name: FILE_NAME, content_base64: z.string().min(1).describe('base64 of the binary content (no data URL prefix, no line breaks)') }),
   ])).min(1).max(MAX_UPLOAD_FILES).optional()
-    .describe(`添付ファイル（1〜${MAX_UPLOAD_FILES} 件、中身の合計 ${MAX_FILES_BYTES / 1024}KiB まで）。各要素は name と、content_text（SVG、CSV、Markdown、コードなどのテキスト）か content_base64（小さなバイナリ）のどちらか一方。中身を読めて合計 ${MAX_FILES_BYTES / 1024}KiB に収まるファイルだけを渡す。PC でコマンドを実行できないクライアントでは、利用者の PC にあるテキストのファイルも、読めて収まれば content_text で送ってよい。ただし content_text は UTF-8 で添付するので、元のファイルと同じバイト列にならないことがある。中身に � や化けた文字が見えるとき、Excel などで作った CSV のように元の文字コードや BOM が要りそうなときは、content_text で送らず prepare_upload の説明の案内に従う。チャットに添付されたファイルは、コード実行で中身を読めるときだけ content_base64 で送れる。読めないファイル、収まらないファイル、それ以外の利用者の PC にあるファイルは、prepare_upload の説明の案内に従う`),
+    .describe(`Attachments. Each item has name plus either content_text (text) or content_base64 (small binary). Pass only files whose content you can read and that total at most ${MAX_FILES_BYTES / 1024}KiB. A file attached to the chat may go as content_base64 only when code execution can read its bytes. A client that cannot run commands on the user's PC may also send a text file from the PC as content_text if it can read it and it fits. content_text is attached as UTF-8: if the content shows � or garbled characters, or the original encoding or BOM likely matters (e.g. a CSV from Excel), do not use content_text. For those, files you cannot read or that do not fit, and any other file on the user's PC, follow the prepare_upload description.`),
   file_ids: z.array(idArg).min(1).max(MAX_UPLOAD_FILES).optional()
-    .describe(`prepare_upload で、投稿先と同じチャンネルへ 24 時間以内にアップロードした file_id（1〜${MAX_UPLOAD_FILES} 件）`),
+    .describe(`file_ids uploaded with prepare_upload to the destination channel within the last 24 hours`),
 };
 
 const B64 = /^[A-Za-z0-9+/]*={0,2}$/;
@@ -249,9 +249,9 @@ export async function worded<T>(p: Promise<T>, w: Wording): Promise<T> {
 
 const POST_ID = idArg;
 const reactionSchema = {
-  post_id: POST_ID.describe('投稿の post_id'),
+  post_id: POST_ID,
   // Not a zod regex: a Unicode emoji such as ✅ would get the SDK's generic validation error instead of the emoji-name hint.
-  emoji: z.string().min(1).max(100).describe('Mattermost の絵文字名（例: white_check_mark、+1）。前後のコロンは付けても付けなくてもよい。カスタム絵文字の名前は search_emoji で調べる'),
+  emoji: z.string().min(1).max(100).describe('Emoji name (e.g. white_check_mark, +1). Look up custom emoji names with search_emoji.'),
 };
 type ReactionArgs = { post_id: string; emoji: string };
 
@@ -318,8 +318,8 @@ async function whereOf(mm: Mm, uid: string, post: OwnPost): Promise<Where> {
 }
 
 const editSchema = {
-  post_id: POST_ID.describe('編集する、本人の投稿の post_id'),
-  message: z.string().min(1).max(MAX_MESSAGE).describe(`新しい本文（全体を置き換える）。一覧のツール（read_channel など）の出力を元に書き換えるときは、先に get_post で読み直す。出力の本文は各行が 2 文字字下げされているので、各行の先頭の 2 文字の空白を外す。出力では CRLF や CR の改行を LF にそろえ、垂直タブや U+2028 などの区切りも改行として出すので、書き写すと改行の種類が LF になり、改行が増えることもある。get_post に「${BODY_CUT_NOTE}」とあれば、出力を元に書き換えない（切った後ろが消える）。切った投稿を、出力を元に書き換えたいときは、Mattermost の画面で編集するよう利用者に伝える（利用者が新しい本文全体を渡したときは置き換えてよい）`),
+  post_id: POST_ID,
+  message: z.string().min(1).max(MAX_MESSAGE).describe(`New message, replacing the whole text. To rewrite from earlier output, first reread the post with get_post and remove the 2-space indent from each line. If get_post shows "${BODY_CUT_NOTE}", do not rewrite from the output (the cut part would be lost); ask the user to edit it in Mattermost instead, unless they give you the whole new text.`),
 };
 type EditArgs = { post_id: string; message: string };
 
@@ -357,11 +357,11 @@ export async function deleteMessage(mm: Mm, store: Store, uid: string, args: { p
 }
 
 const draftSchema = {
-  channel: z.string().min(1).describe('チャンネル ID、「チーム名/チャンネル名」、チャンネル名、@ユーザー名（DM）、@a,b（グループ DM）のどれか。DM とグループ DM は無ければ作る'),
+  channel: z.string().min(1).describe('A channel ID, team/channel, channel name, @username (DM), or @a,b (group DM). A DM or group DM is created if missing.'),
   // Not counting code points: zod counts UTF-16 units, which can only be stricter than Mattermost's limit.
   message: z.string().min(1).max(MAX_MESSAGE),
-  root_id: POST_ID.optional().describe('返信の下書きにするときの、スレッドの親投稿の post_id'),
-  overwrite: z.boolean().optional().describe('同じ投稿先に本文の違う下書きがあるときに、上書きするなら true。元の本文に加えて添付ファイル、優先度、burn-on-read（読まれた後に消える設定）も失われ、取り消せない'),
+  root_id: POST_ID.optional().describe('post_id of the thread root, to save a reply draft'),
+  overwrite: z.boolean().optional().describe('true to replace an existing draft with a different message for the same destination. Its attachments, priority and burn-on-read setting are lost too, irreversibly.'),
 };
 type DraftArgs = { channel: string; message: string; root_id?: string; overwrite?: boolean };
 type Draft = {
@@ -557,7 +557,7 @@ async function saveLocked(mm: Mm, uid: string, ch: ChannelRef, rootId: string, a
   return undefined;
 }
 
-const prepareSchema = { channel: z.string().min(1).describe('投稿先。チャンネル ID、「チーム名/チャンネル名」、チャンネル名、@ユーザー名（DM）、@a,b（グループ DM）のどれか。DM とグループ DM は無ければ作る') };
+const prepareSchema = { channel: z.string().min(1).describe('Destination: a channel ID, team/channel, channel name, @username (DM), or @a,b (group DM). A DM or group DM is created if missing.') };
 type PrepareArgs = { channel: string };
 const MiB = 1024 * 1024;
 
@@ -586,13 +586,13 @@ export function registerSendTools(server: McpServer, ctx: ToolContext): void {
   const mmOf = (signal: AbortSignal): Mm => ({ call: (u, m, p, b) => ctx.mm.call(u, m, p, b, signal) });
   const reactionAnnotations = { readOnlyHint: false, destructiveHint: false, idempotentHint: true };
   server.registerTool('add_reaction', {
-    description: '投稿に自分のリアクション（絵文字）を付ける。「確認しました」の意味で white_check_mark を付けるなど、本文を投稿するより軽い返事に使う。付いていても成功する',
+    description: 'Add your reaction to a post. Use it for a light reply such as "noted" (white_check_mark) instead of posting.',
     inputSchema: reactionSchema,
     annotations: reactionAnnotations,
   }, guarded(ctx, 'add_reaction', async (args: ReactionArgs, extra: { signal: AbortSignal }) => addReaction(mmOf(extra.signal), ctx.mmUserId, args),
   ) as unknown as ToolCallback<typeof reactionSchema>);
   server.registerTool('remove_reaction', {
-    description: '投稿から自分が付けたリアクションを外す。他人のリアクションは外さない。付いていなくても成功する',
+    description: 'Remove your reaction from a post.',
     inputSchema: reactionSchema,
     annotations: reactionAnnotations,
   }, guarded(ctx, 'remove_reaction', async (args: ReactionArgs, extra: { signal: AbortSignal }) => removeReaction(mmOf(extra.signal), ctx.mmUserId, args),
@@ -600,28 +600,28 @@ export function registerSendTools(server: McpServer, ctx: ToolContext): void {
 
   const destructive = { readOnlyHint: false, destructiveHint: true, idempotentHint: true };
   server.registerTool('edit_message', {
-    description: '本人の投稿の本文を書き換える。他人、webhook、Bot の投稿とシステムメッセージは扱わない。元の本文は上書きされる。編集で足したメンションは通知されない',
+    description: 'Edit the text of your own post. Mentions added by an edit do not notify.',
     inputSchema: editSchema,
     annotations: destructive,
   }, guarded(ctx, 'edit_message', async (args: EditArgs, extra: { signal: AbortSignal }) => editMessage(mmOf(extra.signal), ctx.store, ctx.mmUserId, ctx.cfg.mmBrowserUrl, args),
   ) as unknown as ToolCallback<typeof editSchema>);
-  const deleteSchema = { post_id: POST_ID.describe('削除する、本人の投稿の post_id') };
+  const deleteSchema = { post_id: POST_ID };
   server.registerTool('delete_message', {
-    description: '本人の投稿を削除する。削除は取り消せない。実行の前に利用者に確認すること。他人、webhook、Bot の投稿とシステムメッセージ、返信のあるスレッドの親投稿は消さない',
+    description: 'Delete your own post. This cannot be undone: confirm with the user first.',
     inputSchema: deleteSchema,
     annotations: destructive,
   }, guarded(ctx, 'delete_message', async (args: { post_id: string }, extra: { signal: AbortSignal }) => deleteMessage(mmOf(extra.signal), ctx.store, ctx.mmUserId, args),
   ) as unknown as ToolCallback<typeof deleteSchema>);
 
   server.registerTool('save_draft', {
-    description: '投稿せずに、本人の Mattermost の下書きとして保存する。送信は本人が画面で行う。root_id を渡すとスレッドへの返信の下書きになる。同じ投稿先に本文の違う下書きがあれば、overwrite: true が無い限り上書きしない。下書きの同期を切っている利用者には保存しない。この下書きと同じ本文を send_message で送ると、投稿の後に下書きを消す（添付の付いた下書きは消さない）',
+    description: 'Save a message as your Mattermost draft without posting; the user sends it from Mattermost. Sending the same message with send_message deletes the draft after posting, unless the draft has attachments.',
     inputSchema: draftSchema,
     annotations: destructive,
   }, guarded(ctx, 'save_draft', async (args: DraftArgs, extra: { signal: AbortSignal }) => saveDraft(mmOf(extra.signal), ctx.mmUserId, args),
   ) as unknown as ToolCallback<typeof draftSchema>);
 
   server.registerTool('prepare_upload', {
-    description: '利用者の PC にあるファイル（スクリーンショット、PDF など）を添付するための、使い捨てのアップロード URL と curl のコマンドを返す。PC でコマンドを実行できるクライアント（Claude Code、Codex CLI など）向けで、パスの分からないファイル（Claude Code に貼り付けた画像など）は利用者にパスを聞き、無ければ末尾の案内に従う。curl を実行する前に、送るファイルのパスと投稿先を利用者に示して確認を取ること。PC でコマンドを実行できないクライアント（claude.ai など）とパスの無いファイルでは、save_draft で本文を下書きにし、ファイルは Mattermost の画面から添付するよう案内する',
+    description: 'Return a one-time upload URL and curl command to attach files from the user\'s PC, for clients that can run commands on the PC (Claude Code, Codex CLI, ...). For a file without a known path (such as an image pasted into Claude Code), ask the user for the path. Before running curl, show the user the file paths and the destination and get confirmation. For clients that cannot run commands (claude.ai, ...) and files without a path, save the text with save_draft and tell the user to attach the files in Mattermost.',
     inputSchema: prepareSchema,
     annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false },
   }, guarded(ctx, 'prepare_upload', async (args: PrepareArgs, extra: { signal: AbortSignal }) =>
@@ -629,7 +629,7 @@ export function registerSendTools(server: McpServer, ctx: ToolContext): void {
   ) as unknown as ToolCallback<typeof prepareSchema>);
 
   server.registerTool('send_message', {
-    description: 'チャンネルへ投稿する。root_id を渡すとスレッドへの返信になる。channel はチャンネル ID、「チーム名/チャンネル名」、チャンネル名、@ユーザー名（DM）、@a,b（グループ DM）のどれか。DM とグループ DM は無ければ作る。添付は files（中身を直接渡す）か file_ids（prepare_upload の結果）。同じ投稿先へ同じ本文と添付を 10 分以内に送ると、やり直しとみなして投稿しない。同じ投稿先に本文の同じ下書きがあれば、投稿の後に消す（添付の付いた下書きは消さない）',
+    description: 'Post to a channel. channel is a channel ID, team/channel, channel name, @username (DM), or @a,b (group DM); a DM or group DM is created if missing. Attach files with files (content inline) or file_ids (from prepare_upload). The same message and attachments to the same destination within 10 minutes is treated as a retry and not posted.',
     inputSchema,
     annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false },
   }, guarded(ctx, 'send_message', async (args: Args, extra: { signal: AbortSignal }) => {

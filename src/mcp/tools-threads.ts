@@ -21,7 +21,7 @@ const THREAD_PAGE = 200;
 
 const CRT_OFF = 'スレッドの折りたたみ（CRT）が無効なため、スレッドのフォローは画面にも通知にも効きません。返信の通知はスレッドごとには止められず、Mattermost の通知の設定（すべてのスレッドに効く）で変えます。';
 
-const POST_ID = idArg.describe('スレッドの親投稿か、スレッド内の投稿の post_id');
+const POST_ID = idArg.describe('post_id of the thread root or any post in the thread');
 export const missing = (e: unknown) => e instanceof MmError && (e.status === 403 || e.status === 404);
 const followAnnotations: ToolAnnotations = { readOnlyHint: false, destructiveHint: false, idempotentHint: true };
 
@@ -45,7 +45,7 @@ export function registerThreadTools(server: McpServer, ctx: ToolContext): void {
       }) as unknown as ToolCallback<S>);
   }
 
-  tool('list_followed_threads', 'フォロー中のスレッドを、最終返信の新しい順に一覧する。全チームと DM、グループ DM が対象。アーカイブ済みのチャンネルのスレッドも含む（チャンネルの行の name の後に「アーカイブ済み」と出す）。返信がまだないルート投稿は、フォローしていても最初の返信まで出ない。スレッドの折りたたみ（CRT）が無効な利用者には使えない。読むだけで、既読にはしない',
+  tool('list_followed_threads', 'List threads you follow, latest reply first. Does not mark them read. Root posts without replies do not appear, even if followed.',
     { limit: limitArg(20, 50), cursor: cursorArg }, { readOnlyHint: true },
     async ({ limit, cursor }, mm) => {
       const startedAt = Date.now();
@@ -120,7 +120,7 @@ export function registerThreadTools(server: McpServer, ctx: ToolContext): void {
     return { team, direct };
   }
 
-  tool('follow_thread', 'スレッドをフォローする。フォロー中のスレッドの返信は、スレッドの通知の設定に従って通知され、list_followed_threads に出る。post_id はスレッド内のどの投稿でもよい。フォローすると、その時点までの返信が既読になる（Mattermost の動作）。すでにフォロー中なら何もしない。返信がまだないルート投稿は、最初の返信まで list_followed_threads に出ない。参加していないチャンネルのスレッドはフォローできない',
+  tool('follow_thread', 'Follow a thread. This marks its replies so far as read. Does nothing if already followed.',
     { post_id: POST_ID }, followAnnotations,
     async ({ post_id }, mm) => {
       const r = await rootOf(mm, post_id);
@@ -156,7 +156,7 @@ export function registerThreadTools(server: McpServer, ctx: ToolContext): void {
       ].join('\n');
     });
 
-  tool('unfollow_thread', 'スレッドのフォローを外し、返信の通知を止める。post_id はスレッド内のどの投稿でもよい。メンションの通知は届き、メンションされるか自分が返信すると、Mattermost は再びフォローする。DM とグループ DM のスレッドは、相手が返信するたびに Mattermost が再びフォローするので、通知を止められない（出力でそう伝える）。フォローしていなくても成功する',
+  tool('unfollow_thread', 'Unfollow a thread. Mattermost follows it again when you are mentioned or reply.',
     { post_id: POST_ID }, followAnnotations,
     async ({ post_id }, mm) => {
       const r = await rootOf(mm, post_id);

@@ -66,7 +66,7 @@ describe('add_reaction', () => {
 
   test('the emoji argument points to search_emoji for custom emoji names', async () => {
     const t = (await setup().tools()).find((x) => x.name === 'add_reaction')! as unknown as { inputSchema: { properties: { emoji: { description: string } } } };
-    expect(t.inputSchema.properties.emoji.description).toContain('カスタム絵文字の名前は search_emoji で調べる');
+    expect(t.inputSchema.properties.emoji.description).toContain('Look up custom emoji names with search_emoji');
   });
 
   test('adds the caller\'s reaction to the post and reports the post_id and emoji name', async () => {
@@ -289,20 +289,14 @@ describe('edit_message and delete_message', () => {
   });
 
   describe('edit_message', () => {
-    test('get_post says its message is indented by 2 and cut beyond 4000 characters, and how to rewrite it', async () => {
-      const d = (await setup().tools()).find((x) => x.name === 'get_post')!.description;
-      for (const s of ['2 文字字下げ', '4000 文字を超える本文は切って出す', '字下げを外し', '出力を元に書き換えない']) expect(d).toContain(s);
-    });
-
-    test('the message argument says to reread the post with get_post, drop the 2-space indent, expect line breaks to become LF, and leave a cut post to the Mattermost screen', async () => {
+    test('the message argument says to reread the post with get_post, drop the 2-space indent, and leave a cut post to the Mattermost screen', async () => {
       const t = (await setup().tools()).find((x) => x.name === 'edit_message')! as unknown as { description: string; inputSchema: { properties: { message: { description: string } } } };
       const d = t.inputSchema.properties.message.description;
-      for (const s of ['先に get_post で読み直す', '2 文字字下げ', '先頭の 2 文字の空白を外す', '出力を元に書き換えない']) expect(d).toContain(s);
+      for (const s of ['first reread the post with get_post', 'remove the 2-space indent', 'do not rewrite from the output']) expect(d).toContain(s);
       // Not a literal: a changed limit or note would otherwise leave this guidance quoting a note get_post no longer writes.
-      expect(d).toContain(`「${BODY_CUT_NOTE}」`);
-      expect(d).toContain('LF になり');
-      expect(d).toContain('切った投稿を、出力を元に書き換えたいときは、Mattermost の画面で編集するよう利用者に伝える');
-      expect(t.description).toBe('本人の投稿の本文を書き換える。他人、webhook、Bot の投稿とシステムメッセージは扱わない。元の本文は上書きされる。編集で足したメンションは通知されない');
+      expect(d).toContain(`"${BODY_CUT_NOTE}"`);
+      expect(d).toContain('ask the user to edit it in Mattermost');
+      expect(t.description).toBe('Edit the text of your own post. Mentions added by an edit do not notify.');
     });
 
     test('replaces only the message through the patch API and reports the post_id, channel and permalink', async () => {
@@ -457,8 +451,8 @@ describe('edit_message and delete_message', () => {
       expect(list.find((t) => t.name === name)?.annotations, name).toMatchObject({ readOnlyHint: false, destructiveHint: true, idempotentHint: true });
     }
     const d = list.find((t) => t.name === 'delete_message')!.description;
-    expect(d).toContain('取り消せない');
-    expect(d).toContain('利用者に確認');
+    expect(d).toContain('cannot be undone');
+    expect(d).toContain('confirm with the user');
   });
 });
 
@@ -717,10 +711,9 @@ describe('save_draft', () => {
     const list = await setup().tools() as unknown as { name: string; description: string; annotations: object; inputSchema: { properties: Record<string, { description?: string }> } }[];
     const t = list.find((x) => x.name === 'save_draft')!;
     expect(t.annotations).toMatchObject({ readOnlyHint: false, destructiveHint: true, idempotentHint: true });
-    expect(t.description).toContain('この下書きと同じ本文を send_message で送ると、投稿の後に下書きを消す');
-    expect(t.description).toContain('添付の付いた下書きは消さない');
+    expect(t.description).toContain('Sending the same message with send_message deletes the draft after posting');
     const d = t.inputSchema.properties.overwrite.description!;
-    expect(d).toContain('添付ファイル、優先度、burn-on-read（読まれた後に消える設定）も失われ');
+    expect(d).toContain('attachments, priority and burn-on-read setting are lost too');
   });
 });
 
@@ -870,38 +863,37 @@ describe('send_message with files', () => {
     for (const s of ['secret-name', 'secret-text', 'secret-bytes', Buffer.from('secret-bytes').toString('base64')]) expect(logged).not.toContain(s);
   });
 
-  test('the tool names both ways to attach and says that a draft with the same message is cleared unless it has files', async () => {
+  test('the tool names both ways to attach', async () => {
     const t = (await setup().tools()).find((x) => x.name === 'send_message')!;
-    expect(t.description).toContain('添付は files（中身を直接渡す）か file_ids（prepare_upload の結果）');
-    expect(t.description).toContain('同じ投稿先に本文の同じ下書きがあれば、投稿の後に消す（添付の付いた下書きは消さない）');
+    expect(t.description).toContain('files (content inline) or file_ids (from prepare_upload)');
   });
 
   test('files gives its two forms and limits, and takes only files whose content can be read and fits', async () => {
     const t = (await setup().tools()).find((x) => x.name === 'send_message')! as unknown as { inputSchema: { properties: { files: { description: string } } } };
     const d = t.inputSchema.properties.files.description;
-    for (const s of ['1〜5 件', '128KiB', 'content_text', 'content_base64', '中身を読めて合計 128KiB に収まるファイルだけを渡す']) expect(d).toContain(s);
+    for (const s of ['content_text', 'content_base64', 'Pass only files whose content you can read and that total at most 128KiB']) expect(d).toContain(s);
   });
 
-  test('files allows content_base64 for a file attached to the chat only when code execution can read it', async () => {
+  test('files allows content_base64 for a file attached to the chat only when code execution can read it, keeps content_text away from text that needs its original encoding, and sends other files on the PC to prepare_upload', async () => {
     const t = (await setup().tools()).find((x) => x.name === 'send_message')! as unknown as { inputSchema: { properties: { files: { description: string } } } };
     const d = t.inputSchema.properties.files.description;
-    expect(d).toContain('チャットに添付されたファイルは、コード実行で中身を読めるときだけ content_base64 で送れる');
-    expect(d).toContain('PC でコマンドを実行できないクライアントでは、利用者の PC にあるテキストのファイルも、読めて収まれば content_text で送ってよい');
-    expect(d).toContain('中身に � や化けた文字が見えるとき、Excel などで作った CSV のように元の文字コードや BOM が要りそうなときは、content_text で送らず prepare_upload の説明の案内に従う');
-    expect(d).toContain('読めないファイル、収まらないファイル、それ以外の利用者の PC にあるファイルは、prepare_upload の説明の案内に従う');
+    expect(d).toContain('A file attached to the chat may go as content_base64 only when code execution can read its bytes');
+    expect(d).toContain("A client that cannot run commands on the user's PC may also send a text file from the PC as content_text");
+    expect(d).toContain('or the original encoding or BOM likely matters (e.g. a CSV from Excel), do not use content_text');
+    expect(d).toContain("any other file on the user's PC, follow the prepare_upload description");
   });
 
   test('prepare_upload asks for the user\'s confirmation before curl, asks for the path of a file without one, and points clients that cannot run commands to save_draft', async () => {
     const t = (await setup().tools()).find((x) => x.name === 'prepare_upload')!;
-    expect(t.description).toContain('curl を実行する前に、送るファイルのパスと投稿先を利用者に示して確認を取ること');
-    expect(t.description).toContain('save_draft で本文を下書きにし、ファイルは Mattermost の画面から添付するよう案内する');
-    expect(t.description).toContain('パスの分からないファイル（Claude Code に貼り付けた画像など）は利用者にパスを聞き、無ければ末尾の案内に従う');
-    expect(t.description).toContain('PC でコマンドを実行できないクライアント（claude.ai など）とパスの無いファイルでは、save_draft');
+    expect(t.description).toContain('Before running curl, show the user the file paths and the destination and get confirmation');
+    expect(t.description).toContain('save the text with save_draft and tell the user to attach the files in Mattermost');
+    expect(t.description).toContain('For a file without a known path (such as an image pasted into Claude Code), ask the user for the path');
+    expect(t.description).toContain('For clients that cannot run commands (claude.ai, ...) and files without a path');
   });
 
   test('file_ids of send_message takes files uploaded to the same channel within 24 hours', async () => {
     const t = (await setup().tools()).find((x) => x.name === 'send_message')! as unknown as { inputSchema: { properties: { file_ids: { description: string } } } };
-    for (const s of ['同じチャンネル', '24 時間']) expect(t.inputSchema.properties.file_ids.description).toContain(s);
+    for (const s of ['destination channel', '24 hours']) expect(t.inputSchema.properties.file_ids.description).toContain(s);
   });
 
   test('the draft cleanup\'s 5-second deadline reaches the Mattermost requests, and running past it leaves the post a success', async () => {

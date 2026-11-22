@@ -160,8 +160,8 @@ const tieStart = (ps: MmPost[]) => {
 };
 
 export const limitArg = (def: number, max: number) => z.number().int().min(1).max(max).optional()
-  .describe(`件数（既定 ${def}、最大 ${max}）。cursor を渡したときは無視する`);
-export const cursorArg = z.string().optional().describe('前回の出力の next_cursor');
+  .describe(`Number of items (default ${def})`);
+export const cursorArg = z.string().optional().describe('next_cursor from the previous output. With a cursor, limit and the from/since/until/types/status/unread_only options come from that earlier call; pass the other arguments unchanged.');
 export const perPage = (max: number) => z.number().int().min(1).max(max);
 const channelKinds = z.array(z.enum(['public', 'private', 'dm', 'group_dm'])).min(1);
 
@@ -540,7 +540,7 @@ export function registerReadTools(server: McpServer, ctx: ToolContext): void {
     });
   }
 
-  tool('search_posts', '参加しているチームのメッセージを検索する。Mattermost の検索構文（from:、in:、before:、after:、on: など）をそのまま使える。in: にはチャンネル ID、「チーム名/チャンネル名」、チャンネル名、@ユーザー名（DM）、@a,b（グループ DM。カンマの前後に空白を入れない）を渡せる。同じ名前が複数のチームにあれば、すべてで探す。見つからない・見る権限の無いチャンネルはエラー、参加していないチャンネル（見られる非公開を含む）に絞ると 0 件になる。アーカイブ済みのチャンネルは、in: にチャンネル ID で挙げたときだけ対象（名前では見つからない）。in: と channel:（-in: などの除外を含む）は 1 回の検索で合わせて 20 個まで。DM は作らない。日付は日本時間（JST）で解釈する。新しい順。メッセージ添付（Bot や webhook などが付ける整形表示）の中身は検索の対象外（Mattermost の標準のデータベース検索は添付を検索しないため。その中身を探すなら read_channel で読む。read_channel なら since と until で期間を指定して読める）',
+  tool('search_posts', 'Search messages in your teams with Mattermost search syntax (from:, in:, before:, after:, on:, ...), newest first. in: also takes a channel ID, team/channel, channel name, @username (DM), or @a,b (group DM, no spaces). Filtering to a channel you have not joined returns nothing. Archived channels are searched only when listed in in: by channel ID. Dates are JST. Message attachments from bots and webhooks are not searched; read those with read_channel since/until.',
     { terms: z.string().min(1), limit: limitArg(20, 50), cursor: cursorArg },
     async ({ terms, limit, cursor }, mm) => {
       const c = cursorOf(z.object({ page: z.number().int().min(0), per_page: perPage(50) }).strict(), cursor);
@@ -556,7 +556,7 @@ export function registerReadTools(server: McpServer, ctx: ToolContext): void {
       return render({ lines, posts: shown, next: more ? { page: page + 1, per_page: per } : undefined, notes: [...filtered.notes, ...capNote(all.length, 'これより古い一致')] });
     });
 
-  tool('list_saved_posts', '自分が保存した（フラグを付けた）投稿を新しい順に一覧する。参加しているチャンネルの投稿だけが対象で、アーカイブ済みのチャンネルの投稿も含む（チャンネルの行の name の後に「アーカイブ済み」と出す）',
+  tool('list_saved_posts', 'List posts you saved (flagged), newest first.',
     { limit: limitArg(20, 50), cursor: cursorArg },
     async ({ limit, cursor }, mm) => {
       const c = cursorOf(z.object({ create_at: z.number().int(), id: z.string(), per_page: perPage(50), at: z.number().int().min(0).optional() }).strict(), cursor);
@@ -618,7 +618,7 @@ export function registerReadTools(server: McpServer, ctx: ToolContext): void {
       return render({ lines, posts: shown, notes, next: rest.length > per && last ? { create_at: last.create_at, id: last.id, per_page: per, at: row.get(last.id) } : undefined });
     });
 
-  tool('search_files', 'ファイルを名前で探す（サーバーが中身を抽出していれば中身にも当たる）。参加しているチャンネル、DM、グループ DM のファイルが対象で、参加していない公開チャンネルのファイルは出ず、アーカイブ済みのチャンネルのファイルは in: にチャンネル ID で挙げたときだけ出る（名前では見つからない）。Mattermost の検索構文（from:、in:、ext:、before:、after:、on: など）を使え、日付は日本時間（JST）で解釈する。in: にはチャンネル ID、「チーム名/チャンネル名」、チャンネル名、@ユーザー名（DM）、@a,b（グループ DM。カンマの前後に空白を入れない）を渡せる。同じ名前が複数のチームにあれば、すべてで探す。見つからない・見る権限の無いチャンネルはエラー。in: と channel:（-in: などの除外を含む）は 1 回の検索で合わせて 20 個まで。DM は作らない。名前は語の単位で当たり、日本語の名前は名前全体か先頭からの前方一致（例: 2026年10月*）でしか当たらない。新しい順。file_id は get_file に、post_id は get_post に渡せる',
+  tool('search_files', 'Search files by name, newest first. Search syntax and in: (including archived channels) work as in search_posts, plus ext:. Names match whole words; Japanese names match only in full or by prefix (e.g. 2026年10月*). Pass file_id to get_file.',
     { terms: z.string().min(1), limit: limitArg(20, 50), cursor: cursorArg },
     async ({ terms, limit, cursor }, mm) => {
       // Marked here rather than on search_posts' cursor: that one is used more, and its cursors issued before a deploy would stop working.
@@ -665,12 +665,12 @@ export function registerReadTools(server: McpServer, ctx: ToolContext): void {
       return render({ lines, notes: [...q.notes, ...capNote(all.length, 'これより古い一致')], next: more ? { page: page + 1, per_page: per, files: true } : undefined });
     });
 
-  tool('read_channel', 'チャンネルの投稿を読む。既定は新しい順。from: "unread" なら未読の先頭から古い順に読み、スレッドの折りたたみ（CRT）が有効ならルート投稿だけを返す。読むだけで、既読にはしない。channel はチャンネル ID、「チーム名/チャンネル名」、チャンネル名、@ユーザー名（DM）、@a,b（グループ DM）のどれか。since を渡すと、その時刻から until（省くと最新）の前までを古い順に読み、返信も含む',
+  tool('read_channel', 'Read posts in a channel without marking them read. channel is a channel ID, team/channel, channel name, @username (DM), or @a,b (group DM). Newest first by default. from: "unread" reads from the first unread post, oldest first (root posts only when collapsed threads are on). since reads up to until (default: now), oldest first, including replies.',
     {
       channel: z.string().min(1),
-      from: z.enum(['latest', 'unread']).optional().describe('latest（既定）は最新から新しい順、unread は未読の先頭から古い順。cursor を渡したときは無視する'),
-      since: z.string().optional().describe('範囲の始まり（この時刻を含む）。YYYY-MM-DDTHH:mm の形（秒、タイムゾーンは任意。タイムゾーンが無ければ JST）。from とは同時に指定できない。cursor を渡したときは無視する'),
-      until: z.string().optional().describe('範囲の終わり（この時刻を含まない）。形は since と同じ。省くと最新まで。since と一緒に指定する。cursor を渡したときは無視する'),
+      from: z.enum(['latest', 'unread']).optional(),
+      since: z.string().optional().describe('Range start (inclusive), YYYY-MM-DDTHH:mm (JST if no offset). Not with from.'),
+      until: z.string().optional().describe('Range end (exclusive), same format as since.'),
       limit: limitArg(30, 100),
       cursor: cursorArg,
     },
@@ -795,7 +795,7 @@ export function registerReadTools(server: McpServer, ctx: ToolContext): void {
       return renderPage(head, r.order.map((id) => r.posts[id]).filter(Boolean), (last) => ({ before: last.id, per_page: per }), '投稿はありません。', 'cursor を渡さずに呼ぶと、最新から読み直せます。同じミリ秒の投稿が多いときは、limit を大きくして読み直すと抜けにくくなります）');
     });
 
-  tool('read_thread', 'スレッドの親投稿と返信を古い順に読む。post_id はスレッド内のどの投稿でもよい。親投稿は最初のページにだけ含める',
+  tool('read_thread', 'Read a thread\'s root post and replies, oldest first. post_id can be any post in the thread.',
     { post_id: idArg, limit: limitArg(50, 200), cursor: cursorArg },
     async ({ post_id, limit, cursor }, mm) => {
       const c = cursorOf(z.object({ from_post: z.string().regex(/^[A-Za-z0-9]{26}$/), from_create_at: z.number().int(), per_page: perPage(200) }), cursor);
@@ -824,7 +824,7 @@ export function registerReadTools(server: McpServer, ctx: ToolContext): void {
       });
     });
 
-  tool('get_post', `1 件の投稿を読む。post は post_id か、パーマリンクの URL（…/<チーム名>/pl/<post_id>）。本文は各行を 2 文字字下げし、${BODY_MAX_CHARS} 文字を超える本文は切って出す（edit_message で書き換えるときは字下げを外し、切った投稿は出力を元に書き換えない）`,
+  tool('get_post', `Read one post. post is a post_id or a permalink URL.`,
     { post: z.string().min(1) },
     async ({ post }, mm) => {
       const id = parsePostRef(post, base);
@@ -845,7 +845,7 @@ export function registerReadTools(server: McpServer, ctx: ToolContext): void {
       ].join('\n');
     });
 
-  tool('get_file', `投稿に添付されたファイルを読む。画像なら縮小版（プレビュー）を画像として返す。テキスト（UTF-8、または拡張子が csv・tsv・txt・log の Shift_JIS か EUC-JP）なら中身を先頭の ${TEXT_MAX_CHARS} 文字まで返す。それ以外（PDF など）は名前・種類・大きさだけを返す。file_id は投稿の「添付:」の行にある`,
+  tool('get_file', `Read a file attached to a post. Returns a preview for images, the first ${TEXT_MAX_CHARS} characters for text, and only name, type and size for anything else (PDF, ...).`,
     { file_id: idArg },
     async ({ file_id }, mm) => {
       const f = await worded(mm.call<MmFileInfo>(uid, 'GET', `/files/${file_id}/info`), FILE_WORDING);
@@ -871,7 +871,7 @@ export function registerReadTools(server: McpServer, ctx: ToolContext): void {
       return { content: [{ type: 'text', text: about }, { type: 'image', data: Buffer.from(b).toString('base64'), mimeType }] };
     });
 
-  tool('search_channels', '名前でチャンネルを探す（公開チャンネル、参加している非公開チャンネル、DM、グループ DM）',
+  tool('search_channels', 'Find channels by name (public, private ones you joined, DMs, group DMs).',
     { query: z.string().min(1), limit: limitArg(20, 50), cursor: cursorArg },
     async ({ query, limit, cursor }, mm) => {
       const c = cursorOf(z.object({ offset: z.number().int().min(0), per_page: perPage(50) }), cursor);
@@ -912,9 +912,9 @@ export function registerReadTools(server: McpServer, ctx: ToolContext): void {
       return render({ lines, next, notes: capNote(capped, 'ほかの公開チャンネル') });
     });
 
-  tool('list_my_channels', '参加しているチャンネル（公開、非公開、DM、グループ DM）を、最終投稿の新しい順に一覧する。アーカイブ済みは含まない',
+  tool('list_my_channels', 'List channels you belong to, most recent post first. Archived channels are excluded.',
     {
-      types: channelKinds.optional().describe('種類で絞る（省略すると全部）。cursor を渡したときは無視する'),
+      types: channelKinds.optional(),
       limit: limitArg(50, 200),
       cursor: cursorArg,
     },
@@ -957,7 +957,7 @@ export function registerReadTools(server: McpServer, ctx: ToolContext): void {
       return render({ lines, next: p.next && { ...p.next, per_page: per, types: kinds } });
     });
 
-  tool('get_channel', 'チャンネルの情報（種類、目的、ヘッダー、メンバー数、ピン留めされた投稿）を読む。channel はチャンネル ID、「チーム名/チャンネル名」、チャンネル名、@ユーザー名（DM）、@a,b（グループ DM）のどれか。ピン留めは新しい順',
+  tool('get_channel', 'Read a channel\'s type, purpose, header, member count and pinned posts. channel is a channel ID, team/channel, channel name, @username (DM), or @a,b (group DM).',
     { channel: z.string().min(1), pinned_limit: limitArg(10, 50), cursor: cursorArg },
     async ({ channel, pinned_limit, cursor }, mm) => {
       const c = cursorOf(z.object({ channel_id: z.string(), create_at: z.number().int(), id: z.string(), per_page: perPage(50) }), cursor);
@@ -997,7 +997,7 @@ export function registerReadTools(server: McpServer, ctx: ToolContext): void {
       return render({ lines, posts: shown, next: rest.length > per && last ? { channel_id: ch.id, create_at: last.create_at, id: last.id, per_page: per } : undefined });
     });
 
-  tool('list_channel_members', 'チャンネルのメンバーをユーザー名の順に一覧する。channel はチャンネル ID、「チーム名/チャンネル名」、チャンネル名、@ユーザー名（DM）、@a,b（グループ DM）のどれか。無効化されたユーザーは含まない。参加していないチャンネルのメンバーは、公開チャンネルでも見られない（システム管理者など、チャンネルを読む権限を別に持つ場合を除く）。在席状況は get_user で読める',
+  tool('list_channel_members', 'List a channel\'s members by username. channel is a channel ID, team/channel, channel name, @username (DM), or @a,b (group DM).',
     { channel: z.string().min(1), limit: limitArg(50, 200), cursor: cursorArg },
     async ({ channel, limit, cursor }, mm) => {
       const c = cursorOf(z.object({ channel_id: z.string(), page: z.number().int().min(0), per_page: perPage(200) }).strict(), cursor);
@@ -1024,7 +1024,7 @@ export function registerReadTools(server: McpServer, ctx: ToolContext): void {
       return render({ lines, next: users.length === per ? { channel_id: ch.id, page: page + 1, per_page: per } : undefined });
     });
 
-  tool('get_unreads', '自分の未読を一覧する。未読のあるチャンネル（未読数とメンション数）と、スレッドの折りたたみ（CRT）が有効なら未読の返信があるスレッド。メンションのあるチャンネルが先。読むだけで、既読にはしない',
+  tool('get_unreads', 'List channels with unread posts and, when collapsed threads are on, threads with unread replies. Does not mark anything read.',
     { limit: limitArg(30, 100), cursor: cursorArg },
     async ({ limit, cursor }, mm) => {
       const startedAt = Date.now();
@@ -1106,9 +1106,9 @@ export function registerReadTools(server: McpServer, ctx: ToolContext): void {
       return render({ lines, posts, notes, next: p.next && { ...p.next, per_page: per, crt: crt.on } });
     });
 
-  tool('get_mentions', '自分へのメンション（@ユーザー名、通知の設定にあるキーワード）を新しい順に一覧する。全チームと DM が対象。読むだけで、既読にはしない。unread_only なら未読のメンションだけを出す。メッセージ添付の中と @channel・@all・@here は数えず、DM とグループ DM では Mattermost がすべての投稿をメンションに数えるため、get_unreads のメンション数と合わないことがある',
+  tool('get_mentions', 'List posts mentioning you, newest first. Does not mark them read. @channel, @all and @here are not included.',
     {
-      unread_only: z.boolean().optional().describe('true なら未読のメンションだけ（チャンネルの既読の位置、CRT が有効なら返信はスレッドの既読の位置より後）。cursor を渡したときは無視する'),
+      unread_only: z.boolean().optional(),
       limit: limitArg(20, 50),
       cursor: cursorArg,
     },
@@ -1191,7 +1191,7 @@ export function registerReadTools(server: McpServer, ctx: ToolContext): void {
       return render({ lines, posts: shown, notes, next });
     });
 
-  tool('search_users', '名前やユーザー名でユーザーを探す',
+  tool('search_users', 'Find users by name or username.',
     { query: z.string().min(1), limit: limitArg(20, 50), cursor: cursorArg },
     async ({ query, limit, cursor }, mm) => {
       const c = cursorOf(z.object({ offset: z.number().int().min(0), per_page: perPage(50) }), cursor);
@@ -1205,7 +1205,7 @@ export function registerReadTools(server: McpServer, ctx: ToolContext): void {
       return render({ lines, next, notes: capNote(all.length, 'ほかのユーザー') });
     });
 
-  tool('get_user', 'ユーザーのプロフィールを読む。user はユーザー ID か @ユーザー名',
+  tool('get_user', 'Read a user\'s profile. user is a user ID or @username.',
     { user: z.string().min(1) },
     async ({ user }, mm) => {
       const u = await resolveUser(mm, uid, user);

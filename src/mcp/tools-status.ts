@@ -12,7 +12,7 @@ const MIN_AHEAD = 60_000;
 const STATUSES = ['online', 'away', 'dnd', 'offline'] as const;
 type Status = (typeof STATUSES)[number];
 const DISABLED: Wording = { id: [[501, 'api.custom_status.disabled', 'この Mattermost ではカスタムステータスが無効です。']] };
-const TIME = '。ISO 8601 の YYYY-MM-DDTHH:mm（秒は任意）。タイムゾーン（Z、+09:00 など）が無ければ JST。今から 1 分後以降';
+const TIME = ', YYYY-MM-DDTHH:mm (JST if no offset)';
 
 function future(s: string, name: string): number {
   const ms = parseWhen(s, name);
@@ -69,12 +69,12 @@ export function registerStatusTools(server: McpServer, ctx: ToolContext): void {
   const mmOf = (signal: AbortSignal): Mm => ({ call: (u, m, p, b) => ctx.mm.call(u, m, p, b, signal) });
 
   const statusSchema = {
-    status: z.enum(STATUSES).describe('online: オンライン、away: 離席、dnd: 取り込み中、offline: オフライン'),
-    dnd_until: z.string().optional().describe(`dnd の終了時刻（status が dnd のときだけ）${TIME}。省略すると自分で変えるまで dnd のまま`),
+    status: z.enum(STATUSES),
+    dnd_until: z.string().optional().describe(`End of dnd${TIME}. Omit to stay dnd until changed.`),
   };
   // Cast for the same reason as in tools-read.ts: the SDK's callback type does not resolve for these shapes.
   server.registerTool('set_status', {
-    description: '自分の在席状況を変える。dnd は終了時刻を指定でき、過ぎると dnd にする前の在席状況に戻る（既に dnd のときに設定すると dnd のまま）。Mattermost は終了時刻を分に切り捨てる。online にすると手動の設定を外し、自動の判定に戻る。他人の在席状況は変えられない。不在（ooo）は設定できず、不在のときに変えると自動返信が止まる',
+    description: 'Change your availability. When dnd ends, the previous status returns; if you set dnd while already dnd, it returns to dnd. online clears the manual setting and returns to automatic. Out of office cannot be set, and changing the status while out of office stops the auto-reply.',
     inputSchema: statusSchema,
     // Destructive: leaving ooo turns off the auto-responder, which no tool here turns back on.
     // Not idempotent: setting dnd again makes dnd the status it returns to when it ends.
@@ -84,19 +84,19 @@ export function registerStatusTools(server: McpServer, ctx: ToolContext): void {
 
   const replaces = { readOnlyHint: false, destructiveHint: true, idempotentHint: true };
   const customSchema = {
-    emoji: z.string().min(1).max(100).optional().describe('絵文字名（例: calendar、palm_tree）。前後のコロンは付けても付けなくてもよい。カスタム絵文字の名前は search_emoji で調べる'),
-    text: z.string().min(1).max(100).optional().describe('文言（100 文字まで）'),
-    until: z.string().optional().describe(`期限${TIME}。省略すると期限なし`),
+    emoji: z.string().min(1).max(100).optional().describe('Emoji name (e.g. calendar). Look up custom emoji names with search_emoji.'),
+    text: z.string().min(1).max(100).optional(),
+    until: z.string().optional().describe(`Expiry${TIME}. Omit for no expiry.`),
   };
   server.registerTool('set_custom_status', {
-    description: '自分のカスタムステータス（絵文字と文言）を設定する。今のカスタムステータスは置き換わる。emoji か text の少なくとも一方が要る。期限を過ぎると Mattermost の画面に出なくなる',
+    description: 'Set your custom status (emoji and text). Replaces the whole current status: passing only emoji clears the text. Needs emoji or text.',
     inputSchema: customSchema,
     annotations: replaces,
   }, guarded(ctx, 'set_custom_status', async (args: CustomArgs, extra: { signal: AbortSignal }) => setCustomStatus(mmOf(extra.signal), uid, args),
   ) as unknown as ToolCallback<typeof customSchema>);
 
   server.registerTool('clear_custom_status', {
-    description: '自分のカスタムステータスを消す。設定されていなくても成功する',
+    description: 'Clear your custom status.',
     inputSchema: {},
     annotations: replaces,
   }, guarded(ctx, 'clear_custom_status', async (_args: Record<string, never>, extra: { signal: AbortSignal }) => clearCustomStatus(mmOf(extra.signal), uid),

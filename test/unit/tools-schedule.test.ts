@@ -83,7 +83,7 @@ function setup() {
 describe('schedule_message', () => {
   test('file_ids takes files uploaded to the same channel within 24 hours', async () => {
     const t = (await setup().tools()).find((x) => x.name === 'schedule_message')! as unknown as { inputSchema: { properties: { file_ids: { description: string } } } };
-    for (const s of ['同じチャンネル', '24 時間']) expect(t.inputSchema.properties.file_ids.description).toContain(s);
+    for (const s of ['destination channel', '24 hours']) expect(t.inputSchema.properties.file_ids.description).toContain(s);
   });
 
   test('the schema has no files, so file_ids is the only way to attach', async () => {
@@ -93,7 +93,7 @@ describe('schedule_message', () => {
 
   test('the tool says file_ids is the only way to attach', async () => {
     const t = (await setup().tools()).find((x) => x.name === 'schedule_message')!;
-    expect((t as unknown as { description: string }).description).toContain('添付は file_ids（prepare_upload の結果）だけ');
+    expect((t as unknown as { description: string }).description).toContain('Attach files only via file_ids');
   });
 
   describe('to a DM not opened yet', () => {
