@@ -94,6 +94,8 @@ unset MM_ADMIN_TOKEN
 | `MM_BROWSER_URL` | | `MM_URL` | 利用者のブラウザを送る Mattermost の URL。パーマリンクもこれで作る |
 | `DB_PATH` | | `/data/mcp.sqlite` | SQLite ファイル |
 | `PORT` | | `3000` | 待ち受けるポート |
+| `LOCALE` | | `en` | ツールの説明、ツールの出力、同意画面、管理コマンドの言語。`en` か `ja`。空の文字列は既定値として扱い、ほかの値は起動時に `LOCALE must be en or ja` で落ちる |
+| `TIME_ZONE` | | `UTC` | 時刻を読み書きするタイムゾーンの IANA 名（例 `Asia/Tokyo`）。オフセットの無い時刻と検索の日付をこのタイムゾーンで読み、出力には UTC とこのタイムゾーンの時刻を併記する。空の文字列は既定値として扱い、ほかの値は起動時に `TIME_ZONE must be an IANA time zone name` で落ちる |
 | `ACCESS_TOKEN_TTL_SEC` | | `3600` | MCP のアクセストークンの有効期限（秒）。リフレッシュの確認のときにだけ短くする |
 | `EXTRA_REDIRECT_URIS` | | | 追加で登録を許すリダイレクト URI（カンマ区切り、完全一致）。claude.ai、claude.com、ループバックは既定で許可している |
 | `EXTRA_ALLOWED_ORIGINS` | | | `/mcp` で追加で許す `Origin`（カンマ区切り）。既定は `https://claude.ai` と `https://claude.com`。`Origin` の無い要求（CLI）は検査しない |
