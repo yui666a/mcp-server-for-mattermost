@@ -333,7 +333,7 @@ describe('read tools against the local Mattermost', () => {
       do {
         const r = await call('alice', 'list_my_channels', { ...args, ...(cursor ? { cursor } : {}) });
         expect(r.isError).toBeFalsy();
-        expect(r.content[0].text).not.toContain('取り直してください');
+        expect(r.content[0].text).not.toContain('Start again from the first page');
         text += `${r.content[0].text}\n`;
         seen.push(...ids(r));
         cursor = nextCursor(r);
@@ -370,10 +370,10 @@ describe('read tools against the local Mattermost', () => {
 
     test('lists alice\'s public, private, DM and group DM channels, but not an archived one', async () => {
       const { text } = await listAll({ limit: 200 });
-      expect(lineOf(text, pub.id)?.replace(/最終投稿: [^、]+、/, '最終投稿: *、')).toBe(`- ${e.teams.a.name}/t7-pub-${TAG}（channel_id: ${pub.id}、team_id: ${e.teams.a.id}、種類: 公開、最終投稿: *、表示名: t7-pub ${TAG}）`);
-      expect(lineOf(text, priv.id)).toContain('種類: 非公開');
-      expect(lineOf(text, dm.id)?.replace(/最終投稿: [^、]+、/, '最終投稿: *、')).toBe(`- @${e.users.bob.username}（channel_id: ${dm.id}、種類: DM、最終投稿: *、表示名: @${e.users.bob.username}）`);
-      expect(lineOf(text, gm.id)).toContain('種類: グループ DM');
+      expect(lineOf(text, pub.id)?.replace(/last post: [^,]+,/, 'last post: *,')).toBe(`- ${e.teams.a.name}/t7-pub-${TAG} (channel_id: ${pub.id}, team_id: ${e.teams.a.id}, type: public, last post: *, display name: t7-pub ${TAG})`);
+      expect(lineOf(text, priv.id)).toContain('type: private');
+      expect(lineOf(text, dm.id)?.replace(/last post: [^,]+,/, 'last post: *,')).toBe(`- @${e.users.bob.username} (channel_id: ${dm.id}, type: DM, last post: *, display name: @${e.users.bob.username})`);
+      expect(lineOf(text, gm.id)).toContain('type: group DM');
       expect(text).not.toContain(archived.id);
     });
 
@@ -383,7 +383,7 @@ describe('read tools against the local Mattermost', () => {
       expect(seen).toContain(gm.id);
       expect(seen).not.toContain(pub.id);
       expect(seen).not.toContain(priv.id);
-      expect(text).not.toMatch(/種類: (公開|非公開)、/);
+      expect(text).not.toMatch(/type: (public|private),/);
     });
 
     test('paging to the end yields exactly the channels of GET /users/me/channels', async () => {
@@ -422,26 +422,26 @@ describe('read tools against the local Mattermost', () => {
       const t = r.content[0].text;
       expect(t).toContain(`channel_id: ${ch.id}`);
       expect(t).toContain(`team_id: ${e.teams.a.id}`);
-      expect(t).toContain('種類: 公開');
-      expect(t).toContain(`目的: ${TAG} purpose`);
-      expect(t).toContain(`ヘッダー: ${TAG} header`);
-      expect(t).toContain('メンバー数: 1');
-      expect(t).toContain('ピン留め: 3 件');
+      expect(t).toContain('Type: public');
+      expect(t).toContain(`Purpose: ${TAG} purpose`);
+      expect(t).toContain(`Header: ${TAG} header`);
+      expect(t).toContain('Member count: 1');
+      expect(t).toContain('Pinned posts: 3');
       expect(postIds(r)).toEqual(pins);
     });
 
     test('for a public channel bob has not joined, says the member count is unavailable', async () => {
       const r = await call('bob', 'get_channel', { channel: ch.id });
       expect(r.isError).toBeFalsy();
-      expect(r.content[0].text).toContain('メンバー数: 取得できません（参加していないか、一時的な障害か、権限の設定）');
-      expect(r.content[0].text).toContain(`目的: ${TAG} purpose`);
+      expect(r.content[0].text).toContain('Member count: unavailable (you have not joined, a temporary failure, or a permission setting)');
+      expect(r.content[0].text).toContain(`Purpose: ${TAG} purpose`);
       expect(postIds(r)).toEqual(pins);
     });
 
     test('for the id of a private channel bob has not joined, says he has no permission', async () => {
       const r = await call('bob', 'get_channel', { channel: e.teams.a.privateChannelId! });
       expect(r.isError).toBe(true);
-      expect(r.content[0].text).toBe('このチャンネルを見る権限がありません（参加していない非公開チャンネルなど）。 If you should be a member, this may be a temporary Mattermost failure. Wait a moment and retry. If it persists, you may have been removed from the channel, or the read permission may have been removed in the server\'s permission settings; ask an administrator to check.');
+      expect(r.content[0].text).toBe('You do not have permission to view this channel (for example, a private channel you have not joined). If you should be a member, this may be a temporary Mattermost failure. Wait a moment and retry. If it persists, you may have been removed from the channel, or the read permission may have been removed in the server\'s permission settings; ask an administrator to check.');
     });
 
     test('pages through 3 pinned posts with pinned_limit 2', async () => {
@@ -478,8 +478,8 @@ describe('read tools against the local Mattermost', () => {
       });
       const r = await call('alice', 'get_user', { user: '@bob' });
       expect(r.isError).toBeFalsy();
-      expect(r.content[0].text).toContain('タイムゾーン: Asia/Kolkata（手動）');
-      expect(r.content[0].text).toMatch(/現地時刻: \d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\+05:30/);
+      expect(r.content[0].text).toContain('Time zone: Asia/Kolkata (manual)');
+      expect(r.content[0].text).toMatch(/Local time: \d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\+05:30/);
     });
 
     test('shows do-not-disturb and its end time when bob turns it on', async () => {
@@ -488,7 +488,7 @@ describe('read tools against the local Mattermost', () => {
       const r = await call('alice', 'get_user', { user: '@bob' });
       expect(r.isError).toBeFalsy();
       const minute = new Date(Math.floor(end / 60) * 60_000).toISOString().slice(0, 19);
-      expect(r.content[0].text).toContain(`在席: 取り込み中（終了: ${minute}Z | `);
+      expect(r.content[0].text).toContain(`Presence: do not disturb (until: ${minute}Z | `);
     });
   });
 
@@ -666,21 +666,21 @@ describe('read tools against the local Mattermost', () => {
     try {
       const refused = await call('bob', 'list_channel_members', { channel: ch.id });
       expect(refused.isError).toBe(true);
-      expect(refused.content[0].text).toBe('このチャンネルのメンバーを見る権限がありません。参加していないチャンネルのメンバーは、公開チャンネルでも見られません。 If you should be a member, this may be a temporary Mattermost failure. Wait a moment and retry. If it persists, you may have been removed from the channel, or the read permission may have been removed in the server\'s permission settings; ask an administrator to check.');
+      expect(refused.content[0].text).toBe('You do not have permission to view this channel\'s members. Members of a channel you have not joined cannot be seen, even for a public channel. If you should be a member, this may be a temporary Mattermost failure. Wait a moment and retry. If it persists, you may have been removed from the channel, or the read permission may have been removed in the server\'s permission settings; ask an administrator to check.');
       await mmApi(aliceMm, 'POST', `/channels/${ch.id}/members`, { user_id: e.users.bob.id });
-      const members = (r: Result) => [...r.content[0].text.matchAll(/^- @(\S+?)（/gm)].map((m) => m[1]);
+      const members = (r: Result) => [...r.content[0].text.matchAll(/^- @(\S+?) \(/gm)].map((m) => m[1]);
       const pages: string[][] = [];
       let cursor: string | undefined;
       let last: Result;
       do {
         last = await call('alice', 'list_channel_members', { channel: `team-a/${ch.name}`, limit: 1, ...(cursor ? { cursor } : {}) });
         expect(last.isError).toBeFalsy();
-        if (!cursor) expect(last.content[0].text).toContain('メンバー数: 2');
+        if (!cursor) expect(last.content[0].text).toContain('Member count: 2');
         pages.push(members(last));
         cursor = nextCursor(last);
       } while (cursor);
       expect(pages).toEqual([[e.users.alice.username], [e.users.bob.username], []]);
-      expect(last.content[0].text).not.toContain('メンバーはいません');
+      expect(last.content[0].text).not.toContain('No members');
       expect(last.content[0].text).toContain('(No more results)');
     } finally {
       await mmApi(e.adminToken, 'DELETE', `/channels/${ch.id}`);

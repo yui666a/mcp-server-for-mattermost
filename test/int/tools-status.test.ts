@@ -75,7 +75,7 @@ describe('set_status against the local Mattermost', () => {
     expect(r.isError).toBeFalsy();
     const s = await status();
     expect(s).toMatchObject({ status: 'dnd', manual: true, dnd_end_time: Math.floor(end.getTime() / 60_000) * 60 });
-    expect(r.content[0].text).toContain('「取り込み中」（終了:');
+    expect(r.content[0].text).toContain('「do not disturb」（終了:');
   });
 
   test('away is manual, and online goes back to automatic', async () => {

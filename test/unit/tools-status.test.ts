@@ -76,14 +76,14 @@ describe('set_status', () => {
   test('online says the status is back to automatic', async () => {
     routes = { [`PUT ${STATUS}`]: echo() };
     const r = await setup().call('set_status', { status: 'online' });
-    expect(r.text).toContain('「オンライン」');
+    expect(r.text).toContain('「online」');
     expect(r.text).toContain('自動の判定に戻りました');
   });
 
   test('away does not claim the status is automatic', async () => {
     routes = { [`PUT ${STATUS}`]: echo() };
     const r = await setup().call('set_status', { status: 'away' });
-    expect(r.text).toContain('「離席」');
+    expect(r.text).toContain('「away」');
     expect(r.text).not.toContain('自動');
   });
 
@@ -92,7 +92,7 @@ describe('set_status', () => {
     const r = await setup().call('set_status', { status: 'dnd', dnd_until: '2026-11-04T11:00:30' });
     expect(r.isError).toBe(false);
     expect(bodies[STATUS]).toEqual({ user_id: 'u1', status: 'dnd', dnd_end_time: Date.parse('2026-11-04T02:00:30Z') / 1000 });
-    expect(r.text).toContain('「取り込み中」（終了: 2026-11-04T02:00:00Z | 2026-11-04T11:00:00+09:00）');
+    expect(r.text).toContain('「do not disturb」（終了: 2026-11-04T02:00:00Z | 2026-11-04T11:00:00+09:00）');
   });
 
   test('dnd without dnd_until says it has no end time', async () => {

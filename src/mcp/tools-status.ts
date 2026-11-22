@@ -4,7 +4,7 @@ import { z } from 'zod';
 import { formatTime, InputError } from './format.ts';
 import type { Mm } from './resolve.ts';
 import { guarded, text, type ToolContext } from './tool.ts';
-import { PRESENCE } from './tools-read.ts';
+import { presenceName } from './tools-read.ts';
 import { worded, type Wording } from './tools-send.ts';
 import { parseWhen, whenForm } from './when.ts';
 
@@ -30,7 +30,7 @@ export async function setStatus(mm: Mm, uid: string, args: StatusArgs): Promise<
     id: [[404, 'api.status.user_not_found.app_error', 'この Mattermost では在席状況の機能が無効なため、在席状況を変えられません。']],
   });
   const until = s.status !== 'dnd' ? '' : s.dnd_end_time > 0 ? `（終了: ${formatTime(s.dnd_end_time * 1000)}）` : '（終了時刻なし）';
-  return text(`在席状況を「${PRESENCE[s.status]}」${until}にしました。${s.status === 'online' ? '手動の設定を外し、自動の判定に戻りました。' : ''}`);
+  return text(`在席状況を「${presenceName(s.status)}」${until}にしました。${s.status === 'online' ? '手動の設定を外し、自動の判定に戻りました。' : ''}`);
 }
 
 type CustomArgs = { emoji?: string; text?: string; until?: string };

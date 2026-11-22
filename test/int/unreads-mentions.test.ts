@@ -64,7 +64,7 @@ describe('get_unreads and get_mentions against the local Mattermost', () => {
     do {
       const r = await call(who, name, cursor ? { cursor } : { limit });
       expect(r.isError, r.content[0].text).toBeFalsy();
-      expect(r.content[0].text).not.toContain('取り直してください');
+      expect(r.content[0].text).not.toContain('Start again from the first page');
       texts.push(r.content[0].text);
       cursor = nextCursor(r);
     } while (cursor && texts.length < 100);
@@ -101,12 +101,12 @@ describe('get_unreads and get_mentions against the local Mattermost', () => {
   test('get_unreads shows the unread root posts and mention of the channel, and the thread with its unread reply, without marking anything read', async () => {
     const before = await unreadOf();
     const text = (await pageAll('alice', 'get_unreads', 100)).join('\n');
-    expect(text.split('\n')[0]).toBe('スレッドの折りたたみ（CRT）: 有効（サーバー設定: always_on）');
+    expect(text.split('\n')[0]).toBe('Collapsed threads (CRT): on (Server setting: always_on)');
     const line = text.split('\n').find((l) => l.startsWith('- ') && l.includes(`channel_id: ${ch.id}`));
     expect(line).toContain(`${e.teams.a.name}/t6-${TAG}`);
-    expect(line).toContain('未読: 3、メンション: 1、');
+    expect(line).toContain('unread: 3, mentions: 1, ');
     const thread = text.split('\n--- post_id: ').find((b) => b.startsWith(threadRoot));
-    expect(thread).toContain('未読の返信: 1、未読のメンション: 0、');
+    expect(thread).toContain('Unread replies: 1, unread mentions: 0, ');
     expect(thread).toContain(`${browserUrl}/${e.teams.a.name}/pl/${threadRoot}`);
     expect(await unreadOf()).toEqual(before);
   });

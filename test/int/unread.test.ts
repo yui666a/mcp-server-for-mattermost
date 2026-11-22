@@ -89,7 +89,7 @@ describe('read_channel from unread and mark_as_read against the local Mattermost
 
     const seen: string[] = [];
     let r = await call('read_channel', { channel: ch, from: 'unread', limit: 2 });
-    expect(r.content[0].text).toContain('未読の先頭から古い順');
+    expect(r.content[0].text).toContain('From the first unread post, oldest first');
     for (let i = 0; ; i++) {
       expect(r.isError, r.content[0].text).toBeFalsy();
       seen.push(...postIds(r));
