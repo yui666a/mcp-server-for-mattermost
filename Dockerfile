@@ -1,4 +1,4 @@
-FROM node:26.13.0-slim
+FROM node:26.13.1-slim
 WORKDIR /app
 COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
 # Installed through npm rather than corepack: Node 26 no longer bundles corepack.
