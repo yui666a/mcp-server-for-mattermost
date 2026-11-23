@@ -1,4 +1,5 @@
 FROM node:26.13.1-slim
+LABEL io.modelcontextprotocol.server.name="io.github.yui666a/mcp-server-for-mattermost"
 WORKDIR /app
 COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
 # Installed through npm rather than corepack: Node 26 no longer bundles corepack.
