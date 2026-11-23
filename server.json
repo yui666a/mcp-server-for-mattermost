@@ -1,0 +1,31 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
+  "name": "io.github.yui666a/mcp-server-for-mattermost",
+  "title": "Mattermost",
+  "description": "Read and post to Mattermost as each user via per-user OAuth. Self-hosted, works with Team Edition.",
+  "version": "0.1.0",
+  "repository": {
+    "url": "https://github.com/yui666a/mcp-server-for-mattermost",
+    "source": "github"
+  },
+  "packages": [
+    {
+      "registryType": "oci",
+      "identifier": "ghcr.io/yui666a/mcp-server-for-mattermost:0.1.0",
+      "transport": {
+        "type": "streamable-http",
+        "url": "http://localhost:{PORT}/mcp"
+      },
+      "environmentVariables": [
+        { "name": "PUBLIC_URL", "description": "Public origin of this server behind the reverse proxy, without a trailing slash", "isRequired": true },
+        { "name": "MM_OAUTH_CLIENT_ID", "description": "Client ID of the Mattermost OAuth app", "isRequired": true },
+        { "name": "MM_OAUTH_CLIENT_SECRET", "description": "Client secret of the Mattermost OAuth app", "isRequired": true, "isSecret": true },
+        { "name": "TOKEN_ENC_KEY", "description": "Base64 of a 32-byte key that encrypts stored tokens (openssl rand -base64 32)", "isRequired": true, "isSecret": true },
+        { "name": "MM_URL", "description": "Mattermost URL the server calls; defaults to PUBLIC_URL" },
+        { "name": "LOCALE", "description": "Language of tool descriptions and output", "default": "en", "choices": ["en", "ja"] },
+        { "name": "TIME_ZONE", "description": "IANA time zone for reading and writing times", "default": "UTC" },
+        { "name": "PORT", "description": "Port to listen on", "default": "3000" }
+      ]
+    }
+  ]
+}
