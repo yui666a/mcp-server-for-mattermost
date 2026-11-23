@@ -60,11 +60,11 @@ describe('scheduled messages against the local Mattermost', () => {
   const schedule = async (channelId: string, message: string) => {
     const made = await call('schedule_message', { channel: channelId, message, at: inTwoMinutes() });
     expect(made.isError, made.content[0].text).toBeFalsy();
-    return /予約 ID: (\S+)/.exec(made.content[0].text)![1];
+    return /scheduled ID: (\S+)/.exec(made.content[0].text)![1];
   };
   const rowOf = async (id: string) => {
     const text = (await call('list_scheduled_messages', {})).content[0].text;
-    return text.split('--- ').find((r) => r.startsWith(`予約 ID: ${id}\n`)) ?? '';
+    return text.split('--- ').find((r) => r.startsWith(`scheduled ID: ${id}\n`)) ?? '';
   };
   const postsWith = async (channelId: string, message: string) =>
     Object.values((await mmApi<{ posts: Record<string, Post> }>(aliceMm, 'GET', `/channels/${channelId}/posts?per_page=200`)).posts)
@@ -77,7 +77,7 @@ describe('scheduled messages against the local Mattermost', () => {
     const [post] = await postsWith(channel.id, message);
     expect(post?.user_id).toBe(e.users.alice.id);
     const row = await rowOf(id);
-    expect(row).toContain('状態: 投稿済み');
+    expect(row).toContain('status: posted');
     expect(row).toContain(`post_id: ${post.id}`);
     expect(row).toContain(`/team-a/pl/${post.id}`);
   });
@@ -105,7 +105,7 @@ describe('scheduled messages against the local Mattermost', () => {
     const message = `${TAG} scheduled with a file`;
     const made = await call('schedule_message', { channel: channel.id, message, at: inTwoMinutes(), file_ids: [fileId] });
     expect(made.isError, made.content[0].text).toBeFalsy();
-    const id = /予約 ID: (\S+)/.exec(made.content[0].text)![1];
+    const id = /scheduled ID: (\S+)/.exec(made.content[0].text)![1];
     const sent = await call('send_message', { channel: channel.id, message: `${TAG} steals the file`, file_ids: [fileId] });
     expect(sent.isError).toBe(true);
     expect(sent.content[0].text).toContain(id);
@@ -113,10 +113,10 @@ describe('scheduled messages against the local Mattermost', () => {
     const [post] = await postsWith(channel.id, message);
     expect(post?.file_ids).toEqual([fileId]);
     const row = await rowOf(id);
-    expect(row).toContain('状態: 投稿済み');
+    expect(row).toContain('status: posted');
     expect(row).toContain(`post_id: ${post.id}`);
-    expect(row).toContain(`添付: ${fileId}`);
-    expect(row).not.toContain('注意');
+    expect(row).toContain(`attachments: ${fileId}`);
+    expect(row).not.toContain('note');
   });
 
   test('a cancelled schedule is not posted', async () => {
@@ -133,17 +133,17 @@ describe('scheduled messages against the local Mattermost', () => {
     await mmApi(e.adminToken, 'DELETE', `/channels/${doomed.id}`);
     await tick(store, mm, Date.now() + 120_000);
     const row = await rowOf(id);
-    expect(row).toContain('状態: 失敗');
-    expect(/失敗の理由: (.+)/.exec(row)?.[1]).toContain('アーカイブ');
+    expect(row).toContain('status: failed');
+    expect(/failure reason: (.+)/.exec(row)?.[1]).toContain('archived');
   });
 
   test('schedule_message refuses files, which only send_message takes, instead of scheduling without the attachment', async () => {
     const message = `${TAG} with inline files`;
     const r = await call('schedule_message', { channel: channel.id, message, at: inTwoMinutes(), files: [{ name: 'a.txt', content_text: 'hello' }] });
     expect(r.isError).toBe(true);
-    expect(r.content[0].text).toContain('受けない引数です: files');
-    expect(r.content[0].text).toContain('send_message の files を使えます');
-    expect(r.content[0].text).toContain('prepare_upload の説明の案内に従ってください');
+    expect(r.content[0].text).toContain('Arguments not accepted: files');
+    expect(r.content[0].text).toContain('use files of send_message');
+    expect(r.content[0].text).toContain('follow the guidance in the prepare_upload description');
     expect((await call('list_scheduled_messages', {})).content[0].text).not.toContain(message);
   });
 
@@ -152,8 +152,8 @@ describe('scheduled messages against the local Mattermost', () => {
     const id = await schedule(channel.id, message);
     const r = await call('update_scheduled_message', { id, message: `${TAG} changed`, file_ids: ['a'.repeat(26)] });
     expect(r.isError).toBe(true);
-    expect(r.content[0].text).toContain('受けない引数です: file_ids');
-    expect(r.content[0].text).toContain('投稿先と添付は変えられません');
+    expect(r.content[0].text).toContain('Arguments not accepted: file_ids');
+    expect(r.content[0].text).toContain('Destination and attachments cannot be changed');
     expect(r.content[0].text).toContain('cancel_scheduled_message');
     expect(await rowOf(id)).toContain(message);
     expect((await call('cancel_scheduled_message', { id })).isError).toBeFalsy();
@@ -165,11 +165,11 @@ describe('scheduled messages against the local Mattermost', () => {
     const at = new Date(Date.now() + 3600_000).toISOString().slice(0, 16) + 'Z';
     const made = await call('schedule_message', { channel: 'team-a/town-square', message: `${TAG} later`, at });
     expect(made.isError, made.content[0].text).toBeFalsy();
-    const id = /予約 ID: (\S+)/.exec(made.content[0].text)![1];
+    const id = /scheduled ID: (\S+)/.exec(made.content[0].text)![1];
 
     const listed = await call('list_scheduled_messages', { status: 'pending' });
     expect(listed.isError).toBeFalsy();
-    expect(listed.content[0].text).toContain(`予約 ID: ${id}\n状態: 待機中`);
+    expect(listed.content[0].text).toContain(`scheduled ID: ${id}\nstatus: pending`);
     expect(listed.content[0].text).toContain(`${TAG} later`);
 
     const cancelled = await call('cancel_scheduled_message', { id });

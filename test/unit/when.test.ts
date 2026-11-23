@@ -1,6 +1,9 @@
-import { expect, test } from 'vitest';
+import { afterEach, expect, test } from 'vitest';
 import { InputError } from '../../src/mcp/format.ts';
-import { parseWhen } from '../../src/mcp/when.ts';
+import { parseWhen, whenForm } from '../../src/mcp/when.ts';
+import { setTimeZone } from '../../src/zone.ts';
+
+afterEach(() => setTimeZone('Asia/Tokyo'));
 
 test.each([
   ['2026-11-03T10:00', '2026-11-03T01:00:00.000Z'],
@@ -13,7 +16,7 @@ test.each([
   ['2026-11-03T10:00:00.000+09:00', '2026-11-03T01:00:00.000Z'],
   ['2026-11-03T00:30', '2026-11-02T15:30:00.000Z'],
   ['2028-02-29T12:00', '2028-02-29T03:00:00.000Z'],
-])('reads %j as %s, taking a time without a zone as JST', (given, utc) => {
+])('reads %j as %s, taking a time without a zone as Asia/Tokyo', (given, utc) => {
   expect(new Date(parseWhen(given)).toISOString()).toBe(utc);
 });
 
@@ -39,6 +42,38 @@ test.each([
 });
 
 test('names the argument in the error, at unless told otherwise', () => {
-  expect(() => parseWhen('x', 'since')).toThrow(/^since「x」を日時として読めません/);
-  expect(() => parseWhen('x')).toThrow(/^at「x」を日時として読めません/);
+  expect(() => parseWhen('x', 'since')).toThrow(/^since "x" cannot be read as a date-time/);
+  expect(() => parseWhen('x')).toThrow(/^at "x" cannot be read as a date-time/);
+});
+
+test('takes a time without a zone as the local time of TIME_ZONE', () => {
+  setTimeZone('UTC');
+  expect(parseWhen('2026-11-23T09:00')).toBe(Date.UTC(2026, 10, 23, 9, 0));
+  setTimeZone('America/New_York');
+  expect(parseWhen('2026-07-01T12:00')).toBe(Date.UTC(2026, 6, 1, 16, 0));
+  expect(parseWhen('2026-07-01T12:00Z')).toBe(Date.UTC(2026, 6, 1, 12, 0));
+});
+
+test('refuses a local time skipped by daylight saving time, saying it does not exist rather than that the form is wrong', () => {
+  setTimeZone('America/New_York');
+  expect(() => parseWhen('2026-03-08T02:30')).toThrow(InputError);
+  expect(() => parseWhen('2026-03-08T02:30')).toThrow(/^at "2026-03-08T02:30" does not exist in America\/New_York.*daylight-saving.*another time.*offset/);
+  expect(() => parseWhen('2026-03-08T02:30')).not.toThrow(/cannot be read/);
+});
+
+test.each([
+  ['America/New_York', true],
+  ['Europe/London', true],
+  ['Australia/Sydney', true],
+  ['Asia/Tokyo', false],
+  ['UTC', false],
+])('the time form names the daylight-saving rule only for a zone that observes it (%s: %s)', (tz, dst) => {
+  setTimeZone(tz);
+  expect(whenForm()).toContain(`${tz} if no offset`);
+  expect(/daylight-saving/.test(whenForm())).toBe(dst);
+});
+
+test('reads a local time repeated by daylight saving time as the earlier moment', () => {
+  setTimeZone('America/New_York');
+  expect(parseWhen('2026-11-01T01:30')).toBe(Date.UTC(2026, 10, 1, 5, 30));
 });

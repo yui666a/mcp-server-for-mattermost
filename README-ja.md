@@ -6,7 +6,8 @@ AI のクライアント（claude.ai、Claude Code、Codex CLI などの MCP ク
 利用者は URL を 1 つコネクタとして追加し、自分の Mattermost のアカウントでログインする。
 サーバーが見られるもの、できることは、その利用者の権限の範囲に限られる。
 
-> ツールの説明は英語、ツールの出力、同意画面、`docs/` 以下の文書は日本語で書いている。
+> ツールの説明、ツールの出力、同意画面の言語は環境変数 `LOCALE`（`en` か `ja`、既定は `en`）で選ぶ。
+> `docs/` 以下の文書は英語と日本語の両方を置く（日本語版は `-ja.md`）。
 
 ## 何のためのものか
 
@@ -59,7 +60,7 @@ Mattermost は公式の MCP サーバーを [Mattermost Agents プラグイン](
 | `set_status` | 自分の在席状況（オンライン、離席、取り込み中（終了時刻を付けられる）、オフライン）を変える |
 | `set_custom_status` / `clear_custom_status` | 自分のカスタムステータス（絵文字、文言、期限）を設定する、消す |
 
-時刻は JST で扱う。`schedule_message`、`set_status`（`dnd_until`）、`set_custom_status`（`until`）の時刻（`YYYY-MM-DDTHH:mm[:ss[.sss]]`）はオフセットが無ければ `+09:00` として読むので、ほかのタイムゾーンなら `Z` か `+hh:mm`（`-hh:mm`）を付ける。検索の日付（`on:`、`before:`、`after:`）は JST の日として扱い、出力の時刻は UTC と JST を併記する。
+時刻は環境変数 `TIME_ZONE`（IANA のタイムゾーン名、既定は `UTC`）のタイムゾーンで扱う。`schedule_message`、`set_status`（`dnd_until`）、`set_custom_status`（`until`）の時刻（`YYYY-MM-DDTHH:mm[:ss[.sss]]`）はオフセットが無ければ `TIME_ZONE` の時刻として読むので、ほかのタイムゾーンなら `Z` か `+hh:mm`（`-hh:mm`）を付ける。検索の日付（`on:`、`before:`、`after:`）は `TIME_ZONE` の日として扱い、出力の時刻は UTC と `TIME_ZONE` の時刻を併記する（`TIME_ZONE` が UTC のときは UTC だけを出す）。
 
 読み取り系のツールが出す投稿には、メッセージ添付（Bot や webhook が投稿する整形表示。Mattermost の標準のデータベース検索は対象にしない）、リアクションと付けた人、編集の時刻、システムメッセージかどうかも含める。`get_unreads` と `list_followed_threads` のスレッドは、Mattermost のスレッドの一覧が通常はリアクションを返さないため、リアクションがあることだけを出す（返れば付けた人も出す）。付けた人は `get_post` で確かめられる。
 
@@ -78,7 +79,7 @@ MCP クライアント ──(MCP のトークン)──> mcp-server-for-matterm
 - Mattermost に confidential な OAuth アプリを 1 つ登録する。1 プロセスで動き、状態は SQLite ファイルに持つ
 - Mattermost API の呼び出しに、利用者ごとと全体の上限（毎分 300 回と 600 回）、タイムアウト、同時実行数の上限を設けている
 
-設計の全体は [docs/superpowers/specs/2026-11-01-mattermost-mcp-design.md](docs/superpowers/specs/2026-11-01-mattermost-mcp-design.md) にある。
+設計の全体は [docs/superpowers/specs/2026-11-01-mattermost-mcp-design-ja.md](docs/superpowers/specs/2026-11-01-mattermost-mcp-design-ja.md) にある。
 
 ## 必要なもの
 
@@ -121,7 +122,7 @@ pnpm dev:down    # ローカルの Mattermost を止め、データを消す
 
 ## 導入
 
-確かめておく Mattermost の設定、OAuth アプリの作り方、環境変数、`compose.yml` の例、リバースプロキシに求めることと nginx の例は [docs/deployment.md](docs/deployment.md) にある。
+確かめておく Mattermost の設定、OAuth アプリの作り方、環境変数、`compose.yml` の例、リバースプロキシに求めることと nginx の例は [docs/deployment-ja.md](docs/deployment-ja.md) にある。
 サーバーは Mattermost と同じオリジン（`/mcp` 以下）にも、別のホストにも置ける。
 
 ## クライアントからつなぐ
@@ -132,14 +133,14 @@ URL は `<PUBLIC_URL>/mcp`（例 `https://mcp.example.com/mcp`）。
 - **claude.ai**: この URL でカスタムコネクタを追加する
 - **Codex CLI**: `codex mcp add mattermost --url https://mcp.example.com/mcp` の後、`codex mcp login mattermost`
 
-クライアントごとの実測の挙動は [docs/measurements.md](docs/measurements.md) にある。
+クライアントごとの実測の挙動は [docs/measurements-ja.md](docs/measurements-ja.md) にある。
 
 ## 文書
 
-- [docs/deployment.md](docs/deployment.md): 自分の環境への導入
-- [docs/operations.md](docs/operations.md): 導入後の確認、ログ、管理コマンド、Mattermost とこのサーバーの更新、バックアップと復元、障害対応
-- [docs/measurements.md](docs/measurements.md): Mattermost の OAuth の実測、クライアント互換性、負荷
-- [docs/superpowers/specs/2026-11-01-mattermost-mcp-design.md](docs/superpowers/specs/2026-11-01-mattermost-mcp-design.md): 設計
+- [docs/deployment-ja.md](docs/deployment-ja.md): 自分の環境への導入
+- [docs/operations-ja.md](docs/operations-ja.md): 導入後の確認、ログ、管理コマンド、Mattermost とこのサーバーの更新、バックアップと復元、障害対応
+- [docs/measurements-ja.md](docs/measurements-ja.md): Mattermost の OAuth の実測、クライアント互換性、負荷
+- [docs/superpowers/specs/2026-11-01-mattermost-mcp-design-ja.md](docs/superpowers/specs/2026-11-01-mattermost-mcp-design-ja.md): 設計
 
 ## ライセンス
 

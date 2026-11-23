@@ -84,22 +84,22 @@ describe('search_emoji', () => {
     routes = { [SEARCH]: found() };
     const r = await setup().call('search_emoji', { name: 'calendar' });
     expect(r.isError).toBe(false);
-    expect(r.text).toContain('「calendar」を名前に含むカスタム絵文字はありません');
-    expect(r.text).toContain('標準の絵文字は対象外');
+    expect(r.text).toContain('No custom emoji has "calendar" in its name');
+    expect(r.text).toContain('Standard emoji are not searched');
   });
 
   test('a full page of 200 says the list was cut at 200; 199 does not', async () => {
     routes = { [SEARCH]: found(...Array.from({ length: 200 }, (_, i) => `e${i}`)) };
-    expect((await setup().call('search_emoji', { name: 'e' })).text).toContain('200 件までを出しました');
+    expect((await setup().call('search_emoji', { name: 'e' })).text).toContain('Showed up to 200');
     routes = { [SEARCH]: found(...Array.from({ length: 199 }, (_, i) => `e${i}`)) };
-    expect((await setup().call('search_emoji', { name: 'e' })).text).not.toContain('件までを出しました');
+    expect((await setup().call('search_emoji', { name: 'e' })).text).not.toContain('Showed up to');
   });
 
   test('a server with custom emoji disabled says so', async () => {
     routes = { [SEARCH]: mmError(403, 'api.emoji.disabled.app_error') };
     const r = await setup().call('search_emoji', { name: 'party' });
     expect(r.isError).toBe(true);
-    expect(r.text).toContain('カスタム絵文字が無効です');
+    expect(r.text).toContain('Custom emoji is turned off');
   });
 
   test('is annotated read-only', async () => {

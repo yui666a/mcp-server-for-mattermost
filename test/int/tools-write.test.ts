@@ -85,7 +85,7 @@ describe('add_reaction and remove_reaction against the local Mattermost', () => 
 
     const removed = await call('remove_reaction', { post_id: post.id, emoji: 'white_check_mark' });
     expect(removed.isError).toBeFalsy();
-    expect(removed.content[0].text).toContain('付いていれば外しました');
+    expect(removed.content[0].text).toContain('if it was there');
     expect(has(await reactions(post.id), e.users.alice.id, 'white_check_mark')).toBe(false);
   });
 
@@ -103,7 +103,7 @@ describe('add_reaction and remove_reaction against the local Mattermost', () => 
     const post = await bobPost(open.id);
     const r = await call('add_reaction', { post_id: post.id, emoji: `no_such_${TAG}` });
     expect(r.isError).toBe(true);
-    expect(r.content[0].text).toContain(`絵文字「no_such_${TAG}」がありません`);
+    expect(r.content[0].text).toContain(`There is no emoji "no_such_${TAG}"`);
     expect(r.content[0].text).toContain('white_check_mark');
   });
 
@@ -111,7 +111,7 @@ describe('add_reaction and remove_reaction against the local Mattermost', () => 
     const post = await bobPost(secret.id);
     const r = await call('add_reaction', { post_id: post.id, emoji: 'smile' });
     expect(r.isError).toBe(true);
-    expect(r.content[0].text).toContain('この投稿にリアクションできません');
+    expect(r.content[0].text).toContain('You cannot react to this post');
     expect(await reactions(post.id)).toEqual([]);
   });
 });
@@ -141,7 +141,7 @@ describe('edit_message and delete_message against the local Mattermost', () => {
     const p = await post(bobMm, 'bob');
     for (const r of [await call('edit_message', { post_id: p.id, message: `${TAG} hijack` }), await call('delete_message', { post_id: p.id })]) {
       expect(r.isError).toBe(true);
-      expect(r.content[0].text).toContain('本人の投稿ではありません');
+      expect(r.content[0].text).toContain('This is not your post');
     }
     expect((await getPost(p.id)).message).toBe(`${TAG} bob`);
   });
@@ -151,7 +151,7 @@ describe('edit_message and delete_message against the local Mattermost', () => {
     const reply = await post(bobMm, 'reply', root.id);
     const r = await call('delete_message', { post_id: root.id });
     expect(r.isError).toBe(true);
-    expect(r.content[0].text).toContain('Mattermost の画面');
+    expect(r.content[0].text).toContain('Mattermost screen');
     expect(await status(root.id)).toBe(200);
     expect(await status(reply.id)).toBe(200);
   });
@@ -205,12 +205,12 @@ describe('save_draft against the local Mattermost', () => {
     expect((await call('save_draft', { channel: open.id, message: `${TAG} still writing`, root_id: root.id })).isError).toBeFalsy();
     const sent = await call('send_message', { channel: open.id, message: `${TAG} something else`, root_id: root.id });
     expect(sent.isError).toBeFalsy();
-    expect(sent.content[0].text).not.toContain('下書き');
+    expect(sent.content[0].text).not.toContain('draft');
     expect((await find(root.id))?.message).toBe(`${TAG} still writing`);
 
     expect((await call('save_draft', { channel: open.id, message: `${TAG} to send`, overwrite: true })).isError).toBeFalsy();
     const channel = await call('send_message', { channel: open.id, message: `${TAG} to send` });
-    expect(channel.content[0].text).toContain('同じ本文の下書きを消しました。そのチャンネルを');
+    expect(channel.content[0].text).toContain('Deleted the draft with the same body. If you have that channel');
     expect(await find()).toBeUndefined();
     expect((await find(root.id))?.message).toBe(`${TAG} still writing`);
   });
@@ -221,8 +221,8 @@ describe('save_draft against the local Mattermost', () => {
     expect((await call('save_draft', { channel: dm.id, message: `${TAG} dm to send`, overwrite: true })).isError).toBeFalsy();
     const sent = await call('send_message', { channel: dm.id, message: `${TAG} dm to send` });
     expect(sent.isError).toBeFalsy();
-    expect(sent.content[0].text).toContain('同じ本文の下書きを消しました');
-    expect(sent.content[0].text).toContain(`投稿先: channel_id: ${dm.id}、表示名: @${e.users.bob.username}`);
+    expect(sent.content[0].text).toContain('Deleted the draft with the same body');
+    expect(sent.content[0].text).toContain(`Destination: channel_id: ${dm.id}, display name: @${e.users.bob.username}`);
     expect((await listed()).find((d) => d.channel_id === dm.id && d.root_id === '')).toBeUndefined();
   });
 
@@ -232,7 +232,7 @@ describe('save_draft against the local Mattermost', () => {
     expect((await call('save_draft', { channel: open.id, message: `${TAG} reply to send`, root_id: root.id })).isError).toBeFalsy();
     const sent = await call('send_message', { channel: open.id, message: `${TAG} reply to send`, root_id: root.id });
     expect(sent.isError).toBeFalsy();
-    expect(sent.content[0].text).toContain('同じ本文の下書きを消しました。そのスレッドを');
+    expect(sent.content[0].text).toContain('Deleted the draft with the same body. If you have that thread');
     expect(await find(root.id)).toBeUndefined();
   });
 
@@ -243,7 +243,7 @@ describe('save_draft against the local Mattermost', () => {
     try {
       const r = await call('save_draft', { channel: open.id, message: `${TAG} sync off`, root_id: root.id });
       expect(r.isError).toBe(true);
-      expect(r.content[0].text).toContain('設定 > 詳細設定');
+      expect(r.content[0].text).toContain('Settings > Advanced');
       expect(await find(root.id)).toBeUndefined();
     } finally {
       await mmApi(aliceMm, 'POST', `/users/${e.users.alice.id}/preferences/delete`, [{ user_id: e.users.alice.id, ...SYNC }]);

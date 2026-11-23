@@ -206,7 +206,7 @@ describe('read tools against the local Mattermost', () => {
     const r = await call('alice', 'search_posts', { terms: `${term} in:general-dup` });
     expect(r.isError).toBeFalsy();
     expect(postIds(r)).toEqual(expect.arrayContaining(posted));
-    const note = r.content[0].text.split('\n').find((l) => l.includes('複数のチームにあるため'));
+    const note = r.content[0].text.split('\n').find((l) => l.includes('is in several teams'));
     expect(note).toContain('team-a');
     expect(note).toContain('team-b');
   });
@@ -229,7 +229,7 @@ describe('read tools against the local Mattermost', () => {
     const r = await call('alice', 'search_posts', { terms: `${TAG} in:@${one.name}` });
     expect(await dmMissing(one.id)).toBe(true);
     expect(r.isError).toBe(true);
-    expect(r.content[0].text).toContain(`@${one.name} との DM はまだありません`);
+    expect(r.content[0].text).toContain(`There is no DM with @${one.name} yet`);
 
     const two = await stranger('ex');
     const x = await call('alice', 'search_posts', { terms: `${TAG} -in:@${two.name}` });
@@ -268,7 +268,7 @@ describe('read tools against the local Mattermost', () => {
     const fourth = await user('nogm');
     const r = await call('alice', 'search_posts', { terms: `${term} in:@${e.users.bob.username},${fourth.name}` });
     expect(r.isError).toBe(true);
-    expect(r.content[0].text).toContain('グループ DM はまだありません');
+    expect(r.content[0].text).toContain('There is no group DM with');
     const name = createHash('sha1').update([e.users.alice.id, e.users.bob.id, fourth.id].sort().join('')).digest('hex');
     const res = await fetch(`${e.mmUrl}/api/v4/teams/${e.teams.a.id}/channels/name/${name}`, { headers: { authorization: `Bearer ${aliceMm}` } });
     expect(res.status).toBe(404);
@@ -297,7 +297,7 @@ describe('read tools against the local Mattermost', () => {
     const id = (await mmApi<{ id: string }>(aliceMm, 'POST', '/posts', { channel_id: e.teams.a.privateChannelId!, message: `${TAG} private` })).id;
     const r = await call('bob', 'get_post', { post: id });
     expect(r.isError).toBe(true);
-    expect(r.content[0].text).toBe('この投稿を見る権限がありません（参加していない非公開チャンネルなど）。参加しているはずなら、Mattermost の一時的な障害の可能性があります。少し待ってから再試行してください。続くなら、チャンネルから外されたか、サーバーの権限の設定で読む権限が外されている可能性があるので、管理者に確かめてください。');
+    expect(r.content[0].text).toBe('You do not have permission to view this post (for example, in a private channel you have not joined). If you should be a member, this may be a temporary Mattermost failure. Wait a moment and retry. If it persists, you may have been removed from the channel, or the read permission may have been removed in the server\'s permission settings; ask an administrator to check.');
   });
 
   test('get_post reports a deleted post as not found', async () => {
@@ -305,21 +305,21 @@ describe('read tools against the local Mattermost', () => {
     await mmApi(aliceMm, 'DELETE', `/posts/${id}`);
     const r = await call('alice', 'get_post', { post: id });
     expect(r.isError).toBe(true);
-    expect(r.content[0].text).toBe('投稿が見つかりません（削除されたか、存在しません）。');
+    expect(r.content[0].text).toBe('The post was not found (it was deleted, or it does not exist).');
   });
 
   test('get_post on a reply gives the parent post_id', async () => {
     const r = await call('alice', 'get_post', { post: replies[1] });
     expect(r.isError).toBeFalsy();
-    expect(r.content[0].text).toContain(`親 post_id: ${root}`);
+    expect(r.content[0].text).toContain(`Root post_id: ${root}`);
     expect(r.content[0].text).toContain('read_thread');
   });
 
   test('get_post on a root post with replies points to read_thread', async () => {
     const r = await call('alice', 'get_post', { post: root });
     expect(r.isError).toBeFalsy();
-    expect(r.content[0].text).toContain(`返信数: ${replies.length}`);
-    expect(r.content[0].text).toContain(`read_thread に post_id: ${root}`);
+    expect(r.content[0].text).toContain(`Replies: ${replies.length}`);
+    expect(r.content[0].text).toContain(`Pass post_id: ${root} to read_thread`);
   });
 
   describe('list_my_channels', () => {
@@ -333,7 +333,7 @@ describe('read tools against the local Mattermost', () => {
       do {
         const r = await call('alice', 'list_my_channels', { ...args, ...(cursor ? { cursor } : {}) });
         expect(r.isError).toBeFalsy();
-        expect(r.content[0].text).not.toContain('取り直してください');
+        expect(r.content[0].text).not.toContain('Start again from the first page');
         text += `${r.content[0].text}\n`;
         seen.push(...ids(r));
         cursor = nextCursor(r);
@@ -370,10 +370,10 @@ describe('read tools against the local Mattermost', () => {
 
     test('lists alice\'s public, private, DM and group DM channels, but not an archived one', async () => {
       const { text } = await listAll({ limit: 200 });
-      expect(lineOf(text, pub.id)?.replace(/最終投稿: [^、]+、/, '最終投稿: *、')).toBe(`- ${e.teams.a.name}/t7-pub-${TAG}（channel_id: ${pub.id}、team_id: ${e.teams.a.id}、種類: 公開、最終投稿: *、表示名: t7-pub ${TAG}）`);
-      expect(lineOf(text, priv.id)).toContain('種類: 非公開');
-      expect(lineOf(text, dm.id)?.replace(/最終投稿: [^、]+、/, '最終投稿: *、')).toBe(`- @${e.users.bob.username}（channel_id: ${dm.id}、種類: DM、最終投稿: *、表示名: @${e.users.bob.username}）`);
-      expect(lineOf(text, gm.id)).toContain('種類: グループ DM');
+      expect(lineOf(text, pub.id)?.replace(/last post: [^,]+,/, 'last post: *,')).toBe(`- ${e.teams.a.name}/t7-pub-${TAG} (channel_id: ${pub.id}, team_id: ${e.teams.a.id}, type: public, last post: *, display name: t7-pub ${TAG})`);
+      expect(lineOf(text, priv.id)).toContain('type: private');
+      expect(lineOf(text, dm.id)?.replace(/last post: [^,]+,/, 'last post: *,')).toBe(`- @${e.users.bob.username} (channel_id: ${dm.id}, type: DM, last post: *, display name: @${e.users.bob.username})`);
+      expect(lineOf(text, gm.id)).toContain('type: group DM');
       expect(text).not.toContain(archived.id);
     });
 
@@ -383,7 +383,7 @@ describe('read tools against the local Mattermost', () => {
       expect(seen).toContain(gm.id);
       expect(seen).not.toContain(pub.id);
       expect(seen).not.toContain(priv.id);
-      expect(text).not.toMatch(/種類: (公開|非公開)、/);
+      expect(text).not.toMatch(/type: (public|private),/);
     });
 
     test('paging to the end yields exactly the channels of GET /users/me/channels', async () => {
@@ -422,26 +422,26 @@ describe('read tools against the local Mattermost', () => {
       const t = r.content[0].text;
       expect(t).toContain(`channel_id: ${ch.id}`);
       expect(t).toContain(`team_id: ${e.teams.a.id}`);
-      expect(t).toContain('種類: 公開');
-      expect(t).toContain(`目的: ${TAG} purpose`);
-      expect(t).toContain(`ヘッダー: ${TAG} header`);
-      expect(t).toContain('メンバー数: 1');
-      expect(t).toContain('ピン留め: 3 件');
+      expect(t).toContain('Type: public');
+      expect(t).toContain(`Purpose: ${TAG} purpose`);
+      expect(t).toContain(`Header: ${TAG} header`);
+      expect(t).toContain('Member count: 1');
+      expect(t).toContain('Pinned posts: 3');
       expect(postIds(r)).toEqual(pins);
     });
 
     test('for a public channel bob has not joined, says the member count is unavailable', async () => {
       const r = await call('bob', 'get_channel', { channel: ch.id });
       expect(r.isError).toBeFalsy();
-      expect(r.content[0].text).toContain('メンバー数: 取得できません（参加していないか、一時的な障害か、権限の設定）');
-      expect(r.content[0].text).toContain(`目的: ${TAG} purpose`);
+      expect(r.content[0].text).toContain('Member count: unavailable (you have not joined, a temporary failure, or a permission setting)');
+      expect(r.content[0].text).toContain(`Purpose: ${TAG} purpose`);
       expect(postIds(r)).toEqual(pins);
     });
 
     test('for the id of a private channel bob has not joined, says he has no permission', async () => {
       const r = await call('bob', 'get_channel', { channel: e.teams.a.privateChannelId! });
       expect(r.isError).toBe(true);
-      expect(r.content[0].text).toBe('このチャンネルを見る権限がありません（参加していない非公開チャンネルなど）。参加しているはずなら、Mattermost の一時的な障害の可能性があります。少し待ってから再試行してください。続くなら、チャンネルから外されたか、サーバーの権限の設定で読む権限が外されている可能性があるので、管理者に確かめてください。');
+      expect(r.content[0].text).toBe('You do not have permission to view this channel (for example, a private channel you have not joined). If you should be a member, this may be a temporary Mattermost failure. Wait a moment and retry. If it persists, you may have been removed from the channel, or the read permission may have been removed in the server\'s permission settings; ask an administrator to check.');
     });
 
     test('pages through 3 pinned posts with pinned_limit 2', async () => {
@@ -478,8 +478,8 @@ describe('read tools against the local Mattermost', () => {
       });
       const r = await call('alice', 'get_user', { user: '@bob' });
       expect(r.isError).toBeFalsy();
-      expect(r.content[0].text).toContain('タイムゾーン: Asia/Kolkata（手動）');
-      expect(r.content[0].text).toMatch(/現地時刻: \d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\+05:30/);
+      expect(r.content[0].text).toContain('Time zone: Asia/Kolkata (manual)');
+      expect(r.content[0].text).toMatch(/Local time: \d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\+05:30/);
     });
 
     test('shows do-not-disturb and its end time when bob turns it on', async () => {
@@ -488,7 +488,7 @@ describe('read tools against the local Mattermost', () => {
       const r = await call('alice', 'get_user', { user: '@bob' });
       expect(r.isError).toBeFalsy();
       const minute = new Date(Math.floor(end / 60) * 60_000).toISOString().slice(0, 19);
-      expect(r.content[0].text).toContain(`在席: 取り込み中（終了: ${minute}Z | `);
+      expect(r.content[0].text).toContain(`Presence: do not disturb (until: ${minute}Z | `);
     });
   });
 
@@ -529,7 +529,7 @@ describe('read tools against the local Mattermost', () => {
       expect(r.isError).toBeFalsy();
       expect(r.content.map((c) => c.type)).toEqual(['text', 'text']);
       expect(r.content[0].text).toContain(`${TAG}.md`);
-      expect(r.content[0].text).toContain('文字コード: UTF-8');
+      expect(r.content[0].text).toContain('Encoding: UTF-8');
       expect(r.content[1].text).toBe(md);
     });
 
@@ -540,7 +540,7 @@ describe('read tools against the local Mattermost', () => {
       const r = await call('bob', 'get_file', { file_id: fileId });
       expect(r.isError).toBeFalsy();
       expect(r.content[0].text).toContain('charset=utf-8');
-      expect(r.content[0].text).toContain('文字コード: Shift_JIS');
+      expect(r.content[0].text).toContain('Encoding: Shift_JIS');
       expect(r.content[1].text).toBe('品名,数\nりんご,3\n');
     });
 
@@ -550,7 +550,7 @@ describe('read tools against the local Mattermost', () => {
       const r = await call('bob', 'get_file', { file_id: fileId });
       expect(r.isError).toBeFalsy();
       expect(r.content[1].text).toBe('x'.repeat(10_000));
-      expect(r.content[0].text).toContain('先頭の 10000 文字だけを返しました（ファイル全体は 100000 バイト）');
+      expect(r.content[0].text).toContain('Only the first 10000 characters were returned (the whole file is 100000 bytes)');
     });
 
     test('get_file refuses a file in a private channel the caller has not joined', async () => {
@@ -559,7 +559,7 @@ describe('read tools against the local Mattermost', () => {
       await mmApi(aliceMm, 'POST', '/posts', { channel_id: priv, message: `${TAG} private png`, file_ids: [fileId] });
       const r = await call('bob', 'get_file', { file_id: fileId });
       expect(r.isError).toBe(true);
-      expect(r.content[0].text).toBe('このファイルを見る権限がありません（参加していない非公開チャンネルのファイルなど）。参加しているはずなら、Mattermost の一時的な障害の可能性があります。少し待ってから再試行してください。続くなら、チャンネルから外されたか、サーバーの権限の設定で読む権限が外されている可能性があるので、管理者に確かめてください。');
+      expect(r.content[0].text).toBe('You do not have permission to view this file (for example, a file in a private channel you have not joined). If you should be a member, this may be a temporary Mattermost failure. Wait a moment and retry. If it persists, you may have been removed from the channel, or the read permission may have been removed in the server\'s permission settings; ask an administrator to check.');
     });
   });
 
@@ -631,7 +631,7 @@ describe('read tools against the local Mattermost', () => {
     test('in: with a name in both teams searches both and says so', async () => {
       const r = await call('alice', 'search_files', { terms: `${TAG}g* in:general-dup` });
       expect(fileIds(r)).toEqual(expect.arrayContaining([files[`${TAG}g-a.txt`], files[`${TAG}g-b.txt`]]));
-      expect(r.content[0].text).toContain('in:general-dup は複数のチームにあるため、すべてで探しました');
+      expect(r.content[0].text).toContain('in:general-dup is in several teams, so all of them were searched');
     });
 
     test('a search for "*" alone answers an empty result, which search_files asks before reporting an in: error', async () => {
@@ -645,7 +645,7 @@ describe('read tools against the local Mattermost', () => {
       made.push(u.id);
       const fail = await call('alice', 'search_files', { terms: `${TAG}f* in:@${name}` });
       expect(fail.isError).toBe(true);
-      expect(fail.content[0].text).toBe(`@${name} との DM はまだありません。`);
+      expect(fail.content[0].text).toBe(`There is no DM with @${name} yet.`);
       const r = await call('alice', 'search_files', { terms: `${TAG}f* -in:@${name}` });
       expect(fileIds(r)).toContain(files[`${TAG}f-report.pdf`]);
       const dm = [e.users.alice.id, u.id].sort().join('__');
@@ -666,22 +666,22 @@ describe('read tools against the local Mattermost', () => {
     try {
       const refused = await call('bob', 'list_channel_members', { channel: ch.id });
       expect(refused.isError).toBe(true);
-      expect(refused.content[0].text).toBe('このチャンネルのメンバーを見る権限がありません。参加していないチャンネルのメンバーは、公開チャンネルでも見られません。参加しているはずなら、Mattermost の一時的な障害の可能性があります。少し待ってから再試行してください。続くなら、チャンネルから外されたか、サーバーの権限の設定で読む権限が外されている可能性があるので、管理者に確かめてください。');
+      expect(refused.content[0].text).toBe('You do not have permission to view this channel\'s members. Members of a channel you have not joined cannot be seen, even for a public channel. If you should be a member, this may be a temporary Mattermost failure. Wait a moment and retry. If it persists, you may have been removed from the channel, or the read permission may have been removed in the server\'s permission settings; ask an administrator to check.');
       await mmApi(aliceMm, 'POST', `/channels/${ch.id}/members`, { user_id: e.users.bob.id });
-      const members = (r: Result) => [...r.content[0].text.matchAll(/^- @(\S+?)（/gm)].map((m) => m[1]);
+      const members = (r: Result) => [...r.content[0].text.matchAll(/^- @(\S+?) \(/gm)].map((m) => m[1]);
       const pages: string[][] = [];
       let cursor: string | undefined;
       let last: Result;
       do {
         last = await call('alice', 'list_channel_members', { channel: `team-a/${ch.name}`, limit: 1, ...(cursor ? { cursor } : {}) });
         expect(last.isError).toBeFalsy();
-        if (!cursor) expect(last.content[0].text).toContain('メンバー数: 2');
+        if (!cursor) expect(last.content[0].text).toContain('Member count: 2');
         pages.push(members(last));
         cursor = nextCursor(last);
       } while (cursor);
       expect(pages).toEqual([[e.users.alice.username], [e.users.bob.username], []]);
-      expect(last.content[0].text).not.toContain('メンバーはいません');
-      expect(last.content[0].text).toContain('（続きはありません）');
+      expect(last.content[0].text).not.toContain('No members');
+      expect(last.content[0].text).toContain('(No more results)');
     } finally {
       await mmApi(e.adminToken, 'DELETE', `/channels/${ch.id}`);
     }
@@ -711,15 +711,15 @@ describe('read tools against the local Mattermost', () => {
     });
 
     const attachment = [
-      'メッセージ添付（Bot などの整形表示）1/1:',
-      `  前置き: ${TAG} pre`,
-      '  タイトル: Build failed（https://ci.example/1）',
-      '  本文: line 1',
+      'Message attachment (formatted display, e.g. from a bot) 1/1:',
+      `  Pretext: ${TAG} pre`,
+      '  Title: Build failed (https://ci.example/1)',
+      '  Text: line 1',
       '    line 2',
-      '  項目: Branch: main',
-      '  ボタンやメニュー: Retry（MCP からは操作できません）',
+      '  Field: Branch: main',
+      '  Buttons and menus: Retry (cannot be operated from MCP)',
     ].join('\n');
-    const reactions = `リアクション: :eyes: 2（@${e.users.alice.username}、@${e.users.bob.username}）`;
+    const reactions = `Reactions: :eyes: 2 (@${e.users.alice.username}, @${e.users.bob.username})`;
     const section = (text: string, id: string) => {
       const at = text.indexOf(`--- post_id: ${id}`);
       if (at < 0) throw new Error(`post ${id} is not in the output`);
@@ -737,16 +737,16 @@ describe('read tools against the local Mattermost', () => {
       const text = (await call('alice', 'read_thread', { post_id: reply })).content[0].text;
       expect(section(text, bot)).toContain(attachment);
       expect(section(text, bot)).toContain(reactions);
-      expect(section(text, reply).split('\n')[2]).toMatch(/^編集済み: \S+Z \| \S+\+09:00$/);
-      expect(section(text, bot)).not.toContain('編集済み');
+      expect(section(text, reply).split('\n')[2]).toMatch(/^Edited: \S+Z \| \S+\+09:00$/);
+      expect(section(text, bot)).not.toContain('Edited');
     });
 
     test('read_channel marks the system messages of the channel', async () => {
       const text = (await call('alice', 'read_channel', { channel: ch.id, limit: 20 })).content[0].text;
       expect(text).toContain(attachment);
-      const system = text.split(/\n(?=--- post_id: )/).filter((x) => x.includes('\nシステムメッセージ（system_'));
+      const system = text.split(/\n(?=--- post_id: )/).filter((x) => x.includes('\nSystem message (system_'));
       expect(system.some((x) => /joined the channel|added to the channel/.test(x))).toBe(true);
-      expect(section(text, reply)).not.toContain('システムメッセージ');
+      expect(section(text, reply)).not.toContain('System message');
     });
   });
 

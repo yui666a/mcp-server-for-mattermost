@@ -3,10 +3,13 @@ import { execFileSync, spawnSync } from 'node:child_process';
 import { existsSync, mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { expect, test } from 'vitest';
+import { afterEach, expect, test } from 'vitest';
 import { runAdmin } from '../../src/admin.ts';
 import { openDb } from '../../src/db.ts';
+import { setLocale } from '../../src/i18n/index.ts';
 import { Store } from '../../src/store.ts';
+
+afterEach(() => setLocale('en'));
 
 const codeInput = (clientId: string) => ({ mmUserId: 'u1', clientId, redirectUri: 'http://localhost:1/cb', codeChallenge: 'ch', resource: 'r', scope: 'mattermost' });
 const sessionInput = (clientId: string) => ({ clientId, redirectUri: 'http://localhost:1/cb', codeChallenge: 'ch', state: 's', resource: 'r', scope: 'mattermost' });
@@ -66,13 +69,23 @@ test('invalidate-scheduled fails every pending and sending schedule, telling the
   expect(r.code).toBe(0);
   expect(r.out).toBe('invalidated 4 scheduled posts\n');
   const row = (id: string) => db.prepare('SELECT status, error FROM scheduled_posts WHERE id = ?').get(id);
-  expect(row(fresh)).toEqual({ status: 'failed', error: 'サーバーを復元したため無効にしました。予約を入れ直してください。' });
-  const unknown = { status: 'failed', error: 'サーバーを復元したため無効にしました。投稿されたか不明なので、Mattermost の画面で確かめてください。' };
+  expect(row(fresh)).toEqual({ status: 'failed', error: 'Invalidated because the server was restored. Schedule the message again.' });
+  const unknown = { status: 'failed', error: 'Invalidated because the server was restored. It is unknown whether this was posted, so check in Mattermost.' };
   expect(row(attempted)).toEqual(unknown);
   expect(row(passed)).toEqual(unknown);
   expect(row(sending)).toEqual(unknown);
   expect(row(posted)).toEqual({ status: 'posted', error: null });
   expect(row(failed)).toEqual({ status: 'failed', error: 'earlier' });
+});
+
+test('invalidate-scheduled writes the reason in the current locale', () => {
+  setLocale('ja');
+  const db = openDb(':memory:');
+  const store = new Store(db, randomBytes(32));
+  const fresh = store.createScheduled({ mmUserId: 'u1', channelId: 'c'.repeat(26), message: 'm', scheduledAt: Date.now() + 3600_000 }, 1000)!;
+  run(db, ['invalidate-scheduled']);
+  const row = db.prepare('SELECT error FROM scheduled_posts WHERE id = ?').get(fresh);
+  expect(row).toEqual({ error: 'サーバーを復元したため無効にしました。予約を入れ直してください。' });
 });
 
 test('list-clients shows id, name, created and authorized; --unauthorized filters', () => {

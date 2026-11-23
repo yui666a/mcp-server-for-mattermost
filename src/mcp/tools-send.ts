@@ -6,8 +6,9 @@ import { randomToken, sha256 } from '../crypto.ts';
 import { log } from '../log.ts';
 import { MmError, RateLimited, Reauthorize } from '../mattermost/client.ts';
 import { MAX_OPEN_UPLOAD_URLS, type HeldFile, type Store } from '../store.ts';
+import { msg } from '../i18n/index.ts';
 import { idArg } from './args.ts';
-import { BODY_CUT_NOTE, indented, InputError, oneLine, truncate, unformat, type MmPost } from './format.ts';
+import { bodyCutNote, indented, InputError, oneLine, truncate, unformat, type MmPost } from './format.ts';
 import { lookPosted, postOnce } from './post.ts';
 import { myTeams, NoDirectChannel, resolveChannel, teamNameOf, type ChannelRef, type Mm, type MmChannel, type ResolvedChannel } from './resolve.ts';
 import { guarded, text, type ToolContext } from './tool.ts';
@@ -20,20 +21,21 @@ const MAX_MESSAGE = 16383;
 export const MAX_UPLOAD_FILES = 5;
 // Not higher: the MCP path's nginx takes 1 MB per request, and 128KiB of text JSON-escaped up to 6x plus the longest message just fits.
 export const MAX_FILES_BYTES = 128 * 1024;
-export const FILE_NAME = z.string().min(1).max(100).regex(/^[^/\\\p{Cc}]+$/u, 'ファイル名に / や \\、制御文字は使えません');
-const inputSchema = {
+// A function rather than a constant: the error text comes from the table, which must be looked up after the locale is set.
+export const fileName = () => z.string().min(1).max(100).regex(/^[^/\\\p{Cc}]+$/u, msg().send.fileNameInvalid);
+const sendSchema = () => ({
   channel: z.string().min(1),
   message: z.string().min(1).max(MAX_MESSAGE),
-  root_id: idArg.optional().describe('post_id of the thread root to reply to'),
-  allow_duplicate: z.boolean().optional().describe('true to post the same message again on purpose'),
+  root_id: idArg.optional().describe(msg().descriptions.rootId),
+  allow_duplicate: z.boolean().optional().describe(msg().descriptions.allowDuplicate),
   files: z.array(z.union([
-    z.strictObject({ name: FILE_NAME, content_text: z.string().min(1) }),
-    z.strictObject({ name: FILE_NAME, content_base64: z.string().min(1).describe('base64 of the binary content (no data URL prefix, no line breaks)') }),
+    z.strictObject({ name: fileName(), content_text: z.string().min(1) }),
+    z.strictObject({ name: fileName(), content_base64: z.string().min(1).describe(msg().descriptions.contentBase64) }),
   ])).min(1).max(MAX_UPLOAD_FILES).optional()
-    .describe(`Attachments. Each item has name plus either content_text (text) or content_base64 (small binary). Pass only files whose content you can read and that total at most ${MAX_FILES_BYTES / 1024}KiB. A file attached to the chat may go as content_base64 only when code execution can read its bytes. A client that cannot run commands on the user's PC may also send a text file from the PC as content_text if it can read it and it fits. content_text is attached as UTF-8: if the content shows � or garbled characters, or the original encoding or BOM likely matters (e.g. a CSV from Excel), do not use content_text. For those, files you cannot read or that do not fit, and any other file on the user's PC, follow the prepare_upload description.`),
+    .describe(msg().descriptions.files(MAX_FILES_BYTES / 1024)),
   file_ids: z.array(idArg).min(1).max(MAX_UPLOAD_FILES).optional()
-    .describe(`file_ids uploaded with prepare_upload to the destination channel within the last 24 hours`),
-};
+    .describe(msg().descriptions.fileIds),
+});
 
 const B64 = /^[A-Za-z0-9+/]*={0,2}$/;
 function decodeFiles(files: FileArg[]): Upload[] {
@@ -43,12 +45,12 @@ function decodeFiles(files: FileArg[]): Upload[] {
     const bytes = Buffer.from(b, 'base64');
     // Not trusting Buffer.from alone: it skips characters it cannot read and stops at the first "=", so a data URL or a cut string would upload garbage.
     if (!B64.test(b) || b.length % 4 !== 0 || bytes.toString('base64') !== b) {
-      throw new InputError(`ファイル「${f.name}」の content_base64 を base64 として読めません。data URL の接頭辞（data:...;base64,）や改行を付けずに渡してください。`);
+      throw new InputError(msg().send.base64Invalid(f.name));
     }
     return { name: f.name, bytes };
   });
   const total = out.reduce((n, f) => n + f.bytes.length, 0);
-  if (total > MAX_FILES_BYTES) throw new InputError(`添付ファイルの中身の合計が ${total} バイトで、上限の ${MAX_FILES_BYTES} バイト（${MAX_FILES_BYTES / 1024}KiB）を超えています。合計がこの大きさになる添付は files では送れないので、prepare_upload の説明の案内に従ってください。`);
+  if (total > MAX_FILES_BYTES) throw new InputError(msg().send.filesTooBig(total, MAX_FILES_BYTES));
   return out;
 }
 
@@ -65,27 +67,24 @@ export async function uploadFile(mm: Mm, uid: string, channelId: string, name: s
     mm.call<{ file_infos: { id: string }[] }>(uid, 'POST', `/files?channel_id=${channelId}&filename=${encodeURIComponent(name)}`, body),
     {
       id: [
-        [400, 'api.file.upload_file.large_image_detailed.app_error', `ファイル「${name}」は画像の画素数が大きすぎるため添付できません。`],
-        [413, 'api.file.upload_file.too_large_detailed.app_error', tooLarge(name)],
-        [403, 'api.file.attachments.disabled.app_error', ATTACHMENTS_OFF],
+        [400, 'api.file.upload_file.large_image_detailed.app_error', msg().send.imageTooLarge(name)],
+        [413, 'api.file.upload_file.too_large_detailed.app_error', msg().send.tooLarge(name)],
+        [403, 'api.file.attachments.disabled.app_error', msg().send.attachmentsOff],
       ],
     },
   );
   return r.file_infos[0].id;
 }
 
-const ATTACHMENTS_OFF = 'このサーバーではファイルの添付が無効です。';
-const tooLarge = (name: string) => `ファイル「${name}」は大きすぎるため添付できません。`;
-
 // Not left to the upload alone when the DM is about to be created: a refused upload would leave the new DM empty, and Mattermost cannot delete a DM.
 // Not checking the image size in pixels, permissions, restricted DMs or plugins: the client config does not tell them, so those refusals can still leave an empty DM.
 async function checkFilesAccepted(mm: Mm, uid: string, files: Upload[]): Promise<void> {
   const c = await mm.call<{ EnableFileAttachments?: string; MaxFileSize?: string }>(uid, 'GET', '/config/client?format=old');
-  if (c.EnableFileAttachments === 'false') throw new InputError(ATTACHMENTS_OFF);
+  if (c.EnableFileAttachments === 'false') throw new InputError(msg().send.attachmentsOff);
   // Not validated with Number(): it reads "" as 0, which would refuse every file.
   if (!/^\d+$/.test(c.MaxFileSize ?? '')) return;
   const big = files.find((f) => f.bytes.length > Number(c.MaxFileSize));
-  if (big) throw new InputError(tooLarge(big.name));
+  if (big) throw new InputError(msg().send.tooLarge(big.name));
 }
 
 const upload = (mm: Mm, uid: string, channelId: string, f: Upload) =>
@@ -93,12 +92,12 @@ const upload = (mm: Mm, uid: string, channelId: string, f: Upload) =>
 
 // Checked against this MCP's own record rather than Mattermost's file info: it tells apart a file of another channel, one already posted, and one not uploaded through prepare_upload.
 export function checkUploaded(store: Store, uid: string, channelId: string, fileIds: string[]): void {
-  if (new Set(fileIds).size !== fileIds.length) throw new InputError('file_ids に同じ file_id が重なっています。');
+  if (new Set(fileIds).size !== fileIds.length) throw new InputError(msg().send.duplicateFileIds);
   const known = new Map(store.uploadedFiles(uid, fileIds).map((f) => [f.fileId, f]));
   for (const id of fileIds) {
     const f = known.get(id);
-    if (!f) throw new InputError(`file_id ${id} は、本人が prepare_upload の URL で 24 時間以内にアップロードしたファイルではありません。`);
-    if (f.channelId !== channelId) throw new InputError(`file_id ${id} は別のチャンネル（channel_id: ${f.channelId}）へアップロードしたファイルです。投稿先のチャンネルで prepare_upload からやり直してください。`);
+    if (!f) throw new InputError(msg().send.notUploaded(id));
+    if (f.channelId !== channelId) throw new InputError(msg().send.otherChannel(id, f.channelId));
   }
 }
 
@@ -106,7 +105,7 @@ export function checkUploaded(store: Store, uid: string, channelId: string, file
 // Not checking the schedules first: a file a posted schedule holds is already posted, and that is the reason to give.
 export function checkUnposted(store: Store, uid: string, fileIds: string[]): void {
   const used = store.uploadedFiles(uid, fileIds).find((f) => f.postId);
-  if (used) throw new InputError(`file_id ${used.fileId} は既に投稿（post_id: ${used.postId}）に使われています。同じファイルをもう一度送るときは、prepare_upload からアップロードし直してください。`);
+  if (used) throw new InputError(msg().send.alreadyPosted(used.fileId, used.postId!));
   const [held] = store.heldScheduledFiles(uid, fileIds);
   if (held) throw heldError(held);
 }
@@ -140,11 +139,7 @@ export async function resolveTarget(mm: Mm, store: Store, uid: string, channel: 
 }
 
 export const heldError = (h: HeldFile) =>
-  new InputError(`file_id ${h.fileId} は予約（予約 ID: ${h.scheduledId}）の添付に使われています。投稿を試みる前の待機中の予約なら、cancel_scheduled_message で取り消すと使えます。同じファイルを別に送るときは、prepare_upload からアップロードし直してください。`);
-
-const SIZE_DIFFERS = '同じ本文の投稿がありますが、添付ファイルの大きさが違うため、この送信が投稿されたかは分かりません（アップロードしたファイルを書き換えるプラグインがあるサーバーでは、この送信の投稿でも大きさが変わります）。read_channel などで確かめ、投稿されていなければ allow_duplicate: true で送り直してください。';
-const OWNED_ELSEWHERE = '同じ本文の投稿がありますが、ほかの送信か予約のものとして記録されているため、この送信が投稿されたかは分かりません。read_channel などで確かめ、投稿されていなければ allow_duplicate: true で送り直してください。';
-const INFLIGHT = '同じ投稿を処理中です。少し待ってから read_channel などで投稿されたかを確かめてください。';
+  new InputError(msg().send.heldBySchedule(h.fileId, h.scheduledId));
 
 export async function sendMessage(mm: Mm, store: Store, uid: string, baseUrl: string, args: Args, client?: AbortSignal): Promise<CallToolResult> {
   const files = decodeFiles(args.files ?? []);
@@ -155,7 +150,7 @@ export async function sendMessage(mm: Mm, store: Store, uid: string, baseUrl: st
   checkUploaded(store, uid, ch.id, fileIds);
   const rootId = args.root_id;
   if (rootId) await checkRoot(mm, uid, rootId, ch);
-  const where = `投稿先: channel_id: ${ch.id}${rootId ? `、返信先 post_id: ${rootId}` : ''}、表示名: ${oneLine(ch.displayName || ch.name)}`;
+  const where = msg().send.destination(ch.id, rootId, oneLine(ch.displayName || ch.name));
   // Not only after a fresh post: an earlier attempt's cleanup may have failed, and a resend that did not post can retry it.
   const done = async (postId: string, note: string) => {
     const cleared = await clearSentDraft(mm, uid, ch, rootId ?? '', args.message, client);
@@ -169,9 +164,9 @@ export async function sendMessage(mm: Mm, store: Store, uid: string, baseUrl: st
     const hidden = r.redactedFileCount > 0 && !r.fileIds.length;
     const got = hidden ? r.redactedFileCount : r.fileIds.length;
     store.markFilesPosted(uid, hidden ? fileIds : fileIds.filter((id) => r.fileIds.includes(id)), r.postId);
-    if (!attached) return '投稿しました。';
-    if (got === attached) return `投稿しました。ファイル ${attached} 件を添付しました。`;
-    return `投稿しました。ただし、添付した ${attached} 件のうち ${attached - got} 件を Mattermost が外したため、投稿に付いていません${hidden ? '（ファイルをダウンロードする権限が無いため、どれが外れたかは分かりません）' : ''}。`;
+    if (!attached) return msg().send.posted;
+    if (got === attached) return msg().send.postedWithFiles(attached);
+    return msg().send.postedDropped(attached, attached - got, hidden);
   };
   const uploadAll = async () => {
     const ids: string[] = [];
@@ -187,8 +182,8 @@ export async function sendMessage(mm: Mm, store: Store, uid: string, baseUrl: st
   }
 
   const claim = store.claimPost({ mmUserId: uid, channelId: ch.id, rootId, bodyHash: bodyHash(args.message, files, fileIds) });
-  if (claim.kind === 'done') return done(claim.postId, '同じ本文を直前に投稿済みのため、やり直しとみなして投稿していません。');
-  if (claim.kind === 'inflight') return text(INFLIGHT, true);
+  if (claim.kind === 'done') return done(claim.postId, msg().send.justPosted);
+  if (claim.kind === 'inflight') return text(msg().send.inflight, true);
   if (claim.kind === 'retry') {
     // Not dropping the claim if this lookup fails: the earlier attempt's outcome is still unknown.
     const { found, sizeDiffers } = await lookPosted(mm, uid, { ...spec, fileCount: attached, fileIds, files: files.map((f) => f.bytes.length) }, claim.createdAt);
@@ -197,13 +192,13 @@ export async function sendMessage(mm: Mm, store: Store, uid: string, baseUrl: st
     const prev = found.find((p) => !owned.has(p));
     // Not posting when every match is another record's: such a record may hold this send's own earlier post by a mistaken match of its own, and posting again would post it twice.
     // Not dropping the claim either, for the same reason.
-    if (!prev && found.length) return text(OWNED_ELSEWHERE, true);
+    if (!prev && found.length) return text(msg().send.ownedElsewhere, true);
     // Not posting either when the only candidates differ in file size: on a server whose plugin rewrites uploads, that is this send's own earlier post.
-    if (!prev && sizeDiffers.some((p) => !owned.has(p))) return text(SIZE_DIFFERS, true);
+    if (!prev && sizeDiffers.some((p) => !owned.has(p))) return text(msg().send.sizeDiffers, true);
     if (prev) {
       store.completePost(claim.id, prev);
       store.markFilesPosted(uid, fileIds, prev);
-      return done(prev, '同じ本文の投稿が既にあったため、やり直しとみなして投稿していません。');
+      return done(prev, msg().send.alreadyThere);
     }
   }
   let claimedAt = claim.claimedAt;
@@ -214,7 +209,7 @@ export async function sendMessage(mm: Mm, store: Store, uid: string, baseUrl: st
     const ids = await uploadAll();
     // Not posting on the claim taken before the uploads: they can outlast the in-flight grace, and a resend that took the claim over meanwhile posts too.
     const again = store.reclaimPost(claim.id, claimedAt);
-    if (again === undefined) return text(INFLIGHT, true);
+    if (again === undefined) return text(msg().send.inflight, true);
     claimedAt = again;
     posting = true;
     const r = await postOnce(mm, uid, { ...spec, fileIds: ids }, claim.pendingPostId);
@@ -248,34 +243,33 @@ export async function worded<T>(p: Promise<T>, w: Wording): Promise<T> {
 }
 
 const POST_ID = idArg;
-const reactionSchema = {
+const reactionSchema = () => ({
   post_id: POST_ID,
   // Not a zod regex: a Unicode emoji such as ✅ would get the SDK's generic validation error instead of the emoji-name hint.
-  emoji: z.string().min(1).max(100).describe('Emoji name (e.g. white_check_mark, +1). Look up custom emoji names with search_emoji.'),
-};
+  emoji: z.string().min(1).max(100).describe(msg().descriptions.emoji),
+});
 type ReactionArgs = { post_id: string; emoji: string };
 
-const emojiHint = (name: string) => `絵文字「${name}」がありません。標準の絵文字名（例: white_check_mark、+1）か、search_emoji で調べたカスタム絵文字名を指定してください。`;
 // Checked rather than encoded: the name goes into a path, where "." and ".." survive encoding and fetch would normalise them into another endpoint.
 function emojiName(raw: string): string {
   const name = raw.trim().replace(/^:/, '').replace(/:$/, '').trim();
-  if (!/^[A-Za-z0-9_+-]{1,64}$/.test(name)) throw new InputError(emojiHint(name));
+  if (!/^[A-Za-z0-9_+-]{1,64}$/.test(name)) throw new InputError(msg().send.emojiHint(name));
   return name;
 }
 const reactionWording = (name: string, archived: string): Wording => ({
   id: [
-    [404, 'app.emoji.get_by_name.no_result', emojiHint(name)],
-    [404, 'app.post.get.app_error', '投稿が見つかりません（削除されたか、存在しません）。'],
-    [403, archived, 'アーカイブ済みのチャンネルの投稿のリアクションは変えられません。'],
+    [404, 'app.emoji.get_by_name.no_result', msg().send.emojiHint(name)],
+    [404, 'app.post.get.app_error', msg().read.postNotFound],
+    [403, archived, msg().send.reactionArchived],
   ],
-  status: [[403, 'この投稿にリアクションできません（見られない投稿、存在しない投稿、アーカイブ済みチャンネルの投稿）。']],
+  status: [[403, msg().send.reactionForbidden]],
 });
 
 export async function addReaction(mm: Mm, uid: string, args: ReactionArgs): Promise<CallToolResult> {
   const name = emojiName(args.emoji);
   await worded(mm.call(uid, 'POST', '/reactions', { user_id: uid, post_id: args.post_id, emoji_name: name }),
     reactionWording(name, 'api.reaction.save.archived_channel.app_error'));
-  return text(`リアクション :${name}: を付けました。\npost_id: ${args.post_id}`);
+  return text(msg().send.reactionAdded(name, args.post_id));
 }
 
 export async function removeReaction(mm: Mm, uid: string, args: ReactionArgs): Promise<CallToolResult> {
@@ -283,13 +277,12 @@ export async function removeReaction(mm: Mm, uid: string, args: ReactionArgs): P
   // Not reporting whether a reaction was there: Mattermost answers 200 either way, even for an unknown emoji name.
   await worded(mm.call(uid, 'DELETE', `/users/${uid}/posts/${args.post_id}/reactions/${name}`),
     reactionWording(name, 'api.reaction.delete.archived_channel.app_error'));
-  return text(`リアクション :${name}: が付いていれば外しました。\npost_id: ${args.post_id}`);
+  return text(msg().send.reactionRemoved(name, args.post_id));
 }
 
 type OwnPost = MmPost & { type: string; props?: Record<string, unknown>; reply_count?: number };
 type Where = { line: string; teamName: string };
-const GONE = '投稿が見つかりません。直前の呼び出しで削除済みの可能性があります。';
-const goneWording: Wording = { id: [[404, 'app.post.get.app_error', GONE]] };
+const goneWording = (): Wording => ({ id: [[404, 'app.post.get.app_error', msg().send.gone]] });
 
 // Not forgetting before DELETE: if Mattermost refused the delete, the post would stay while a resend posted it twice.
 async function forgetIfGone<T>(p: Promise<T>, store: Store, uid: string, postId: string): Promise<T> {
@@ -304,37 +297,38 @@ async function forgetIfGone<T>(p: Promise<T>, store: Store, uid: string, postId:
 // Not trusting user_id alone: a webhook post carries its creator's user_id, and Mattermost would let that creator edit or delete it.
 // Not refusing from_oauth_app or from_plugin: this MCP's own send_message posts carry from_oauth_app.
 async function ownPost(mm: Mm, store: Store, uid: string, postId: string): Promise<OwnPost> {
-  const post = await worded(forgetIfGone(mm.call<OwnPost>(uid, 'GET', `/posts/${postId}`), store, uid, postId), goneWording);
-  if (post.user_id !== uid) throw new InputError('本人の投稿ではありません。この MCP からは本人の投稿だけを編集・削除できます。');
-  if (post.props?.from_webhook || post.props?.from_bot) throw new InputError('webhook や Bot が投稿したものは扱えません。');
-  if (post.type) throw new InputError(`この種類の投稿は扱えません（type: ${post.type}）。`);
+  const post = await worded(forgetIfGone(mm.call<OwnPost>(uid, 'GET', `/posts/${postId}`), store, uid, postId), goneWording());
+  if (post.user_id !== uid) throw new InputError(msg().send.notOwn);
+  if (post.props?.from_webhook || post.props?.from_bot) throw new InputError(msg().send.botPost);
+  if (post.type) throw new InputError(msg().send.unsupportedType(post.type));
   return post;
 }
 
 // Looked up before the write rather than after: once DELETE has succeeded, a failing lookup would report an irreversible success as an error.
 async function whereOf(mm: Mm, uid: string, post: OwnPost): Promise<Where> {
   const ch = await mm.call<MmChannel>(uid, 'GET', `/channels/${post.channel_id}`);
-  return { line: `チャンネル: channel_id: ${ch.id}、表示名: ${oneLine(ch.display_name || ch.name)}`, teamName: await teamNameOf(mm, uid, ch.team_id) };
+  return { line: msg().send.channelLine(ch.id, oneLine(ch.display_name || ch.name)), teamName: await teamNameOf(mm, uid, ch.team_id) };
 }
 
-const editSchema = {
+// A function rather than a constant: the description quotes a table string, which must be looked up after the locale is set.
+const editSchema = () => ({
   post_id: POST_ID,
-  message: z.string().min(1).max(MAX_MESSAGE).describe(`New message, replacing the whole text. To rewrite from earlier output, first reread the post with get_post and remove the 2-space indent from each line. If get_post shows "${BODY_CUT_NOTE}", do not rewrite from the output (the cut part would be lost); ask the user to edit it in Mattermost instead, unless they give you the whole new text.`),
-};
+  message: z.string().min(1).max(MAX_MESSAGE).describe(msg().descriptions.editBody(bodyCutNote())),
+});
 type EditArgs = { post_id: string; message: string };
 
 export async function editMessage(mm: Mm, store: Store, uid: string, baseUrl: string, args: EditArgs): Promise<CallToolResult> {
-  if (!args.message.trim()) throw new InputError('本文が空白だけです。投稿を消したいときは delete_message を使ってください。');
+  if (!args.message.trim()) throw new InputError(msg().send.editBlank);
   const where = await whereOf(mm, uid, await ownPost(mm, store, uid, args.post_id));
   // Not PUT /posts/{id}: it clears is_pinned when the field is left out.
   await worded(mm.call(uid, 'PUT', `/posts/${args.post_id}/patch`, { message: args.message }), {
     id: [
-      [400, 'api.post.update_post.permissions_time_limit.app_error', '編集できる期間を過ぎています。'],
-      [400, 'api.post.patch_post.can_not_update_post_in_deleted.error', 'アーカイブ済みのチャンネルの投稿は編集できません。'],
+      [400, 'api.post.update_post.permissions_time_limit.app_error', msg().send.editExpired],
+      [400, 'api.post.patch_post.can_not_update_post_in_deleted.error', msg().send.editArchived],
     ],
   });
   store.forgetPost(uid, args.post_id);
-  return text(['編集しました。編集で足したメンションは通知されません。', `post_id: ${args.post_id}`, where.line, `${baseUrl}/${where.teamName}/pl/${args.post_id}`].join('\n'));
+  return text([msg().send.edited, `post_id: ${args.post_id}`, where.line, `${baseUrl}/${where.teamName}/pl/${args.post_id}`].join('\n'));
 }
 
 export async function deleteMessage(mm: Mm, store: Store, uid: string, args: { post_id: string }): Promise<CallToolResult> {
@@ -343,33 +337,32 @@ export async function deleteMessage(mm: Mm, store: Store, uid: string, args: { p
   // Not defaulting a missing reply_count to 0: the delete cannot be undone, so an unknown count is treated as having replies.
   // Not closing the race with a reply posted after this check: Mattermost has no conditional delete.
   if (!post.root_id && post.reply_count !== 0) {
-    throw new InputError('返信のあるスレッドの親投稿は消せません。消すとほかの人の返信も消えるためです。消す場合は Mattermost の画面から操作してください。');
+    throw new InputError(msg().send.deleteHasReplies);
   }
   const where = await whereOf(mm, uid, post);
   await worded(forgetIfGone(mm.call(uid, 'DELETE', `/posts/${args.post_id}`), store, uid, args.post_id), {
     id: [
-      ...goneWording.id!,
-      [400, 'api.post.delete_post.can_not_delete_post_in_deleted.error', 'アーカイブ済みのチャンネルの投稿は削除できません。'],
+      ...goneWording().id!,
+      [400, 'api.post.delete_post.can_not_delete_post_in_deleted.error', msg().send.deleteArchived],
     ],
   });
   store.forgetPost(uid, args.post_id);
-  return text(['削除しました。', `post_id: ${args.post_id}`, where.line].join('\n'));
+  return text([msg().send.deleted, `post_id: ${args.post_id}`, where.line].join('\n'));
 }
 
-const draftSchema = {
-  channel: z.string().min(1).describe('A channel ID, team/channel, channel name, @username (DM), or @a,b (group DM). A DM or group DM is created if missing.'),
+const draftSchema = () => ({
+  channel: z.string().min(1).describe(msg().descriptions.draftChannel),
   // Not counting code points: zod counts UTF-16 units, which can only be stricter than Mattermost's limit.
   message: z.string().min(1).max(MAX_MESSAGE),
-  root_id: POST_ID.optional().describe('post_id of the thread root, to save a reply draft'),
-  overwrite: z.boolean().optional().describe('true to replace an existing draft with a different message for the same destination. Its attachments, priority and burn-on-read setting are lost too, irreversibly.'),
-};
+  root_id: POST_ID.optional().describe(msg().descriptions.draftRootId),
+  overwrite: z.boolean().optional().describe(msg().descriptions.draftOverwrite),
+});
 type DraftArgs = { channel: string; message: string; root_id?: string; overwrite?: boolean };
 type Draft = {
   channel_id: string; root_id: string; message: string; type?: string; file_ids?: string[];
   priority?: { priority?: string; requested_ack?: boolean; persistent_notifications?: boolean };
 };
-const LEFT_BEHIND = 'この下書きと同じ本文を send_message で送ると、投稿の後にこの下書きを消します（画面で添付を付けた場合は消しません）。';
-const DISABLED: [number, string, string] = [501, 'api.drafts.disabled.app_error', 'このサーバーでは下書きの同期が無効です。'];
+const disabled = (): [number, string, string] => [501, 'api.drafts.disabled.app_error', msg().send.draftSyncDisabled];
 
 // Refused rather than saved: with sync off the webapp neither loads the draft nor shows its own unsent text to the check below.
 async function syncDraftsOff(mm: Mm, uid: string): Promise<boolean> {
@@ -383,10 +376,10 @@ async function syncDraftsOff(mm: Mm, uid: string): Promise<boolean> {
 
 export async function checkRoot(mm: Mm, uid: string, rootId: string, ch: { id: string; name: string; displayName: string }): Promise<void> {
   const root = await worded(mm.call<MmPost>(uid, 'GET', `/posts/${rootId}`), {
-    status: [[404, `root_id ${rootId} の投稿が見つかりません。`], [403, `root_id ${rootId} の投稿を見られません。`]],
+    status: [[404, msg().send.rootNotFound(rootId)], [403, msg().send.rootForbidden(rootId)]],
   });
-  if (root.channel_id !== ch.id) throw new InputError(`root_id ${rootId} の投稿は channel_id: ${ch.id} のチャンネルにありません（表示名: ${oneLine(ch.displayName || ch.name)}）。`);
-  if (root.root_id) throw new InputError(`root_id ${rootId} は返信です。スレッドの親投稿の post_id を指定してください。`);
+  if (root.channel_id !== ch.id) throw new InputError(msg().send.rootOtherChannel(rootId, ch.id, oneLine(ch.displayName || ch.name)));
+  if (root.root_id) throw new InputError(msg().send.rootIsReply(rootId));
 }
 
 // Not throwing when the caller has no team: send_message's cleanup has nothing to do then, since drafts are listed per team and a DM draft shows nowhere.
@@ -470,36 +463,36 @@ async function clearSentDraft(mm: Mm, uid: string, ch: ChannelRef, rootId: strin
   try {
     return await withDraftLock(uid, ch.id, rootId, () => clearLocked(quick, uid, ch, rootId, message), stop);
   } catch (e) {
-    if (e instanceof MmError && e.status === 501 && e.id === DISABLED[1]) return '';
+    if (e instanceof MmError && e.status === 501 && e.id === disabled()[1]) return '';
     // Not logged when the client gave up: the request was cancelled, not the cleanup broken.
     if (client?.aborted) return '';
     log('draft_cleanup_failed', { mm_user_id: uid, channel_id: ch.id, name: (e as Error)?.name, ...(e instanceof TooLateToDelete ? { skipped: 'delete' } : {}), ...(e instanceof MmError ? { status: e.status, id: e.id } : {}) });
-    if (e instanceof Reauthorize) return '投稿の後で Mattermost への再ログインが必要になったため、同じ本文の下書きを確かめられませんでした。コネクタを再接続してください。下書きが残っていれば、そのまま送ると同じ投稿が 2 回になります。';
-    return '同じ本文の下書きを確かめられなかったか、消せませんでした。下書きが残っていれば、そのまま送ると同じ投稿が 2 回になります。';
+    if (e instanceof Reauthorize) return msg().send.cleanupReauthorize;
+    return msg().send.cleanupFailed;
   }
 }
 
 async function clearLocked(quick: Mm, uid: string, ch: ChannelRef, rootId: string, message: string): Promise<string> {
   const d = (await draftsOf(quick, uid, ch))?.find((x) => x.channel_id === ch.id && (x.root_id || '') === rootId && x.message === message);
   if (!d) return '';
-  if (d.file_ids?.length) return '同じ本文の下書きがありますが、添付ファイルが付いているため消していません。そのまま送ると、同じ本文がもう一度投稿されます。';
+  if (d.file_ids?.length) return msg().send.draftHasFiles;
   // Not deleting with sync off: the webapp clears its stored draft on draft_deleted whatever the setting, wiping unsynced text kept only in the browser.
-  if (await syncDraftsOff(quick, uid)) return '同じ本文の下書きがありますが、下書きの同期を切っているため消していません。同期を入れ直すと画面に出るので、送らずに消してください。';
+  if (await syncDraftsOff(quick, uid)) return msg().send.draftSyncOffKept;
   await quick.call(uid, 'DELETE', `/users/${uid}/channels/${ch.id}/drafts${rootId ? `/${rootId}` : ''}`);
   const p = d.priority;
   return [
     // Not claiming the input box is empty: an open editor keeps its own copy until the user switches channel or thread.
-    `同じ本文の下書きを消しました。${rootId ? 'そのスレッド' : 'そのチャンネル'}を画面で開いている場合は、入力欄に本文が残っているので、送らずに消してください。`,
-    ...(p?.priority || p?.requested_ack || p?.persistent_notifications ? ['下書きに付いていた優先度は、この投稿には付いていません。'] : []),
+    msg().send.draftCleared(!!rootId),
+    ...(p?.priority || p?.requested_ack || p?.persistent_notifications ? [msg().send.draftPriorityLost] : []),
     // Not keeping the draft for it: sending it from the UI would post the same text twice, the same reason priority is not kept.
-    ...(d.type === 'burn_on_read' ? ['下書きに付いていた burn-on-read（読まれた後に消える設定）は、この投稿には付いていません。投稿は消えずに残ります。'] : []),
+    ...(d.type === 'burn_on_read' ? [msg().send.draftBurnLost] : []),
   ].join('\n');
 }
 
 export async function saveDraft(mm: Mm, uid: string, args: DraftArgs): Promise<CallToolResult> {
   // Checked before resolving rather than after: resolving may create the DM, and with sync off the call fails anyway.
   if (await syncDraftsOff(mm, uid)) {
-    throw new InputError('下書きの同期を切っているため保存していません。保存しても画面に届かないか、書きかけの下書きを上書きするおそれがあります。「設定 > 詳細設定」で下書きの同期を入れてください。');
+    throw new InputError(msg().send.draftSyncOffRefused);
   }
   const rootId = args.root_id ?? '';
   // Not listing only after resolving a DM it may create: with drafts disabled on the server the call then fails leaving it empty. A DM's drafts are listed on the first team, the same team as after resolving.
@@ -510,59 +503,59 @@ export async function saveDraft(mm: Mm, uid: string, args: DraftArgs): Promise<C
   const ch = await resolveChannel(mm, uid, args.channel, { create: createsDirect(rootId, []) });
   // Checked here rather than left to Mattermost: it saves a draft on any root_id, and one on a reply never shows in any thread.
   if (rootId) await checkRoot(mm, uid, rootId, ch);
-  const where = `投稿先: channel_id: ${ch.id}${rootId ? `、返信先 post_id: ${rootId}` : ''}、表示名: ${oneLine(ch.displayName || ch.name)}`;
+  const where = msg().send.destination(ch.id, rootId || undefined, oneLine(ch.displayName || ch.name));
   // Not locking the resolving above: one call may take tens of seconds, and a send_message cleanup waiting behind it would always run out of time.
   // Not leaving the list and the save unlocked: a save made between the cleanup's list and its DELETE would be the draft it deletes.
   const same = await withDraftLock(uid, ch.id, rootId, () => saveLocked(mm, uid, ch, rootId, args, where));
   if (same) return same;
   // Not claiming the input box for a reply: only channel drafts were checked in the webapp.
   return text(rootId
-    ? ['下書きとして保存しました。送信は本人が行ってください。', where, LEFT_BEHIND].join('\n')
+    ? [msg().send.draftSavedReply, where, msg().send.leftBehind].join('\n')
     : [
-      'Mattermost の下書きとして保存しました。そのチャンネルの入力欄に入っています。送信は本人が行ってください。',
+      msg().send.draftSavedChannel,
       where,
-      '保存したときにそのチャンネルを開いていた場合は、チャンネルを開き直してから編集してください。開き直さずに書くと、この下書きは置き換わります。',
-      LEFT_BEHIND,
+      msg().send.draftReopen,
+      msg().send.leftBehind,
     ].join('\n'));
 }
 
 async function listDrafts(mm: Mm, uid: string, ch: Pick<ChannelRef, 'teamId'>): Promise<Draft[]> {
-  const list = await worded(draftsOf(mm, uid, ch), { id: [DISABLED] });
-  if (!list) throw new InputError('所属しているチームがないため、既存の下書きを確かめられません。');
+  const list = await worded(draftsOf(mm, uid, ch), { id: [disabled()] });
+  if (!list) throw new InputError(msg().send.noTeamForDrafts);
   return list;
 }
 
 async function saveLocked(mm: Mm, uid: string, ch: ChannelRef, rootId: string, args: DraftArgs, where: string): Promise<CallToolResult | undefined> {
   const list = await listDrafts(mm, uid, ch);
   const existing = list.find((d) => d.channel_id === ch.id && (d.root_id || '') === rootId);
-  if (existing?.message === args.message) return text(`同じ下書きがあります。保存し直していません。\n${where}\n${LEFT_BEHIND}`);
+  if (existing?.message === args.message) return text(`${msg().send.draftSame}\n${where}\n${msg().send.leftBehind}`);
   if (existing && !args.overwrite) {
     // Not counted by code point: list_scheduled_messages counts its 200 by grapheme, and a code point cut can split an emoji in two.
     const head = truncate(existing.message, 200);
-    const quoted = indented(head.truncated ? '既存の下書き（先頭 200 文字）' : '既存の下書き（全文）', head.text);
+    const quoted = indented(head.truncated ? msg().send.existingHead : msg().send.existingFull, head.text);
     throw new InputError([
-      '同じ投稿先に、本文の違う下書きがあります。上書きしていません。上書きするときは overwrite: true を付けてください（添付ファイル、優先度、burn-on-read も失われます）。',
+      msg().send.draftDiffers,
       where,
       // Not after the quote: the quote stays last, so nothing written in the draft can pass for a line of this answer.
-      ...(head.truncated ? ['既存の下書きは 200 文字を超えるので、先頭だけを出しています。書き写すと後ろが消えるので、追記は Mattermost の画面で行うよう利用者に伝えてください。'] : []),
-      ...(quoted.length > 1 ? ['既存の下書きの 2 行目以降は 4 文字字下げしています。CRLF や CR の改行は LF にそろえ、垂直タブや U+2028 などの区切りも改行として出しているので、書き写すと改行の種類が LF になり、改行が増えることもあります。書き写すときは、2 行目以降の先頭の 4 文字の空白を外してください。'] : []),
+      ...(head.truncated ? [msg().send.existingCut] : []),
+      ...(quoted.length > 1 ? [msg().send.existingIndent] : []),
       // Not at the margin: a later line of the user's draft could pass for a line of this answer.
       ...quoted,
     ].join('\n'));
   }
   await worded(mm.call(uid, 'POST', '/drafts', { channel_id: ch.id, root_id: rootId, message: args.message }), {
-    id: [DISABLED, [400, 'api.draft.create_draft.can_not_draft_to_deleted.error', 'アーカイブ済みのチャンネルには下書きを保存できません。']],
-    status: [[403, 'このチャンネルに下書きを保存する権限がありません。']],
+    id: [disabled(), [400, 'api.draft.create_draft.can_not_draft_to_deleted.error', msg().send.draftArchived]],
+    status: [[403, msg().send.draftForbidden]],
   });
   return undefined;
 }
 
-const prepareSchema = { channel: z.string().min(1).describe('Destination: a channel ID, team/channel, channel name, @username (DM), or @a,b (group DM). A DM or group DM is created if missing.') };
+const prepareSchema = () => ({ channel: z.string().min(1).describe(msg().descriptions.prepareChannel) });
 type PrepareArgs = { channel: string };
 const MiB = 1024 * 1024;
 
 export async function prepareUpload(mm: Mm, store: Store, uid: string, publicUrl: string, maxBytes: number, args: PrepareArgs): Promise<CallToolResult> {
-  const full = () => new InputError(`使われていないアップロード URL が ${MAX_OPEN_UPLOAD_URLS} 件あります。それを使うか、10 分の期限が切れるのを待ってください。`);
+  const full = () => new InputError(msg().send.uploadsFull(MAX_OPEN_UPLOAD_URLS));
   // Not left to createUploadUrl alone: resolving may create the DM first, and failing after that leaves it empty. A URL issued or released between the two checks still does.
   if (store.openUploadUrlCount(uid) >= MAX_OPEN_UPLOAD_URLS) throw full();
   const ch = mayCreateDirect(args.channel, undefined, [])
@@ -570,15 +563,15 @@ export async function prepareUpload(mm: Mm, store: Store, uid: string, publicUrl
     : await resolveChannel(mm, uid, args.channel, { create: true });
   const token = store.createUploadUrl({ mmUserId: uid, channelId: ch.id });
   if (!token) throw full();
-  const limit = maxBytes % MiB ? `${maxBytes} バイト` : `${maxBytes / MiB}MiB`;
+  const limit = maxBytes % MiB ? msg().send.bytes(maxBytes) : `${maxBytes / MiB}MiB`;
   return text([
-    `アップロード用の URL を発行しました。10 分間、1 回だけ使えます（1 回で ${MAX_UPLOAD_FILES} 件まで、送る本文は multipart の枠を含めて ${limit} まで）。`,
-    `投稿先: channel_id: ${ch.id}、表示名: ${oneLine(ch.displayName || ch.name)}`,
-    '実行する前に、送るファイルのパスと投稿先を利用者に示して、確認を取ってください。',
+    msg().send.uploadIssued(MAX_UPLOAD_FILES, limit),
+    msg().send.destination(ch.id, undefined, oneLine(ch.displayName || ch.name)),
+    msg().send.uploadConfirm,
     '',
-    `curl -sS -F 'file=@<ファイルのパス>' ${publicUrl}/mcp/upload/${token}`,
+    msg().send.uploadCurl(`${publicUrl}/mcp/upload/${token}`),
     '',
-    '複数のファイルは -F \'file=@<パス>\' を繰り返します。返ってきた file_id を send_message の file_ids に渡して、同じチャンネルへ投稿してください。予約するときは schedule_message の file_ids に渡します。',
+    msg().send.uploadMore,
   ].join('\n'));
 }
 
@@ -586,55 +579,55 @@ export function registerSendTools(server: McpServer, ctx: ToolContext): void {
   const mmOf = (signal: AbortSignal): Mm => ({ call: (u, m, p, b) => ctx.mm.call(u, m, p, b, signal) });
   const reactionAnnotations = { readOnlyHint: false, destructiveHint: false, idempotentHint: true };
   server.registerTool('add_reaction', {
-    description: 'Add your reaction to a post. Use it for a light reply such as "noted" (white_check_mark) instead of posting.',
-    inputSchema: reactionSchema,
+    description: msg().descriptions.addReaction,
+    inputSchema: reactionSchema(),
     annotations: reactionAnnotations,
   }, guarded(ctx, 'add_reaction', async (args: ReactionArgs, extra: { signal: AbortSignal }) => addReaction(mmOf(extra.signal), ctx.mmUserId, args),
-  ) as unknown as ToolCallback<typeof reactionSchema>);
+  ) as unknown as ToolCallback<ReturnType<typeof reactionSchema>>);
   server.registerTool('remove_reaction', {
-    description: 'Remove your reaction from a post.',
-    inputSchema: reactionSchema,
+    description: msg().descriptions.removeReaction,
+    inputSchema: reactionSchema(),
     annotations: reactionAnnotations,
   }, guarded(ctx, 'remove_reaction', async (args: ReactionArgs, extra: { signal: AbortSignal }) => removeReaction(mmOf(extra.signal), ctx.mmUserId, args),
-  ) as unknown as ToolCallback<typeof reactionSchema>);
+  ) as unknown as ToolCallback<ReturnType<typeof reactionSchema>>);
 
   const destructive = { readOnlyHint: false, destructiveHint: true, idempotentHint: true };
   server.registerTool('edit_message', {
-    description: 'Edit the text of your own post. Mentions added by an edit do not notify.',
-    inputSchema: editSchema,
+    description: msg().descriptions.editMessage,
+    inputSchema: editSchema(),
     annotations: destructive,
   }, guarded(ctx, 'edit_message', async (args: EditArgs, extra: { signal: AbortSignal }) => editMessage(mmOf(extra.signal), ctx.store, ctx.mmUserId, ctx.cfg.mmBrowserUrl, args),
-  ) as unknown as ToolCallback<typeof editSchema>);
+  ) as unknown as ToolCallback<ReturnType<typeof editSchema>>);
   const deleteSchema = { post_id: POST_ID };
   server.registerTool('delete_message', {
-    description: 'Delete your own post. This cannot be undone: confirm with the user first.',
+    description: msg().descriptions.deleteMessage,
     inputSchema: deleteSchema,
     annotations: destructive,
   }, guarded(ctx, 'delete_message', async (args: { post_id: string }, extra: { signal: AbortSignal }) => deleteMessage(mmOf(extra.signal), ctx.store, ctx.mmUserId, args),
   ) as unknown as ToolCallback<typeof deleteSchema>);
 
   server.registerTool('save_draft', {
-    description: 'Save a message as your Mattermost draft without posting; the user sends it from Mattermost. Sending the same message with send_message deletes the draft after posting, unless the draft has attachments.',
-    inputSchema: draftSchema,
+    description: msg().descriptions.saveDraft,
+    inputSchema: draftSchema(),
     annotations: destructive,
   }, guarded(ctx, 'save_draft', async (args: DraftArgs, extra: { signal: AbortSignal }) => saveDraft(mmOf(extra.signal), ctx.mmUserId, args),
-  ) as unknown as ToolCallback<typeof draftSchema>);
+  ) as unknown as ToolCallback<ReturnType<typeof draftSchema>>);
 
   server.registerTool('prepare_upload', {
-    description: 'Return a one-time upload URL and curl command to attach files from the user\'s PC, for clients that can run commands on the PC (Claude Code, Codex CLI, ...). For a file without a known path (such as an image pasted into Claude Code), ask the user for the path. Before running curl, show the user the file paths and the destination and get confirmation. For clients that cannot run commands (claude.ai, ...) and files without a path, save the text with save_draft and tell the user to attach the files in Mattermost.',
-    inputSchema: prepareSchema,
+    description: msg().descriptions.prepareUpload,
+    inputSchema: prepareSchema(),
     annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false },
   }, guarded(ctx, 'prepare_upload', async (args: PrepareArgs, extra: { signal: AbortSignal }) =>
     prepareUpload(mmOf(extra.signal), ctx.store, ctx.mmUserId, ctx.cfg.publicUrl, ctx.cfg.uploadMaxBytes, args),
-  ) as unknown as ToolCallback<typeof prepareSchema>);
+  ) as unknown as ToolCallback<ReturnType<typeof prepareSchema>>);
 
   server.registerTool('send_message', {
-    description: 'Post to a channel. channel is a channel ID, team/channel, channel name, @username (DM), or @a,b (group DM); a DM or group DM is created if missing. Attach files with files (content inline) or file_ids (from prepare_upload). The same message and attachments to the same destination within 10 minutes is treated as a retry and not posted.',
-    inputSchema,
+    description: msg().descriptions.sendMessage,
+    inputSchema: sendSchema(),
     annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false },
   }, guarded(ctx, 'send_message', async (args: Args, extra: { signal: AbortSignal }) => {
     const mm: Mm = { call: (u, m, p, b, s) => ctx.mm.call(u, m, p, b, s ? AbortSignal.any([extra.signal, s]) : extra.signal) };
     return sendMessage(mm, ctx.store, ctx.mmUserId, ctx.cfg.mmBrowserUrl, args, extra.signal);
   // Cast for the same reason as in tools-read.ts: the SDK's callback type does not resolve for this shape.
-  }) as unknown as ToolCallback<typeof inputSchema>);
+  }) as unknown as ToolCallback<ReturnType<typeof sendSchema>>);
 }

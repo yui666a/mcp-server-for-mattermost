@@ -1,5 +1,6 @@
 import { existsSync } from 'node:fs';
 import type { DatabaseSync } from 'node:sqlite';
+import { localeOf, msg, setLocale } from './i18n/index.ts';
 import { openDb } from './db.ts';
 import { Store } from './store.ts';
 
@@ -24,8 +25,8 @@ export function runAdmin(argv: string[], db: DatabaseSync, io: Io): number {
   }
   if (cmd === 'invalidate-scheduled' && args.length === 0) {
     const n = store.invalidateScheduled(Date.now(), {
-      unattempted: 'サーバーを復元したため無効にしました。予約を入れ直してください。',
-      unknown: 'サーバーを復元したため無効にしました。投稿されたか不明なので、Mattermost の画面で確かめてください。',
+      unattempted: msg().admin.invalidatedUnattempted,
+      unknown: msg().admin.invalidatedUnknown,
     });
     io.out(`invalidated ${n} scheduled posts\n`);
     return 0;
@@ -55,6 +56,7 @@ if (import.meta.main) {
   try {
     // openDb would silently create an empty DB on a wrong path, making "purged 0 rows" look like success.
     if (!existsSync(path)) throw new Error(`database not found: ${path}`);
+    setLocale(localeOf(process.env.LOCALE));
     process.exitCode = runAdmin(process.argv.slice(2), openDb(path), io);
   } catch (e) {
     io.err(`error: ${(e as Error).message}\n`);

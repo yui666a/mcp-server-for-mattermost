@@ -1,79 +1,79 @@
-# 実測した挙動
+# Measured behavior
 
-設計と実装が前提にしている、Mattermost と MCP クライアントの挙動を測った結果。
-Mattermost を更新するときは、結合テスト（`pnpm test:int`）でこれらの前提を確かめ直す（[operations.md の「Mattermost を更新するとき」](operations.md#mattermost-を更新するとき)）。
+Results of measuring the Mattermost and MCP client behavior that the design and implementation rely on.
+When you update Mattermost, confirm these assumptions again with the integration tests (`pnpm test:int`) ([When updating Mattermost in operations.md](operations.md#when-updating-mattermost)).
 
-## Mattermost の OAuth の実測
+## Measured Mattermost OAuth behavior
 
-ローカルの Mattermost 11.7.15（`dev/compose.yml`、OAuth アプリは confidential で `is_trusted: true`）に対して `test/int/mattermost-oauth.test.ts` で測った結果。設計の前提のうち、トークンの再利用、リフレッシュ token のローテーション、`pending_post_id` の重複排除は成り立った。リフレッシュによる旧アクセストークンの失効は成り立たなかった（下の「リフレッシュ後の旧アクセストークン」）。
+Results measured with `test/int/mattermost-oauth.test.ts` against a local Mattermost 11.7.15 (`dev/compose.yml`, the OAuth app is confidential with `is_trusted: true`). Of the design assumptions, token reuse, refresh token rotation and `pending_post_id` deduplication held. Invalidation of the old access token by a refresh did not hold (see "Old access token after a refresh" below).
 
-### トークン交換とリフレッシュ
+### Token exchange and refresh
 
-- エンドポイントは `POST {MM_URL}/oauth/access_token`、本文は `application/x-www-form-urlencoded`。
-- 認可コード交換の必須パラメータは `grant_type=authorization_code`、`code`、`client_id`、`client_secret`、`redirect_uri`。`redirect_uri` を省かない。省いたときも認可時と異なる値のときも 400 `api.oauth.get_access_token.redirect_uri.app_error`。使用済みの `code` は 400 `api.oauth.get_access_token.expired_code.app_error`。
-- リフレッシュの必須パラメータは `grant_type=refresh_token`、`refresh_token`、`client_id`、`client_secret`。`redirect_uri` は不要（付けても 200）。`client_secret` を省いても誤っても 401 `model.oauth.validate_grant.credentials.app_error`。
-- 応答は `access_token`、`refresh_token`、`token_type: bearer`、`expires_in`、`scope`、`id_token`。`expires_in` は 2592000（30 日）で、MCP 側のアクセストークンの期限とは無関係に固定。
-- 同じユーザーと同じアプリで再認可すると、期限内なら同じ `access_token` と `refresh_token` が返る（テストで確認）。
-- リフレッシュすると新しい `access_token` と `refresh_token` が返り、使用済みの `refresh_token` は二度と使えない。
-- 古い `access_token` はリフレッシュ直後も有効なまま残る（8 秒後も `/api/v4/users/me` が 200）。古い `access_token` の失効を `401` の根拠にしない。詳細は下の「リフレッシュ後の旧アクセストークン」。
+- The endpoint is `POST {MM_URL}/oauth/access_token`, and the body is `application/x-www-form-urlencoded`.
+- The required parameters of the authorization code exchange are `grant_type=authorization_code`, `code`, `client_id`, `client_secret` and `redirect_uri`. Do not omit `redirect_uri`. Omitting it, or giving a value different from the one used at authorization, returns 400 `api.oauth.get_access_token.redirect_uri.app_error`. A used `code` returns 400 `api.oauth.get_access_token.expired_code.app_error`.
+- The required parameters of a refresh are `grant_type=refresh_token`, `refresh_token`, `client_id` and `client_secret`. `redirect_uri` is not needed (adding it still returns 200). Omitting `client_secret` or giving a wrong one returns 401 `model.oauth.validate_grant.credentials.app_error`.
+- The response has `access_token`, `refresh_token`, `token_type: bearer`, `expires_in`, `scope` and `id_token`. `expires_in` is 2592000 (30 days), fixed regardless of the lifetime of the MCP-side access token.
+- Authorizing again with the same user and the same app returns the same `access_token` and `refresh_token` while they are within their lifetime (confirmed in a test).
+- A refresh returns a new `access_token` and `refresh_token`, and the used `refresh_token` can never be used again.
+- The old `access_token` stays valid right after the refresh (`/api/v4/users/me` still returns 200 after 8 seconds). Do not treat invalidation of the old `access_token` as the basis for a `401`. For details, see "Old access token after a refresh" below.
 
-### 再ログインが要る条件
+### When a re-login is needed
 
-エラー応答は `{"id", "message", "detailed_error", "request_id", "status_code"}` の形で、OAuth の `error` 値は `message` の先頭（`invalid_grant: ...`）にだけ現れる。独立した `error` フィールドはない。判定は HTTP ステータスと `id` で行う。
+An error response has the shape `{"id", "message", "detailed_error", "request_id", "status_code"}`, and the OAuth `error` value appears only at the start of `message` (`invalid_grant: ...`). There is no separate `error` field. The decision is made on the HTTP status and `id`.
 
-| 状況 | HTTP | `id` | 再ログイン |
+| Situation | HTTP | `id` | Re-login |
 |---|---|---|---|
-| 使用済みの `refresh_token` | 404 | `api.oauth.get_access_token.refresh_token.app_error` | 要る |
-| 存在しない `refresh_token` | 404 | 同上 | 要る |
-| 利用者がアプリを取り消した（`POST /oauth/deauthorize`） | 404 | 同上 | 要る |
-| 利用者を無効化した（`DELETE /api/v4/users/{id}`） | 404 | 同上 | 要る |
-| `refresh_token` 欠落 | 400 | `api.oauth.get_access_token.missing_refresh_token.app_error` | 不要（実装の誤り） |
-| `client_secret` の欠落か不一致 | 401 | `model.oauth.validate_grant.credentials.app_error` | 不要（設定の誤り） |
+| A used `refresh_token` | 404 | `api.oauth.get_access_token.refresh_token.app_error` | Needed |
+| A `refresh_token` that does not exist | 404 | Same as above | Needed |
+| The user revoked the app (`POST /oauth/deauthorize`) | 404 | Same as above | Needed |
+| The user was deactivated (`DELETE /api/v4/users/{id}`) | 404 | Same as above | Needed |
+| `refresh_token` missing | 400 | `api.oauth.get_access_token.missing_refresh_token.app_error` | Not needed (an implementation mistake) |
+| `client_secret` missing or mismatched | 401 | `model.oauth.validate_grant.credentials.app_error` | Not needed (a configuration mistake) |
 
-- MCP サーバーが再ログインを要求するのは、リフレッシュが 404 かつ `id` が `api.oauth.get_access_token.refresh_token.app_error` のときと、下の 403 のときだけ。
-- 無効化の 404 は、無効化で `OAuthAccessData` が消えるため。v11.7.15 のソースには、`OAuthAccessData` が残っていて `DeleteAt != 0` の場合に 403 `api.oauth.get_access_token.expired_code.app_error` を返す分岐もある。ローカルでは到達しなかったが、MCP サーバーはこの 403 も再ログインとして扱う。
-- 取り消しは `POST {MM_URL}/oauth/deauthorize`、本文 `{"client_id": "..."}`、利用者の Cookie（`MMAUTHTOKEN`）に加えて、`X-Requested-With: XMLHttpRequest` か `X-CSRF-Token`（`MMCSRF` Cookie の値）のどちらかが必要。どちらも無いとき、`X-CSRF-Token` の値が誤っているときは 401。Cookie は、ログイン要求に `X-Requested-With: XMLHttpRequest` を付けたときだけ `Set-Cookie` される。
+- The MCP server asks for a re-login only when a refresh returns 404 with `id` of `api.oauth.get_access_token.refresh_token.app_error`, and for the 403 below.
+- The deactivation 404 happens because deactivation deletes `OAuthAccessData`. The v11.7.15 source also has a branch that returns 403 `api.oauth.get_access_token.expired_code.app_error` when `OAuthAccessData` remains and `DeleteAt != 0`. It was not reached locally, but the MCP server treats this 403 as a re-login too.
+- Revocation is `POST {MM_URL}/oauth/deauthorize` with the body `{"client_id": "..."}`, and it needs the user's cookie (`MMAUTHTOKEN`) plus either `X-Requested-With: XMLHttpRequest` or `X-CSRF-Token` (the value of the `MMCSRF` cookie). It returns 401 when neither is present or when the `X-CSRF-Token` value is wrong. The cookie is sent in `Set-Cookie` only when the login request carries `X-Requested-With: XMLHttpRequest`.
 
-### リフレッシュ後の旧アクセストークン
+### Old access token after a refresh
 
-- 同じユーザーと同じアプリで認可し、リフレッシュしたあと、旧 `access_token` で `GET /api/v4/users/me` を 15 秒間隔で呼んだ。リフレッシュ後 841 秒（約 14 分）まで 200 のままで、401 にならなかった。新しい `access_token` も同時に 200。
-- Mattermost のセッションキャッシュ（`SessionCacheInMinutes`、既定 10）の 10 分を超えても 200 が続いたため、キャッシュによる一時的な残存ではない。旧 `access_token` に紐づくセッションはリフレッシュで失効せず、セッション自体の期限（`SessionLengthSSOInDays`、既定 30 日、`expires_in` の 2592000 と一致）まで有効とみられる。30 日までは測っていない。
-- 旧 `access_token` が 401 になるのが確認できたのは、利用者がアプリを取り消したとき（`POST /oauth/deauthorize`）だけ。
-- MCP サーバーは、Mattermost が 401 を返したら保存済みの資格情報を読み直す方式なので、旧トークンが残っても動作は変わらない。Mattermost のトークンは MCP サーバーの外に出さないが、リフレッシュ後の旧トークンは保存先が漏えいしたときのリスクとして残る。
+- After authorizing with the same user and the same app and refreshing, `GET /api/v4/users/me` was called with the old `access_token` every 15 seconds. It stayed at 200 until 841 seconds (about 14 minutes) after the refresh and never became 401. The new `access_token` also returned 200 at the same time.
+- It kept returning 200 beyond the 10 minutes of Mattermost's session cache (`SessionCacheInMinutes`, default 10), so this is not a temporary remnant of the cache. The session tied to the old `access_token` is not invalidated by the refresh, and appears to stay valid until the session's own expiry (`SessionLengthSSOInDays`, default 30 days, which matches the 2592000 of `expires_in`). It was not measured out to 30 days.
+- The only case where the old `access_token` was confirmed to become 401 is when the user revoked the app (`POST /oauth/deauthorize`).
+- The MCP server re-reads the stored credentials when Mattermost returns 401, so its behavior does not change even if the old token remains. Mattermost tokens never leave the MCP server, but an old token after a refresh remains a risk if the storage is leaked.
 
-### `pending_post_id` の重複排除
+### Deduplication by `pending_post_id`
 
-- 同じ `pending_post_id` で `POST /api/v4/posts` を 2 回呼ぶと、2 回目は 201 で最初の投稿と同じ `id` を返す（テストで確認）。
+- Calling `POST /api/v4/posts` twice with the same `pending_post_id` returns 201 the second time, with the same `id` as the first post (confirmed in a test).
 
-## クライアント互換性
+## Client compatibility
 
-MCP サーバーの前に一時的な HTTPS トンネルを置いて `/mcp` を公開し、3 つのクライアントからつないだ。`ACCESS_TOKEN_TTL_SEC=120` にして、確かめるためだけに置いた一時的なツール（Mattermost の `/api/v4/users/me` を返すもの。いまのツールには無い）を 2 分以上空けて 2 回呼び、リフレッシュ後の呼び出しも確かめた。どれも 2 回とも成功した（2026-11-01）。
+A temporary HTTPS tunnel was put in front of the MCP server to expose `/mcp`, and 3 clients connected through it. With `ACCESS_TOKEN_TTL_SEC=120`, a temporary tool placed only for this check (it returns Mattermost's `/api/v4/users/me`; the current tools do not have it) was called twice more than 2 minutes apart, which also checked the call after a refresh. All succeeded both times (2026-11-01).
 
-| クライアント | 登録（DCR）の `redirect_uris` | 認可要求 | コード交換 | リフレッシュ |
+| Client | `redirect_uris` of the registration (DCR) | Authorization request | Code exchange | Refresh |
 |---|---|---|---|---|
-| Codex CLI 0.166.0 | `http://127.0.0.1:<port>/callback/<id>` | `resource`、`scope=mattermost`、S256 | `resource` あり | `resource`、`scope` あり |
-| Claude Code 2.1.316 | `http://localhost:<port>/callback` | `resource`、`scope=mattermost`、S256 | `resource` あり | `resource` あり、`scope` なし |
-| claude.ai | `https://claude.ai/api/mcp/auth_callback` | `resource`、`scope=mattermost`、S256 | `resource` あり | `resource` あり、`scope` なし |
+| Codex CLI 0.166.0 | `http://127.0.0.1:<port>/callback/<id>` | `resource`, `scope=mattermost`, S256 | With `resource` | With `resource` and `scope` |
+| Claude Code 2.1.316 | `http://localhost:<port>/callback` | `resource`, `scope=mattermost`, S256 | With `resource` | With `resource`, without `scope` |
+| claude.ai | `https://claude.ai/api/mcp/auth_callback` | `resource`, `scope=mattermost`, S256 | With `resource` | With `resource`, without `scope` |
 
-- どのクライアントも、パスを挟んだ形のメタデータ（`/.well-known/oauth-protected-resource/mcp`、`/.well-known/oauth-authorization-server/mcp`）を見つけ、`token_endpoint_auth_method=none` で登録した。
-- claude.ai は 1 回の接続で DCR を 2 回送った。使われない client の登録が残る。
-- Codex は、認証なしの要求が 401 になってからリフレッシュする。Claude Code と claude.ai は、期限が近いアクセストークンを使う前にリフレッシュする。
-- Claude Code は有効期限が 120 秒だと要求のたびにリフレッシュし、約 1 秒のうちに 5 回続いた。5 回は直列で、どれも 200 だった。同じリフレッシュトークンを並行して送る挙動は観測していない。送られた場合は再利用として grant が取り消され、再ログインになる。
-- Claude Code と claude.ai は、認証のあと `server/discover` を送る。サーバーは 400 を返し、クライアントはそのまま次の要求に進んだ。
-- claude.ai は、`initialize` を送らずに `tools/call` を送ることがある。サーバーは stateless なので、この要求も処理できる。
+- Every client found the path-inserted metadata (`/.well-known/oauth-protected-resource/mcp`, `/.well-known/oauth-authorization-server/mcp`) and registered with `token_endpoint_auth_method=none`.
+- claude.ai sent DCR twice for one connection. The registration of the client that is not used remains.
+- Codex refreshes after an unauthenticated request returns 401. Claude Code and claude.ai refresh before using an access token that is close to expiry.
+- With a lifetime of 120 seconds, Claude Code refreshed on every request, 5 times in a row within about 1 second. The 5 were serial and all returned 200. Sending the same refresh token concurrently was not observed. If it were sent, the grant would be revoked as a reuse and a re-login would follow.
+- Claude Code and claude.ai send `server/discover` after authentication. The server returned 400, and the client moved on to the next request as it was.
+- claude.ai sometimes sends `tools/call` without sending `initialize`. The server is stateless, so it can handle this request too.
 
-## 負荷
+## Load
 
-ローカルの Mattermost 11.7.8（`dev/compose.yml`）に、[deployment.md](deployment.md#4-起動) の `compose.yml` の例と同じ上限（`cpus: 0.5`、`mem_limit: 256m`、`pids_limit: 128`、`read_only`）の `mcp` コンテナをつないで測った（2026-11-01、開発機は Docker、12 CPU）。`dev/setup.ts` で作る `load1`〜`load6` の 6 人が、それぞれ 4 並列で `read_channel`（`team-a` の `general-dup`、既定の 30 件）を 190 秒呼び続けた。レート制限のエラーが返ったら 250 ms 待って呼び直す。その間、別のセッション（`alice` のログイン）で `GET /api/v4/users/me` を 200 ms おきに呼んで応答時間を測った。
+Measured with a local Mattermost 11.7.8 (`dev/compose.yml`) connected to an `mcp` container with the same limits as the `compose.yml` example in [deployment.md](deployment.md#4-start) (`cpus: 0.5`, `mem_limit: 256m`, `pids_limit: 128`, `read_only`) (2026-11-01, a development machine running Docker, 12 CPUs). Six users, `load1` to `load6` created by `dev/setup.ts`, each kept calling `read_channel` (`general-dup` of `team-a`, the default 30 posts) with 4 in parallel for 190 seconds. On a rate limit error they waited 250 ms and called again. Meanwhile a separate session (a login of `alice`) called `GET /api/v4/users/me` every 200 ms to measure the response time.
 
-| | 件数 | 中央値 | 95 パーセンタイル | 最大 |
+| | Count | Median | 95th percentile | Max |
 |---|---|---|---|---|
-| 負荷なし（120 秒） | 585 | 3.4 ms | 6.4 ms | 13.6 ms |
-| 負荷あり（180 秒） | 883 | 2.3 ms | 4.6 ms | 9.1 ms |
-| 負荷あり、ツール呼び出しが成功していた秒だけ | 56 | 2.3 ms | 5.1 ms | 7.4 ms |
+| No load (120 seconds) | 585 | 3.4 ms | 6.4 ms | 13.6 ms |
+| Under load (180 seconds) | 883 | 2.3 ms | 4.6 ms | 9.1 ms |
+| Under load, only the seconds in which tool calls were succeeding | 56 | 2.3 ms | 5.1 ms | 7.4 ms |
 
-- 成功したツール呼び出しは 190 秒で 517 回（163 回／分）。`read_channel` 1 回は Mattermost API を約 3.7 回呼ぶので、全体の上限 600 回／分に張り付いていた。残りの 17376 回はレート制限のエラーで、Mattermost には届いていない
-- 上限は 60 秒の移動窓なので、Mattermost への呼び出しは窓が空いた瞬間にまとまって出る（成功は 190 秒のうち 10 秒に集中し、最大 94 回／秒）。その秒でも 95 パーセンタイルは負荷なしより低く、悪化は見られなかった。全体の上限 600 回／分は変えない
-- `mcp` のメモリは最大 86 MiB（上限 256 MiB の 34 %）、CPU は `docker stats` で最大 56 %（1 CPU を 100 % とする値。`cpus: 0.5` は 50 % にあたり、測定値はその付近にあった）
-- 測定は nginx と TLS を通さず（`mcp` から `http://mattermost:8065` へ直接）、12 CPU の開発機で行った。リバースプロキシと TLS を経由し、CPU の少ないホストで動かす環境では、応答時間の絶対値と余裕は小さくなりうる
-- `docker stop` で `shutting_down` を出して終了コード 0 で止まった
+- There were 517 successful tool calls in 190 seconds (163 per minute). One `read_channel` calls the Mattermost API about 3.7 times, so the load was pinned at the overall limit of 600 calls per minute. The other 17376 calls were rate limit errors and never reached Mattermost
+- The limit is a 60-second sliding window, so calls to Mattermost come out in bursts the moment the window opens (the successes were concentrated in 10 of the 190 seconds, up to 94 calls per second). Even in those seconds the 95th percentile was lower than with no load, and no degradation was seen. The overall limit of 600 calls per minute is unchanged
+- Memory of `mcp` peaked at 86 MiB (34 % of the 256 MiB limit), and CPU peaked at 56 % in `docker stats` (a value where 1 CPU is 100 %; `cpus: 0.5` corresponds to 50 %, and the measurement was near it)
+- The measurement did not go through nginx and TLS (directly from `mcp` to `http://mattermost:8065`) and was done on a 12-CPU development machine. In an environment that goes through a reverse proxy and TLS and runs on a host with fewer CPUs, the absolute response times and the headroom can be smaller
+- `docker stop` printed `shutting_down` and stopped with exit code 0

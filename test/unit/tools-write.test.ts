@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
-import { BODY_CUT_NOTE } from '../../src/mcp/format.ts';
+import { setLocale } from '../../src/i18n/index.ts';
+import { bodyCutNote } from '../../src/mcp/format.ts';
 import { MAX_OPEN_UPLOAD_URLS, type Store } from '../../src/store.ts';
 import { freezeCleanupClock, freezeCleanupDeadline, makeApp, SLOW, SLOW_TEST } from './helpers.ts';
 
@@ -17,7 +18,10 @@ beforeEach(() => {
   hits = [];
   uploads = [];
 });
-afterEach(() => vi.restoreAllMocks());
+afterEach(() => {
+  vi.restoreAllMocks();
+  setLocale('en');
+});
 
 type Rpc = { isError: boolean; text: string };
 
@@ -58,8 +62,8 @@ function setup() {
 const POST = 'p'.repeat(26);
 const mmError = (status: number, id: string) => () => Response.json({ id, message: 'm', status_code: status }, { status });
 const ESCAPES = ['..', '.', 'a/b', '%2F', '../../posts/x', '%2e%2e'];
-const EMOJI_HINT = '標準の絵文字名（例: white_check_mark、+1）か、search_emoji で調べたカスタム絵文字名を指定してください';
-const REACT_403 = 'この投稿にリアクションできません（見られない投稿、存在しない投稿、アーカイブ済みチャンネルの投稿）';
+const EMOJI_HINT = 'Specify a standard emoji name (e.g. white_check_mark, +1) or a custom emoji name found with search_emoji';
+const REACT_403 = 'You cannot react to this post (a post you cannot see, one that does not exist, or one in an archived channel)';
 
 describe('add_reaction', () => {
   const ok = { 'POST /reactions': () => ({}) };
@@ -112,7 +116,7 @@ describe('add_reaction', () => {
     routes = { 'POST /reactions': mmError(404, 'app.emoji.get_by_name.no_result') };
     const r = await setup().call('add_reaction', { post_id: POST, emoji: ':no_such:' });
     expect(r.isError).toBe(true);
-    expect(r.text).toContain('絵文字「no_such」がありません');
+    expect(r.text).toContain('There is no emoji "no_such"');
     expect(r.text).toContain(EMOJI_HINT);
   });
 
@@ -120,8 +124,8 @@ describe('add_reaction', () => {
     routes = { 'POST /reactions': mmError(404, 'app.post.get.app_error') };
     const r = await setup().call('add_reaction', { post_id: POST, emoji: 'smile' });
     expect(r.isError).toBe(true);
-    expect(r.text).toContain('投稿が見つかりません');
-    expect(r.text).not.toContain('絵文字');
+    expect(r.text).toContain('The post was not found');
+    expect(r.text).not.toContain('emoji');
   });
 
   test.each([
@@ -133,7 +137,7 @@ describe('add_reaction', () => {
     routes = { 'POST /reactions': mmError(status, id) };
     const r = await setup().call('add_reaction', { post_id: POST, emoji: 'smile' });
     expect(r.isError).toBe(true);
-    expect(r.text).toBe(`Mattermost がエラーを返しました（${status}）: m`);
+    expect(r.text).toBe(`Mattermost returned an error (${status}): m`);
   });
 
   test('403 says the post cannot be reacted to, naming the possible causes', async () => {
@@ -147,7 +151,7 @@ describe('add_reaction', () => {
     routes = { 'POST /reactions': mmError(403, 'api.reaction.save.archived_channel.app_error') };
     const r = await setup().call('add_reaction', { post_id: POST, emoji: 'smile' });
     expect(r.isError).toBe(true);
-    expect(r.text).toContain('アーカイブ済み');
+    expect(r.text).toContain('archived');
     expect(r.text).not.toContain(REACT_403);
   });
 });
@@ -160,7 +164,7 @@ describe('remove_reaction', () => {
     const r = await setup().call('remove_reaction', { post_id: POST, emoji: ':+1:' });
     expect(r.isError).toBe(false);
     expect(hits).toEqual([path('+1')]);
-    expect(r.text).toContain('付いていれば外しました');
+    expect(r.text).toContain('if it was there');
     expect(r.text).toContain(`post_id: ${POST}`);
     expect(r.text).toContain('+1');
   });
@@ -189,7 +193,7 @@ describe('remove_reaction', () => {
     routes = { [path('smile')]: mmError(404, 'app.post.get.app_error') };
     const r = await setup().call('remove_reaction', { post_id: POST, emoji: 'smile' });
     expect(r.isError).toBe(true);
-    expect(r.text).toContain('投稿が見つかりません');
+    expect(r.text).toContain('The post was not found');
   });
 
   test('403 and an archived channel are worded, the archived one first', async () => {
@@ -198,7 +202,7 @@ describe('remove_reaction', () => {
     expect((await s.call('remove_reaction', { post_id: POST, emoji: 'smile' })).text).toContain(REACT_403);
     routes = { [path('smile')]: mmError(403, 'api.reaction.delete.archived_channel.app_error') };
     const r = await s.call('remove_reaction', { post_id: POST, emoji: 'smile' });
-    expect(r.text).toContain('アーカイブ済み');
+    expect(r.text).toContain('archived');
     expect(r.text).not.toContain(REACT_403);
   });
 });
@@ -239,16 +243,16 @@ describe('edit_message and delete_message', () => {
     serve(mine(), { [`GET /channels/${CH}`]: () => ({ id: CH, name: 'town', display_name: 'To\nwn', team_id: 't1', type: 'O' }) });
     const r = await run(setup());
     expect(r.isError).toBe(false);
-    expect(r.text).toContain(`チャンネル: channel_id: ${CH}、表示名: To wn`);
+    expect(r.text).toContain(`Channel: channel_id: ${CH}, display name: To wn`);
   });
 
   describe('only the caller\'s own posts are edited or deleted', () => {
     test.each([
-      ['another user\'s post', { user_id: 'u2' }, '本人の投稿ではありません'],
+      ['another user\'s post', { user_id: 'u2' }, 'This is not your post'],
       ['the caller\'s webhook post', { props: { from_webhook: 'true' } }, 'webhook'],
-      ['the caller\'s bot post', { props: { from_bot: 'true' } }, 'Bot'],
-      ['the caller\'s system message', { type: 'system_join_channel' }, 'この種類の投稿は扱えません（type: system_join_channel）'],
-      ['the caller\'s /me post', { type: 'me' }, 'この種類の投稿は扱えません（type: me）'],
+      ['the caller\'s bot post', { props: { from_bot: 'true' } }, 'bot'],
+      ['the caller\'s system message', { type: 'system_join_channel' }, 'This kind of post cannot be handled (type: system_join_channel)'],
+      ['the caller\'s /me post', { type: 'me' }, 'This kind of post cannot be handled (type: me)'],
     ])('refuses %s, reading the post and sending neither PATCH nor DELETE', async (_, over, wording) => {
       serve(mine(over));
       const s = setup();
@@ -282,7 +286,7 @@ describe('edit_message and delete_message', () => {
       const s = setup();
       for (const r of [await edit(s), await del(s)]) {
         expect(r.isError).toBe(true);
-        expect(r.text).toContain('投稿が見つかりません。直前の呼び出しで削除済みの可能性があります');
+        expect(r.text).toContain('The post was not found. It may have been deleted by the previous call');
       }
       expect(writes()).toEqual([]);
     });
@@ -294,9 +298,15 @@ describe('edit_message and delete_message', () => {
       const d = t.inputSchema.properties.message.description;
       for (const s of ['first reread the post with get_post', 'remove the 2-space indent', 'do not rewrite from the output']) expect(d).toContain(s);
       // Not a literal: a changed limit or note would otherwise leave this guidance quoting a note get_post no longer writes.
-      expect(d).toContain(`"${BODY_CUT_NOTE}"`);
+      expect(d).toContain(`"${bodyCutNote()}"`);
       expect(d).toContain('ask the user to edit it in Mattermost');
       expect(t.description).toBe('Edit the text of your own post. Mentions added by an edit do not notify.');
+    });
+
+    test('the message argument quotes the note get_post writes in the locale set when the tools are registered', async () => {
+      setLocale('ja');
+      const t = (await setup().tools()).find((x) => x.name === 'edit_message')! as unknown as { inputSchema: { properties: { message: { description: string } } } };
+      expect(t.inputSchema.properties.message.description).toContain('本文を 4000 文字で切りました');
     });
 
     test('replaces only the message through the patch API and reports the post_id, channel and permalink', async () => {
@@ -312,7 +322,7 @@ describe('edit_message and delete_message', () => {
 
     test('says mentions added by the edit are not notified', async () => {
       serve(mine());
-      expect((await edit(setup())).text).toContain('編集で足したメンションは通知されません');
+      expect((await edit(setup())).text).toContain('Mentions added by an edit do not notify');
     });
 
     test.each(['   ', ' \n\t '])('refuses a whitespace-only message %j, pointing to delete_message, without calling Mattermost', async (message) => {
@@ -333,8 +343,8 @@ describe('edit_message and delete_message', () => {
     });
 
     test.each([
-      ['the edit time limit has passed', 'api.post.update_post.permissions_time_limit.app_error', '編集できる期間を過ぎています'],
-      ['the channel is archived', 'api.post.patch_post.can_not_update_post_in_deleted.error', 'アーカイブ済み'],
+      ['the edit time limit has passed', 'api.post.update_post.permissions_time_limit.app_error', 'The time allowed for editing has passed'],
+      ['the channel is archived', 'api.post.patch_post.can_not_update_post_in_deleted.error', 'archived'],
     ])('when %s, says so', async (_, id, wording) => {
       serve(mine(), { [PATCH]: mmError(400, id) });
       const r = await edit(setup());
@@ -357,8 +367,8 @@ describe('edit_message and delete_message', () => {
       serve(mine({ root_id: '', reply_count: 2 }));
       const r = await del(setup());
       expect(r.isError).toBe(true);
-      expect(r.text).toContain('返信');
-      expect(r.text).toContain('Mattermost の画面');
+      expect(r.text).toContain('replies');
+      expect(r.text).toContain('Mattermost screen');
       expect(hits).toEqual([GET_POST]);
     });
 
@@ -378,7 +388,7 @@ describe('edit_message and delete_message', () => {
       serve(mine(over));
       const r = await del(setup());
       expect(r.isError).toBe(true);
-      expect(r.text).toContain('Mattermost の画面');
+      expect(r.text).toContain('Mattermost screen');
       expect(hits).toEqual([GET_POST]);
     });
 
@@ -386,14 +396,14 @@ describe('edit_message and delete_message', () => {
       serve(mine(), { [DELETE]: mmError(400, 'api.post.delete_post.can_not_delete_post_in_deleted.error') });
       const r = await del(setup());
       expect(r.isError).toBe(true);
-      expect(r.text).toContain('アーカイブ済み');
+      expect(r.text).toContain('archived');
     });
 
     test('a post deleted between the check and DELETE says it may have been deleted by the previous call', async () => {
       serve(mine(), { [DELETE]: mmError(404, 'app.post.get.app_error') });
       const r = await del(setup());
       expect(r.isError).toBe(true);
-      expect(r.text).toContain('直前の呼び出しで削除済みの可能性があります');
+      expect(r.text).toContain('It may have been deleted by the previous call');
     });
   });
 
@@ -408,7 +418,7 @@ describe('edit_message and delete_message', () => {
       expect((await send(s, 'old')).isError).toBe(false);
       expect((await del(s)).isError).toBe(false);
       const r = await send(s, 'old');
-      expect(r.text).toContain('投稿しました');
+      expect(r.text).toContain('Posted');
       expect(sent()).toBe(2);
     });
 
@@ -421,7 +431,7 @@ describe('edit_message and delete_message', () => {
       expect((await send(s, 'old')).isError).toBe(false);
       expect((await del(s)).isError).toBe(true);
       const r = await send(s, 'old');
-      expect(r.text).toContain('投稿しました');
+      expect(r.text).toContain('Posted');
       expect(sent()).toBe(2);
     });
 
@@ -430,7 +440,7 @@ describe('edit_message and delete_message', () => {
       const s = setup();
       expect((await send(s, 'old')).isError).toBe(false);
       expect((await del(s)).isError).toBe(true);
-      expect((await send(s, 'old')).text).toContain('同じ本文を直前に投稿済み');
+      expect((await send(s, 'old')).text).toContain('The same body was posted just before');
       expect(sent()).toBe(1);
     });
 
@@ -440,7 +450,7 @@ describe('edit_message and delete_message', () => {
       expect((await send(s, 'old')).isError).toBe(false);
       expect((await edit(s)).isError).toBe(false);
       const r = await send(s, 'old');
-      expect(r.text).toContain('投稿しました');
+      expect(r.text).toContain('Posted');
       expect(sent()).toBe(2);
     });
   });
@@ -463,8 +473,8 @@ describe('save_draft', () => {
   const PREF = 'GET /users/me/preferences/advanced_settings/name/sync_drafts';
   const LIST = 'GET /users/u1/teams/t1/drafts';
   const SAVE = 'POST /drafts';
-  const SYNC_OFF = '設定 > 詳細設定';
-  const LEFT_BEHIND = 'この下書きと同じ本文を send_message で送ると、投稿の後にこの下書きを消します（画面で添付を付けた場合は消しません）';
+  const SYNC_OFF = 'Settings > Advanced';
+  const LEFT_BEHIND = 'Sending the same body as this draft with send_message deletes the draft after posting (it is not deleted if you attached files on the screen)';
   const writes = () => hits.filter((h) => !h.startsWith('GET '));
   const draft = (over: Record<string, unknown> = {}) => ({ user_id: 'u1', channel_id: CH, root_id: '', message: 'mine', create_at: 1, update_at: 1, ...over });
   const serve = (extra: Record<string, Route> = {}) => {
@@ -484,7 +494,7 @@ describe('save_draft', () => {
     serve({ [`GET /channels/${CH}`]: () => ({ id: CH, name: 'town', display_name: 'To\nwn', team_id: 't1', type: 'O' }) });
     const r = await save();
     expect(r.isError).toBe(false);
-    expect(r.text).toContain(`投稿先: channel_id: ${CH}、表示名: To wn`);
+    expect(r.text).toContain(`Destination: channel_id: ${CH}, display name: To wn`);
   });
 
   describe('saving', () => {
@@ -494,11 +504,11 @@ describe('save_draft', () => {
       expect(r.isError).toBe(false);
       expect(hits).toEqual([PREF, `GET /channels/${CH}`, 'GET /teams/t1', LIST, SAVE]);
       expect(bodies['/drafts']).toEqual({ channel_id: CH, root_id: '', message: 'hello' });
-      expect(r.text).toContain('入力欄');
-      expect(r.text).toContain('送信は本人');
-      expect(r.text).toContain(`投稿先: channel_id: ${CH}、表示名: Town`);
-      expect(r.text).toContain('チャンネルを開き直して');
-      expect(r.text).toContain('置き換わります');
+      expect(r.text).toContain('input box');
+      expect(r.text).toContain('The user must send it');
+      expect(r.text).toContain(`Destination: channel_id: ${CH}, display name: Town`);
+      expect(r.text).toContain('reopen the channel');
+      expect(r.text).toContain('replaces this draft');
       expect(r.text).toContain(LEFT_BEHIND);
     });
 
@@ -508,12 +518,12 @@ describe('save_draft', () => {
       expect(r.isError).toBe(false);
       expect(hits).toEqual([PREF, `GET /channels/${CH}`, 'GET /teams/t1', `GET /posts/${ROOT}`, LIST, SAVE]);
       expect(bodies['/drafts']).toEqual({ channel_id: CH, root_id: ROOT, message: 'hello' });
-      expect(r.text).toContain('下書きとして保存しました');
-      expect(r.text).toContain(`返信先 post_id: ${ROOT}`);
+      expect(r.text).toContain('Saved as a draft');
+      expect(r.text).toContain(`reply to post_id: ${ROOT}`);
       expect(r.text).toContain(LEFT_BEHIND);
-      expect(r.text).toContain('送信は本人');
-      expect(r.text).not.toContain('入力欄');
-      expect(r.text).not.toContain('開き直して');
+      expect(r.text).toContain('The user must send it');
+      expect(r.text).not.toContain('input box');
+      expect(r.text).not.toContain('reopen');
     });
 
     test('a draft list of null (no drafts at all) is treated as empty', async () => {
@@ -555,25 +565,25 @@ describe('save_draft', () => {
     test('says a quoted draft over 200 characters is cut and heads it as the first 200 characters, heads a shorter one as the whole draft, and gives no indent note for a one-line draft', async () => {
       serve({ [LIST]: () => [draft({ message: 'a'.repeat(201) })] });
       const r = await save();
-      expect(r.text).toContain('既存の下書きは 200 文字を超えるので、先頭だけを出しています。書き写すと後ろが消えるので、追記は Mattermost の画面で行うよう利用者に伝えてください。');
-      expect(r.text).not.toContain('字下げ');
-      expect(r.text).toMatch(new RegExp(`既存の下書き（先頭 200 文字）: a{200}$`));
+      expect(r.text).toContain('The existing draft is over 200 characters, so only its beginning is shown. Copying it would lose the rest; tell the user to append in the Mattermost screen.');
+      expect(r.text).not.toContain('indented');
+      expect(r.text).toMatch(new RegExp(`Existing draft \\(first 200 characters\\): a{200}$`));
       serve({ [LIST]: () => [draft({ message: 'a'.repeat(200) })] });
       const whole = (await save()).text;
-      expect(whole).not.toContain('200 文字を超える');
-      expect(whole).toMatch(new RegExp(`既存の下書き（全文）: a{200}$`));
+      expect(whole).not.toContain('over 200 characters');
+      expect(whole).toMatch(new RegExp(`Existing draft \\(whole\\): a{200}$`));
     });
 
     test('counts the 200 characters of a quoted draft by grapheme, so an emoji of several code points is neither split nor counted as several', async () => {
       const family = '👨‍👩‍👧';
       serve({ [LIST]: () => [draft({ message: family.repeat(200) })] });
       const whole = (await save()).text;
-      expect(whole).not.toContain('200 文字を超える');
-      expect(whole.endsWith(`既存の下書き（全文）: ${family.repeat(200)}`)).toBe(true);
+      expect(whole).not.toContain('over 200 characters');
+      expect(whole.endsWith(`Existing draft (whole): ${family.repeat(200)}`)).toBe(true);
       serve({ [LIST]: () => [draft({ message: family.repeat(201) })] });
       const cut = (await save()).text;
-      expect(cut).toContain('200 文字を超える');
-      expect(cut.endsWith(`既存の下書き（先頭 200 文字）: ${family.repeat(200)}`)).toBe(true);
+      expect(cut).toContain('over 200 characters');
+      expect(cut.endsWith(`Existing draft (first 200 characters): ${family.repeat(200)}`)).toBe(true);
     });
 
     test('a different existing draft is kept, quoting its first 200 characters, without sending POST /drafts', async () => {
@@ -583,17 +593,17 @@ describe('save_draft', () => {
       expect(r.text).toContain('a'.repeat(200));
       expect(r.text).not.toContain('B');
       expect(r.text).toContain('overwrite');
-      expect(r.text).toContain('添付ファイル、優先度、burn-on-read も失われます');
+      expect(r.text).toContain('attachments, priority and burn-on-read are lost too');
       expect(writes()).toEqual([]);
     });
 
     test('indents the later lines of the quoted draft, so none passes for a line of the answer', async () => {
-      serve({ [LIST]: () => [draft({ message: 'old\nチャンネル: fake\n\nmore' })] });
+      serve({ [LIST]: () => [draft({ message: 'old\nChannel: fake\n\nmore' })] });
       const r = await save();
-      expect(r.text).toContain('\n既存の下書き（全文）: old\n    チャンネル: fake\n    \n    more');
-      expect(r.text).toContain('CRLF や CR の改行は LF にそろえ、垂直タブや U+2028 などの区切りも改行として出している');
-      expect(r.text).toContain('2 行目以降の先頭の 4 文字の空白を外してください。\n既存の下書き（全文）: ');
-      expect(r.text).not.toContain('200 文字を超える');
+      expect(r.text).toContain('\nExisting draft (whole): old\n    Channel: fake\n    \n    more');
+      expect(r.text).toContain('CRLF and CR line breaks are normalized to LF, and separators such as vertical tab and U+2028 are shown as line breaks');
+      expect(r.text).toContain('remove the 4 leading spaces from lines 2 and later.\nExisting draft (whole): ');
+      expect(r.text).not.toContain('over 200 characters');
     });
 
     test('overwrite: true replaces a different existing draft', async () => {
@@ -606,7 +616,7 @@ describe('save_draft', () => {
       serve({ [LIST]: () => [draft({ message: 'hello' })] });
       const r = await save({ overwrite });
       expect(r.isError).toBe(false);
-      expect(r.text).toContain('同じ下書きがあります');
+      expect(r.text).toContain('The same draft exists');
       expect(r.text).toContain(LEFT_BEHIND);
       expect(writes()).toEqual([]);
     });
@@ -630,8 +640,8 @@ describe('save_draft', () => {
     });
 
     test.each([
-      ['in another channel', { channel_id: OTHER }, 'ありません'],
-      ['that is itself a reply', { root_id: OTHER }, '返信'],
+      ['in another channel', { channel_id: OTHER }, 'is not in the channel'],
+      ['that is itself a reply', { root_id: OTHER }, 'is a reply'],
     ])('refuses a root post %s without sending POST /drafts', async (_, over, wording) => {
       serve({ [`GET /posts/${ROOT}`]: () => ({ id: ROOT, channel_id: CH, root_id: '', ...over }) });
       const r = await save({ root_id: ROOT });
@@ -644,7 +654,7 @@ describe('save_draft', () => {
       serve({ [`GET /posts/${ROOT}`]: mmError(404, 'app.post.get.app_error') });
       const r = await save({ root_id: ROOT });
       expect(r.isError).toBe(true);
-      expect(r.text).toContain('見つかりません');
+      expect(r.text).toContain('was not found');
       expect(writes()).toEqual([]);
     });
 
@@ -652,8 +662,8 @@ describe('save_draft', () => {
       serve({ [`GET /posts/${ROOT}`]: mmError(403, 'api.context.permissions.app_error') });
       const r = await save({ root_id: ROOT });
       expect(r.isError).toBe(true);
-      expect(r.text).toContain('見られません');
-      expect(r.text).not.toContain('下書きを保存する権限');
+      expect(r.text).toContain('You cannot view');
+      expect(r.text).not.toContain('permission to save a draft');
       expect(writes()).toEqual([]);
     });
   });
@@ -663,7 +673,7 @@ describe('save_draft', () => {
       serve({ [PREF]: () => ({ user_id: 'u1', category: 'advanced_settings', name: 'sync_drafts', value: 'false' }) });
       const r = await save();
       expect(r.isError).toBe(true);
-      expect(r.text).toContain('同期');
+      expect(r.text).toContain('sync');
       expect(r.text).toContain(SYNC_OFF);
       expect(writes()).toEqual([]);
     });
@@ -695,10 +705,10 @@ describe('save_draft', () => {
 
   describe('Mattermost errors', () => {
     test.each([
-      ['draft sync is disabled on the server (501)', SAVE, 501, 'api.drafts.disabled.app_error', 'このサーバーでは下書きの同期が無効です'],
-      ['draft sync is disabled, seen on the list (501)', LIST, 501, 'api.drafts.disabled.app_error', 'このサーバーでは下書きの同期が無効です'],
-      ['the caller may not post there (403)', SAVE, 403, 'api.context.permissions.app_error', 'このチャンネルに下書きを保存する権限がありません'],
-      ['the channel is archived', SAVE, 400, 'api.draft.create_draft.can_not_draft_to_deleted.error', 'アーカイブ済み'],
+      ['draft sync is disabled on the server (501)', SAVE, 501, 'api.drafts.disabled.app_error', 'Draft sync is disabled on this server'],
+      ['draft sync is disabled, seen on the list (501)', LIST, 501, 'api.drafts.disabled.app_error', 'Draft sync is disabled on this server'],
+      ['the caller may not post there (403)', SAVE, 403, 'api.context.permissions.app_error', 'You do not have permission to save a draft in this channel'],
+      ['the channel is archived', SAVE, 400, 'api.draft.create_draft.can_not_draft_to_deleted.error', 'archived'],
     ])('when %s, says so', async (_, route, status, id, wording) => {
       serve({ [route]: mmError(status, id) });
       const r = await save();
@@ -735,13 +745,13 @@ describe('the destination line of send_message and prepare_upload', () => {
     serve('To\nwn');
     const r = await setup().call(name, args);
     expect(r.isError).toBe(false);
-    expect(r.text).toContain(`投稿先: channel_id: ${CH}、表示名: To wn`);
+    expect(r.text).toContain(`Destination: channel_id: ${CH}, display name: To wn`);
   });
 
   test('send_message puts the real channel_id before a display name written as a fake one', async () => {
-    serve('x（channel_id: fake）');
+    serve('x (channel_id: fake)');
     const r = await setup().call('send_message', { channel: CH, message: 'm' });
-    expect(r.text).toContain(`投稿先: channel_id: ${CH}、表示名: x（channel_id: fake）`);
+    expect(r.text).toContain(`Destination: channel_id: ${CH}, display name: x (channel_id: fake)`);
   });
 });
 
@@ -775,7 +785,7 @@ describe('send_message with files', () => {
     const r = await send([{ name: '図 1.svg', content_text: '<svg>日本</svg>' }, { name: 'b.bin', content_base64: 'AAH/' }]);
     expect(r.isError).toBe(false);
     expect(hits).toEqual([`GET /channels/${CH}`, 'GET /teams/t1', UPLOAD, UPLOAD, 'POST /posts', 'GET /users/u1/teams/t1/drafts']);
-    expect(r.text).not.toContain('下書き');
+    expect(r.text).not.toContain('draft');
     expect(uploads.map((u) => [u.query.get('channel_id'), u.query.get('filename'), u.type, [...u.bytes]])).toEqual([
       [CH, '図 1.svg', 'application/octet-stream', [...Buffer.from('<svg>日本</svg>', 'utf8')]],
       [CH, 'b.bin', 'application/octet-stream', [0, 1, 255]],
@@ -817,7 +827,7 @@ describe('send_message with files', () => {
     serve();
     const r = await send([{ name: 'a.txt', content_text: 'a'.repeat(KiB128 + 1) }]);
     expect(r.text).toContain('128KiB');
-    expect(r.text).toContain('prepare_upload の説明の案内に従ってください');
+    expect(r.text).toContain('follow the prepare_upload description');
   });
 
   test.each([
@@ -844,8 +854,8 @@ describe('send_message with files', () => {
   });
 
   test.each([
-    [400, 'api.file.upload_file.large_image_detailed.app_error', '画素数が大きすぎる'],
-    [413, 'api.file.upload_file.too_large_detailed.app_error', '大きすぎる'],
+    [400, 'api.file.upload_file.large_image_detailed.app_error', 'the image has too many pixels'],
+    [413, 'api.file.upload_file.too_large_detailed.app_error', 'is too large to attach'],
   ])('an upload refused with %i %s is worded with the file name, and nothing is posted', async (status, id, wording) => {
     serve({ [UPLOAD]: mmError(status, id) });
     const r = await send([{ name: 'huge.png', content_text: 'a' }]);
@@ -907,8 +917,8 @@ describe('send_message with files', () => {
     ac.abort(new DOMException('timed out', 'TimeoutError'));
     const r = await sending;
     expect(r.isError).toBe(false);
-    expect(r.text).toContain('投稿しました。');
-    expect(r.text).toContain('同じ本文の下書きを確かめられなかったか、消せませんでした');
+    expect(r.text).toContain('Posted.');
+    expect(r.text).toContain('The draft with the same body could not be checked or deleted');
   }, SLOW_TEST);
 });
 
@@ -936,9 +946,9 @@ describe('a DM not opened yet', { timeout: SLOW_TEST }, () => {
   };
 
   test.each([
-    ['send_message', { message: 'hi' }, '投稿しました'],
-    ['save_draft', { message: 'hi' }, '下書きとして保存しました'],
-    ['prepare_upload', {}, 'アップロード用の URL を発行しました'],
+    ['send_message', { message: 'hi' }, 'Posted'],
+    ['save_draft', { message: 'hi' }, 'Saved as a Mattermost draft'],
+    ['prepare_upload', {}, 'Issued an upload URL'],
   ])('%s creates the DM and writes to it', async (tool, args, done) => {
     serve();
     const r = await setup().call(tool, { channel: '@carol', ...args });
@@ -954,14 +964,14 @@ describe('a DM not opened yet', { timeout: SLOW_TEST }, () => {
     serve();
     const r = await setup().call(tool, { channel: '@carol', ...args });
     expect(r.isError).toBe(true);
-    expect(r.text).toContain('@carol との DM はまだありません');
+    expect(r.text).toContain('There is no DM with @carol yet');
     expect(hits).not.toContain(CREATE);
   });
 
   test.each([
-    ['not uploaded through prepare_upload', [FILE], () => {}, 'prepare_upload の URL で 24 時間以内にアップロードしたファイルではありません'],
-    ['uploaded for another channel', [FILE], (st: Store) => st.recordUploadedFile({ mmUserId: 'u1', channelId: OTHER_CH }, FILE), `別のチャンネル（channel_id: ${OTHER_CH}）`],
-    ['given twice', [FILE, FILE], () => {}, '同じ file_id が重なっています'],
+    ['not uploaded through prepare_upload', [FILE], () => {}, 'is not a file that you uploaded within the last 24 hours through a prepare_upload URL'],
+    ['uploaded for another channel', [FILE], (st: Store) => st.recordUploadedFile({ mmUserId: 'u1', channelId: OTHER_CH }, FILE), `another channel (channel_id: ${OTHER_CH})`],
+    ['given twice', [FILE, FILE], () => {}, 'contains the same file_id more than once'],
   ])('send_message with file_ids %s reports the file mistake rather than the missing DM, and does not create the DM', async (_, file_ids, given, msg) => {
     serve();
     const s = setup();
@@ -969,7 +979,7 @@ describe('a DM not opened yet', { timeout: SLOW_TEST }, () => {
     const r = await s.call('send_message', { channel: '@carol', message: 'hi', file_ids });
     expect(r.isError).toBe(true);
     expect(r.text).toContain(msg);
-    expect(r.text).not.toContain('DM はまだありません');
+    expect(r.text).not.toContain('There is no DM with');
     expect(hits).not.toContain(CREATE);
   });
 
@@ -977,7 +987,7 @@ describe('a DM not opened yet', { timeout: SLOW_TEST }, () => {
     serve();
     routes['GET /config/client'] = () => ({ EnableFileAttachments: 'false' });
     const r = await setup().call('prepare_upload', { channel: '@carol' });
-    expect(r.text).toBe('このサーバーではファイルの添付が無効です。');
+    expect(r.text).toBe('File attachments are disabled on this server.');
     expect(hits).not.toContain(CREATE);
   });
 
@@ -985,7 +995,7 @@ describe('a DM not opened yet', { timeout: SLOW_TEST }, () => {
     serve();
     routes[`GET /teams/t1/channels/name/${CAROL}__u1`] = () => ({ id: NEW_DM, name: `${CAROL}__u1`, display_name: '', team_id: '', type: 'D' });
     const r = await setup().call('prepare_upload', { channel: '@carol' });
-    expect(r.text).toContain('アップロード用の URL を発行しました');
+    expect(r.text).toContain('Issued an upload URL');
     expect(hits).not.toContain('GET /config/client');
   });
 
@@ -995,7 +1005,7 @@ describe('a DM not opened yet', { timeout: SLOW_TEST }, () => {
     for (let i = 0; i < MAX_OPEN_UPLOAD_URLS; i++) s.store.createUploadUrl({ mmUserId: 'u1', channelId: OTHER_CH });
     const r = await s.call('prepare_upload', { channel: '@carol' });
     expect(r.isError).toBe(true);
-    expect(r.text).toContain(`使われていないアップロード URL が ${MAX_OPEN_UPLOAD_URLS} 件あります`);
+    expect(r.text).toContain(`You have ${MAX_OPEN_UPLOAD_URLS} upload URL(s) that are not used yet`);
     expect(hits).toEqual([]);
   });
 
@@ -1006,7 +1016,7 @@ describe('a DM not opened yet', { timeout: SLOW_TEST }, () => {
     s.store.takeUploadUrl(s.store.createUploadUrl({ mmUserId: 'u1', channelId: OTHER_CH })!);
     s.store.createUploadUrl({ mmUserId: 'u2', channelId: OTHER_CH });
     const r = await s.call('prepare_upload', { channel: '@carol' });
-    expect(r.text).toContain('アップロード用の URL を発行しました');
+    expect(r.text).toContain('Issued an upload URL');
   });
 
   test.each([
@@ -1018,7 +1028,7 @@ describe('a DM not opened yet', { timeout: SLOW_TEST }, () => {
     routes['GET /users/u1/teams/t1/drafts'] = mmError(501, 'api.drafts.disabled.app_error');
     const r = await setup().call('save_draft', { channel, message: 'hi' });
     expect(r.isError).toBe(true);
-    expect(r.text).toContain('このサーバーでは下書きの同期が無効です');
+    expect(r.text).toContain('Draft sync is disabled on this server');
     expect(hits).not.toContain(create);
     expect(hits).not.toContain('POST /users/usernames');
     expect(hits).not.toContain('GET /users/username/carol');
@@ -1029,7 +1039,7 @@ describe('a DM not opened yet', { timeout: SLOW_TEST }, () => {
     routes['GET /users/me/teams'] = () => [];
     const r = await setup().call('save_draft', { channel: '@carol', message: 'hi' });
     expect(r.isError).toBe(true);
-    expect(r.text).toContain('所属しているチームがないため、既存の下書きを確かめられません');
+    expect(r.text).toContain('You belong to no team, so existing drafts cannot be checked');
     expect(hits).not.toContain('GET /users/username/carol');
     expect(hits).not.toContain(CREATE);
   });
@@ -1037,7 +1047,7 @@ describe('a DM not opened yet', { timeout: SLOW_TEST }, () => {
   test('save_draft to a DM lists the drafts before resolving, and again just before saving', async () => {
     serve();
     const r = await setup().call('save_draft', { channel: '@carol', message: 'hi' });
-    expect(r.text).toContain('下書きとして保存しました');
+    expect(r.text).toContain('Saved as a Mattermost draft');
     const list = 'GET /users/u1/teams/t1/drafts';
     expect(hits.filter((h) => h === list)).toHaveLength(2);
     expect(hits.indexOf(list)).toBeLessThan(hits.indexOf(CREATE));
@@ -1064,7 +1074,7 @@ describe('a DM not opened yet', { timeout: SLOW_TEST }, () => {
       serveWith(() => ({ EnableFileAttachments: 'false', MaxFileSize: '100' }));
       const r = await setup().call('send_message', { channel, message: 'hi', files: [file(1)] });
       expect(r.isError).toBe(true);
-      expect(r.text).toBe('このサーバーではファイルの添付が無効です。');
+      expect(r.text).toBe('File attachments are disabled on this server.');
       const lookup = hits.findIndex((h) => h.startsWith('GET /teams/t1/channels/name/'));
       expect(lookup).toBeGreaterThanOrEqual(0);
       expect(hits.indexOf(CONFIG)).toBeGreaterThan(lookup);
@@ -1079,7 +1089,7 @@ describe('a DM not opened yet', { timeout: SLOW_TEST }, () => {
       routes['GET /teams/t1/channels/name/' + (name === 'GROUP' ? createHash('sha1').update([CAROL, 'v'.repeat(26), 'u1'].sort().join('')).digest('hex') : name)] =
         () => ({ id: NEW_DM, name: 'x', display_name: '', team_id: '', type: name === 'GROUP' ? 'G' : 'D' });
       const r = await setup().call('send_message', { channel, message: 'hi', files: [file(1)] });
-      expect(r.text).toContain('投稿しました。');
+      expect(r.text).toContain('Posted.');
       expect(hits).not.toContain(CONFIG);
     });
 
@@ -1087,7 +1097,7 @@ describe('a DM not opened yet', { timeout: SLOW_TEST }, () => {
       serveWith(() => ({ EnableFileAttachments: 'false' }));
       const r = await setup().call('send_message', { channel: '@nobody', message: 'hi', files: [file(1)] });
       expect(r.isError).toBe(true);
-      expect(r.text).toContain('ユーザー「@nobody」が見つかりません');
+      expect(r.text).toContain('User "@nobody" not found');
       expect(hits).not.toContain(CONFIG);
     });
 
@@ -1095,7 +1105,7 @@ describe('a DM not opened yet', { timeout: SLOW_TEST }, () => {
       serveWith(() => ({}));
       routes['GET /users/username/carol'] = () => ({ id: CAROL, username: 'carol', delete_at: 1 });
       const r = await setup().call('send_message', { channel: '@carol', message: 'hi', files: [file(1)] });
-      expect(r.text).toContain('無効化されているため、DM を作りません');
+      expect(r.text).toContain('is deactivated, so the DM is not created');
       expect(hits).toContain(CONFIG);
       expect(hits).not.toContain(CREATE);
     });
@@ -1106,10 +1116,10 @@ describe('a DM not opened yet', { timeout: SLOW_TEST }, () => {
       routes[CREATE] = () => { dm = true; return { id: NEW_DM, name: `${CAROL}__u1`, display_name: '', team_id: '', type: 'D' }; };
       routes[`GET /teams/t1/channels/name/${CAROL}__u1`] = () => (dm ? { id: NEW_DM, name: `${CAROL}__u1`, display_name: '', team_id: '', type: 'D' } : Response.json({ id: 'not_found' }, { status: 404 }));
       const s = setup();
-      expect((await s.call('send_message', { channel: '@carol', message: 'hi', files: [file(1)] })).text).toContain('投稿しました。');
+      expect((await s.call('send_message', { channel: '@carol', message: 'hi', files: [file(1)] })).text).toContain('Posted.');
       routes[CONFIG] = mmError(500, 'app.config.get.app_error');
       const r = await s.call('send_message', { channel: '@carol', message: 'hi', files: [file(1)] });
-      expect(r.text).toContain('同じ本文を直前に投稿済み');
+      expect(r.text).toContain('The same body was posted just before');
     });
 
     test.each([
@@ -1119,10 +1129,10 @@ describe('a DM not opened yet', { timeout: SLOW_TEST }, () => {
       serveWith(() => ({ EnableFileAttachments: 'true', MaxFileSize: '3' }));
       const r = await setup().call('send_message', { channel: '@carol', message: 'hi', files: [{ name: 'small.txt', content_text: 'a' }, { name: 'b.txt', content_text: 'b'.repeat(bytes) }] });
       if (refused) {
-        expect(r.text).toBe('ファイル「b.txt」は大きすぎるため添付できません。');
+        expect(r.text).toBe('The file "b.txt" is too large to attach.');
         expect(hits).not.toContain(CREATE);
       } else {
-        expect(r.text).toContain('投稿しました。');
+        expect(r.text).toContain('Posted.');
         expect(hits).toContain(CREATE);
       }
     });
@@ -1134,7 +1144,7 @@ describe('a DM not opened yet', { timeout: SLOW_TEST }, () => {
     ])('a MaxFileSize that is %s skips the size check, and the DM is created as before', async (_, config) => {
       serveWith(() => config);
       const r = await setup().call('send_message', { channel: '@carol', message: 'hi', files: [file(10)] });
-      expect(r.text).toContain('投稿しました。');
+      expect(r.text).toContain('Posted.');
       expect(hits).toContain(CREATE);
     });
 
@@ -1142,7 +1152,7 @@ describe('a DM not opened yet', { timeout: SLOW_TEST }, () => {
       serveWith(mmError(500, 'app.config.get.app_error'));
       const r = await setup().call('send_message', { channel: '@carol', message: 'hi', files: [file(1)] });
       expect(r.isError).toBe(true);
-      expect(r.text).toContain('Mattermost に一時的に接続できません');
+      expect(r.text).toContain('Cannot connect to Mattermost for the moment');
       const lookup = hits.findIndex((h) => h.startsWith('GET /teams/t1/channels/name/'));
       expect(lookup).toBeGreaterThanOrEqual(0);
       expect(hits.indexOf(CONFIG)).toBeGreaterThan(lookup);
@@ -1171,7 +1181,7 @@ describe('a DM not opened yet', { timeout: SLOW_TEST }, () => {
   test('send_message with files it cannot read does not create the DM', async () => {
     serve();
     const r = await setup().call('send_message', { channel: '@carol', message: 'hi', files: [{ name: 'a.bin', content_base64: 'not base64' }] });
-    expect(r.text).toContain('base64 として読めません');
+    expect(r.text).toContain('cannot be read as base64');
     expect(hits).not.toContain(CREATE);
   });
 
@@ -1180,7 +1190,7 @@ describe('a DM not opened yet', { timeout: SLOW_TEST }, () => {
     routes[PREF] = () => ({ value: 'false' });
     const r = await setup().call('save_draft', { channel: '@carol', message: 'hi' });
     expect(r.isError).toBe(true);
-    expect(r.text).toContain('下書きの同期を切っている');
+    expect(r.text).toContain('draft sync is turned off');
     expect(hits).toEqual([PREF]);
   });
 });
@@ -1211,7 +1221,7 @@ describe('a root_id in another channel than the DM or group DM it is sent to', (
     };
     const r = await setup().call(tool, { channel, message: 'hi', root_id: ROOT });
     expect(r.isError).toBe(true);
-    expect(r.text).toBe(`root_id ${ROOT} の投稿は channel_id: ${chId} のチャンネルにありません（表示名: ${label}）。`);
+    expect(r.text).toBe(`The post for root_id ${ROOT} is not in the channel with channel_id: ${chId} (display name: ${label}).`);
   });
 
   test('save_draft to a DM with root_id reports a wrong root_id before drafts disabled on the server, as for a channel', async () => {
@@ -1224,7 +1234,7 @@ describe('a root_id in another channel than the DM or group DM it is sent to', (
       [`GET /posts/${ROOT}`]: () => ({ id: ROOT, channel_id: 'o'.repeat(26), root_id: '', user_id: 'u2', message: 'root', create_at: 1 }),
     };
     const r = await setup().call('save_draft', { channel: '@carol', message: 'hi', root_id: ROOT });
-    expect(r.text).toContain(`root_id ${ROOT} の投稿は channel_id: ${DM} のチャンネルにありません（表示名: @carol）。`);
+    expect(r.text).toContain(`The post for root_id ${ROOT} is not in the channel with channel_id: ${DM} (display name: @carol).`);
     expect(hits).not.toContain('GET /users/u1/teams/t1/drafts');
   });
 });
@@ -1235,7 +1245,7 @@ describe('save_draft and send_message\'s draft cleanup for one draft target (use
   const LIST = 'GET /users/u1/teams/t1/drafts';
   const DEL = `DELETE /users/u1/channels/${CH}/drafts`;
   const SAVE = 'POST /drafts';
-  const FAILED = '同じ本文の下書きを確かめられなかったか、消せませんでした';
+  const FAILED = 'The draft with the same body could not be checked or deleted';
   const draft = (message: string) => ({ user_id: 'u1', channel_id: CH, root_id: '', message, create_at: 1, update_at: 1 });
   const count = (h: string) => hits.filter((x) => x === h).length;
   const tick = () => new Promise((r) => setTimeout(r, 20));
@@ -1276,7 +1286,7 @@ describe('save_draft and send_message\'s draft cleanup for one draft target (use
     await tick();
     expect(count(LIST)).toBe(1);
     open();
-    expect((await sending).text).toContain('同じ本文の下書きを消しました');
+    expect((await sending).text).toContain('Deleted the draft with the same body');
     expect((await saving).isError).toBe(false);
     expect(hits.indexOf(DEL)).toBeLessThan(hits.lastIndexOf(LIST));
     expect(hits.lastIndexOf(LIST)).toBeLessThan(hits.indexOf(SAVE));
@@ -1294,7 +1304,7 @@ describe('save_draft and send_message\'s draft cleanup for one draft target (use
     const saving = s.call('save_draft', { channel: CH, message: 'mine' });
     await vi.waitFor(() => expect(count(LIST)).toBe(1), SLOW);
     const r = await s.call('send_message', { channel: CH, message: 'hello', root_id: ROOT });
-    expect(r.text).toContain('同じ本文の下書きを消しました');
+    expect(r.text).toContain('Deleted the draft with the same body');
     open();
     expect((await saving).isError).toBe(false);
   }, SLOW_TEST);
@@ -1312,7 +1322,7 @@ describe('save_draft and send_message\'s draft cleanup for one draft target (use
     const saving = s.call('save_draft', { channel: CH2, message: 'mine' });
     await vi.waitFor(() => expect(count(LIST)).toBe(1), SLOW);
     const r = await s.call('send_message', { channel: CH, message: 'hello' });
-    expect(r.text).toContain('同じ本文の下書きを消しました');
+    expect(r.text).toContain('Deleted the draft with the same body');
     open();
     expect((await saving).isError).toBe(false);
   }, SLOW_TEST);
@@ -1328,8 +1338,8 @@ describe('save_draft and send_message\'s draft cleanup for one draft target (use
     const sending = s.call('send_message', { channel: CH, message: 'hello' });
     await vi.waitFor(() => expect(count('POST /posts')).toBe(1), SLOW);
     open();
-    expect((await saving).text).toContain('本文の違う下書きがあります');
-    expect((await sending).text).toContain('同じ本文の下書きを消しました');
+    expect((await saving).text).toContain('A draft with a different body exists');
+    expect((await sending).text).toContain('Deleted the draft with the same body');
     expect(count(DEL)).toBe(1);
   }, SLOW_TEST);
 

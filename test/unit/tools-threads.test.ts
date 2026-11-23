@@ -87,8 +87,8 @@ describe('list_followed_threads', () => {
       hits = [];
       const r = await setup().call('list_followed_threads', {});
       expect(r.isError).toBe(true);
-      expect(r.text).toContain('スレッドの折りたたみ（CRT）が無効なため、スレッドのフォローは画面にも通知にも効きません');
-      expect(r.text).toContain('スレッドごとには止められず');
+      expect(r.text).toContain('following a thread has no effect on the screen or in notifications');
+      expect(r.text).toContain('cannot be stopped per thread');
       expect(hits).toEqual(['GET /config/client', 'GET /users/me/preferences/display_settings/name/collapsed_reply_threads'].slice(0, crt === 'disabled' ? 1 : 2));
     }
   });
@@ -96,7 +96,7 @@ describe('list_followed_threads', () => {
   test('names a DM partner whose username cannot be found by user_id, not as @<user_id>', async () => {
     routes = { ...base(), 'POST /users/ids': () => [{ id: 'u2', username: 'bob' }] };
     const { text: out } = await setup().call('list_followed_threads', {});
-    expect(out).toContain('ユーザー名不明（user_id: u3）');
+    expect(out).toContain('unknown user name (user_id: u3)');
     expect(out).not.toContain('@u3');
   });
 
@@ -107,28 +107,28 @@ describe('list_followed_threads', () => {
     expect(urls).toContain(`GET /users/u1/teams/${T2}/threads?per_page=200&excludeDirect=true`);
     expect(order(out)).toEqual([TH2, TH1, TH_DM, TH_ARCH]);
     expect(out.split('\n').slice(0, 3)).toEqual([
-      'スレッドの折りたたみ（CRT）: 有効（サーバー設定: always_on）',
-      'フォロー中のスレッド: 4 件',
-      'フォロー中のスレッド（最終返信の新しい順）:',
+      'Collapsed threads (CRT): on (Server setting: always_on)',
+      'Followed threads: 4',
+      'Followed threads (newest last reply first):',
     ]);
     expect(out).toContain(`--- post_id: ${TH1}\n@bob | `);
-    expect(out).toContain(`チーム: team-a（team_id: ${T1}） | チャンネル: channel_id: ${CH1}、name: one、表示名: One`);
-    expect(out).toContain('返信: 3、未読の返信: 1、未読のメンション: 2、最終返信: 1970-01-01T00:00:05Z | 1970-01-01T09:00:05+09:00');
+    expect(out).toContain(`Team: team-a (team_id: ${T1}) | Channel: channel_id: ${CH1}, name: one, display name: One`);
+    expect(out).toContain('Replies: 3, unread replies: 1, unread mentions: 2, last reply: 1970-01-01T00:00:05Z | 1970-01-01T09:00:05+09:00');
     expect(out).toContain(`https://mm.example/team-b/pl/${TH2}`);
-    expect(out).toContain('（続きはありません）');
+    expect(out).toContain('(No more results)');
   });
 
   test('a thread whose replies were all deleted (last_reply_at 0) shows no last reply rather than 1970', async () => {
     routes = { ...base(), [`GET /users/u1/teams/${T1}/threads`]: () => page([thread(TH1, CH1, 0, { reply_count: 0 })]), [`GET /users/u1/teams/${T2}/threads`]: () => page([]) };
     const { text: out } = await setup().call('list_followed_threads', {});
-    expect(out).toContain('最終返信: なし（返信がすべて削除された）');
-    expect(out).not.toContain('最終返信: 1970');
+    expect(out).toContain('last reply: none (all replies were deleted)');
+    expect(out).not.toContain('last reply: 1970');
   });
 
   test('shows a DM thread under the other user\'s name and a thread of a channel missing from the user\'s list by channel_id with the team it came from', async () => {
     routes = base();
     const { text: out } = await setup().call('list_followed_threads', {});
-    expect(out).toContain(`チーム: なし（DM またはグループ DM） | チャンネル: channel_id: ${DM}、name: u1__u3、表示名: @carol`);
+    expect(out).toContain(`Team: none (DM or group DM) | Channel: channel_id: ${DM}, name: u1__u3, display name: @carol`);
     expect(out).toContain(`--- post_id: ${TH_ARCH}\n@bob | 1970-01-01T00:00:00Z | 1970-01-01T09:00:00+09:00\nchannel_id: ${ARCHIVED}\n`);
     expect(out).toContain(`https://mm.example/team-b/pl/${TH_ARCH}`);
   });
@@ -142,39 +142,39 @@ describe('list_followed_threads', () => {
     ] };
     const { text: out } = await setup().call('list_followed_threads', {});
     expect(urls).toContain('GET /users/me/channels?include_deleted=true');
-    expect(out).toContain(`チーム: team-b（team_id: ${T2}） | チャンネル: channel_id: ${ARCHIVED}、name: old、アーカイブ済み、表示名: Old\n`);
-    expect(out).toContain(`チャンネル: channel_id: ${CH1}、name: one、表示名: One`);
+    expect(out).toContain(`Team: team-b (team_id: ${T2}) | Channel: channel_id: ${ARCHIVED}, name: old, archived, display name: Old\n`);
+    expect(out).toContain(`Channel: channel_id: ${CH1}, name: one, display name: One`);
   });
 
   test('says where it stopped when a team follows more threads than one page returns', async () => {
     const full = (last: (i: number) => number) => Array.from({ length: 200 }, (_, i) => thread(`f${String(i).padStart(25, '0')}`, CH2, last(i)));
     routes = { ...base(), [`GET /users/u1/teams/${T2}/threads`]: () => page(full((i) => 9000 - i), 450) };
     const { text: out } = await setup().call('list_followed_threads', {});
-    expect(out).toContain('フォロー中のスレッド: 452 件');
-    expect(out).toContain('（team-b のフォロー中のスレッドは、最終返信の新しい 200 件だけを取得しています（total: 450）。最終返信が 1970-01-01T00:00:08Z | 1970-01-01T09:00:08+09:00 以前のスレッドは出ていないことがあります）');
-    expect(out).not.toContain('team-a と DM、グループ DM の');
+    expect(out).toContain('Followed threads: 452');
+    expect(out).toContain('(For team-b, only the 200 followed threads with the newest last replies were fetched (total: 450). Threads whose last reply is at or before 1970-01-01T00:00:08Z | 1970-01-01T09:00:08+09:00 may be missing.)');
+    expect(out).not.toContain('For team-a with DMs and group DMs');
     routes[`GET /users/u1/teams/${T2}/threads`] = () => page(full((i) => (i < 199 ? 9000 - i : 0)), 450);
     const zero = (await setup().call('list_followed_threads', {})).text;
-    expect(zero).toContain('最終返信の新しい 200 件だけを取得しています（total: 450）。返信がすべて削除されたほかのスレッドは出ていないことがあります）');
-    expect(zero).not.toContain('（total: 450）。最終返信が');
+    expect(zero).toContain('the newest last replies were fetched (total: 450). Other threads whose replies were all deleted may be missing.)');
+    expect(zero).not.toContain('(total: 450). Threads whose last reply');
   });
 
   test('says a short page under a larger total holds follows the list cannot return, not that it stopped', async () => {
     routes = { ...base(), [`GET /users/u1/teams/${T1}/threads`]: () => page([thread(TH1, CH1, 5000)], 3) };
     const out = (await setup().call('list_followed_threads', {})).text;
-    expect(out).toContain('（team-a と DM、グループ DM の total: 3 のうち 2 件は一覧に出せません。データ保持ポリシーでルート投稿が消えたスレッドのフォロー（unfollow_thread でも外せません）か、取得の合間に増えたフォローです）');
-    expect(out).not.toContain('だけを取得しています');
+    expect(out).toContain('(For team-a with DMs and group DMs, 2 of total: 3 cannot be listed. They are follows of threads whose root post was removed by the data retention policy (unfollow_thread cannot remove them either), or follows added while fetching.)');
+    expect(out).not.toContain('were fetched');
     routes[`GET /users/u1/teams/${T2}/threads`] = () => page([], 4);
-    expect((await setup().call('list_followed_threads', {})).text).toContain('（team-b の total: 4 のうち 4 件は一覧に出せません。');
+    expect((await setup().call('list_followed_threads', {})).text).toContain('(For team-b, 4 of total: 4 cannot be listed.');
     const many = (n: number) => Array.from({ length: n }, (_, i) => thread(`f${String(i).padStart(25, '0')}`, CH2, 9000 - i));
     routes[`GET /users/u1/teams/${T2}/threads`] = () => page(many(199), 250);
     const short = (await setup().call('list_followed_threads', {})).text;
-    expect(short).toContain('（team-b の total: 250 のうち 51 件は一覧に出せません。');
-    expect(short).not.toContain('だけを取得しています');
+    expect(short).toContain('(For team-b, 51 of total: 250 cannot be listed.');
+    expect(short).not.toContain('were fetched');
     routes[`GET /users/u1/teams/${T2}/threads`] = () => page(many(200), 200);
     const exact = (await setup().call('list_followed_threads', {})).text;
-    expect(exact).not.toContain('team-b の total');
-    expect(exact).not.toContain('team-b のフォロー中のスレッドは');
+    expect(exact).not.toContain('For team-b');
+    expect(exact).not.toContain('only the 200 followed threads');
   });
 
   test('looks up more than 1,000 users in calls of at most 1,000 ids, and names the users of every call', async () => {
@@ -203,7 +203,7 @@ describe('list_followed_threads', () => {
     expect(order(first.text)).toEqual([TH2, TH1, TH_DM]);
     const second = await call('list_followed_threads', { cursor: cursorIn(first.text) });
     expect(order(second.text)).toEqual([TH_ARCH]);
-    expect(second.text).not.toContain('前のページの後に');
+    expect(second.text).not.toContain('after the previous page');
   });
 
   test('orders threads with the same last reply by id, so a page boundary between them neither skips nor repeats', async () => {
@@ -219,7 +219,7 @@ describe('list_followed_threads', () => {
     const unreads = Buffer.from(JSON.stringify({ as_of: 1, checked_at: 1, last: { s: 1, m: 0, t: 5000, id: TH1 }, per_page: 30, crt: true })).toString('base64url');
     const r = await setup().call('list_followed_threads', { cursor: unreads });
     expect(r.isError).toBe(true);
-    expect(r.text).toContain('cursor が不正です');
+    expect(r.text).toContain('The cursor is invalid');
   });
 
   test('puts threads with a reply after the previous page in a section before the rest', async () => {
@@ -229,7 +229,7 @@ describe('list_followed_threads', () => {
     const now = Date.now() + 60_000;
     routes[`GET /users/u1/teams/${T2}/threads`] = () => page([thread(TH_ARCH, ARCHIVED, now), thread(TH2, CH2, 6000)]);
     const second = await call('list_followed_threads', { cursor: cursorIn(first.text) });
-    expect(second.text).toContain('前のページの後に返信があったスレッド（前のページまでに出したものを含むことがあります）:');
+    expect(second.text).toContain('Threads with replies after the previous page (may include ones already shown on earlier pages):');
     expect(order(second.text)).toEqual([TH_ARCH, TH_DM]);
   });
 
@@ -241,17 +241,17 @@ describe('list_followed_threads', () => {
     routes[`GET /users/u1/teams/${T1}/threads`] = () => page([thread(TH1, CH1, now), thread(TH_DM, DM, now + 1)]);
     const second = await call('list_followed_threads', { cursor: cursorIn(first.text) });
     expect(order(second.text)).toEqual([TH_DM]);
-    expect(second.text).toContain('（前のページの後に返信があったスレッドがほかに 1 件あり、このページに収まりませんでした。cursor を付けずに最初のページから取り直してください）');
+    expect(second.text).toContain('(1 more threads had replies after the previous page and did not fit on this page. Start again from the first page without a cursor.)');
     expect(cursorIn(second.text)).toBeUndefined();
   });
 
   test('says so when nothing is followed, and refuses when the user belongs to no team', async () => {
     routes = { ...base(), [`GET /users/u1/teams/${T1}/threads`]: () => page([]), [`GET /users/u1/teams/${T2}/threads`]: () => ({ total: 0, threads: null }) };
-    expect((await setup().call('list_followed_threads', {})).text).toContain('フォロー中のスレッド: 0 件\nフォロー中のスレッドはありません。\n（続きはありません）');
+    expect((await setup().call('list_followed_threads', {})).text).toContain('Followed threads: 0\nYou follow no threads.\n(No more results)');
     routes['GET /users/me/teams'] = () => [];
     const r = await setup().call('list_followed_threads', {});
     expect(r.isError).toBe(true);
-    expect(r.text).toContain('所属しているチームがないため');
+    expect(r.text).toContain('You belong to no team');
   });
 
   test('is a read-only tool', async () => {
@@ -283,7 +283,7 @@ describe('follow_thread and unfollow_thread', () => {
       hits = [];
       const r = await setup().call(name, { post_id: ROOT });
       expect(r.isError, name).toBe(true);
-      expect(r.text).toContain('スレッドの折りたたみ（CRT）が無効なため');
+      expect(r.text).toContain('Collapsed threads (CRT) are off');
       expect(hits, name).toEqual(['GET /config/client']);
     }
   });
@@ -293,13 +293,13 @@ describe('follow_thread and unfollow_thread', () => {
     const r = await setup().call('follow_thread', { post_id: REPLY });
     expect(r.isError).toBe(false);
     expect(writes()).toEqual([`PUT /users/u1/teams/${T1}/threads/${ROOT}/following`]);
-    expect(r.text).toBe(`スレッド（親 post_id: ${ROOT}）をフォローしました。フォローした時点までの返信は既読になります（Mattermost の動作）。`);
+    expect(r.text).toBe(`Thread (root post_id: ${ROOT}) is now followed. Replies up to this point are marked as read (Mattermost behavior).`);
   });
 
   test('follow_thread leaves an already followed thread alone so its unread replies stay unread', async () => {
     routes = { ...base(), [`GET /users/u1/teams/${T1}/threads/${ROOT}`]: () => ({ id: ROOT, unread_replies: 1 }) };
     const r = await setup().call('follow_thread', { post_id: ROOT });
-    expect(r.text).toBe(`スレッド（親 post_id: ${ROOT}）はすでにフォローしています。`);
+    expect(r.text).toBe(`Thread (root post_id: ${ROOT}) is already followed.`);
     expect(writes()).toEqual([]);
   });
 
@@ -309,9 +309,9 @@ describe('follow_thread and unfollow_thread', () => {
       hits = [];
       const r = await setup().call('follow_thread', { post_id: ROOT });
       expect(r.isError, String(status)).toBe(true);
-      expect(r.text).toContain(status === 404 ? 'このチャンネルに参加していません。' : 'このチャンネルに参加しているかを確かめられませんでした（参加していないか、Mattermost の一時的な障害）。');
-      expect(r.text).toContain('参加していないチャンネルのスレッドは、フォローしても一覧にも通知にも出ません。');
-      if (status === 403) expect(r.text).toContain('続くなら、チャンネルから外されたか、サーバーの権限の設定で読む権限が外されている可能性があるので、管理者に確かめてください。');
+      expect(r.text).toContain(status === 404 ? 'You have not joined this channel.' : 'Could not check whether you have joined this channel (you have not joined, or Mattermost had a temporary failure).');
+      expect(r.text).toContain('Threads of channels you have not joined do not appear in the list or in notifications even if followed.');
+      if (status === 403) expect(r.text).toContain("If it persists, you may have been removed from the channel, or the read permission may have been removed in the server's permission settings; ask an administrator to check.");
       expect(writes()).toEqual([]);
     }
   });
@@ -328,7 +328,7 @@ describe('follow_thread and unfollow_thread', () => {
       hits = [];
       urls = [];
       const r = await setup().call('follow_thread', { post_id: ROOT });
-      expect(r.text).toBe(`スレッド（親 post_id: ${ROOT}）をフォローしました。フォローした時点までの返信は既読になります（Mattermost の動作）。\n返信がまだないため、最初の返信があるまで list_followed_threads には出ません。`);
+      expect(r.text).toBe(`Thread (root post_id: ${ROOT}) is now followed. Replies up to this point are marked as read (Mattermost behavior).\nIt has no replies yet, so it does not appear in list_followed_threads until the first reply.`);
       expect(writes(), String(isFollowing)).toEqual([`PUT /users/u1/teams/${T1}/threads/${ROOT}/following`]);
       expect(urls, String(isFollowing)).toContain(`GET /posts/${ROOT}/thread?collapsedThreads=true`);
     }
@@ -337,14 +337,14 @@ describe('follow_thread and unfollow_thread', () => {
   test('follow_thread leaves a followed root post without replies alone, telling it from the thread\'s is_following', async () => {
     routes = noReplies(true);
     const r = await setup().call('follow_thread', { post_id: ROOT });
-    expect(r.text).toBe(`スレッド（親 post_id: ${ROOT}）はすでにフォローしています。\n返信がまだないため、最初の返信があるまで list_followed_threads には出ません。`);
+    expect(r.text).toBe(`Thread (root post_id: ${ROOT}) is already followed.\nIt has no replies yet, so it does not appear in list_followed_threads until the first reply.`);
     expect(writes()).toEqual([]);
   });
 
   test('follow_thread does not say a followed thread whose replies were all deleted waits for its first reply', async () => {
     routes = { ...noReplies(), [`GET /users/u1/teams/${T1}/threads/${ROOT}`]: () => ({ id: ROOT, unread_replies: 0 }) };
     const r = await setup().call('follow_thread', { post_id: ROOT });
-    expect(r.text).toBe(`スレッド（親 post_id: ${ROOT}）はすでにフォローしています。`);
+    expect(r.text).toBe(`Thread (root post_id: ${ROOT}) is already followed.`);
     expect(hits).not.toContain(`GET /posts/${ROOT}/thread`);
   });
 
@@ -356,7 +356,7 @@ describe('follow_thread and unfollow_thread', () => {
       [`GET /users/u1/teams/${T1}/threads/${ROOT}`]: () => follows ? { id: ROOT, unread_replies: 0 } : Response.json({ id: 'app.user.get_threads_for_user.not_found' }, { status: 404 }),
     };
     const r = await setup().call('follow_thread', { post_id: ROOT });
-    expect(r.text).toBe(`スレッド（親 post_id: ${ROOT}）をフォローしました。フォローした時点までの返信は既読になります（Mattermost の動作）。`);
+    expect(r.text).toBe(`Thread (root post_id: ${ROOT}) is now followed. Replies up to this point are marked as read (Mattermost behavior).`);
     expect(writes()).toEqual([`PUT /users/u1/teams/${T1}/threads/${ROOT}/following`]);
   });
 
@@ -369,7 +369,7 @@ describe('follow_thread and unfollow_thread', () => {
     };
     const r = await setup().call('follow_thread', { post_id: ROOT });
     expect(r.isError).toBe(false);
-    expect(r.text).toBe(`スレッド（親 post_id: ${ROOT}）をフォローしました。フォローした時点までの返信は既読になります（Mattermost の動作）。`);
+    expect(r.text).toBe(`Thread (root post_id: ${ROOT}) is now followed. Replies up to this point are marked as read (Mattermost behavior).`);
   });
 
   test('follow_thread checks the state only once for a thread with replies', async () => {
@@ -408,7 +408,7 @@ describe('follow_thread and unfollow_thread', () => {
       routes = { ...dm(), 'GET /users/me/teams': () => [] };
       hits = [];
       const r = await setup().call(name, { post_id: ROOT });
-      expect(r.text, name).toContain('所属しているチームがないため');
+      expect(r.text, name).toContain('You belong to no team');
       expect(writes(), name).toEqual([]);
     }
   });
@@ -424,7 +424,7 @@ describe('follow_thread and unfollow_thread', () => {
       hits = [];
       const r = await setup().call('unfollow_thread', { post_id: ROOT });
       expect(r.isError, type).toBe(false);
-      expect(r.text, type).toBe(`スレッド（親 post_id: ${ROOT}）のフォローを外しました。ただし、DM とグループ DM のスレッドでは、Mattermost は相手の返信をすべて自分へのメンションとして扱い、相手が返信するたびに再びフォローして通知します。このスレッドの通知は、外しても止まりません。`);
+      expect(r.text, type).toBe(`Thread (root post_id: ${ROOT}) was unfollowed. However, in DM and group DM threads, Mattermost treats every reply from the other person as a mention of you, and follows the thread again and notifies you each time they reply. Notifications for this thread do not stop even after unfollowing.`);
       expect(writes(), type).toEqual([`DELETE /users/u1/teams/${T2}/threads/${ROOT}/following`]);
     }
   });
@@ -432,7 +432,7 @@ describe('follow_thread and unfollow_thread', () => {
   test('unfollow_thread deletes the follow without checking membership or the current follow first', async () => {
     routes = base();
     const r = await setup().call('unfollow_thread', { post_id: REPLY });
-    expect(r.text).toBe(`スレッド（親 post_id: ${ROOT}）のフォローを外しました。このスレッドの返信の通知は届かなくなります。ただし、メンションの通知は届き、メンションされるか自分が返信すると、Mattermost は再びフォローします。`);
+    expect(r.text).toBe(`Thread (root post_id: ${ROOT}) was unfollowed. Reply notifications for this thread will stop arriving. However, mention notifications still arrive, and Mattermost follows the thread again when you are mentioned or reply yourself.`);
     expect(hits).toEqual(['GET /config/client', `GET /posts/${REPLY}`, `GET /channels/${CH1}`, `DELETE /users/u1/teams/${T1}/threads/${ROOT}/following`]);
   });
 
@@ -445,8 +445,8 @@ describe('follow_thread and unfollow_thread', () => {
       [`GET /posts/${HIDDEN}`]: () => Response.json({ id: 'api.context.permissions.app_error' }, { status: 403 }),
     };
     for (const name of ['follow_thread', 'unfollow_thread']) {
-      expect((await setup().call(name, { post_id: GONE })).text, name).toContain('投稿が見つかりません（削除されたか、存在しません）。');
-      expect((await setup().call(name, { post_id: HIDDEN })).text, name).toContain('この投稿を見る権限がありません（参加していない非公開チャンネルなど）。参加しているはずなら、Mattermost の一時的な障害の可能性があります。少し待ってから再試行してください。続くなら、チャンネルから外されたか、サーバーの権限の設定で読む権限が外されている可能性があるので、管理者に確かめてください。');
+      expect((await setup().call(name, { post_id: GONE })).text, name).toContain('The post was not found (it was deleted, or it does not exist).');
+      expect((await setup().call(name, { post_id: HIDDEN })).text, name).toContain('You do not have permission to view this post (for example, in a private channel you have not joined). If you should be a member, this may be a temporary Mattermost failure. Wait a moment and retry. If it persists, you may have been removed from the channel, or the read permission may have been removed in the server\'s permission settings; ask an administrator to check.');
       expect((await setup().call(name, { post_id: 'bad' })).isError, name).toBe(true);
     }
     expect(writes()).toEqual([]);
