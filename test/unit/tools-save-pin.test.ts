@@ -54,8 +54,8 @@ const CH = 'c'.repeat(26);
 const mmError = (status: number, id: string) => () => Response.json({ id, message: 'm', status_code: status }, { status });
 const post = (is_pinned = false) => ({ [`GET /posts/${POST}`]: () => ({ id: POST, channel_id: CH, is_pinned }), [`GET /channels/${CH}/members/me`]: () => ({ channel_id: CH, user_id: 'u1' }) });
 const FLAG = [{ user_id: 'u1', category: 'flagged_post', name: POST, value: 'true' }];
-const GONE = '投稿が見つかりません（削除されたか、存在しません）。';
-const FORBIDDEN = 'この投稿を見る権限がありません（参加していない非公開チャンネルなど）。参加しているはずなら、Mattermost の一時的な障害の可能性があります。少し待ってから再試行してください。続くなら、チャンネルから外されたか、サーバーの権限の設定で読む権限が外されている可能性があるので、管理者に確かめてください。';
+const GONE = 'The post was not found (it was deleted, or it does not exist).';
+const FORBIDDEN = 'You do not have permission to view this post (for example, in a private channel you have not joined). If you should be a member, this may be a temporary Mattermost failure. Wait a moment and retry. If it persists, you may have been removed from the channel, or the read permission may have been removed in the server\'s permission settings; ask an administrator to check.';
 const ALL = ['save_post', 'unsave_post', 'pin_post', 'unpin_post'];
 const CHECKED = ['save_post', 'pin_post', 'unpin_post'];
 const WRITE: Record<string, string> = { save_post: 'PUT /users/u1/preferences', pin_post: `POST /posts/${POST}/pin`, unpin_post: `POST /posts/${POST}/unpin` };
@@ -78,7 +78,7 @@ describe('save_post', () => {
   test('checks the post and the membership, then saves it as a flagged_post preference', async () => {
     routes = { ...post(), 'PUT /users/u1/preferences': () => ({ status: 'OK' }) };
     const r = await setup().call('save_post', { post_id: POST });
-    expect(r).toEqual({ isError: false, text: `投稿を保存しました。list_saved_posts で一覧できます。\npost_id: ${POST}` });
+    expect(r).toEqual({ isError: false, text: `Saved the post. You can list saved posts with list_saved_posts.\npost_id: ${POST}` });
     expect(hits).toEqual([`GET /posts/${POST}`, `GET /channels/${CH}/members/me`, 'PUT /users/u1/preferences']);
     expect(bodies['/users/u1/preferences']).toEqual(FLAG);
   });
@@ -98,7 +98,7 @@ describe('unsave_post', () => {
   test('deletes the flagged_post preference without reading the post or the membership', async () => {
     routes = { 'POST /users/u1/preferences/delete': () => ({ status: 'OK' }) };
     const r = await setup().call('unsave_post', { post_id: POST });
-    expect(r).toEqual({ isError: false, text: `投稿を保存していれば、保存した投稿から外しました。\npost_id: ${POST}` });
+    expect(r).toEqual({ isError: false, text: `If the post was saved, it was removed from your saved posts.\npost_id: ${POST}` });
     expect(hits).toEqual(['POST /users/u1/preferences/delete']);
     expect(bodies['/users/u1/preferences/delete']).toEqual(FLAG);
   });
@@ -106,10 +106,10 @@ describe('unsave_post', () => {
 
 describe('pin_post and unpin_post', () => {
   test.each([
-    ['pin_post', false, '投稿をピン留めしました。'],
-    ['pin_post', true, '投稿は既にピン留めされています。'],
-    ['unpin_post', true, '投稿のピン留めを外しました。'],
-    ['unpin_post', false, '投稿はピン留めされていません。'],
+    ['pin_post', false, 'Pinned the post.'],
+    ['pin_post', true, 'The post is already pinned.'],
+    ['unpin_post', true, 'Unpinned the post.'],
+    ['unpin_post', false, 'The post is not pinned.'],
   ])('%s on a post with is_pinned %s reports "%s" with the post and channel ids', async (name, pinned, head) => {
     routes = { ...post(pinned), [WRITE[name]]: () => ({ status: 'OK' }) };
     const r = await setup().call(name, { post_id: POST });
@@ -118,10 +118,10 @@ describe('pin_post and unpin_post', () => {
   });
 
   test.each(['pin_post', 'unpin_post'].flatMap((name) => [
-    [name, 400, 'api.post.update_post.system_message.app_error', 'システムメッセージはピン留めできません。'],
-    [name, 400, 'api.post.patch_post.can_not_update_post_in_deleted.error', 'アーカイブ済みのチャンネルの投稿のピン留めは変えられません。'],
-    [name, 400, 'api.post.update_post.permissions_time_limit.app_error', '投稿から時間が経った投稿のピン留めは変えられません'],
-    [name, 403, 'api.context.permissions.app_error', 'この投稿のピン留めを変えられません（投稿を確かめた直後に削除されたか、見る権限が無くなったか、Mattermost の一時的な障害）。削除されたなら、変えるものはありません。参加しているはずなら、少し待ってから再試行してください。続くなら、チャンネルから外されたか、サーバーの権限の設定で読む権限が外されている可能性があるので、管理者に確かめてください。'],
+    [name, 400, 'api.post.update_post.system_message.app_error', 'System messages cannot be pinned.'],
+    [name, 400, 'api.post.patch_post.can_not_update_post_in_deleted.error', 'The pin state of posts in an archived channel cannot be changed.'],
+    [name, 400, 'api.post.update_post.permissions_time_limit.app_error', 'the pin state of a post cannot be changed after some time has passed since it was posted'],
+    [name, 403, 'api.context.permissions.app_error', 'You cannot change the pin state of this post (it was deleted right after the post was checked, you lost the permission to view it, or Mattermost had a temporary failure). If it was deleted, there is nothing to change. If you should be a member, wait a moment and retry. If it persists, you may have been removed from the channel, or the read permission may have been removed in the server\'s permission settings; ask an administrator to check.'],
   ] as const))('%s words a %i %s', async (name, status, id, want) => {
     routes = { ...post(), [WRITE[name]]: mmError(status, id) };
     const r = await setup().call(name, { post_id: POST });
@@ -132,7 +132,7 @@ describe('pin_post and unpin_post', () => {
   test.each(['pin_post', 'unpin_post'] as const)('%s leaves a 400 it has no wording for as Mattermost\'s own error', async (name) => {
     routes = { ...post(name === 'unpin_post'), [WRITE[name]]: mmError(400, 'api.post.patch_post.can_not_update_burn_on_read_post.error') };
     const r = await setup().call(name, { post_id: POST });
-    expect(r).toEqual({ isError: true, text: 'Mattermost がエラーを返しました（400）: m' });
+    expect(r).toEqual({ isError: true, text: 'Mattermost returned an error (400): m' });
   });
 });
 
@@ -147,15 +147,15 @@ describe('the checks before save_post, pin_post and unpin_post', () => {
     });
 
   const NOT_MEMBER: Record<string, string> = {
-    save_post: '参加していないチャンネルの投稿は保存できません。',
-    pin_post: '参加していないチャンネルの投稿はピン留めできません。',
-    unpin_post: '参加していないチャンネルの投稿のピン留めは外せません。',
+    save_post: 'You cannot save posts in a channel you have not joined.',
+    pin_post: 'You cannot pin posts in a channel you have not joined.',
+    unpin_post: 'You cannot unpin posts in a channel you have not joined.',
   };
   test.each(CHECKED.flatMap((name) => [[name, 403], [name, 404]] as const))(
     '%s refuses a post of a channel the user has not joined (members/me %i)', async (name, status) => {
       routes = { ...post(), [`GET /channels/${CH}/members/me`]: mmError(status, status === 403 ? 'api.context.permissions.app_error' : 'app.channel.get_member.missing.app_error') };
       const r = await setup().call(name, { post_id: POST });
-      expect(r).toEqual({ isError: true, text: status === 404 ? NOT_MEMBER[name] : `このチャンネルに参加しているかを確かめられませんでした（参加していないか、Mattermost の一時的な障害）。${NOT_MEMBER[name]}参加しているはずなら、少し待ってから再試行してください。続くなら、チャンネルから外されたか、サーバーの権限の設定で読む権限が外されている可能性があるので、管理者に確かめてください。` });
+      expect(r).toEqual({ isError: true, text: status === 404 ? NOT_MEMBER[name] : `Could not check whether you have joined this channel (you have not joined, or Mattermost had a temporary failure). ${NOT_MEMBER[name]} If you should be a member, wait a moment and retry. If it persists, you may have been removed from the channel, or the read permission may have been removed in the server's permission settings; ask an administrator to check.` });
       expect(hits).not.toContain(WRITE[name]);
     });
 });

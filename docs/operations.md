@@ -1,204 +1,211 @@
-# 運用
+# Operations
 
-導入した MCP サーバーを動かし続けるための手順。
-導入は [deployment.md](deployment.md) にある。
-コマンドは [deployment.md](deployment.md) の `compose.yml` の例（サービス名 `mcp`）を前提にする。
+How to keep a deployed MCP server running.
+For deployment, see [deployment.md](deployment.md).
+The commands assume the `compose.yml` example in [deployment.md](deployment.md) (service name `mcp`).
 
-## 導入後の確認
+## Post-deployment checks
 
-作業者のアカウントで、使う予定の MCP クライアント（claude.ai、Claude Code、Codex CLI など）から `<PUBLIC_URL>/mcp` に接続する。
+With the operator's account, connect to `<PUBLIC_URL>/mcp` from each MCP client you plan to use (claude.ai, Claude Code, Codex CLI and so on).
 
-- 読み取り系の 17 ツール（`search_posts`、`search_files`、`read_channel`、`read_thread`、`search_channels`、`search_users`、`get_user`、`get_post`、`get_file`、`list_saved_posts`、`list_my_channels`、`get_channel`、`list_channel_members`、`get_unreads`、`get_mentions`、`list_scheduled_messages`、`search_emoji`）を 1 回ずつ呼び、エラーにならない
-  - `get_unreads` は、出力の先頭に CRT の判定の行（`スレッドの折りたたみ（CRT）: 有効（サーバー設定: …）` など）が出る
-  - `search_files` が「ファイルの検索が無効になっています」を返したら、Mattermost のシステムコンソールでファイル検索が無効にされている。使うなら有効にするよう、Mattermost の管理者に頼む
-- `get_file` の画像がクライアントに届くかを、クライアントごとに確かめる。結合テストはクライアントを使わないので、ここでしか確かめられない
-  1. Web で、作業者自身の DM（`@<作業者のユーザー名>`）に、文字の入った画像を添付して投稿する
-  2. `read_channel` で `@<作業者のユーザー名>` を読み、その投稿に `添付:` の行（`file_id`、名前、種類、大きさ、幅と高さ）が出ることを見る
-  3. その `file_id` で `get_file` を呼び、画像に書かれた文字をモデルに読ませる。クライアントの画面に画像が表示されるかと、モデルが中身を答えられたかを分けて見る
-  4. 確かめ終えたら、Web でその投稿を消す
-- 書き込み系のツールは、作業者自身の DM の中だけで確かめる。他のチャンネルや利用者の投稿には触れない
-  1. `send_message` で `@<作業者のユーザー名>` に投稿する
-  2. その投稿に `add_reaction`（例 `white_check_mark`）を呼び、画面で付いたことを見る。`remove_reaction` で外し、画面で消えたことを見る。同じ投稿に `save_post` を呼んで画面の保存した投稿に出ること、`pin_post` を呼んで画面のピン留めに出ることを見る。`unsave_post` と `unpin_post` で外し、画面から消えたことを見る
-  3. `edit_message` で本文を変え、画面で変わったことを見る。`delete_message` で消し、画面から消えたことを見る
-  4. `save_draft` で下書きを保存し、DM を開いて入力欄に出ることを見る。送信せず、画面で入力欄を空にして下書きを消す
-  5. `send_message` に `files`（例 `{"name":"check.txt","content_text":"attachment check"}`）を付けて投稿し、画面に添付が出ることを見る。確かめたら `delete_message` で消す
-  6. PC でコマンドを実行できるクライアント（Claude Code、Codex CLI など）から、`prepare_upload` で `@<作業者のユーザー名>` の URL を発行し、数 MB の画像を `curl` で送る。返った `file_id` を `send_message` の `file_ids` に渡して投稿し、画面に添付が出ることを見る。同じ URL へもう一度送ると 404 になることも見る。確かめたら `delete_message` で消す
-- 予約投稿を、作業者自身の DM の中だけで確かめる。本文は、ほかの手順で送った本文とも互いとも違うものにする（同じ本文だと、やり直しの照合が別の投稿と取り違えうる）
-  1. `schedule_message` で、2〜3 分後の時刻に 2 件の予約を入れる
-  2. 1 件は `update_scheduled_message` で時刻を 1 分ほど後ろへずらし、もう 1 件は `cancel_scheduled_message` で取り消す
-  3. 変えた時刻を過ぎたら（巡回は 30 秒ごとなので 1 分ほど待つ）、`list_scheduled_messages` で、時刻を変えた予約が「投稿済み」になり、パーマリンクがその投稿を開くことを見る。取り消した予約は一覧に出ない
-  4. DM の画面に予約の投稿が 1 件だけ出ていることを見る。確かめたら Web でその投稿を消す
-- 既読化を、作業者自身の DM の中だけで確かめる
-  1. `send_message` で `@<作業者のユーザー名>` に 2 件投稿し、Web で 1 件目を「未読にする」で未読に戻す
-  2. `read_channel` に `from: "unread"` を付けて `@<作業者のユーザー名>` を読み、未読に戻した投稿から古い順に出ることを見る
-  3. 出た投稿のうち最も新しいものの `post_id` を `last_post_id` にして `mark_as_read` を呼び、画面の未読が消えることを見る。確かめたら `delete_message` で 2 件を消す
-- スレッドのフォローを、作業者自身の DM の中だけで確かめる。`get_unreads` の CRT の判定の行が「無効」なら、`list_followed_threads` が「スレッドの折りたたみ（CRT）が無効なため」を返すことだけを見て、残りは飛ばす
-  1. `send_message` で `@<作業者のユーザー名>` に投稿し、その `post_id` を `root_id` にして返信を 1 件投稿する
-  2. `list_followed_threads` を呼び、そのスレッドが出ることを見る（自分が返信したスレッドは、Mattermost が自動でフォローする）
-  3. `unfollow_thread` を呼び、`list_followed_threads` から消えることを見る。`follow_thread` を呼び、戻ることを見る
-  4. 確かめたら `delete_message` で返信、親投稿の順に消す（返信のある親投稿は消せないため）
-- 在席状況とカスタムステータスを、作業者自身のステータスで確かめる。不在（ooo）か取り込み中にしている間は確かめない（不在から変えると Mattermost が自動返信を止め、MCP からは戻せない。取り込み中から取り込み中を設定し直すと、元の終了時刻の後も取り込み中が続く）
-  1. 始める前に、`get_user` で自分を読み、`在席:` の行（`（手動で設定）` が付いているか）を控える。カスタムステータスは Web で控える
-  2. `set_status` で `dnd` に 10 分ほど後の `dnd_until` を付けて呼び、画面の在席状況が取り込み中になることを見る。`get_user` で自分を読み、`取り込み中（終了: …）` が出ることも見る
-  3. `set_custom_status` で絵文字（例 `calendar`）、文言、1 時間後の `until` を指定し、画面のカスタムステータスに出ることを見る。`clear_custom_status` で消し、画面から消えたことを見る
-  4. `set_status` で控えた在席状況に戻す（`（手動で設定）` が付いていなかったなら `online`）。カスタムステータスがあったなら、Web で設定し直す。Web のカスタムステータスの「最近使った」一覧から、確かめに使ったものを消す
-- 取り消しと再ログイン
-  1. Mattermost の「設定 > セキュリティ > OAuth 2.0 アプリ」で、作った OAuth アプリの許可を取り消す
-  2. 次のツール呼び出しが「Mattermost への再ログインが必要です。コネクタを再接続してください。」を返す
-  3. その次の要求でクライアントが再ログインを求め、再ログインするとツールを呼べる
-- ログ（下の「ログ」）に、上の呼び出しの `tool_call`、予約の `scheduled_post`、アップロードの `upload` が出ていて、投稿の本文、検索語、トークン（`Bearer`、`access_token`、`refresh_token`、アップロード URL のトークン）、添付のファイル名と中身が含まれていない
+- Call each of the 17 read tools (`search_posts`, `search_files`, `read_channel`, `read_thread`, `search_channels`, `search_users`, `get_user`, `get_post`, `get_file`, `list_saved_posts`, `list_my_channels`, `get_channel`, `list_channel_members`, `get_unreads`, `get_mentions`, `list_scheduled_messages`, `search_emoji`) once, and confirm none of them returns an error
+  - `get_unreads` prints the CRT decision line at the top of its output (for example `Collapsed threads (CRT): on (Server setting: …)`)
+  - If `search_files` returns "File search is turned off on this Mattermost", file search is disabled in the Mattermost System Console. Ask the Mattermost administrator to enable it if you want to use it
+- Check per client that the image from `get_file` reaches the client. The integration tests do not use a client, so this is the only place to check it
+  1. On the web, attach an image containing text to a post in the operator's own DM (`@<operator's username>`)
+  2. Read `@<operator's username>` with `read_channel`, and confirm the post shows an `Attachment:` line (`file_id`, name, type, size, width and height)
+  3. Call `get_file` with that `file_id`, and have the model read the text written in the image. Look separately at whether the image is shown on the client's screen and whether the model could answer what it contains
+  4. When done, delete that post on the web
+- Check the write tools only inside the operator's own DM. Do not touch posts in other channels or by other users
+  1. Post to `@<operator's username>` with `send_message`
+  2. Call `add_reaction` (for example `white_check_mark`) on that post and confirm on screen that it was added. Remove it with `remove_reaction` and confirm on screen that it is gone. Call `save_post` on the same post and confirm it appears under saved posts on screen, and call `pin_post` and confirm it appears under pinned posts on screen. Remove them with `unsave_post` and `unpin_post` and confirm on screen that they are gone
+  3. Change the body with `edit_message` and confirm on screen that it changed. Delete it with `delete_message` and confirm on screen that it is gone
+  4. Save a draft with `save_draft`, open the DM, and confirm it appears in the input box. Do not send it; empty the input box on screen to delete the draft
+  5. Post with `send_message` and `files` (for example `{"name":"check.txt","content_text":"attachment check"}`), and confirm the attachment appears on screen. When confirmed, delete it with `delete_message`
+  6. From a client that can run commands on the PC (Claude Code, Codex CLI and so on), issue a URL for `@<operator's username>` with `prepare_upload` and send an image of a few MB with `curl`. Pass the returned `file_id` to `file_ids` of `send_message` to post it, and confirm the attachment appears on screen. Also confirm that sending to the same URL again returns 404. When confirmed, delete it with `delete_message`
+- Check scheduled messages only inside the operator's own DM. Make the bodies differ from the bodies sent in the other steps and from each other (with the same body, the matching on retry could mistake one post for another)
+  1. Create 2 schedules with `schedule_message` for 2 to 3 minutes from now
+  2. Move the time of one back by about 1 minute with `update_scheduled_message`, and cancel the other with `cancel_scheduled_message`
+  3. After the changed time passes (the sweep runs every 30 seconds, so wait about 1 minute), confirm with `list_scheduled_messages` that the rescheduled message is "posted" and that its permalink opens that post. The cancelled schedule does not appear in the list
+  4. Confirm that only 1 post of the scheduled message appears on the DM screen. When confirmed, delete that post on the web
+- Check marking as read only inside the operator's own DM
+  1. Post 2 messages to `@<operator's username>` with `send_message`, and on the web put the first back to unread with "Mark as Unread"
+  2. Read `@<operator's username>` with `read_channel` and `from: "unread"`, and confirm the posts appear oldest first, starting from the one put back to unread
+  3. Call `mark_as_read` with the `post_id` of the newest of those posts as `last_post_id`, and confirm the unread mark on screen is gone. When confirmed, delete the 2 posts with `delete_message`
+- Check thread following only inside the operator's own DM. If the CRT decision line of `get_unreads` says off, only confirm that `list_followed_threads` returns "Collapsed threads (CRT) are off" and skip the rest
+  1. Post to `@<operator's username>` with `send_message`, then post 1 reply with that `post_id` as `root_id`
+  2. Call `list_followed_threads` and confirm the thread appears (Mattermost follows a thread you replied to automatically)
+  3. Call `unfollow_thread` and confirm it disappears from `list_followed_threads`. Call `follow_thread` and confirm it comes back
+  4. When confirmed, delete the reply and then the parent post with `delete_message` (a parent post with replies cannot be deleted)
+- Check presence and the custom status with the operator's own status. Do not check while the status is out of office (ooo) or do not disturb (when you change from out of office, Mattermost stops the auto-reply and the MCP cannot restore it. If you set do not disturb again while already in do not disturb, do not disturb continues past the original end time)
+  1. Before starting, read yourself with `get_user` and note the `Presence:` line (whether `(set manually)` is attached). Note the custom status on the web
+  2. Call `set_status` with `dnd` and a `dnd_until` about 10 minutes ahead, and confirm that the presence on screen becomes do not disturb. Read yourself with `get_user` and also confirm that `do not disturb (until: …)` appears
+  3. Specify an emoji (for example `calendar`), text, and an `until` 1 hour ahead with `set_custom_status`, and confirm it appears as the custom status on screen. Clear it with `clear_custom_status` and confirm it is gone from the screen
+  4. Return to the noted presence with `set_status` (`online` if `(set manually)` was not attached). If there was a custom status, set it again on the web. Remove the ones used for the check from the "Recent" list of the custom status on the web
+- Revocation and re-login
+  1. In Mattermost under "Settings > Security > OAuth 2.0 Apps", revoke the authorization of the OAuth app you created
+  2. The next tool call returns "You need to log in to Mattermost again. Reconnect the connector."
+  3. On the request after that, the client asks for a re-login, and once you log in again you can call the tools
+- The logs ("Logs" below) show the `tool_call` of the calls above, `scheduled_post` of the schedules and `upload` of the uploads, and contain no post bodies, search terms, tokens (`Bearer`, `access_token`, `refresh_token`, the token in an upload URL) or attachment file names and contents
 
-## ログ
+## Logs
 
-1 行 1 件の JSON を標準出力に出す。
-各行は `ts`（時刻）と `event` を持つ。
-投稿の本文、検索語、トークンは出さない。
+The server writes one JSON object per line to standard output.
+Each line has `ts` (time) and `event`.
+Post bodies, search terms and tokens are not logged.
 
 ```bash
 docker compose logs --no-log-prefix mcp | grep '"event":"tool_call"'
 ```
 
-| `event` | 内容 |
+| `event` | Content |
 |---|---|
-| `tool_call` | ツールの呼び出し。`mm_user_id`、`tool`、`outcome`（`ok`、`tool_error`、`input_error`、`invalid_args`（ツールを呼ぶ前に MCP SDK が、inputSchema に合わない引数を断った。受けない引数、型・形式・長さ・範囲の誤り、必須の欠け。`input_error` は、スキーマには合うがツールが処理の中で断ったもの）、`reauthorize`、`rate_limited`、`upstream_unavailable`、`mm_error`、`error`）、`ms` |
-| `tool_interrupted` | `mark_as_read` が再ログイン・429・Mattermost の停止などで途中で中断し、それまでの結果をツールのエラーとして返したとき。`mm_user_id`、`tool`、`outcome`（中断の原因。`tool_call` の `outcome` と同じ値。このとき `tool_call` の `outcome` は `tool_error` になる） |
-| `scheduled_post` | 予約の投稿の結果。`mm_user_id`、`outcome` |
-| `upload` | `prepare_upload` の URL へのアップロード。`mm_user_id`、`outcome`（`ok`、`too_large`、`client_gone`（本文の途中で接続が切れた）、`stalled`（本文を待つ間に 15 秒データが来なかった）、`InputError`、`MmError`、`RateLimited`、`UpstreamUnavailable` など）、`files`（Mattermost へ送れた件数）、`bytes`（受け取ったファイルの合計）、`ms`。URL が無効なときと、同時に処理できる件数を超えたときは出ない |
-| `draft_cleanup_failed` | `send_message` の投稿の後の、同じ本文の下書きの確認か削除の失敗。投稿は成功している。`mm_user_id`、`channel_id`、`name`（エラーの名前）、Mattermost のエラーなら `status` と `id`。`name` は主に、`TimeoutError`（打ち切りで、ロックか流量の上限の空きを待つ途中か、削除を送る前に止めた）、`UpstreamUnavailable`（Mattermost に届かないか、`501` 以外の `5xx` を返したか、トークンのリフレッシュに失敗したか、呼び出しの途中で打ち切った）、`MmError`（Mattermost の、`401` と `429` 以外の `4xx` か `501` のエラーの応答）、`Reauthorize`（再ログインが必要）、`RateLimited`（Mattermost かこのサーバーの流量の上限）。打ち切りは `TimeoutError` と `UpstreamUnavailable` のどちらにもなるので、打ち切りかどうかは名前では見分けられない。`skipped` が `delete` なら、打ち切りまでの残りが短いため削除を送っておらず、下書きは残っている。`skipped` が無いときは、ロックや流量の上限の待ち、確認、削除のどこかで失敗したか打ち切られたので、消えたかは下書きの一覧で確かめる。サーバーで下書きの同期が無効なときと、クライアントが要求を取り消したときは出ない |
-| `token_issued`、`token_refreshed` | MCP のトークンの発行とリフレッシュ。`client_id`、`mm_user_id` |
-| `token_reuse_detected` | 使用済みの認可コードかリフレッシュトークンが再び提示され、その grant を失効させた。`client_id`。そのクライアントは再ログインになる。同じクライアントで繰り返すなら、トークンの漏えいか、クライアントが同じリフレッシュトークンを並行して送っていることを疑う |
-| `mm_refresh_config_error` | Mattermost が、再ログインで直るもの以外の 4xx でリフレッシュを断った。`status`、`id`。`model.oauth.validate_grant.credentials.app_error`（401）なら `MM_OAUTH_CLIENT_SECRET` が OAuth アプリと合っていない（シークレットを作り直した場合など）。ツールは一時的なエラーを返し続ける |
-| `dcr_registered`、`dcr_unauthorized_near_limit` | クライアントの登録と、未認可の登録が上限に近いことの警告（下の「未認可の登録が上限に近いとき」） |
-| `authorize_completed`、`authorize_upstream_failed` | 利用者のログインの完了と、Mattermost との通信の失敗（`step` が `exchange` か `users_me`） |
-| `unhandled_error`、`tool_unhandled_error`、`upload_unhandled_error`、`scheduled_post_error`、`scheduler_failed`、`sweep_failed` | 想定外の失敗。エラーの名前とコードだけを持つ |
-| `listening`、`shutting_down` | 起動と停止 |
+| `tool_call` | A tool call. `mm_user_id`, `tool`, `outcome` (`ok`, `tool_error`, `input_error`, `invalid_args` (the MCP SDK rejected arguments that do not match the inputSchema before calling the tool: arguments it does not accept, wrong type, format, length or range, and missing required ones. `input_error` is for input that matches the schema but that the tool rejected during processing), `reauthorize`, `rate_limited`, `upstream_unavailable`, `mm_error`, `error`), `ms` |
+| `tool_interrupted` | `mark_as_read` was interrupted midway by a re-login, a 429, a Mattermost outage or the like, and returned the results so far as a tool error. `mm_user_id`, `tool`, `outcome` (the cause of the interruption. The same values as `outcome` of `tool_call`. In this case `outcome` of `tool_call` is `tool_error`) |
+| `scheduled_post` | The result of posting a schedule. `mm_user_id`, `outcome` |
+| `upload` | An upload to the `prepare_upload` URL. `mm_user_id`, `outcome` (`ok`, `too_large`, `client_gone` (the connection dropped midway through the body), `stalled` (no data arrived for 15 seconds while waiting for the body), `InputError`, `MmError`, `RateLimited`, `UpstreamUnavailable` and so on), `files` (the number sent to Mattermost), `bytes` (the total of the received files), `ms`. It is not logged when the URL is invalid or when the number of concurrent uploads is exceeded |
+| `draft_cleanup_failed` | A failure to check or delete a draft with the same body after the post of `send_message`. The post succeeded. `mm_user_id`, `channel_id`, `name` (the error name), and `status` and `id` for a Mattermost error. `name` is mainly `TimeoutError` (a deadline; it stopped while waiting for a lock or a rate limit slot, or before sending the delete), `UpstreamUnavailable` (Mattermost could not be reached, returned a `5xx` other than `501`, the token refresh failed, or the call was cut off midway), `MmError` (an error response from Mattermost: a `4xx` other than `401` and `429`, or `501`), `Reauthorize` (a re-login is needed) and `RateLimited` (the rate limit of Mattermost or of this server). A deadline can show up as either `TimeoutError` or `UpstreamUnavailable`, so the name does not tell you whether it was a deadline. If `skipped` is `delete`, the delete was not sent because too little time was left before the deadline, and the draft remains. If there is no `skipped`, it failed or hit the deadline somewhere in waiting for the lock or rate limit, the check or the delete, so check the draft list to see whether it was deleted. It is not logged when draft sync is disabled on the server or when the client cancelled the request |
+| `token_issued`, `token_refreshed` | Issue and refresh of MCP tokens. `client_id`, `mm_user_id` |
+| `token_reuse_detected` | A used authorization code or refresh token was presented again, and that grant was revoked. `client_id`. That client has to log in again. If it repeats for the same client, suspect a token leak or that the client is sending the same refresh token concurrently |
+| `mm_refresh_config_error` | Mattermost rejected a refresh with a 4xx other than those a re-login fixes. `status`, `id`. With `model.oauth.validate_grant.credentials.app_error` (401), `MM_OAUTH_CLIENT_SECRET` does not match the OAuth app (for example after regenerating the secret). Tools keep returning a temporary error |
+| `dcr_registered`, `dcr_unauthorized_near_limit` | A client registration, and a warning that unauthorized registrations are near the limit ("When unauthorized registrations near the limit" below) |
+| `authorize_completed`, `authorize_upstream_failed` | A user's login completing, and a communication failure with Mattermost (`step` is `exchange` or `users_me`) |
+| `unhandled_error`, `tool_unhandled_error`, `upload_unhandled_error`, `scheduled_post_error`, `scheduler_failed`, `sweep_failed` | Unexpected failures. They carry only the error name and code |
+| `listening`, `shutting_down` | Start and stop. `listening` has `port`, `locale` and `time_zone` |
 
-### Mattermost のサーバーログ
+### Mattermost server log
 
-Mattermost のサーバーログに `error getting channel id by name from in filter` の警告が出ることがある。
-`search_posts` と `search_files` は `in:`（`-in:`、`channel:` を含む）のチャンネルの指定を channel_id に置き換えてから渡すが、Mattermost はその値をまずチャンネル名として引き、引けないとこの警告を出して ID のまま条件に使う。
-検索の結果は正しく、MCP サーバーの不具合ではないので、対処は要らない。
-1 回の検索で、置き換えた後の値（チャンネル ID）ごとに 1 行（通常の語とハッシュタグが混ざると 2 行）出る。
+The Mattermost server log can show a warning `error getting channel id by name from in filter`.
+`search_posts` and `search_files` replace the channel specified with `in:` (including `-in:` and `channel:`) with the channel_id before passing it on, but Mattermost first looks that value up as a channel name, and when the lookup fails it logs this warning and uses the ID as it is in the condition.
+The search results are correct and this is not a bug in the MCP server, so no action is needed.
+One search logs one line per replaced value (channel ID), or two lines when ordinary terms and hashtags are mixed.
 
-## 管理コマンド
+## Admin commands
 
-コンテナの中で `node src/admin.ts` を実行する。
-`TOKEN_ENC_KEY` は要らず、`DB_PATH`（既定 `/data/mcp.sqlite`）の DB を直接操作する。
+Run `node src/admin.ts` inside the container.
+It does not need `TOKEN_ENC_KEY`, and operates directly on the DB at `DB_PATH` (default `/data/mcp.sqlite`).
 
 ```bash
-docker compose exec mcp node src/admin.ts list-clients               # 登録された MCP クライアント（client_id、名前、登録時刻、認可済みか）
-docker compose exec mcp node src/admin.ts list-clients --unauthorized # 未認可の登録だけ
-docker compose exec mcp node src/admin.ts delete-client <client_id>   # 登録を消す。そのクライアントはコネクタの追加し直しが要る
-docker compose exec mcp node src/admin.ts purge-credentials          # 認可途中の状態、grant、トークン、アップロード URL、重複防止の記録を消す。登録は残す
+docker compose exec mcp node src/admin.ts list-clients               # registered MCP clients (client_id, name, registration time, whether authorized)
+docker compose exec mcp node src/admin.ts list-clients --unauthorized # only unauthorized registrations
+docker compose exec mcp node src/admin.ts delete-client <client_id>   # deletes a registration. That client has to add the connector again
+docker compose exec mcp node src/admin.ts purge-credentials          # deletes in-progress authorization state, grants, tokens, upload URLs and duplicate-prevention records. Registrations are kept
 ```
 
-`purge-credentials` を稼働中に実行すると、全利用者が再ログインになる。
-通常はバックアップからの復元でだけ使い、そのときは続けて `invalidate-scheduled` も実行する。
-`invalidate-scheduled` は待機中と投稿中の予約をすべて失敗にし、投稿済みと失敗の予約は残す。
-復元では、`purge-credentials` と `invalidate-scheduled` のどちらも MCP サーバーを起動する前に、単独のコンテナで実行する（下の「バックアップと復元」）。
-`invalidate-scheduled` は稼働中には実行しない。巡回が投稿している途中の予約まで失敗にするので、投稿は届いているのに一覧では「投稿されたか不明」の失敗と出て、利用者が確かめずに入れ直すと同じ投稿が 2 回になりうるため。
-また、失敗の理由の文言も、復元のときに向けたものになっている。
+Running `purge-credentials` on a live server makes every user log in again.
+Normally use it only when restoring from a backup, and then also run `invalidate-scheduled`.
+`invalidate-scheduled` fails every waiting and posting schedule, and keeps posted and failed schedules.
+In a restore, run both `purge-credentials` and `invalidate-scheduled` in a standalone container before starting the MCP server ("Backup and restore" below).
+Do not run `invalidate-scheduled` on a live server. It also fails a schedule the sweep is posting at that moment, so the post has arrived but the list shows a failure whose reason says "It is unknown whether this was posted", and if the user re-enters it without checking, the same post goes out twice.
+The wording of the failure reason is also written for the restore case.
 
-## 未認可の登録が上限に近いとき
+## When unauthorized registrations near the limit
 
-未認可の登録（DCR で登録されたが、まだ一度も利用者が認可を完了していないもの）は 7 日で消え、500 件を上限に古いものから消える。
-450 件を超えると `dcr_unauthorized_near_limit`（`count` は件数）が出る。
+Unauthorized registrations (registered through DCR but never completed by a user's authorization) are deleted after 7 days, and beyond the limit of 500 the oldest are deleted first.
+Above 450, `dcr_unauthorized_near_limit` (`count` is the number) is logged.
 
 ```bash
 docker compose exec mcp node src/admin.ts list-clients --unauthorized | wc -l
 docker compose exec mcp node src/admin.ts list-clients --unauthorized | cut -f2,3 | tail -20
 ```
 
-- 正規の利用で未認可の登録が数百件に積み上がることはない（claude.ai でも 1 回の接続で 2 件。[measurements.md の「クライアント互換性」](measurements.md#クライアント互換性)）。名前と時刻が揃った登録がまとまっていれば、第三者による積み上げとみなす
-- 上限に達すると最も古い未認可の登録から消えるので、正規の利用者の新しい接続は妨げられない。認可済みの登録は自動では消えない
-- リバースプロキシのアクセスログで `POST /mcp/oauth/register` の接続元を集計し、偏りがあれば記録しておく。登録エンドポイントには IP ごとのレート制限をかけておく（[deployment.md の「リバースプロキシ」](deployment.md#5-リバースプロキシ)）
+- Legitimate use never piles up several hundred unauthorized registrations (even claude.ai makes 2 per connection; [Client compatibility in measurements.md](measurements.md#client-compatibility)). If registrations with matching names and times appear in a cluster, treat it as a third party piling them up
+- At the limit the oldest unauthorized registration is deleted first, so new connections from legitimate users are not blocked. Authorized registrations are not deleted automatically
+- Aggregate the source of `POST /mcp/oauth/register` in the reverse proxy access log, and keep a record if it is skewed. Keep a per-IP rate limit on the registration endpoint ([Reverse proxy in deployment.md](deployment.md#5-reverse-proxy))
 
-## Mattermost を更新するとき
+## When updating Mattermost
 
-MCP サーバーは Mattermost 11.7.15 で実測した OAuth の挙動（[measurements.md](measurements.md)）と、公開文書にない `pending_post_id` の重複排除を前提にしている。
-更新する前に、開発機で新しい版に対して結合テストを通す。
+The MCP server relies on the OAuth behavior measured on Mattermost 11.7.15 ([measurements.md](measurements.md)) and on the undocumented deduplication by `pending_post_id`.
+Before updating, pass the integration tests against the new version on a development machine.
 
 ```bash
 pnpm dev:down
-MATTERMOST_IMAGE_TAG=<新しい版> pnpm dev:up
+MATTERMOST_IMAGE_TAG=<new version> pnpm dev:up
 pnpm test:int
 ```
 
-通ってから運用中の Mattermost を更新する。
-通らなければ更新を止め、食い違った挙動を調べる。
+Update the production Mattermost only after they pass.
+If they fail, stop the update and investigate the behavior that differs.
 
-## MCP サーバーを更新するとき
+## When updating the MCP server
 
-更新の前に、下の「バックアップと復元」のとおりに `/data` を写しておく。
-新しい版をビルドしてコンテナを作り直す（`docker compose up -d --build mcp`）。
+Before updating, copy `/data` as described in "Backup and restore" below.
+Build the new version and recreate the container (`docker compose up -d --build mcp`).
 
-DB のスキーマは、起動のたびに `CREATE TABLE IF NOT EXISTS` で作り、そのあと `src/db.ts` の `migrate` に書いた列を、既存の表に無ければ足す。
-`migrate` が扱うのは、列の追加だけである。新しい版で表が増えれば `CREATE TABLE` で足されるが、既存の列の変更や削除は既存の DB に反映されない。
-更新の前に `src/db.ts` の差分を見て、`migrate` で足す列のほかに既存の表が変わっていれば、移行の手順が示されていない限りその版へは更新しない。
-戻すときは、前の版のイメージと、更新前に写した `/data` を一緒に戻す。
+The DB schema is created with `CREATE TABLE IF NOT EXISTS` on every start, and then the columns listed in `migrate` in `src/db.ts` are added to existing tables if missing.
+`migrate` handles only the addition of columns. A new table in a new version is added by `CREATE TABLE`, but changes or deletions of existing columns are not applied to an existing DB.
+Before updating, look at the diff of `src/db.ts`, and if existing tables change beyond the columns `migrate` adds, do not update to that version unless a migration procedure is given.
 
-## バックアップと復元
+Before upgrading to a version where the language and the time zone are chosen with the environment variables `LOCALE` and `TIME_ZONE`: if your deployment runs in Japanese and JST, add `LOCALE=ja` and `TIME_ZONE=Asia/Tokyo` to its environment variables before upgrading.
+The defaults are `en` and `UTC`, so if you upgrade without adding them, tool output becomes English and times without an offset are read as UTC.
+After updating, confirm that `locale` and `time_zone` in the `listening` startup log are the values you added.
 
-MCP サーバーの状態は、`/data` の SQLite ファイル（`mcp.sqlite`、`-wal`、`-shm`）と `TOKEN_ENC_KEY` だけにある。
-バックアップは、コンテナを止めてディレクトリごと写すか、ディレクトリを含むディスクのスナップショットで取る。
-鍵は SQLite ファイルとは別に保管する。
+To roll back, restore the previous version's image together with the `/data` you copied before the update.
 
-古いバックアップをそのまま起動すると、使用済みのリフレッシュトークンや失効した grant が過去の状態に戻り、ローテーション済みの古いトークンが再び有効になりうる。
-また、その後に取り消したり変えたりした予約が待機中のまま戻り、投稿されてしまう。
-そこで、復元した SQLite ファイルは、MCP サーバーとして起動する前に、ネットワークなしのコンテナで認証情報を消し、予約を失敗にする。
+## Backup and restore
+
+The MCP server's state lives only in the SQLite files in `/data` (`mcp.sqlite`, `-wal`, `-shm`) and in `TOKEN_ENC_KEY`.
+Take a backup by stopping the container and copying the whole directory, or with a snapshot of the disk that contains the directory.
+Keep the key separately from the SQLite files.
+
+If you start an old backup as it is, used refresh tokens and revoked grants return to their past state, and old tokens that have already been rotated can become valid again.
+Schedules that were cancelled or changed afterwards also come back as waiting and get posted.
+So before starting a restored SQLite file as the MCP server, delete the credentials and fail the schedules in a container with no network.
 
 ```bash
 docker compose stop mcp
-# 復元したファイルを ./data に置き、所有者を UID 1000 にそろえ、ほかのユーザーから読めなくする
+# Put the restored files in ./data, set the owner to UID 1000, and make them unreadable to other users
 sudo chown -R 1000:1000 data && sudo chmod 700 data
-docker run --rm --network none -v "$PWD/data:/data" mcp-server-for-mattermost node src/admin.ts list-clients | wc -l
-docker run --rm --network none -v "$PWD/data:/data" mcp-server-for-mattermost node src/admin.ts purge-credentials
-docker run --rm --network none -v "$PWD/data:/data" mcp-server-for-mattermost node src/admin.ts invalidate-scheduled
-docker run --rm --network none -v "$PWD/data:/data" mcp-server-for-mattermost node src/admin.ts list-clients | wc -l
+docker run --rm --network none -e LOCALE=en -v "$PWD/data:/data" mcp-server-for-mattermost node src/admin.ts list-clients | wc -l
+docker run --rm --network none -e LOCALE=en -v "$PWD/data:/data" mcp-server-for-mattermost node src/admin.ts purge-credentials
+docker run --rm --network none -e LOCALE=en -v "$PWD/data:/data" mcp-server-for-mattermost node src/admin.ts invalidate-scheduled
+docker run --rm --network none -e LOCALE=en -v "$PWD/data:/data" mcp-server-for-mattermost node src/admin.ts list-clients | wc -l
 docker compose up -d mcp
 ```
 
-- `purge-credentials` は `purged <件数> rows` を出す。前後の `list-clients` の件数が変わらない（DCR の登録は消さない）ことを確かめる。登録が残るので、各クライアントは手元のリフレッシュトークンが `invalid_grant` で拒否された後、通常の再ログインで戻る
-- `invalidate-scheduled` は `invalidated <件数> scheduled posts` を出す。失敗にした予約は `list_scheduled_messages` に理由とともに出るので、件数が 0 でなければ利用者に予約を確かめて入れ直すよう知らせる。投稿を試みた予約と、予定時刻を過ぎた予約は、理由が「投稿されたか不明」になる（バックアップの後に投稿されていたかもしれないため）
-- 管理コマンドは `docker compose exec` ではなく、MCP サーバーを起動しない単独のコンテナで、ネットワークなしで動かす。イメージ名は [deployment.md](deployment.md#4-起動) の `compose.yml` の例で付けたもの
-- 鍵（`TOKEN_ENC_KEY`）は作り直さない。失敗にした予約の本文は同じ鍵で暗号化されたまま更新から 7 日残り、作り直すと `list_scheduled_messages` で本文が読めなくなる
-- バックアップより後に登録したクライアントは戻らないので、その利用者にはコネクタを追加し直してもらう
-- 復元したディスクごと起動する方式（VM のスナップショットからの起動など）では、MCP サーバーのコンテナが自動起動する前に上の処理を済ませる。巻き戻った状態の MCP サーバーに、どこからも届かないようにするため
+Pass the same `LOCALE` as the server in `-e LOCALE=` of these commands (change `en` if the server runs with another value). Only `invalidate-scheduled` writes text (the reason stored with each failed schedule); with another value it would be stored in the wrong language.
 
-SQLite ファイルを失い、バックアップも無いときは、空の `/data` で起動し直す。
-登録、ログイン、予約はすべて失われ、利用者はコネクタを追加し直す。
-予約していた利用者には、予約が失われたことを知らせる。
+- `purge-credentials` prints `purged <count> rows`. Confirm the count of `list-clients` before and after does not change (DCR registrations are not deleted). Registrations remain, so each client returns through a normal re-login after its local refresh token is rejected with `invalid_grant`
+- `invalidate-scheduled` prints `invalidated <count> scheduled posts`. The schedules it failed appear in `list_scheduled_messages` with a reason, so if the count is not 0, tell users to check their schedules and enter them again. A schedule that was attempted and a schedule past its scheduled time get a reason saying "It is unknown whether this was posted" (it may have been posted after the backup)
+- Run the admin commands not with `docker compose exec` but in a standalone container that does not start the MCP server, with no network. The image name is the one set in the `compose.yml` example in [deployment.md](deployment.md#4-start)
+- Do not regenerate the key (`TOKEN_ENC_KEY`). The bodies of the failed schedules stay encrypted with the same key for 7 days after the update, and regenerating it makes the bodies unreadable in `list_scheduled_messages`
+- Clients registered after the backup do not come back, so ask those users to add the connector again
+- When you start from the restored disk as a whole (for example booting from a VM snapshot), finish the steps above before the MCP server container starts automatically. This keeps the rolled-back MCP server unreachable from anywhere
 
-## 障害対応
+If you lose the SQLite files and have no backup, restart with an empty `/data`.
+All registrations, logins and schedules are lost, and users add the connector again.
+Tell the users who had schedules that the schedules were lost.
 
-### `mcp` が再起動を繰り返す
+## Incident response
 
-`docker compose ps mcp` が `Restarting` のまま、または `healthy` にならない。
-MCP サーバーが止まっても Mattermost は動き続け、MCP のパスだけが 502 になる。
+### `mcp` keeps restarting
+
+`docker compose ps mcp` stays at `Restarting` or never becomes `healthy`.
+Even if the MCP server is down, Mattermost keeps running and only the MCP paths return 502.
 
 ```bash
 docker compose ps mcp
 docker compose logs --tail 50 mcp
 ```
 
-| ログ | 原因 | 対処 |
+| Log | Cause | Action |
 |---|---|---|
-| `PUBLIC_URL is required` など `... is required` | 必須の環境変数が欠けている | [deployment.md の「環境変数」](deployment.md#3-環境変数) |
-| `PUBLIC_URL must not end with a slash` | `PUBLIC_URL` の末尾のスラッシュ | 外す |
-| `TOKEN_ENC_KEY must be 32 bytes in base64` | 鍵の形式の誤り | 鍵を作り直してよいのは、DB に Mattermost のトークンも待機中の予約も無いときだけ。あるなら元の鍵を探す |
-| `... must be a positive integer` | `PORT` か `ACCESS_TOKEN_TTL_SEC` の値 | 正の整数にする |
-| `unable to open database file` | `/data` が無い、または UID 1000 が書けない | `ls -ln data`、`chown 1000:1000 data` |
+| `... is required`, such as `PUBLIC_URL is required` | A required environment variable is missing | [Environment variables in deployment.md](deployment.md#3-environment-variables) |
+| `PUBLIC_URL must not end with a slash` | A trailing slash on `PUBLIC_URL` | Remove it |
+| `TOKEN_ENC_KEY must be 32 bytes in base64` | The key format is wrong | Regenerate the key only when the DB holds neither Mattermost tokens nor waiting schedules. If it does, find the original key |
+| `... must be a positive integer` | The value of `PORT` or `ACCESS_TOKEN_TTL_SEC` | Make it a positive integer |
+| `unable to open database file` | `/data` does not exist, or UID 1000 cannot write to it | `ls -ln data`, `chown 1000:1000 data` |
 
-直したら `docker compose up -d mcp` で作り直す（環境変数の変更は作り直さないと反映されない）。
+After fixing it, recreate with `docker compose up -d mcp` (changes to environment variables take effect only when recreated).
 
-### ツールが「Mattermost に一時的に接続できません」を返す
+### A tool returns "Cannot connect to Mattermost for the moment."
 
-MCP サーバーから `MM_URL` に届いていない。
+The MCP server cannot reach `MM_URL`.
 
 ```bash
 docker compose exec mcp node -e "fetch(process.env.MM_URL+'/api/v4/system/ping').then(r=>console.log(r.status),e=>{console.error(e.cause?.code??e.message);process.exit(1)})"
 ```
 
-`MM_URL` を省略して `PUBLIC_URL` と同じにしているときは、`PUBLIC_URL` に置き換えて打つ。
-200 以外なら、名前解決、証明書、リバースプロキシのアクセス制限（MCP サーバーの接続元アドレスが拒否されていないか）を確かめる。
-リバースプロキシで一時的にアクセスを作業者だけに絞っている間は、MCP サーバーから Mattermost への呼び出しも同じ制限を受けるので、MCP も使えなくなる。
+If you omitted `MM_URL` and it equals `PUBLIC_URL`, substitute `PUBLIC_URL` when typing it.
+If the result is anything but 200, check name resolution, the certificate, and the reverse proxy access restrictions (whether the MCP server's source address is rejected).
+While the reverse proxy temporarily restricts access to the operator only, calls from the MCP server to Mattermost are under the same restriction, so the MCP is unusable too.

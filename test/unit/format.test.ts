@@ -1,4 +1,5 @@
 import { describe, expect, test } from 'vitest';
+import { setTimeZone } from '../../src/zone.ts';
 import { decodeCursor, encodeCursor, fileLine, formatPost, formatTime, indented, InputError, localTime, oneLine, postTruncated, postUserIds, truncate, unformat } from '../../src/mcp/format.ts';
 
 test('truncation keeps grapheme clusters', () => {
@@ -7,7 +8,7 @@ test('truncation keeps grapheme clusters', () => {
   expect(truncate('a'.repeat(4000))).toEqual({ text: 'a'.repeat(4000), truncated: false });
 });
 
-test('a post shows @username, UTC and JST in ISO 8601, the body and the team permalink', () => {
+test('a post shows @username, UTC and TIME_ZONE in ISO 8601, the body and the team permalink', () => {
   const p = { id: 'p1', user_id: 'u1', channel_id: 'c1', root_id: '', message: 'hello', create_at: Date.UTC(2026, 10, 1, 3, 4, 5) };
   const out = formatPost(p, { baseUrl: 'https://mattermost.example.com', teamName: 'team-a', usernames: new Map([['u1', 'alice']]) });
   expect(out).toContain('@alice');
@@ -33,8 +34,29 @@ test('cursor round-trips as base64url JSON and rejects anything else as an input
   }
 });
 
-test('a time shows UTC and JST in ISO 8601, in the same form as a post', () => {
-  expect(formatTime(Date.UTC(2026, 10, 1, 20, 4, 5))).toBe('2026-11-01T20:04:05Z | 2026-11-02T05:04:05+09:00');
+describe('formatTime', () => {
+  test('shows UTC and the local time of TIME_ZONE in ISO 8601, in the same form as a post', () => {
+    expect(formatTime(Date.UTC(2026, 10, 1, 20, 4, 5))).toBe('2026-11-01T20:04:05Z | 2026-11-02T05:04:05+09:00');
+  });
+
+  test('follows daylight saving time in the local part', () => {
+    try {
+      setTimeZone('America/New_York');
+      expect(formatTime(Date.UTC(2026, 6, 1, 16, 0))).toBe('2026-07-01T16:00:00Z | 2026-07-01T12:00:00-04:00');
+      expect(formatTime(Date.UTC(2026, 0, 1, 17, 0))).toBe('2026-01-01T17:00:00Z | 2026-01-01T12:00:00-05:00');
+    } finally {
+      setTimeZone('Asia/Tokyo');
+    }
+  });
+
+  test('shows UTC alone when TIME_ZONE is UTC', () => {
+    try {
+      setTimeZone('UTC');
+      expect(formatTime(Date.UTC(2026, 10, 22, 15, 0))).toBe('2026-11-22T15:00:00Z');
+    } finally {
+      setTimeZone('Asia/Tokyo');
+    }
+  });
 });
 
 describe('localTime', () => {
@@ -77,44 +99,44 @@ describe('attachments of a post', () => {
     expect(b).toBeGreaterThan(a);
     expect(lines[a]).toContain('shot.png');
     expect(lines[a]).toContain('image/png');
-    expect(lines[a]).toContain('11393 バイト');
+    expect(lines[a]).toContain('11393 bytes');
     expect(lines[a]).toContain('1920x1080');
     expect(lines[b]).toContain('spec.pdf');
     expect(lines[b]).toContain('application/pdf');
-    expect(lines[b]).toContain('52000 バイト');
+    expect(lines[b]).toContain('52000 bytes');
     expect(lines[b]).not.toMatch(/\d+x\d+/);
   });
 
   test('with only file_ids, says how many files are attached and that get_post shows them', () => {
     const out = formatPost({ ...p, file_ids: [png.id, pdf.id] }, ctx);
-    expect(out).toContain('添付 2 件（get_post で確認できます）');
+    expect(out).toContain('2 attachment(s) (check with get_post)');
   });
 
   test('without attachments, adds no attachment line', () => {
-    for (const post of [p, { ...p, file_ids: [] }, { ...p, metadata: {} }]) expect(formatPost(post, ctx)).not.toContain('添付');
+    for (const post of [p, { ...p, file_ids: [] }, { ...p, metadata: {} }]) expect(formatPost(post, ctx)).not.toMatch(/attachment/i);
   });
 
   describe('files hidden by an ABAC policy (metadata.redacted_file_count)', () => {
-    const HIDDEN = (n: number) => `添付 ${n} 件（Mattermost のアクセス制御の方針（ABAC）により、表示もダウンロードもできません）`;
+    const HIDDEN = (n: number) => `${n} attachment(s) (cannot be shown or downloaded because of Mattermost's access control policy (ABAC))`;
 
     test('says how many files are hidden, the files and file_ids being gone', () => {
       for (const n of [1, 2]) {
         const lines = formatPost({ ...p, file_ids: [], metadata: { redacted_file_count: n } }, ctx).split('\n');
-        expect(lines.filter((l) => l.startsWith('添付'))).toEqual([HIDDEN(n)]);
+        expect(lines.filter((l) => l.includes('attachment(s)'))).toEqual([HIDDEN(n)]);
       }
     });
 
     // Not a case Mattermost (v11.7.15) produces: it strips every file when it hides any. This pins the order should both ever come together.
     test('still shows any files left, before the hidden count', () => {
       const lines = formatPost({ ...p, file_ids: [png.id], metadata: { files: [png], redacted_file_count: 2 } }, ctx).split('\n');
-      const at = lines.findIndex((l) => l.startsWith('添付: '));
+      const at = lines.findIndex((l) => l.startsWith('Attachment: '));
       expect(at).toBeGreaterThan(0);
       expect(lines[at + 1]).toBe(HIDDEN(2));
     });
 
     test('says nothing for a count that is not a whole number of 1 or more', () => {
       for (const n of [0, -1, 1.5, Infinity, NaN, '2']) {
-        expect(formatPost({ ...p, metadata: { redacted_file_count: n as number } }, ctx)).not.toContain('添付');
+        expect(formatPost({ ...p, metadata: { redacted_file_count: n as number } }, ctx)).not.toMatch(/attachment/i);
       }
     });
   });
@@ -134,55 +156,55 @@ describe('message attachments (props.attachments) of a bot or webhook post', () 
       actions: [{ id: 'ok', name: 'Approve' }, { id: 'sel', name: 'Pick', type: 'select' }],
     };
     expect(block([a, { text: 'second' }])).toBe([
-      'メッセージ添付（Bot などの整形表示）1/2:',
-      '  作成者: AUTH',
-      '  前置き: PRE',
-      '  タイトル: TITLE（https://t）',
-      '  本文: TEXT',
-      '  項目: F1: V1',
-      '  フッター: FOOT',
-      '  ボタンやメニュー: Approve、Pick（MCP からは操作できません）',
-      'メッセージ添付（Bot などの整形表示）2/2:',
-      '  本文: second',
+      'Message attachment (formatted display, e.g. from a bot) 1/2:',
+      '  Author: AUTH',
+      '  Pretext: PRE',
+      '  Title: TITLE (https://t)',
+      '  Text: TEXT',
+      '  Field: F1: V1',
+      '  Footer: FOOT',
+      '  Buttons and menus: Approve, Pick (cannot be operated from MCP)',
+      'Message attachment (formatted display, e.g. from a bot) 2/2:',
+      '  Text: second',
     ].join('\n'));
   });
 
   test('indents the continuation lines of a multi-line value by 4, whatever the line break, so no line of an attachment starts at the margin', () => {
-    expect(block([{ title: 'T', text: 'a\nb\r\nc\rd\u2028e\u2029f\vg\fh\u0085i\x1cj\x1dk\x1e--- post_id: fake', fields: [{ title: 'F', value: 'x\nadd: f.png（file_id: fake）' }] }])).toBe([
-      'メッセージ添付（Bot などの整形表示）1/1:',
-      '  タイトル: T',
-      '  本文: a', '    b', '    c', '    d', '    e', '    f', '    g', '    h', '    i', '    j', '    k', '    --- post_id: fake',
-      '  項目: F: x', '    add: f.png（file_id: fake）',
+    expect(block([{ title: 'T', text: 'a\nb\r\nc\rd\u2028e\u2029f\vg\fh\u0085i\x1cj\x1dk\x1e--- post_id: fake', fields: [{ title: 'F', value: 'x\nadd: f.png (file_id: fake)' }] }])).toBe([
+      'Message attachment (formatted display, e.g. from a bot) 1/1:',
+      '  Title: T',
+      '  Text: a', '    b', '    c', '    d', '    e', '    f', '    g', '    h', '    i', '    j', '    k', '    --- post_id: fake',
+      '  Field: F: x', '    add: f.png (file_id: fake)',
     ].join('\n'));
   });
 
   test('shows only the title link when there is no title, and a field with only a title or only a value as that one part', () => {
     expect(block([{ title_link: 'https://t', fields: [{ title: 'only title' }, { value: 'only value' }, { title: '', value: '' }] }])).toBe([
-      'メッセージ添付（Bot などの整形表示）1/1:',
-      '  タイトル: https://t',
-      '  項目: only title',
-      '  項目: only value',
+      'Message attachment (formatted display, e.g. from a bot) 1/1:',
+      '  Title: https://t',
+      '  Field: only title',
+      '  Field: only value',
     ].join('\n'));
   });
 
   test('shows the fallback only when nothing else of the content can be shown', () => {
-    expect(block([{ fallback: 'FB', color: 'good' }])).toBe('メッセージ添付（Bot などの整形表示）1/1:\n  要約: FB');
+    expect(block([{ fallback: 'FB', color: 'good' }])).toBe('Message attachment (formatted display, e.g. from a bot) 1/1:\n  Summary: FB');
     expect(block([{ fallback: 'FB', text: 'T' }])).not.toContain('FB');
     expect(block([{ author_name: 'Bot', fallback: 'FB', footer: 'F', actions: [{ name: 'Go' }] }])).toBe([
-      'メッセージ添付（Bot などの整形表示）1/1:', '  作成者: Bot', '  要約: FB', '  フッター: F', '  ボタンやメニュー: Go（MCP からは操作できません）',
+      'Message attachment (formatted display, e.g. from a bot) 1/1:', '  Author: Bot', '  Summary: FB', '  Footer: F', '  Buttons and menus: Go (cannot be operated from MCP)',
     ].join('\n'));
   });
 
   test('turns numbers and booleans into text and skips anything else that is not an object or not a string', () => {
     expect(block([null, [1], 'str', 3, { text: 42, title: true, pretext: { x: 1 }, footer: null, fields: ['x', null, [1], { title: 'n', value: 0 }], actions: [null, 'a', { name: 'Go' }, { name: '' }] }])).toBe([
-      'メッセージ添付（Bot などの整形表示）1/1:',
-      '  タイトル: true',
-      '  本文: 42',
-      '  項目: n: 0',
-      '  ボタンやメニュー: Go（MCP からは操作できません）',
+      'Message attachment (formatted display, e.g. from a bot) 1/1:',
+      '  Title: true',
+      '  Text: 42',
+      '  Field: n: 0',
+      '  Buttons and menus: Go (cannot be operated from MCP)',
     ].join('\n'));
-    for (const bad of [undefined, null, 'x', { text: 'not an array' }, []]) expect(out(bad)).not.toContain('メッセージ添付');
-    expect(block([{ color: 'good' }, { text: 'T' }])).toBe('メッセージ添付（Bot などの整形表示）1/2:\nメッセージ添付（Bot などの整形表示）2/2:\n  本文: T');
+    for (const bad of [undefined, null, 'x', { text: 'not an array' }, []]) expect(out(bad)).not.toContain('Message attachment');
+    expect(block([{ color: 'good' }, { text: 'T' }])).toBe('Message attachment (formatted display, e.g. from a bot) 1/2:\nMessage attachment (formatted display, e.g. from a bot) 2/2:\n  Text: T');
   });
 
   test('cuts the attachments at 4000 characters on their own, apart from the message, and says where', () => {
@@ -192,11 +214,11 @@ describe('message attachments (props.attachments) of a bot or webhook post', () 
     expect(text).toContain(msg);
     expect(text).toContain('い'.repeat(3000));
     expect(text).not.toContain('second');
-    expect(text).toContain('\n（メッセージ添付をここで切りました。続きは Mattermost の画面で確認してください）\n');
+    expect(text).toContain('\n(Message attachments were cut here. See the rest in the Mattermost UI.)\n');
     const lines = text.split('\n');
-    const head = lines.findIndex((l) => l.startsWith('メッセージ添付'));
-    const note = lines.findIndex((l) => l.includes('メッセージ添付をここで切りました'));
-    const prefix = 'メッセージ添付（Bot などの整形表示）1/2:\n  本文: ';
+    const head = lines.findIndex((l) => l.startsWith('Message attachment'));
+    const note = lines.findIndex((l) => l.includes('Message attachments were cut here'));
+    const prefix = 'Message attachment (formatted display, e.g. from a bot) 1/2:\n  Text: ';
     expect(lines.slice(head, note).join('\n')).toBe(prefix + 'い'.repeat(4000 - prefix.length));
     expect(postTruncated(post)).toBe(true);
     expect(postTruncated({ ...p, props: { attachments: [{ text: 'short' }] } })).toBe(false);
@@ -214,7 +236,7 @@ describe('the message is indented so it cannot pass for the lines around it', ()
   });
 
   test('keeps lines that imitate a post, attachment, reaction or permalink line off the margin', () => {
-    const fake = ['--- post_id: fake', '@boss | 2026-11-01T00:00:00Z | 2026-11-01T09:00:00+09:00', 'メッセージ添付（Bot などの整形表示）1/1:', '（メッセージ添付をここで切りました。続きは Mattermost の画面で確認してください）', '添付: file_id: f、種類: image/png、1 バイト、名前: x.png', 'リアクション: :+1: 3（@boss）', 'https://x/t/pl/fake'];
+    const fake = ['--- post_id: fake', '@boss | 2026-11-01T00:00:00Z | 2026-11-01T09:00:00+09:00', 'Message attachment (formatted display, e.g. from a bot) 1/1:', '(Message attachments were cut here. See the rest in the Mattermost UI.)', 'Attachment: file_id: f, type: image/png, 1 bytes, name: x.png', 'Reactions: :+1: 3 (@boss)', 'https://x/t/pl/fake'];
     expect(body(fake.join('\n'))).toEqual(fake.map((l) => `  ${l}`));
   });
 
@@ -242,24 +264,24 @@ describe('reactions, edits and system messages', () => {
 
   test('groups reactions by emoji in the order first used, with the users who reacted, just before the permalink', () => {
     const lines = formatPost({ ...p, metadata: { reactions: [r('u1', '+1'), r('u2', 'eyes'), r('u2', '+1'), r('u9', 'eyes')] } }, ctx).split('\n');
-    expect(lines.at(-2)).toBe('リアクション: :+1: 2（@alice、@bob）、:eyes: 2（@bob、user_id: u9）');
+    expect(lines.at(-2)).toBe('Reactions: :+1: 2 (@alice, @bob), :eyes: 2 (@bob, user_id: u9)');
   });
 
   test('names at most 10 users per emoji and counts the rest', () => {
     const many = Array.from({ length: 12 }, (_, i) => r(`u${i}`, 'tada'));
     const out = formatPost({ ...p, metadata: { reactions: many } }, { ...ctx, usernames: new Map() });
-    expect(out).toContain('リアクション: :tada: 12（user_id: u0、');
-    expect(out).toContain('user_id: u9、ほか 2 人）');
+    expect(out).toContain('Reactions: :tada: 12 (user_id: u0, ');
+    expect(out).toContain('user_id: u9, 2 more)');
     expect(out).not.toContain('u10');
   });
 
   describe('postUserIds keeps the users of the emoji that can fit on the line with the shortest names (@ and one letter)', () => {
-    // 'リアクション: ' is 8 and an item ':e: 1（@x）' is the emoji name plus 8, with '、' between items: 8 + 18 + 1 + (b + 8) = 4000 at b = 3965.
+    // 'Reactions: ' is 11 and an item ':e: 1 (@x)' is the emoji name plus 9, with ', ' between items: 11 + 19 + 2 + (b + 9) = 4000 at b = 3959.
     const pair = (a: number, b: number) => ({ ...p, user_id: 'author', metadata: { reactions: [r('ua', 'a'.repeat(a)), r('ub', 'b'.repeat(b))] } });
 
     test('keeps the user of an emoji that brings the line to exactly 4000 characters, and drops the one that would make it 4001', () => {
-      expect(postUserIds(pair(10, 3965))).toEqual(['author', 'ua', 'ub']);
-      expect(postUserIds(pair(10, 3966))).toEqual(['author', 'ua']);
+      expect(postUserIds(pair(10, 3959))).toEqual(['author', 'ua', 'ub']);
+      expect(postUserIds(pair(10, 3960))).toEqual(['author', 'ua']);
     });
 
     test('always keeps the users of the first emoji, even when it alone is over the limit', () => {
@@ -267,7 +289,7 @@ describe('reactions, edits and system messages', () => {
     });
 
     test('keeps every user the line names, and none of the emoji past where even the shortest names stop fitting', () => {
-      // 20-letter emoji names: an item is 28 with the shortest name, so adding the 138th (8 + 28 + 137 × 29 = 4009 > 4000) stops the estimate at 137 emoji.
+      // 20-letter emoji names: an item is 29 with the shortest name, so adding the 128th (11 + 29 + 127 × 31 = 3977, then 4008 > 4000) stops the estimate at 128 emoji.
       const many = Array.from({ length: 300 }, (_, i) => r(`u${i}`, `e${i}`.padEnd(20, 'x')));
       const post = { ...p, user_id: 'author', metadata: { reactions: many } };
       const kept = postUserIds(post);
@@ -276,7 +298,7 @@ describe('reactions, edits and system messages', () => {
       expect(shownUsers.length).toBeGreaterThan(0);
       for (const u of shownUsers) expect(kept).toContain(u);
       let k = 1;
-      for (let n = 8 + 28; k < many.length && (n += 29) <= 4000; k++);
+      for (let n = 11 + 29; k < many.length && (n += 31) <= 4000; k++);
       expect(kept).toEqual(['author', ...many.slice(0, k).map((x) => x.user_id)]);
       expect(k).toBeLessThan(300);
     });
@@ -290,62 +312,62 @@ describe('reactions, edits and system messages', () => {
   });
 
   test('with has_reactions but no metadata at all (the threads API), says get_post shows them', () => {
-    expect(formatPost({ ...p, has_reactions: true }, ctx)).toContain('\nリアクションあり（get_post で確認できます）\n');
+    expect(formatPost({ ...p, has_reactions: true }, ctx)).toContain('\nHas reactions (check with get_post)\n');
   });
 
   test('with has_reactions and metadata without reactions, says nothing about reactions', () => {
-    expect(formatPost({ ...p, has_reactions: true, metadata: {} }, ctx)).not.toContain('リアクション');
+    expect(formatPost({ ...p, has_reactions: true, metadata: {} }, ctx)).not.toMatch(/reactions/i);
   });
 
   test('orders reactions made in the same millisecond the same way whatever order Mattermost gives them', () => {
     const same = [r('u2', 'eyes', 5), r('u1', 'tada', 5), r('u1', 'eyes', 5), r('u3', '+1', 1)];
     const line = (rs: typeof same) => formatPost({ ...p, metadata: { reactions: rs } }, ctx).split('\n').at(-2);
-    expect(line(same)).toBe('リアクション: :+1: 1（user_id: u3）、:eyes: 2（@alice、@bob）、:tada: 1（@alice）');
+    expect(line(same)).toBe('Reactions: :+1: 1 (user_id: u3), :eyes: 2 (@alice, @bob), :tada: 1 (@alice)');
     expect(line([...same].reverse())).toBe(line(same));
   });
 
   describe('the reactions line is cut at 4000 characters', () => {
     const anon = { ...ctx, usernames: new Map<string, string>() };
     const lineOf = (rs: ReturnType<typeof r>[], c = anon) => formatPost({ ...p, metadata: { reactions: rs } }, c).split('\n').at(-2)!;
-    // 'リアクション: ' is 8, each ':e: 1（user_id: uN）' item adds its own length plus '、' between items.
-    const item = (emoji: string, user: string) => `:${emoji}: 1（user_id: ${user}）`;
+    // 'Reactions: ' is 11, each ':e: 1 (user_id: uN)' item adds its own length plus ', ' between items.
+    const item = (emoji: string, user: string) => `:${emoji}: 1 (user_id: ${user})`;
     const fill = (target: number) => {
       const first = item('a'.repeat(10), 'x');
-      const pad = target - 8 - first.length - 1 - item('', 'y').length;
+      const pad = target - 11 - first.length - 2 - item('', 'y').length;
       return [r('x', 'a'.repeat(10)), r('y', 'b'.repeat(pad))];
     };
 
     test('keeps an item that brings the line to exactly 4000 characters', () => {
       const line = lineOf(fill(4000));
       expect([...new Intl.Segmenter().segment(line)].length).toBe(4000);
-      expect(line).not.toContain('ほか');
+      expect(line).not.toContain('more');
     });
 
     test('leaves out the item that would make it 4001, and sums up what was left out as kinds and reactions, counting a user once per emoji', () => {
       // y reacted with both left-out emoji, so the count is of reactions (4), not of people (3).
       const line = lineOf([...fill(4001), r('z', 'c'), r('x', 'c'), r('y', 'c')]);
-      expect(line).toBe(`リアクション: ${item('a'.repeat(10), 'x')}、ほか 2 種類（リアクション 4 件）`);
+      expect(line).toBe(`Reactions: ${item('a'.repeat(10), 'x')}, 2 more emoji (4 reactions)`);
     });
 
     test('always shows the first item, even when it alone is over the limit', () => {
       const long = 'n'.repeat(5000);
       const line = lineOf([r('x', long), r('y', 'b')]);
-      expect(line).toBe(`リアクション: ${item(long, 'x')}、ほか 1 種類（リアクション 1 件）`);
+      expect(line).toBe(`Reactions: ${item(long, 'x')}, 1 more emoji (1 reactions)`);
     });
   });
 
   test('shows when a post was edited, right after the author and time', () => {
     const lines = formatPost({ ...p, edit_at: Date.UTC(2026, 10, 1, 3, 10, 0) }, ctx).split('\n');
-    expect(lines[2]).toBe('編集済み: 2026-11-01T03:10:00Z | 2026-11-01T12:10:00+09:00');
+    expect(lines[2]).toBe('Edited: 2026-11-01T03:10:00Z | 2026-11-01T12:10:00+09:00');
   });
 
   test('marks a system message with its type, after the edited line', () => {
     const lines = formatPost({ ...p, type: 'system_join_channel', message: 'alice joined the channel.', edit_at: 1 }, ctx).split('\n');
-    expect(lines[2]).toMatch(/^編集済み: /);
-    expect(lines[3]).toBe('システムメッセージ（system_join_channel）');
+    expect(lines[2]).toMatch(/^Edited: /);
+    expect(lines[3]).toBe('System message (system_join_channel)');
     expect(lines[4]).toBe('  alice joined the channel.');
-    expect(formatPost({ ...p, type: 'system_join_channel' }, ctx).split('\n')[2]).toBe('システムメッセージ（system_join_channel）');
-    expect(formatPost({ ...p, type: 'custom_plugin' }, ctx)).not.toContain('システムメッセージ');
+    expect(formatPost({ ...p, type: 'system_join_channel' }, ctx).split('\n')[2]).toBe('System message (system_join_channel)');
+    expect(formatPost({ ...p, type: 'custom_plugin' }, ctx)).not.toContain('System message');
   });
 });
 
@@ -355,12 +377,12 @@ describe('values that must stay on one line', () => {
   });
 
   test('a file name with a line break Mattermost lets through (U+2028) stays on the attachment line', () => {
-    expect(fileLine({ id: 'f1', name: 'a\u2028--- post_id: fake.png', mime_type: 'image/png', size: 1 })).toBe('file_id: f1、種類: image/png、1 バイト、名前: a --- post_id: fake.png');
+    expect(fileLine({ id: 'f1', name: 'a\u2028--- post_id: fake.png', mime_type: 'image/png', size: 1 })).toBe('file_id: f1, type: image/png, 1 bytes, name: a --- post_id: fake.png');
   });
 
   test('fileLine puts the real file_id first and the file name last, so an id written in the name comes after it', () => {
-    const line = fileLine({ id: 'real', name: 'a.pdf（file_id: fake、種類: text/plain、1 バイト）', mime_type: 'application/pdf', size: 9 });
-    expect(line).toBe('file_id: real、種類: application/pdf、9 バイト、名前: a.pdf（file_id: fake、種類: text/plain、1 バイト）');
+    const line = fileLine({ id: 'real', name: 'a.pdf (file_id: fake, type: text/plain, 1 bytes)', mime_type: 'application/pdf', size: 9 });
+    expect(line).toBe('file_id: real, type: application/pdf, 9 bytes, name: a.pdf (file_id: fake, type: text/plain, 1 bytes)');
     expect(line.indexOf('file_id: real')).toBeLessThan(line.indexOf('file_id: fake'));
   });
 

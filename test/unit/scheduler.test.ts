@@ -17,9 +17,9 @@ const UID = 'u1';
 const UID2 = 'u2';
 const CH = 'c'.repeat(26);
 const ROOT = 'r'.repeat(26);
-const REAUTH = 'Mattermost への再ログインが必要です。コネクタを再接続してください。';
-const UNKNOWN = '投稿されたか不明です。Mattermost の画面で確かめてください。';
-const LATE = '予定時刻を 1 時間過ぎたため投稿していません。';
+const REAUTH = 'You need to log in to Mattermost again. Reconnect the connector.';
+const UNKNOWN = 'It is unknown whether this was posted. Check in Mattermost.';
+const LATE = 'Not posted because the scheduled time was more than 1 hour ago.';
 
 const refused = () => { throw Object.assign(new TypeError('fetch failed'), { cause: { code: 'ECONNREFUSED' } }); };
 const timedOut = () => { throw new TypeError('fetch failed'); };
@@ -127,10 +127,10 @@ test('schedules that keep failing for a while go behind ones not yet tried, so o
 
 describe('a refusal fails the schedule without retrying, with a reason for the user', () => {
   const cases: [string, () => Response, string][] = [
-    ['archived channel', () => mmError(400, 'api.post.create_post.can_not_post_to_deleted.error'), 'チャンネルがアーカイブされたため投稿していません。'],
-    ['no permission (left the channel)', () => mmError(403, 'api.context.permissions.app_error'), 'このチャンネルに投稿する権限がありません（チャンネルから抜けた、権限が変わった、など）。'],
-    ['deleted root', () => mmError(400, 'api.post.create_post.root_id.app_error'), '返信先のスレッドの親投稿が削除されたため投稿していません。'],
-    ['other 4xx keeps Mattermost\'s message', () => mmError(400, 'some.other.error', 'Invalid foo.'), 'Mattermost がエラーを返しました（400）: Invalid foo.'],
+    ['archived channel', () => mmError(400, 'api.post.create_post.can_not_post_to_deleted.error'), 'Not posted because the channel was archived.'],
+    ['no permission (left the channel)', () => mmError(403, 'api.context.permissions.app_error'), 'You do not have permission to post to this channel (for example, you left the channel or your permissions changed).'],
+    ['deleted root', () => mmError(400, 'api.post.create_post.root_id.app_error'), 'Not posted because the root post of the thread being replied to was deleted.'],
+    ['other 4xx keeps Mattermost\'s message', () => mmError(400, 'some.other.error', 'Invalid foo.'), 'Mattermost returned an error (400): Invalid foo.'],
   ];
   for (const [name, answer, reason] of cases) {
     test(name, async () => {
@@ -167,7 +167,7 @@ describe('a refusal fails the schedule without retrying, with a reason for the u
     const id = s.make();
     await s.run();
     expect(s.row(id)).toMatchObject({ status: 'failed', first_attempt_at: null });
-    expect(s.row(id).error).toContain('再ログイン');
+    expect(s.row(id).error).toContain('log in to Mattermost again');
   });
 });
 
@@ -238,7 +238,7 @@ describe('a retry after an unknown outcome looks for the earlier post first', ()
     const id = attempted(s, { fileIds: [F1] });
     await s.run();
     expect(s.row(id)).toMatchObject({ status: 'failed' });
-    expect(s.row(id).error).toContain('再ログイン');
+    expect(s.row(id).error).toContain('log in to Mattermost again');
     expect(s.row(id).first_attempt_at).not.toBeNull();
     expect(s.store.heldScheduledFiles(UID, [F1])).toEqual([{ fileId: F1, scheduledId: id }]);
   });
@@ -517,7 +517,7 @@ test('a schedule whose message cannot be decrypted (TOKEN_ENC_KEY was made again
   s.set(id, 'message_sealed = ?', 'not-a-sealed-value');
   await s.run();
   expect(hits).toEqual([]);
-  expect(s.row(id)).toMatchObject({ status: 'failed', error: '本文を復号できないため投稿していません。予約を入れ直してください。', first_attempt_at: null });
+  expect(s.row(id)).toMatchObject({ status: 'failed', error: 'Not posted because the body cannot be decrypted. Schedule the message again.', first_attempt_at: null });
 });
 
 describe('an unexpected error fails only that schedule', () => {
@@ -531,7 +531,7 @@ describe('an unexpected error fails only that schedule', () => {
     await s.run();
     expect(s.row(sentBroken)).toMatchObject({ status: 'failed', error: UNKNOWN });
     expect(s.row(sentBroken).first_attempt_at).not.toBeNull();
-    expect(s.row(sealed)).toMatchObject({ status: 'failed', error: '本文を復号できないため投稿していません。予約を入れ直してください。' });
+    expect(s.row(sealed)).toMatchObject({ status: 'failed', error: 'Not posted because the body cannot be decrypted. Schedule the message again.' });
     expect(s.row(fine)).toMatchObject({ status: 'posted' });
   });
 });
@@ -586,7 +586,7 @@ describe('a schedule with files', () => {
     routes['POST /posts'] = () => ({ id: 'p'.repeat(26), file_ids: [F2] });
     const id = s.make({ fileIds: [F1, F2] });
     await s.run();
-    expect(s.row(id)).toMatchObject({ status: 'posted', error: `添付した 2 件のうち 1 件（${F1}）を Mattermost が外したため、投稿に付いていません。` });
+    expect(s.row(id)).toMatchObject({ status: 'posted', error: `Of the 2 attached files, Mattermost removed 1 (${F1}), so they are not on the post.` });
     expect(s.store.listScheduled(UID, { limit: 10 }).find((r) => r.id === id)?.fileIds).toEqual([F2]);
     expect(marks()).toEqual([null, 'p'.repeat(26)]);
     expect(s.store.heldScheduledFiles(UID, [F1, F2])).toEqual([{ fileId: F2, scheduledId: id }]);
@@ -610,7 +610,7 @@ describe('a schedule with files', () => {
     routes['POST /posts'] = () => ({ id: 'p'.repeat(26), file_ids: [], metadata: { redacted_file_count: 1 } });
     const id = s.make({ fileIds: [F1, F2] });
     await s.run();
-    expect(s.row(id).error).toBe('添付した 2 件のうち 1 件を Mattermost が外したため、投稿に付いていません（ファイルをダウンロードする権限が無いため、どれが外れたかは分かりません）。');
+    expect(s.row(id).error).toBe('Of the 2 attached files, Mattermost removed 1, so they are not on the post (you lack permission to download the files, so which ones were removed is unknown).');
     expect(s.store.listScheduled(UID, { limit: 10 }).find((r) => r.id === id)?.fileIds).toEqual([F1, F2]);
     expect(marks()).toEqual(['p'.repeat(26), 'p'.repeat(26)]);
     expect(s.store.heldScheduledFiles(UID, [F1, F2])).toHaveLength(2);
@@ -622,7 +622,7 @@ describe('a schedule with files', () => {
     routes['POST /posts'] = () => ({ id: 'p'.repeat(26), file_ids: [F2], metadata: { redacted_file_count: 2 } });
     const id = s.make({ fileIds: [F1, F2] });
     await s.run();
-    expect(s.row(id)).toMatchObject({ status: 'posted', error: `添付した 2 件のうち 1 件（${F1}）を Mattermost が外したため、投稿に付いていません。` });
+    expect(s.row(id)).toMatchObject({ status: 'posted', error: `Of the 2 attached files, Mattermost removed 1 (${F1}), so they are not on the post.` });
     expect(marks()).toEqual([null, 'p'.repeat(26)]);
     expect(s.store.listScheduled(UID, { limit: 10 }).find((r) => r.id === id)?.fileIds).toEqual([F2]);
     expect(s.store.heldScheduledFiles(UID, [F1, F2])).toEqual([{ fileId: F2, scheduledId: id }]);
@@ -739,8 +739,8 @@ describe('a schedule with files', () => {
     const withFiles = s.make({ fileIds: [F1] });
     const without = s.make({ message: 'plain' });
     await s.run();
-    expect(s.row(withFiles).error).toBe('このチャンネルに投稿する権限か、ファイルを添付する権限がありません（チャンネルから抜けた、権限が変わった、など）。');
-    expect(s.row(without).error).toBe('このチャンネルに投稿する権限がありません（チャンネルから抜けた、権限が変わった、など）。');
+    expect(s.row(withFiles).error).toBe('You do not have permission to post to this channel or to attach files to it (for example, you left the channel or your permissions changed).');
+    expect(s.row(without).error).toBe('You do not have permission to post to this channel (for example, you left the channel or your permissions changed).');
   });
 });
 

@@ -75,7 +75,7 @@ describe('set_status against the local Mattermost', () => {
     expect(r.isError).toBeFalsy();
     const s = await status();
     expect(s).toMatchObject({ status: 'dnd', manual: true, dnd_end_time: Math.floor(end.getTime() / 60_000) * 60 });
-    expect(r.content[0].text).toContain('「取り込み中」（終了:');
+    expect(r.content[0].text).toContain('"do not disturb" (until:');
   });
 
   test('away is manual, and online goes back to automatic', async () => {
@@ -101,7 +101,7 @@ describe('set_custom_status and clear_custom_status against the local Mattermost
   test('an unknown emoji is refused by Mattermost and reported as a missing emoji', async () => {
     const r = await call('set_custom_status', { emoji: `no_such_${TAG}` });
     expect(r.isError).toBe(true);
-    expect(r.content[0].text).toContain(`絵文字「no_such_${TAG}」がありません`);
+    expect(r.content[0].text).toContain(`The emoji "no_such_${TAG}" does not exist`);
   });
 });
 

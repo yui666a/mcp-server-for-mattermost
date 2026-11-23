@@ -1,3 +1,6 @@
+import { localeOf, type Locale } from './i18n/index.ts';
+import { zoneOf } from './zone.ts';
+
 export type Config = {
   publicUrl: string;
   resource: string;
@@ -13,6 +16,8 @@ export type Config = {
   extraRedirectUris: string[];
   extraOrigins: string[];
   uploadMaxBytes: number;
+  locale: Locale;
+  timeZone: string;
 };
 
 const list = (v: string | undefined) => (v ?? '').split(',').map((s) => s.trim()).filter(Boolean);
@@ -51,5 +56,7 @@ export function loadConfig(env: NodeJS.ProcessEnv): Config {
     extraRedirectUris: list(env.EXTRA_REDIRECT_URIS),
     extraOrigins: list(env.EXTRA_ALLOWED_ORIGINS),
     uploadMaxBytes: positiveInt(env, 'UPLOAD_MAX_BYTES', 10 * 1024 * 1024),
+    locale: localeOf(env.LOCALE),
+    timeZone: zoneOf(env.TIME_ZONE),
   };
 }

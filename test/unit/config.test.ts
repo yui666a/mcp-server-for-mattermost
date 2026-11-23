@@ -46,3 +46,22 @@ test('UPLOAD_MAX_BYTES sets the upload limit and must be a positive integer', ()
   expect(loadConfig({ ...base, UPLOAD_MAX_BYTES: '1048576' }).uploadMaxBytes).toBe(1048576);
   expect(() => loadConfig({ ...base, UPLOAD_MAX_BYTES: '0' })).toThrow(/UPLOAD_MAX_BYTES/);
 });
+
+test('LOCALE and TIME_ZONE default to en and UTC, also when empty', () => {
+  for (const env of [base, { ...base, LOCALE: '', TIME_ZONE: '' }]) {
+    const c = loadConfig(env);
+    expect(c.locale).toBe('en');
+    expect(c.timeZone).toBe('UTC');
+  }
+});
+
+test('LOCALE takes ja and TIME_ZONE takes an IANA name', () => {
+  const c = loadConfig({ ...base, LOCALE: 'ja', TIME_ZONE: 'Asia/Tokyo' });
+  expect(c.locale).toBe('ja');
+  expect(c.timeZone).toBe('Asia/Tokyo');
+});
+
+test('an unknown LOCALE or TIME_ZONE fails at startup', () => {
+  expect(() => loadConfig({ ...base, LOCALE: 'fr' })).toThrow('LOCALE must be en or ja');
+  expect(() => loadConfig({ ...base, TIME_ZONE: 'Mars/Olympus' })).toThrow('TIME_ZONE must be an IANA time zone name');
+});

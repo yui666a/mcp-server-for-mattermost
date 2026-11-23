@@ -102,7 +102,7 @@ describe('followed threads against the local Mattermost', () => {
     expect(await followed()).not.toContain(root);
 
     r = await call('follow_thread', { post_id: root });
-    expect(r.content[0].text).toContain('をフォローしました');
+    expect(r.content[0].text).toContain('is now followed');
     expect(await followed()).toContain(root);
   });
 
@@ -119,7 +119,7 @@ describe('followed threads against the local Mattermost', () => {
     }
     const page = pages.find((t) => t.includes(root));
     expect(page).toBeDefined();
-    expect(page).toContain(`チーム: ${e.teams.a.name}（team_id: ${team}） | チャンネル: channel_id: ${ch}、name: t79-archived-${TAG}、アーカイブ済み、表示名: `);
+    expect(page).toContain(`Team: ${e.teams.a.name} (team_id: ${team}) | Channel: channel_id: ${ch}, name: t79-archived-${TAG}, archived, display name: `);
   });
 
   test('follow_thread on a followed thread keeps its unread replies and mentions', async () => {
@@ -132,7 +132,7 @@ describe('followed threads against the local Mattermost', () => {
     expect(before.unread_mentions).toBe(1);
 
     const r = await call('follow_thread', { post_id: root });
-    expect(r.content[0].text).toContain('はすでにフォローしています');
+    expect(r.content[0].text).toContain('is already followed');
     expect(await stateOf(root)).toMatchObject({ unread_replies: 1, unread_mentions: 1 });
   });
 
@@ -143,7 +143,7 @@ describe('followed threads against the local Mattermost', () => {
     expect(await followed()).not.toContain(root);
 
     const r = await call('follow_thread', { post_id: reply });
-    expect(r.content[0].text).toContain(`スレッド（親 post_id: ${root}）をフォローしました`);
+    expect(r.content[0].text).toContain(`Thread (root post_id: ${root}) is now followed`);
     expect(await followed()).toContain(root);
   });
 
@@ -151,11 +151,11 @@ describe('followed threads against the local Mattermost', () => {
     const ch = await newChannel('noreply');
     const root = await say(bobMm, ch, 'root');
     let r = await call('follow_thread', { post_id: root });
-    expect(r.content[0].text).toContain('をフォローしました');
+    expect(r.content[0].text).toContain('is now followed');
     r = await call('follow_thread', { post_id: root });
     expect(r.isError, r.content[0].text).toBeFalsy();
-    expect(r.content[0].text).toContain('はすでにフォローしています');
-    expect(r.content[0].text).toContain('最初の返信があるまで');
+    expect(r.content[0].text).toContain('is already followed');
+    expect(r.content[0].text).toContain('until the first reply');
   });
 
   test('follow_thread does not say a thread whose replies were all deleted waits for its first reply', async () => {
@@ -165,8 +165,8 @@ describe('followed threads against the local Mattermost', () => {
     const reply = await say(bobMm, ch, 'bob reply', root);
     await mmApi(bobMm, 'DELETE', `/posts/${reply}`);
     const r = await call('follow_thread', { post_id: root });
-    expect(r.content[0].text).toContain('をフォローしました');
-    expect(r.content[0].text).not.toContain('最初の返信があるまで');
+    expect(r.content[0].text).toContain('is now followed');
+    expect(r.content[0].text).not.toContain('until the first reply');
   });
 
   test('follow_thread refuses a thread in a public channel alice has not joined', async () => {
@@ -175,7 +175,7 @@ describe('followed threads against the local Mattermost', () => {
     await say(bobMm, ch, 'bob reply', root);
     const r = await call('follow_thread', { post_id: root });
     expect(r.isError).toBe(true);
-    expect(r.content[0].text).toContain('このチャンネルに参加しているかを確かめられませんでした');
+    expect(r.content[0].text).toContain('Could not check whether you have joined this channel');
     expect(await followed()).not.toContain(root);
   });
 
@@ -191,7 +191,7 @@ describe('followed threads against the local Mattermost', () => {
     const root = await say(carolMm, dm.id, 'root');
     await say(aliceMm, dm.id, 'alice reply', root);
     const r = await call('unfollow_thread', { post_id: root });
-    expect(r.content[0].text).toContain('このスレッドの通知は、外しても止まりません。');
+    expect(r.content[0].text).toContain('Notifications for this thread do not stop even after unfollowing.');
     expect(await followed()).not.toContain(root);
     await say(carolMm, dm.id, 'carol reply', root);
     expect(await followed()).toContain(root);

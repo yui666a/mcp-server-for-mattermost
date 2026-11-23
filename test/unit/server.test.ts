@@ -31,7 +31,7 @@ test('a plain shape with an argument named _zod is made strict like any other sh
   expect(tool.inputSchema.additionalProperties).toBe(false);
   const r = await client.callTool({ name: 'zod_named', arguments: { _zod: 'x', other: 1 } });
   expect(r.isError).toBe(true);
-  expect((r.content as { text: string }[])[0].text).toContain('受けない引数です: other');
+  expect((r.content as { text: string }[])[0].text).toContain('Arguments not accepted: other');
 });
 
 test('arguments the check refuses are logged as a tool_call with the outcome invalid_args, and the reply is unchanged', async () => {
@@ -54,9 +54,9 @@ test.each([
 });
 
 test.each([
-  ['a message', 'denied', 'Mattermost がエラーを返しました（403）: denied'],
-  ['no message', '', 'Mattermost がエラーを返しました（403）。'],
-  ['a blank message', '  ', 'Mattermost がエラーを返しました（403）。'],
+  ['a message', 'denied', 'Mattermost returned an error (403): denied'],
+  ['no message', '', 'Mattermost returned an error (403).'],
+  ['a blank message', '  ', 'Mattermost returned an error (403).'],
 ])('a Mattermost error with %s is worded without a dangling colon', async (_, message, text) => {
   const { MmError } = await import('../../src/mattermost/client.ts');
   const { failureText } = await import('../../src/mcp/tool.ts');
